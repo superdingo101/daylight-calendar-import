@@ -29,6 +29,14 @@ async def test_config_flow_shows_form():
     assert len(schema.schema) == 2
 
     selectors = list(schema.schema.values())
+    ai_task_selector = selectors[0]
+    assert ai_task_selector.config["filter"] == [
+        {
+            "domain": ["ai_task"],
+            "supported_features": [1],
+        }
+    ]
+
     calendar_selector = selectors[1]
     assert calendar_selector.config["filter"] == [
         {
