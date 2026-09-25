@@ -1,0 +1,10 @@
+{
+  "domain": "daylight_calendar_import",
+  "name": "Daylight Calendar Import",
+  "codeowners": ["@superdingo101"],
+  "config_flow": true,
+  "documentation": "https://github.com/superdingo101/daylight-calendar-import",
+  "integration_type": "service",
+  "issue_tracker": "https://github.com/superdingo101/daylight-calendar-import/issues",
+  "version": "0.1.0"
+}

@@ -1,0 +1,19 @@
+[project]
+name = "daylight-calendar-import"
+version = "0.1.0"
+description = "Home Assistant integration for extracting calendar events from unstructured input"
+requires-python = ">=3.13"
+license = "MIT"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["custom_components.daylight_calendar_import"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = true
