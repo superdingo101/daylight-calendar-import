@@ -9,6 +9,7 @@ import probatio
 from homeassistant.components import ai_task
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import selector
+from homeassistant.util import dt as dt_util
 
 from .models import DraftValidationError, EventDraft
 
@@ -22,7 +23,11 @@ Rules:
 - For all-day events, return ISO 8601 dates; end is exclusive, matching calendar semantics.
 - Preserve useful source details in description when appropriate.
 - confidence is from 0 to 1 and reflects confidence in the extracted event.
+- Resolve relative dates and local clock times using the reference datetime and Home Assistant time zone below.
 - Return no events when the source does not contain a calendar event.
+
+Reference datetime: {reference_datetime}
+Home Assistant time zone: {time_zone}
 
 Source text:
 {text}
@@ -92,11 +97,19 @@ async def async_parse_text(
     if not clean_text:
         raise ValueError("text must not be empty")
 
+    time_zone = hass.config.time_zone
+    local_tz = dt_util.get_time_zone(time_zone)
+    reference_datetime = dt_util.now(time_zone=local_tz).isoformat()
+
     result = await ai_task.async_generate_data(
         hass,
         task_name=TASK_NAME,
         entity_id=ai_task_entity,
-        instructions=PROMPT_TEMPLATE.format(text=clean_text),
+        instructions=PROMPT_TEMPLATE.format(
+            text=clean_text,
+            reference_datetime=reference_datetime,
+            time_zone=time_zone,
+        ),
         structure=EVENTS_STRUCTURE,
     )
     return parse_ai_data(result.data)
