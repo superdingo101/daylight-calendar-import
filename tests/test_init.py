@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from homeassistant.core import SupportsResponse
+
 from custom_components.daylight_calendar_import import (
     _async_create_calendar_event,
     _parse_for_entry,
@@ -66,11 +68,13 @@ async def test_setup_parse_and_import_services(monkeypatch):
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
     assert await async_setup_entry(hass, entry()) is True
 
-    parse_handler = hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)][0]
+    parse_handler, parse_kwargs = hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)]
+    assert parse_kwargs["supports_response"] is SupportsResponse.ONLY
     result = await parse_handler(SimpleNamespace(data={"text": "hello"}))
     assert result["events"][0]["title"] == "Practice"
 
-    import_handler = hass.services.handlers[(DOMAIN, SERVICE_IMPORT_TEXT)][0]
+    import_handler, import_kwargs = hass.services.handlers[(DOMAIN, SERVICE_IMPORT_TEXT)]
+    assert import_kwargs["supports_response"] is SupportsResponse.OPTIONAL
     result = await import_handler(SimpleNamespace(data={"text": "hello"}))
     assert result["imported"] == 1
     assert hass.services.calls[0][0:2] == ("calendar", "create_event")
