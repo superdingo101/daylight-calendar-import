@@ -33,7 +33,14 @@ class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         schema = vol.Schema(
             {
                 vol.Required(CONF_AI_TASK_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="ai_task")
+                    selector.EntitySelectorConfig(
+                        filter={
+                            "domain": "ai_task",
+                            "supported_features": [
+                                "ai_task.AITaskEntityFeature.GENERATE_DATA"
+                            ],
+                        }
+                    )
                 ),
                 vol.Required(CONF_CALENDAR_ENTITY): selector.EntitySelector(
                     selector.EntitySelectorConfig(
