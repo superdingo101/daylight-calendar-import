@@ -6,9 +6,11 @@ from typing import Any
 
 import voluptuous as vol
 
+from homeassistant.auth.permissions.const import CAT_ENTITIES, POLICY_CONTROL
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DESCRIPTION
 from homeassistant.core import Context, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.exceptions import Unauthorized, UnknownUser
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
@@ -29,11 +31,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Daylight Calendar Import from a config entry."""
 
     async def handle_parse_text(call: ServiceCall) -> ServiceResponse:
-        drafts = await _parse_for_entry(hass, entry, call.data[ATTR_TEXT])
+        drafts = await _parse_for_entry(
+            hass, entry, call.data[ATTR_TEXT], context=call.context
+        )
         return {"events": [draft.as_dict() for draft in drafts]}
 
     async def handle_import_text(call: ServiceCall) -> ServiceResponse:
-        drafts = await _parse_for_entry(hass, entry, call.data[ATTR_TEXT])
+        drafts = await _parse_for_entry(
+            hass, entry, call.data[ATTR_TEXT], context=call.context
+        )
         for draft in drafts:
             await _async_create_calendar_event(
                 hass,
@@ -71,13 +77,44 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _parse_for_entry(
-    hass: HomeAssistant, entry: ConfigEntry, text: str
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    text: str,
+    *,
+    context: Context | None = None,
 ) -> list[EventDraft]:
+    ai_task_entity = entry.data[CONF_AI_TASK_ENTITY]
+    await _async_check_entity_control_permission(hass, ai_task_entity, context)
     return await async_parse_text(
         hass,
         text=text,
-        ai_task_entity=entry.data[CONF_AI_TASK_ENTITY],
+        ai_task_entity=ai_task_entity,
     )
+
+
+async def _async_check_entity_control_permission(
+    hass: HomeAssistant,
+    entity_id: str,
+    context: Context | None,
+) -> None:
+    """Enforce Home Assistant entity-control permissions for a user call."""
+    if context is None or context.user_id is None:
+        return
+
+    user = await hass.auth.async_get_user(context.user_id)
+    if user is None:
+        raise UnknownUser(
+            context=context,
+            permission=POLICY_CONTROL,
+            user_id=context.user_id,
+        )
+    if not user.permissions.check_entity(entity_id, POLICY_CONTROL):
+        raise Unauthorized(
+            context=context,
+            permission=POLICY_CONTROL,
+            user_id=context.user_id,
+            perm_category=CAT_ENTITIES,
+        )
 
 
 async def _async_create_calendar_event(
