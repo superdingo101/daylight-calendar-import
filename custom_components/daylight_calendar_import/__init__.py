@@ -8,7 +8,7 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DESCRIPTION
-from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.core import Context, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
@@ -36,7 +36,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         drafts = await _parse_for_entry(hass, entry, call.data[ATTR_TEXT])
         for draft in drafts:
             await _async_create_calendar_event(
-                hass, entry.data[CONF_CALENDAR_ENTITY], draft
+                hass,
+                entry.data[CONF_CALENDAR_ENTITY],
+                draft,
+                context=call.context,
             )
         return {
             "events": [draft.as_dict() for draft in drafts],
@@ -78,7 +81,11 @@ async def _parse_for_entry(
 
 
 async def _async_create_calendar_event(
-    hass: HomeAssistant, calendar_entity: str, draft: EventDraft
+    hass: HomeAssistant,
+    calendar_entity: str,
+    draft: EventDraft,
+    *,
+    context: Context | None = None,
 ) -> None:
     data: dict[str, Any] = {
         "entity_id": calendar_entity,
@@ -95,4 +102,6 @@ async def _async_create_calendar_event(
         data["start_date_time"] = draft.start
         data["end_date_time"] = draft.end
 
-    await hass.services.async_call("calendar", "create_event", data, blocking=True)
+    await hass.services.async_call(
+        "calendar", "create_event", data, blocking=True, context=context
+    )
