@@ -89,7 +89,8 @@ def draft(all_day=False):
 
 
 async def test_setup_parse_and_import_services(monkeypatch):
-    hass = FakeHass()
+    permissions = FakePermissions(allowed=True)
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
     parse = AsyncMock(return_value=[draft()])
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
     assert await async_setup_entry(hass, entry()) is True
@@ -111,6 +112,7 @@ async def test_setup_parse_and_import_services(monkeypatch):
     assert result["imported"] == 1
     assert hass.services.calls[0][0:2] == ("calendar", "create_event")
     assert hass.services.calls[0][4] is call_context
+    assert permissions.calls == [("ai_task.test", POLICY_CONTROL)]
 
     assert await async_unload_entry(hass, entry()) is True
     assert hass.services.handlers == {}
