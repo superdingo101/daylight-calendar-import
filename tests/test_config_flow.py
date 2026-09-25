@@ -28,6 +28,15 @@ async def test_config_flow_shows_form():
     schema = kwargs["data_schema"]
     assert len(schema.schema) == 2
 
+    selectors = list(schema.schema.values())
+    calendar_selector = selectors[1]
+    assert calendar_selector.config["filter"] == [
+        {
+            "domain": ["calendar"],
+            "supported_features": [1],
+        }
+    ]
+
 
 async def test_config_flow_creates_entry():
     flow = DaylightCalendarImportConfigFlow()
