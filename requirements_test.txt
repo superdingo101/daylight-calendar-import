@@ -6,3 +6,4 @@ pytest-homeassistant-custom-component>=0.13.0
 hassil==3.12.1
 gazetteer-matcher==1.1.0
 home-assistant-intents==2026.9.17
+PyTurboJPEG==1.8.3
