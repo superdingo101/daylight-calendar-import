@@ -36,7 +36,14 @@ class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                     selector.EntitySelectorConfig(domain="ai_task")
                 ),
                 vol.Required(CONF_CALENDAR_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="calendar")
+                    selector.EntitySelectorConfig(
+                        filter={
+                            "domain": "calendar",
+                            "supported_features": [
+                                "calendar.CalendarEntityFeature.CREATE_EVENT"
+                            ],
+                        }
+                    )
                 ),
             }
         )
