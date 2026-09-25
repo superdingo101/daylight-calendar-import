@@ -1,0 +1,17 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Daylight Calendar Import",
+        "description": "Choose the Home Assistant AI Task entity used for parsing and the calendar where proof-of-concept imports are created.",
+        "data": {
+          "ai_task_entity": "AI Task entity",
+          "calendar_entity": "Calendar"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Daylight Calendar Import is already configured."
+    }
+  }
+}

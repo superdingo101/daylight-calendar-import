@@ -1,0 +1,23 @@
+parse_text:
+  name: Parse text
+  description: Extract validated calendar event drafts without creating events.
+  fields:
+    text:
+      name: Text
+      description: Unstructured text containing zero or more calendar events.
+      required: true
+      selector:
+        text:
+          multiline: true
+
+import_text:
+  name: Import text
+  description: Extract validated event drafts and create them on the configured calendar.
+  fields:
+    text:
+      name: Text
+      description: Unstructured text containing zero or more calendar events.
+      required: true
+      selector:
+        text:
+          multiline: true
