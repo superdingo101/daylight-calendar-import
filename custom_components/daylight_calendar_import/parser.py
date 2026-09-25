@@ -39,35 +39,35 @@ EVENTS_STRUCTURE = probatio.Schema(
                 "fields": {
                     "title": {
                         "required": True,
-                        "description": "Short event title",
+                        "label": "Short event title",
                         "selector": {"text": {}},
                     },
                     "start": {
                         "required": True,
-                        "description": "ISO date or timezone-aware ISO datetime",
+                        "label": "ISO date or timezone-aware ISO datetime",
                         "selector": {"text": {}},
                     },
                     "end": {
                         "required": True,
-                        "description": "Exclusive ISO end date or timezone-aware ISO datetime",
+                        "label": "Exclusive ISO end date or timezone-aware ISO datetime",
                         "selector": {"text": {}},
                     },
                     "all_day": {
                         "required": True,
-                        "description": "True only for an all-day event",
+                        "label": "True only for an all-day event",
                         "selector": {"boolean": {}},
                     },
                     "location": {
-                        "description": "Event location when explicitly present",
+                        "label": "Event location when explicitly present",
                         "selector": {"text": {}},
                     },
                     "description": {
-                        "description": "Useful supporting details from the source",
+                        "label": "Useful supporting details from the source",
                         "selector": {"text": {"multiline": True}},
                     },
                     "confidence": {
                         "required": True,
-                        "description": "Confidence from 0 through 1",
+                        "label": "Confidence from 0 through 1",
                         "selector": {"number": {"min": 0, "max": 1, "step": 0.01}},
                     },
                 },
