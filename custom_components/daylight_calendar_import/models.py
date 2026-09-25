@@ -83,10 +83,13 @@ def _validate_temporal_range(start: str, end: str, all_day: bool) -> None:
         else:
             start_value = datetime.fromisoformat(start)
             end_value = datetime.fromisoformat(end)
-            if start_value.tzinfo is None or end_value.tzinfo is None:
-                raise DraftValidationError("timed events must include timezone offsets")
     except ValueError as err:
         raise DraftValidationError("start/end must be valid ISO values") from err
+
+    if not all_day and (
+        start_value.tzinfo is None or end_value.tzinfo is None
+    ):
+        raise DraftValidationError("timed events must include timezone offsets")
 
     if end_value <= start_value:
         raise DraftValidationError("end must be after start")
