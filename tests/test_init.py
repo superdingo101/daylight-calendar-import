@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from homeassistant.core import SupportsResponse
+from homeassistant.core import Context, SupportsResponse
 
 from custom_components.daylight_calendar_import import (
     _async_create_calendar_event,
@@ -32,8 +32,8 @@ class FakeServices:
     def async_remove(self, domain, service):
         self.handlers.pop((domain, service), None)
 
-    async def async_call(self, domain, service, data, blocking=False):
-        self.calls.append((domain, service, data, blocking))
+    async def async_call(self, domain, service, data, blocking=False, context=None):
+        self.calls.append((domain, service, data, blocking, context))
 
 
 class FakeHass:
@@ -75,9 +75,13 @@ async def test_setup_parse_and_import_services(monkeypatch):
 
     import_handler, import_kwargs = hass.services.handlers[(DOMAIN, SERVICE_IMPORT_TEXT)]
     assert import_kwargs["supports_response"] is SupportsResponse.OPTIONAL
-    result = await import_handler(SimpleNamespace(data={"text": "hello"}))
+    call_context = Context(user_id="test-user")
+    result = await import_handler(
+        SimpleNamespace(data={"text": "hello"}, context=call_context)
+    )
     assert result["imported"] == 1
     assert hass.services.calls[0][0:2] == ("calendar", "create_event")
+    assert hass.services.calls[0][4] is call_context
 
     assert await async_unload_entry(hass, entry()) is True
     assert hass.services.handlers == {}
