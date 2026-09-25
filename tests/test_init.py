@@ -3,9 +3,14 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
+from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.core import Context, SupportsResponse
+from homeassistant.exceptions import Unauthorized, UnknownUser
 
 from custom_components.daylight_calendar_import import (
+    _async_check_entity_control_permission,
     _async_create_calendar_event,
     _parse_for_entry,
     async_setup_entry,
@@ -36,9 +41,30 @@ class FakeServices:
         self.calls.append((domain, service, data, blocking, context))
 
 
+class FakePermissions:
+    def __init__(self, allowed=True):
+        self.allowed = allowed
+        self.calls = []
+
+    def check_entity(self, entity_id, permission):
+        self.calls.append((entity_id, permission))
+        return self.allowed
+
+
+class FakeAuth:
+    def __init__(self, user=None):
+        self.user = user
+        self.calls = []
+
+    async def async_get_user(self, user_id):
+        self.calls.append(user_id)
+        return self.user
+
+
 class FakeHass:
-    def __init__(self):
+    def __init__(self, user=None):
         self.services = FakeServices()
+        self.auth = FakeAuth(user)
 
 
 def entry():
@@ -70,7 +96,10 @@ async def test_setup_parse_and_import_services(monkeypatch):
 
     parse_handler, parse_kwargs = hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)]
     assert parse_kwargs["supports_response"] is SupportsResponse.ONLY
-    result = await parse_handler(SimpleNamespace(data={"text": "hello"}))
+    parse_context = Context(user_id=None)
+    result = await parse_handler(
+        SimpleNamespace(data={"text": "hello"}, context=parse_context)
+    )
     assert result["events"][0]["title"] == "Practice"
 
     import_handler, import_kwargs = hass.services.handlers[(DOMAIN, SERVICE_IMPORT_TEXT)]
@@ -88,11 +117,52 @@ async def test_setup_parse_and_import_services(monkeypatch):
 
 
 async def test_parse_for_entry(monkeypatch):
-    hass = FakeHass()
+    permissions = FakePermissions(allowed=True)
+    user = SimpleNamespace(permissions=permissions)
+    hass = FakeHass(user=user)
     parse = AsyncMock(return_value=[])
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
-    assert await _parse_for_entry(hass, entry(), "text") == []
+    context = Context(user_id="allowed-user")
+
+    assert await _parse_for_entry(hass, entry(), "text", context=context) == []
+    assert hass.auth.calls == ["allowed-user"]
+    assert permissions.calls == [("ai_task.test", POLICY_CONTROL)]
     assert parse.await_args.kwargs["ai_task_entity"] == "ai_task.test"
+
+
+async def test_entity_permission_internal_call_skips_auth():
+    hass = FakeHass()
+    await _async_check_entity_control_permission(hass, "ai_task.test", None)
+    await _async_check_entity_control_permission(
+        hass, "ai_task.test", Context(user_id=None)
+    )
+    assert hass.auth.calls == []
+
+
+async def test_entity_permission_unknown_user():
+    hass = FakeHass(user=None)
+    context = Context(user_id="missing-user")
+
+    with pytest.raises(UnknownUser):
+        await _async_check_entity_control_permission(
+            hass, "ai_task.test", context
+        )
+
+    assert hass.auth.calls == ["missing-user"]
+
+
+async def test_entity_permission_denied():
+    permissions = FakePermissions(allowed=False)
+    user = SimpleNamespace(permissions=permissions)
+    hass = FakeHass(user=user)
+    context = Context(user_id="denied-user")
+
+    with pytest.raises(Unauthorized):
+        await _async_check_entity_control_permission(
+            hass, "ai_task.test", context
+        )
+
+    assert permissions.calls == [("ai_task.test", POLICY_CONTROL)]
 
 
 async def test_calendar_event_payloads():
