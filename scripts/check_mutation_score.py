@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -22,12 +23,24 @@ def main() -> int:
     )
     minimum = float(baseline["minimum_score"])
 
-    print(
-        "Mutation score: "
-        f"{score:.2f}% "
-        f"({stats['killed']} killed, {stats['survived']} survived, "
-        f"{stats['total']} total; minimum {minimum:.2f}%)"
+    summary = (
+        "## Mutation testing\n\n"
+        f"- Score: **{score:.2f}%** (minimum {minimum:.2f}%)\n"
+        f"- Killed: {stats['killed']}\n"
+        f"- Survived: {stats['survived']}\n"
+        f"- No tests: {stats['no_tests']}\n"
+        f"- Timeout: {stats['timeout']}\n"
+        f"- Suspicious: {stats['suspicious']}\n"
+        f"- Segfault: {stats['segfault']}\n"
+        f"- Skipped: {stats['skipped']}\n"
+        f"- Total: {stats['total']}\n"
     )
+    print(summary)
+
+    github_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if github_summary:
+        with Path(github_summary).open("a") as stream:
+            stream.write(summary)
 
     failures: list[str] = []
     if score + 1e-9 < minimum:
