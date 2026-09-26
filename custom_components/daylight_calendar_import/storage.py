@@ -153,7 +153,7 @@ class PendingImportStore:
                 raise PendingImportApprovalUncertainError(pending_id)
 
             original = pending
-            while pending.events:
+            while True:
                 event = pending.events[0]
                 in_flight = PendingImport(
                     id=pending.id,
