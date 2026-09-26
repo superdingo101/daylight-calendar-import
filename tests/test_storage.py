@@ -158,55 +158,87 @@ async def test_store_can_remove_backing_storage(monkeypatch):
     assert backend.removed is True
 
 
-async def test_store_processes_and_removes_pending(monkeypatch):
-    existing = PendingImport.create(source_text="existing", events=[draft()])
+async def test_store_processes_events_with_checkpoints(monkeypatch):
+    second = EventDraft(
+        title="Picture Day",
+        start="2026-10-09",
+        end="2026-10-10",
+        all_day=True,
+        confidence=1,
+    )
+    existing = PendingImport.create(
+        source_text="existing",
+        events=[draft(), second],
+    )
     backend = FakeStoreBackend(load_result={"items": [existing.as_dict()]})
     store = make_store(monkeypatch, backend)
     await store.async_load()
     processed = []
 
-    async def processor(pending):
-        processed.append(pending)
+    async def processor(event):
+        processed.append(event)
 
-    result = await store.async_process(existing.id, processor)
+    result = await store.async_process_events(existing.id, processor)
 
+    remaining = PendingImport(
+        id=existing.id,
+        created_at=existing.created_at,
+        source_text=existing.source_text,
+        events=(second,),
+    )
     assert result == existing
-    assert processed == [existing]
+    assert processed == [draft(), second]
     assert store.list() == ()
-    assert backend.saved[-1] == {"items": []}
+    assert backend.saved == [
+        {"items": [remaining.as_dict()]},
+        {"items": []},
+    ]
 
-    assert await store.async_process("missing", processor) is None
-    assert processed == [existing]
+    assert await store.async_process_events("missing", processor) is None
+    assert processed == [draft(), second]
 
 
-async def test_store_process_failure_keeps_pending(monkeypatch):
-    existing = PendingImport.create(source_text="existing", events=[draft()])
+async def test_store_process_partial_failure_keeps_only_remaining_events(monkeypatch):
+    second = EventDraft(
+        title="Picture Day",
+        start="2026-10-09",
+        end="2026-10-10",
+        all_day=True,
+        confidence=1,
+    )
+    existing = PendingImport.create(
+        source_text="existing",
+        events=[draft(), second],
+    )
     backend = FakeStoreBackend(load_result={"items": [existing.as_dict()]})
     store = make_store(monkeypatch, backend)
     await store.async_load()
 
-    async def fail(_pending):
-        raise RuntimeError("processor failed")
+    async def processor(event):
+        if event == second:
+            raise RuntimeError("processor failed")
 
     with pytest.raises(RuntimeError, match="processor failed"):
-        await store.async_process(existing.id, fail)
+        await store.async_process_events(existing.id, processor)
 
-    assert store.list() == (existing,)
-    assert backend.saved == []
+    remaining = store.get(existing.id)
+    assert remaining is not None
+    assert remaining.events == (second,)
+    assert backend.saved == [{"items": [remaining.as_dict()]}]
 
 
-async def test_store_process_save_failure_keeps_pending(monkeypatch):
+async def test_store_process_save_failure_keeps_current_checkpoint(monkeypatch):
     existing = PendingImport.create(source_text="existing", events=[draft()])
     backend = FakeStoreBackend(load_result={"items": [existing.as_dict()]})
     store = make_store(monkeypatch, backend)
     await store.async_load()
     backend.save_error = RuntimeError("save failed")
 
-    async def processor(_pending):
+    async def processor(_event):
         return None
 
     with pytest.raises(RuntimeError, match="save failed"):
-        await store.async_process(existing.id, processor)
+        await store.async_process_events(existing.id, processor)
 
     assert store.list() == (existing,)
 
@@ -219,11 +251,13 @@ async def test_process_serializes_against_reject(monkeypatch):
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def processor(_pending):
+    async def processor(_event):
         started.set()
         await release.wait()
 
-    process_task = asyncio.create_task(store.async_process(existing.id, processor))
+    process_task = asyncio.create_task(
+        store.async_process_events(existing.id, processor)
+    )
     await started.wait()
     reject_task = asyncio.create_task(store.async_remove(existing.id))
     await asyncio.sleep(0)
