@@ -1,4 +1,4 @@
-"""Tests for persistent pending-import storage."""
+"""Tests for persistent pending-import storage and deduplication."""
 
 import asyncio
 from datetime import datetime
@@ -8,6 +8,10 @@ from uuid import UUID
 import pytest
 
 import custom_components.daylight_calendar_import.storage as storage_module
+from custom_components.daylight_calendar_import.dedup import (
+    event_fingerprint,
+    source_fingerprint,
+)
 from custom_components.daylight_calendar_import.models import EventDraft
 from custom_components.daylight_calendar_import.storage import (
     STORAGE_KEY,
@@ -15,6 +19,7 @@ from custom_components.daylight_calendar_import.storage import (
     PendingImport,
     PendingImportApprovalUncertainError,
     PendingImportStore,
+    _remember_fingerprints,
 )
 
 
@@ -57,6 +62,16 @@ def draft():
     )
 
 
+def second_draft():
+    return EventDraft(
+        title="Picture Day",
+        start="2026-10-09",
+        end="2026-10-10",
+        all_day=True,
+        confidence=1,
+    )
+
+
 def make_store(monkeypatch, backend):
     calls = []
     hass = SimpleNamespace()
@@ -72,9 +87,11 @@ def make_store(monkeypatch, backend):
 
 
 def test_pending_import_create_and_round_trip():
+    source_fp = source_fingerprint("message-1")
     pending = PendingImport.create(
         source_text="  Soccer practice email  ",
         events=[draft()],
+        source_fingerprint=source_fp,
     )
 
     UUID(pending.id)
@@ -82,9 +99,14 @@ def test_pending_import_create_and_round_trip():
     assert created_at.utcoffset().total_seconds() == 0
     assert pending.source_text == "Soccer practice email"
     assert pending.events == (draft(),)
+    assert pending.source_fingerprint == source_fp
+    assert pending.as_dict()["source_fingerprint"] == source_fp
 
     restored = PendingImport.from_dict(pending.as_dict())
     assert restored == pending
+
+    without_source = PendingImport.create(source_text="text", events=[draft()])
+    assert "source_fingerprint" not in without_source.as_dict()
 
 
 @pytest.mark.parametrize(
@@ -107,27 +129,62 @@ async def test_store_loads_empty_state(monkeypatch):
 
     assert store.list() == ()
     assert store.get("missing") is None
+    assert store.is_source_duplicate("new-source") is False
 
 
-async def test_store_restores_persisted_items(monkeypatch):
-    pending = PendingImport.create(source_text="text", events=[draft()])
-    backend = FakeStoreBackend(load_result={"items": [pending.as_dict()]})
+async def test_store_restores_items_and_deduplication_history(monkeypatch):
+    active_source = source_fingerprint("active-source")
+    seen_source = source_fingerprint("seen-source")
+    seen_event = event_fingerprint(draft())
+    pending = PendingImport.create(
+        source_text="text",
+        events=[second_draft()],
+        source_fingerprint=active_source,
+    )
+    backend = FakeStoreBackend(
+        load_result={
+            "items": [pending.as_dict()],
+            "seen_source_fingerprints": [seen_source],
+            "seen_event_fingerprints": [seen_event],
+        }
+    )
     store = make_store(monkeypatch, backend)
 
     await store.async_load()
 
     assert store.list() == (pending,)
     assert store.get(pending.id) == pending
+    assert store.is_source_duplicate("seen-source") is True
+    assert store.is_source_duplicate("active-source") is True
+    assert store.is_source_duplicate("new-source") is False
+
+    duplicate = await store.async_add(
+        source_text="duplicate event",
+        events=[draft()],
+    )
+    assert duplicate.pending is None
+    assert duplicate.duplicate_source is False
+    assert duplicate.duplicate_events == 1
+    assert backend.saved == []
 
 
-async def test_store_adds_and_removes_persistently(monkeypatch):
+async def test_store_adds_rejects_and_remembers_source_and_event(monkeypatch):
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
+    await store.async_load()
 
-    pending = await store.async_add(source_text=" text ", events=[draft()])
-
+    result = await store.async_add(
+        source_text=" text ",
+        events=[draft()],
+        source_id="message-1",
+    )
+    pending = result.pending
+    assert pending is not None
+    assert result.duplicate_source is False
+    assert result.duplicate_events == 0
+    assert pending.source_fingerprint == source_fingerprint("message-1")
     assert store.get(pending.id) == pending
-    assert store.list() == (pending,)
+    assert store.is_source_duplicate("message-1") is True
     assert backend.saved == [{"items": [pending.as_dict()]}]
 
     save_count = len(backend.saved)
@@ -137,7 +194,102 @@ async def test_store_adds_and_removes_persistently(monkeypatch):
     assert await store.async_remove(pending.id) is True
     assert store.get(pending.id) is None
     assert store.list() == ()
-    assert backend.saved[-1] == {"items": []}
+    assert backend.saved[-1] == {
+        "items": [],
+        "seen_source_fingerprints": [source_fingerprint("message-1")],
+        "seen_event_fingerprints": [event_fingerprint(draft())],
+    }
+    assert store.is_source_duplicate("message-1") is True
+
+    source_duplicate = await store.async_add(
+        source_text="different event from same source",
+        events=[second_draft()],
+        source_id="message-1",
+    )
+    assert source_duplicate.pending is None
+    assert source_duplicate.duplicate_source is True
+    assert source_duplicate.duplicate_events == 0
+
+
+async def test_store_filters_active_and_within_submission_event_duplicates(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    first = await store.async_add(source_text="first", events=[draft()])
+    assert first.pending is not None
+
+    duplicate = await store.async_add(source_text="same", events=[draft()])
+    assert duplicate.pending is None
+    assert duplicate.duplicate_events == 1
+
+    partial = await store.async_add(
+        source_text="partial",
+        events=[draft(), second_draft(), second_draft()],
+    )
+    assert partial.pending is not None
+    assert partial.pending.events == (second_draft(),)
+    assert partial.duplicate_source is False
+    assert partial.duplicate_events == 2
+    assert len(store.list()) == 2
+
+
+async def test_store_marks_source_seen_when_no_new_events(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    empty = await store.async_add(
+        source_text="no events",
+        events=[],
+        source_id="empty-source",
+    )
+    assert empty.pending is None
+    assert empty.duplicate_source is False
+    assert empty.duplicate_events == 0
+    assert backend.saved[-1] == {
+        "items": [],
+        "seen_source_fingerprints": [source_fingerprint("empty-source")],
+    }
+    assert store.is_source_duplicate("empty-source") is True
+
+    save_count = len(backend.saved)
+    no_source = await store.async_add(source_text="no events", events=[])
+    assert no_source.pending is None
+    assert no_source.duplicate_events == 0
+    assert len(backend.saved) == save_count
+
+
+async def test_store_all_duplicate_events_marks_new_source_seen(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    first = await store.async_add(source_text="first", events=[draft()])
+    assert first.pending is not None
+
+    result = await store.async_add(
+        source_text="same event, new source",
+        events=[draft()],
+        source_id="message-2",
+    )
+
+    assert result.pending is None
+    assert result.duplicate_source is False
+    assert result.duplicate_events == 1
+    assert store.is_source_duplicate("message-2") is True
+    assert backend.saved[-1]["seen_source_fingerprints"] == [
+        source_fingerprint("message-2")
+    ]
+
+
+async def test_store_async_add_rejects_blank_source_text(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    with pytest.raises(ValueError, match="source_text must be a non-empty string"):
+        await store.async_add(source_text="   ", events=[draft()])
 
 
 async def test_store_keeps_memory_unchanged_when_save_fails(monkeypatch):
@@ -148,7 +300,7 @@ async def test_store_keeps_memory_unchanged_when_save_fails(monkeypatch):
     backend.save_error = RuntimeError("save failed")
 
     with pytest.raises(RuntimeError, match="save failed"):
-        await store.async_add(source_text="new", events=[draft()])
+        await store.async_add(source_text="new", events=[second_draft()])
     assert store.list() == (existing,)
 
     with pytest.raises(RuntimeError, match="save failed"):
@@ -165,17 +317,12 @@ async def test_store_can_remove_backing_storage(monkeypatch):
     assert backend.removed is True
 
 
-async def test_store_processes_events_with_checkpoints(monkeypatch):
-    second = EventDraft(
-        title="Picture Day",
-        start="2026-10-09",
-        end="2026-10-10",
-        all_day=True,
-        confidence=1,
-    )
+async def test_store_processes_events_and_remembers_deduplication(monkeypatch):
+    source_fp = source_fingerprint("message-approve")
     existing = PendingImport.create(
         source_text="existing",
-        events=[draft(), second],
+        events=[draft(), second_draft()],
+        source_fingerprint=source_fp,
     )
     backend = FakeStoreBackend(load_result={"items": [existing.as_dict()]})
     store = make_store(monkeypatch, backend)
@@ -191,44 +338,61 @@ async def test_store_processes_events_with_checkpoints(monkeypatch):
         id=existing.id,
         created_at=existing.created_at,
         source_text=existing.source_text,
-        events=(draft(), second),
+        events=(draft(), second_draft()),
         approval_in_flight=True,
+        source_fingerprint=source_fp,
     )
     remaining = PendingImport(
         id=existing.id,
         created_at=existing.created_at,
         source_text=existing.source_text,
-        events=(second,),
+        events=(second_draft(),),
+        source_fingerprint=source_fp,
     )
     second_in_flight = PendingImport(
         id=existing.id,
         created_at=existing.created_at,
         source_text=existing.source_text,
-        events=(second,),
+        events=(second_draft(),),
         approval_in_flight=True,
+        source_fingerprint=source_fp,
     )
+    first_fp = event_fingerprint(draft())
+    second_fp = event_fingerprint(second_draft())
+
     assert result == existing
-    assert processed == [draft(), second]
+    assert processed == [draft(), second_draft()]
     assert store.list() == ()
     assert backend.saved == [
         {"items": [first_in_flight.as_dict()]},
-        {"items": [remaining.as_dict()]},
-        {"items": [second_in_flight.as_dict()]},
-        {"items": []},
+        {
+            "items": [remaining.as_dict()],
+            "seen_event_fingerprints": [first_fp],
+        },
+        {
+            "items": [second_in_flight.as_dict()],
+            "seen_event_fingerprints": [first_fp],
+        },
+        {
+            "items": [],
+            "seen_source_fingerprints": [source_fp],
+            "seen_event_fingerprints": [first_fp, second_fp],
+        },
     ]
 
+    assert store.is_source_duplicate("message-approve") is True
+    duplicate = await store.async_add(
+        source_text="same approved event",
+        events=[draft()],
+    )
+    assert duplicate.pending is None
+    assert duplicate.duplicate_events == 1
+
     assert await store.async_process_events("missing", processor) is None
-    assert processed == [draft(), second]
 
 
 async def test_store_partial_failure_marks_remaining_approval_uncertain(monkeypatch):
-    second = EventDraft(
-        title="Picture Day",
-        start="2026-10-09",
-        end="2026-10-10",
-        all_day=True,
-        confidence=1,
-    )
+    second = second_draft()
     existing = PendingImport.create(
         source_text="existing",
         events=[draft(), second],
@@ -248,6 +412,9 @@ async def test_store_partial_failure_marks_remaining_approval_uncertain(monkeypa
     assert remaining is not None
     assert remaining.events == (second,)
     assert remaining.approval_in_flight is True
+    assert backend.saved[-1]["seen_event_fingerprints"] == [
+        event_fingerprint(draft())
+    ]
 
     called = False
 
@@ -338,3 +505,13 @@ def test_pending_import_restores_legacy_ready_state():
     restored = PendingImport.from_dict(raw)
 
     assert restored.approval_in_flight is False
+    assert restored.source_fingerprint is None
+
+
+def test_remember_fingerprints_deduplicates_refreshes_and_bounds(monkeypatch):
+    existing = ("a", "b")
+
+    assert _remember_fingerprints(existing, ()) == existing
+
+    monkeypatch.setattr(storage_module, "DEDUP_HISTORY_LIMIT", 2)
+    assert _remember_fingerprints(existing, ("b", "c", "c")) == ("b", "c")
