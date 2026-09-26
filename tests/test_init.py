@@ -13,6 +13,7 @@ from custom_components.daylight_calendar_import import (
     _async_check_entity_control_permission,
     _async_create_calendar_event,
     _parse_for_entry,
+    async_remove_entry,
     async_setup_entry,
     async_unload_entry,
 )
@@ -199,3 +200,16 @@ async def test_calendar_event_payloads():
     )
     await _async_create_calendar_event(hass, "calendar.family", no_location)
     assert "location" not in hass.services.calls[-1][2]
+
+
+async def test_remove_entry_deletes_pending_storage(monkeypatch):
+    hass = FakeHass()
+    pending_store = SimpleNamespace(async_remove_storage=AsyncMock())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: pending_store,
+    )
+
+    await async_remove_entry(hass, entry())
+
+    pending_store.async_remove_storage.assert_awaited_once_with()
