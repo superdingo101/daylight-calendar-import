@@ -24,7 +24,7 @@ import_text:
 
 submit_text:
   name: Submit text for review
-  description: Extract validated event drafts and store them for later approval or rejection.
+  description: Extract validated event drafts, deduplicate them, and store new events for later approval or rejection.
   fields:
     text:
       name: Text
@@ -33,6 +33,12 @@ submit_text:
       selector:
         text:
           multiline: true
+    source_id:
+      name: Source ID
+      description: Optional stable upstream identifier used to skip a source that is already pending or handled.
+      required: false
+      selector:
+        text:
 
 approve_pending:
   name: Approve pending import
