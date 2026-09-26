@@ -79,6 +79,11 @@ Email/SMS ingestion, attachments, a review UI, and hosted relay services remain 
 ```bash
 pip install -r requirements_test.txt
 pytest --cov --cov-branch --cov-fail-under=100
+mutmut run
+mutmut export-cicd-stats
+python scripts/check_mutation_score.py
 ```
 
-CI targets 100% branch/code coverage for the Python integration package.
+CI requires 100% statement/branch coverage for the Python integration package and also enforces the mutation-testing baseline in `mutation-baseline.json`.
+
+The mutation baseline was established on September 26, 2026 at **88.43%**: 1,315 of 1,487 generated mutants were killed, 172 survived, and none were untested, suspicious, skipped, timed out, or interrupted. Future changes must not lower that score, and CI also requires zero untested, suspicious, or segfaulting mutants.

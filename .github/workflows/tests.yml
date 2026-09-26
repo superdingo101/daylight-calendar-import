@@ -19,6 +19,30 @@ jobs:
       - run: pip install -r requirements_test.txt
       - run: pytest --cov --cov-branch --cov-fail-under=100
 
+  mutation:
+    name: Mutation score
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements_test.txt
+      - name: Run mutation tests
+        run: mutmut run
+      - name: Export and enforce mutation statistics
+        run: |
+          mutmut export-cicd-stats
+          python scripts/check_mutation_score.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-stats
+          path: mutants/mutmut-cicd-stats.json
+
   test-ha-2026-7:
     name: Test Home Assistant 2026.7.4
     runs-on: ubuntu-latest

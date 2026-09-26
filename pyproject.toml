@@ -18,3 +18,7 @@ source = ["custom_components.daylight_calendar_import"]
 fail_under = 100
 show_missing = true
 skip_covered = true
+
+[tool.mutmut]
+source_paths = ["custom_components/daylight_calendar_import/"]
+pytest_add_cli_args_test_selection = ["tests/"]
