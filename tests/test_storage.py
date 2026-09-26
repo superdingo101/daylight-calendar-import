@@ -957,3 +957,172 @@ def test_remember_fingerprints_deduplicates_refreshes_and_bounds(monkeypatch):
 
     monkeypatch.setattr(storage_module, "DEDUP_HISTORY_LIMIT", 2)
     assert _remember_fingerprints(existing, ("b", "c", "c")) == ("b", "c")
+
+async def test_edit_event_preserves_import_metadata_and_siblings(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (
+        await store.async_add(
+            source_text="newsletter",
+            events=[draft(), second_draft()],
+            source_id="edit-source",
+        )
+    ).pending
+    assert item is not None
+    first, second = item.events
+    replacement = EventDraft(
+        title="Dentist",
+        start="2026-10-11T09:00:00-07:00",
+        end="2026-10-11T10:00:00-07:00",
+        all_day=False,
+        location="Clinic",
+        confidence=0.8,
+    )
+
+    edited = await store.async_edit_event(item.id, first.id, replacement)
+    assert edited is not None
+    updated = store.get(item.id)
+    assert updated is not None
+    assert updated.id == item.id
+    assert updated.created_at == item.created_at
+    assert updated.source_text == item.source_text
+    assert updated.source_fingerprint == item.source_fingerprint
+    assert updated.events == (edited, second)
+
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get(item.id) == updated
+
+
+async def test_edit_event_rejects_duplicate_sibling(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (
+        await store.async_add(
+            source_text="two events",
+            events=[draft(), second_draft()],
+        )
+    ).pending
+    assert item is not None
+
+    with pytest.raises(PendingEventEditError, match="duplicates"):
+        await store.async_edit_event(
+            item.id,
+            item.events[0].id,
+            item.events[1].draft,
+        )
+
+
+async def test_reject_event_preserves_metadata_and_immediate_dedupe(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (
+        await store.async_add(
+            source_text="newsletter",
+            events=[draft(), second_draft()],
+            source_id="reject-source",
+        )
+    ).pending
+    assert item is not None
+    first, second = item.events
+
+    assert await store.async_reject_event(item.id, first.id)
+    updated = store.get(item.id)
+    assert updated is not None
+    assert updated.id == item.id
+    assert updated.created_at == item.created_at
+    assert updated.source_text == item.source_text
+    assert updated.source_fingerprint == item.source_fingerprint
+    assert updated.events == (second,)
+
+    repeated = await store.async_add(
+        source_text="repeat rejected event",
+        events=[draft()],
+    )
+    assert repeated.pending is None
+    assert repeated.duplicate_events == 1
+
+
+async def test_resolve_not_created_preserves_other_uncertain_event(monkeypatch):
+    source_fp = source_fingerprint("uncertain-source")
+    item = PendingImport.create(
+        source_text="newsletter",
+        events=[draft(), second_draft()],
+        source_fingerprint=source_fp,
+    )
+    raw = item.as_dict()
+    raw["events"] = [
+        {**event, "status": "write_uncertain"}
+        for event in raw["events"]
+    ]
+    backend = FakeStoreBackend(load_result={"items": [raw]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    loaded = store.get(item.id)
+    assert loaded is not None
+    first, second = loaded.events
+
+    assert await store.async_resolve_uncertain(
+        item.id, first.id, "not_created"
+    )
+    updated = store.get(item.id)
+    assert updated is not None
+    assert updated.created_at == item.created_at
+    assert updated.source_text == item.source_text
+    assert updated.source_fingerprint == source_fp
+    assert updated.events[0].id == first.id
+    assert updated.events[0].status == "pending"
+    assert updated.events[1].id == second.id
+    assert updated.events[1].status == "write_uncertain"
+
+
+async def test_resolve_last_event_keeps_source_dedupe_live_in_memory(monkeypatch):
+    source_fp = source_fingerprint("resolved-source")
+    item = PendingImport.create(
+        source_text="newsletter",
+        events=[draft()],
+        source_fingerprint=source_fp,
+    )
+    raw = item.as_dict()
+    raw["events"] = [
+        {**raw["events"][0], "status": "write_uncertain"}
+    ]
+    backend = FakeStoreBackend(load_result={"items": [raw]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    assert await store.async_resolve_uncertain(
+        item.id, item.events[0].id, "created"
+    )
+    assert store.get(item.id) is None
+    assert store.is_source_duplicate("resolved-source") is True
+
+
+async def test_save_without_history_override_preserves_seen_sources(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    first = (
+        await store.async_add(
+            source_text="first",
+            events=[draft()],
+            source_id="seen-source",
+        )
+    ).pending
+    assert first is not None
+    assert await store.async_remove(first.id)
+
+    second = await store.async_add(
+        source_text="second",
+        events=[second_draft()],
+    )
+    assert second.pending is not None
+    assert backend.saved[-1]["seen_source_fingerprints"] == [
+        source_fingerprint("seen-source")
+    ]
+
