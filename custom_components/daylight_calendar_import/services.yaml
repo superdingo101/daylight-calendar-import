@@ -96,7 +96,7 @@ get_pending_event:
 
 edit_pending_event:
   name: Edit pending event
-  description: Replace a pending draft while keeping its event ID. An uncertain calendar write must be resolved before editing.
+  description: Replace a pending draft or select its allowed destination calendar while keeping its event ID. An uncertain calendar write must be resolved before editing.
   fields:
     pending_id:
       name: Pending import ID
@@ -114,6 +114,12 @@ edit_pending_event:
       required: true
       selector:
         object:
+    calendar_entity:
+      name: Destination calendar
+      description: Optional writable calendar from the integration's allowed calendars.
+      selector:
+        entity:
+          domain: calendar
 
 reject_pending_event:
   name: Reject pending event

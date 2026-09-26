@@ -109,7 +109,7 @@ def test_pending_import_create_and_round_trip():
     assert pending.source_fingerprint == source_fp
     assert pending.as_dict()["source_fingerprint"] == source_fp
     assert pending.as_service_dict()["events"][0] == {
-        **draft().as_dict(), "id": pending.events[0].id, "status": "pending",
+        **draft().as_dict(), "id": pending.events[0].id, "status": "pending", "calendar_entity": None,
     }
     assert pending.as_service_dict()["approval_in_flight"] is False
 
@@ -196,7 +196,7 @@ async def test_get_event_uses_stable_id_across_restart_and_checkpoints(monkeypat
     assert restarted.get_event(pending.id, second.id) == second
 
     async def processor(event):
-        if event == second_draft():
+        if event.draft == second_draft():
             raise RuntimeError("calendar unavailable")
 
     with pytest.raises(RuntimeError, match="calendar unavailable"):
@@ -359,7 +359,7 @@ async def test_approve_selected_event_preserves_other_draft_and_source(monkeypat
     assert await store.async_approve_event("missing", second.id, processor) is None
     assert await store.async_approve_event(pending.id, "missing", processor) is None
     assert await store.async_approve_event(pending.id, second.id, processor) == second
-    assert processed == [second_draft()]
+    assert processed == [second]
     assert store.get_event(pending.id, first.id) == first
     assert store.get_event(pending.id, second.id) is None
     assert backend.saved[-2]["items"][0]["events"][1]["status"] == "write_uncertain"
@@ -373,7 +373,7 @@ async def test_approve_selected_event_preserves_other_draft_and_source(monkeypat
     assert restarted.get_event(pending.id, first.id) == first
     assert await restarted.async_approve_event(pending.id, first.id, processor) == first
     assert restarted.get(pending.id) is None
-    assert processed == [second_draft(), draft()]
+    assert processed == [second, first]
     assert backend.saved[-1]["seen_source_fingerprints"] == [source_fingerprint("mail-2")]
 
 
@@ -422,7 +422,7 @@ async def test_selected_approval_checkpoint_failures_and_no_source_id(monkeypatc
     backend.fail_on_save_attempt = backend.save_attempts + 2
     with pytest.raises(RuntimeError, match="save failed"):
         await store.async_approve_event(pending.id, event.id, processor)
-    assert calls == [draft()]
+    assert calls == [event]
     assert store.get_event(pending.id, event.id).status == "write_uncertain"
     assert "seen_source_fingerprints" not in backend.saved[-1]
 
@@ -511,7 +511,7 @@ async def test_resolve_not_created_allows_retry_with_same_id(monkeypatch):
         processed.append(draft)
 
     assert await restarted.async_approve_event(item.id, event.id, processor) == event
-    assert processed == [draft()]
+    assert processed == [event]
     assert restarted.get(item.id) is None
 
 
@@ -751,7 +751,7 @@ async def test_store_processes_events_and_remembers_deduplication(monkeypatch):
     second_fp = event_fingerprint(second_draft())
 
     assert result == existing
-    assert processed == [draft(), second_draft()]
+    assert processed == list(existing.events)
     assert store.list() == ()
     assert backend.saved == [
         {"items": [first_in_flight.as_dict()]},
@@ -792,7 +792,7 @@ async def test_store_partial_failure_marks_remaining_approval_uncertain(monkeypa
     await store.async_load()
 
     async def processor(event):
-        if event == second:
+        if event.draft == second:
             raise RuntimeError("processor failed")
 
     with pytest.raises(RuntimeError, match="processor failed"):
@@ -835,11 +835,11 @@ async def test_store_checkpoint_failure_blocks_automatic_retry(monkeypatch):
     uncertain = store.get(existing.id)
     assert uncertain is not None
     assert uncertain.approval_in_flight is True
-    assert processed == [draft()]
+    assert processed == [existing.events[0]]
 
     with pytest.raises(PendingImportApprovalUncertainError):
         await store.async_process_events(existing.id, processor)
-    assert processed == [draft()]
+    assert processed == [existing.events[0]]
 
 
 async def test_store_preflight_failure_has_no_external_side_effect(monkeypatch):
@@ -1126,3 +1126,47 @@ async def test_save_without_history_override_preserves_seen_sources(monkeypatch)
         source_fingerprint("seen-source")
     ]
 
+
+async def test_calendar_destination_survives_edit_checkpoint_and_restart(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    pending = (await store.async_add(
+        source_text="one", events=[draft()], calendar_entity="calendar.family"
+    )).pending
+    assert pending is not None
+    event = pending.events[0]
+    assert event.calendar_entity == "calendar.family"
+    changed = await store.async_edit_event(
+        pending.id, event.id, draft(), calendar_entity="calendar.work"
+    )
+    assert changed is not None
+    assert changed.calendar_entity == "calendar.work"
+    assert await store.async_edit_event(pending.id, event.id, draft()) == changed
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_event(pending.id, event.id) == changed
+
+
+    async def failed_write(selected):
+        assert selected.calendar_entity == "calendar.work"
+        raise RuntimeError("calendar write failed")
+
+    with pytest.raises(RuntimeError, match="calendar write failed"):
+        await restarted.async_approve_event(pending.id, event.id, failed_write)
+    backend.load_result = backend.saved[-1]
+    await restarted.async_load()
+    uncertain = restarted.get_event(pending.id, event.id)
+    assert uncertain is not None
+    assert uncertain.calendar_entity == "calendar.work"
+    assert uncertain.status == "write_uncertain"
+    assert await restarted.async_resolve_uncertain(pending.id, event.id, "not_created")
+    assert restarted.get_event(pending.id, event.id) == changed
+
+
+def test_old_pending_event_without_destination_defaults_to_unselected():
+    event = PendingEvent.create(draft())
+    raw = event.as_dict()
+    raw.pop("calendar_entity")
+    assert PendingEvent.from_dict(raw) == event
