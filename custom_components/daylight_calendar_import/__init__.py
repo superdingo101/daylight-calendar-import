@@ -40,6 +40,7 @@ from .parser import async_parse_text
 from .storage import (
     PendingEventEditError,
     PendingEventResolutionError,
+    PendingEvent,
     PendingImportApprovalUncertainError,
     PendingImportStore,
 )
@@ -69,6 +70,7 @@ EDIT_EVENT_SCHEMA = vol.Schema(
         vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
         vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
         vol.Required("event"): dict,
+        vol.Optional(CONF_CALENDAR_ENTITY): cv.entity_id,
     }
 )
 RESOLVE_EVENT_SCHEMA = vol.Schema(
@@ -96,6 +98,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pending_store = PendingImportStore(hass)
     await pending_store.async_load()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
+    allowed_calendars = entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]])
+
+    def event_calendar(event: PendingEvent) -> str:
+        calendar_entity = event.calendar_entity or entry.data[CONF_CALENDAR_ENTITY]
+        if calendar_entity not in allowed_calendars:
+            raise ServiceValidationError("Event calendar is not in the allowed calendars")
+        return calendar_entity
 
     async def handle_parse_text(call: ServiceCall) -> ServiceResponse:
         drafts = await _parse_for_entry(
@@ -147,6 +156,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             source_text=source_text,
             events=drafts,
             source_id=source_id,
+            calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
         )
         return {
             "pending": (
@@ -162,20 +172,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
 
     async def handle_approve_pending(call: ServiceCall) -> ServiceResponse:
-        calendar_entity = entry.data[CONF_CALENDAR_ENTITY]
+        pending_id = call.data[ATTR_PENDING_ID]
         await _async_check_entity_control_permission(
-            hass, calendar_entity, call.context
+            hass, entry.data[CONF_CALENDAR_ENTITY], call.context
         )
+        pending_to_approve = pending_store.get(pending_id)
+        if pending_to_approve is not None:
+            for calendar_entity in {event_calendar(event) for event in pending_to_approve.events}:
+                if calendar_entity != entry.data[CONF_CALENDAR_ENTITY]:
+                    await _async_check_entity_control_permission(hass, calendar_entity, call.context)
 
-        async def create_event(draft: EventDraft) -> None:
+        async def create_event(event: PendingEvent) -> None:
             await _async_create_calendar_event(
                 hass,
-                calendar_entity,
-                draft,
+                event_calendar(event),
+                event.draft,
                 context=call.context,
             )
 
-        pending_id = call.data[ATTR_PENDING_ID]
         try:
             pending = await pending_store.async_process_events(
                 pending_id, create_event
@@ -199,9 +213,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
 
     async def handle_reject_pending(call: ServiceCall) -> ServiceResponse:
-        await _async_check_entity_control_permission(
-            hass, entry.data[CONF_CALENDAR_ENTITY], call.context
-        )
+        for calendar_entity in allowed_calendars:
+            await _async_check_entity_control_permission(hass, calendar_entity, call.context)
         pending_id = call.data[ATTR_PENDING_ID]
         try:
             removed = await pending_store.async_remove(pending_id)
@@ -222,9 +235,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await _async_check_entity_control_permission(
             hass, entry.data[CONF_AI_TASK_ENTITY], call.context
         )
-        await _async_check_entity_control_permission(
-            hass, entry.data[CONF_CALENDAR_ENTITY], call.context
-        )
+        for calendar_entity in allowed_calendars:
+            await _async_check_entity_control_permission(hass, calendar_entity, call.context)
 
     async def handle_list_pending(call: ServiceCall) -> ServiceResponse:
         await check_read_permission(call)
@@ -266,7 +278,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         event_id = call.data[ATTR_EVENT_ID]
         try:
             draft = EventDraft.from_mapping(call.data["event"])
-            edited = await pending_store.async_edit_event(pending_id, event_id, draft)
+            calendar_entity = call.data.get(CONF_CALENDAR_ENTITY)
+            if calendar_entity is not None and calendar_entity not in allowed_calendars:
+                raise ServiceValidationError("Calendar is not in the allowed calendars")
+            edited = await pending_store.async_edit_event(
+                pending_id, event_id, draft, calendar_entity=calendar_entity
+            )
         except (DraftValidationError, PendingEventEditError) as err:
             raise ServiceValidationError(str(err)) from err
         if edited is None:
@@ -296,9 +313,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pending_id = call.data[ATTR_PENDING_ID]
         event_id = call.data[ATTR_EVENT_ID]
 
-        async def create_event(draft: EventDraft) -> None:
+        event_to_approve = pending_store.get_event(pending_id, event_id)
+        if event_to_approve is not None:
+            await _async_check_entity_control_permission(
+                hass, event_calendar(event_to_approve), call.context
+            )
+
+        async def create_event(event: PendingEvent) -> None:
             await _async_create_calendar_event(
-                hass, entry.data[CONF_CALENDAR_ENTITY], draft, context=call.context
+                hass, event_calendar(event), event.draft, context=call.context
             )
 
         try:

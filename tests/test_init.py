@@ -29,6 +29,7 @@ from custom_components.daylight_calendar_import.const import (
     ATTR_SOURCE_ID,
     ATTR_TEXT,
     CONF_AI_TASK_ENTITY,
+    CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
     DOMAIN,
     SERVICE_APPROVE_PENDING,
@@ -133,7 +134,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
     async def process_pending_events(pending_id, processor):
         assert pending_id == approval.id
         for event in approval.events:
-            await processor(event.draft)
+            await processor(event)
         return approval
 
     pending_store = SimpleNamespace(
@@ -147,6 +148,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
             )
         ),
         async_process_events=AsyncMock(side_effect=process_pending_events),
+        get=Mock(return_value=approval),
         async_remove=AsyncMock(return_value=True),
     )
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
@@ -195,6 +197,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
         source_text="hello",
         events=[draft()],
         source_id="message-1",
+        calendar_entity="calendar.family",
     )
 
     approve_handler, approve_kwargs = hass.services.handlers[
@@ -379,7 +382,7 @@ async def test_edit_pending_event_validates_and_checks_permissions(monkeypatch):
         context=Context(user_id="editor"),
     )
     assert await handler(call) == {"pending_id": item.id, "event": edited.as_service_dict()}
-    store.async_edit_event.assert_awaited_once_with(item.id, original.id, replacement)
+    store.async_edit_event.assert_awaited_once_with(item.id, original.id, replacement, calendar_entity=None)
 
     call.data["event"] = {**replacement.as_dict(), "end": "invalid"}
     with pytest.raises(ServiceValidationError, match="valid ISO"):
@@ -445,11 +448,11 @@ async def test_approve_pending_event_action_writes_only_selected_event(monkeypat
 
     async def approve(pending_id, event_id, processor):
         assert (pending_id, event_id) == (item.id, selected.id)
-        await processor(selected.draft)
+        await processor(selected)
         return selected
 
     store = SimpleNamespace(
-        async_load=AsyncMock(), async_approve_event=AsyncMock(side_effect=approve),
+        async_load=AsyncMock(), async_approve_event=AsyncMock(side_effect=approve), get_event=Mock(return_value=selected),
     )
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
@@ -473,6 +476,7 @@ async def test_approve_pending_event_action_writes_only_selected_event(monkeypat
 
     store.async_approve_event.side_effect = None
     store.async_approve_event.return_value = None
+    store.get_event.return_value = None
     with pytest.raises(ServiceValidationError, match="not found"):
         await handler(call)
     store.async_approve_event.side_effect = PendingImportApprovalUncertainError(item.id)
@@ -584,6 +588,7 @@ async def test_submit_text_without_events_records_source_handling(monkeypatch):
         source_text="nothing here",
         events=[],
         source_id=None,
+        calendar_entity="calendar.family",
     )
 
 
@@ -716,7 +721,7 @@ async def test_approve_and_reject_missing_pending_raise(monkeypatch):
     hass = FakeHass(user=SimpleNamespace(permissions=permissions))
     pending_store = SimpleNamespace(
         async_load=AsyncMock(),
-        async_process_events=AsyncMock(return_value=None),
+        async_process_events=AsyncMock(return_value=None), get=Mock(return_value=None),
         async_remove=AsyncMock(return_value=False),
     )
     monkeypatch.setattr(
@@ -751,7 +756,7 @@ async def test_approve_uncertain_pending_raises_validation_error(monkeypatch):
     hass = FakeHass(user=SimpleNamespace(permissions=permissions))
     pending_store = SimpleNamespace(
         async_load=AsyncMock(),
-        async_process_events=AsyncMock(
+        get=Mock(return_value=None), async_process_events=AsyncMock(
             side_effect=PendingImportApprovalUncertainError("pending-1")
         ),
     )
@@ -1039,6 +1044,7 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
         source_text="submit me",
         events=[event],
         source_id="message-42",
+        calendar_entity="calendar.family",
     )
 
 
@@ -1116,3 +1122,107 @@ async def test_remove_entry_uses_current_hass_instance(monkeypatch):
     assert received_hass == [hass]
     remove_storage.assert_awaited_once_with()
 
+
+async def test_event_calendar_edit_and_approvals_route_to_selected_destination(monkeypatch):
+    from custom_components.daylight_calendar_import.storage import PendingEvent
+
+    item = PendingImport.create(source_text="two events", events=[draft(), draft(True)])
+    first, second = item.events
+    selected = PendingEvent(second.id, second.draft, calendar_entity="calendar.work")
+
+    async def approve_one(_pending_id, _event_id, processor):
+        await processor(selected)
+        return selected
+
+    async def approve_all(_pending_id, processor):
+        await processor(first)
+        await processor(selected)
+        return item
+
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get=Mock(return_value=item),
+        get_event=Mock(return_value=selected),
+        async_edit_event=AsyncMock(return_value=selected),
+        async_approve_event=AsyncMock(side_effect=approve_one),
+        async_process_events=AsyncMock(side_effect=approve_all),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    config = entry()
+    config.data[CONF_CALENDAR_ENTITIES] = ["calendar.family", "calendar.work"]
+    permissions = FakePermissions()
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    await async_setup_entry(hass, config)
+    context = Context(user_id="reviewer")
+    edit = hass.services.handlers[(DOMAIN, SERVICE_EDIT_PENDING_EVENT)][0]
+    edit_call = SimpleNamespace(data={
+        ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: second.id,
+        "event": second.draft.as_dict(), CONF_CALENDAR_ENTITY: "calendar.work",
+    }, context=context)
+    assert (await edit(edit_call))["event"][CONF_CALENDAR_ENTITY] == "calendar.work"
+    store.async_edit_event.assert_awaited_once_with(
+        item.id, second.id, second.draft, calendar_entity="calendar.work"
+    )
+    edit_call.data[CONF_CALENDAR_ENTITY] = "calendar.unlisted"
+    with pytest.raises(ServiceValidationError, match="allowed calendars"):
+        await edit(edit_call)
+    store.async_edit_event.assert_awaited_once()
+
+    approve_event = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING_EVENT)][0]
+    await approve_event(SimpleNamespace(
+        data={ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: second.id}, context=context
+    ))
+    assert hass.services.calls[-1][2]["entity_id"] == "calendar.work"
+    approve_all_handler = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)][0]
+    await approve_all_handler(SimpleNamespace(data={ATTR_PENDING_ID: item.id}, context=context))
+    assert [call[2]["entity_id"] for call in hass.services.calls] == [
+        "calendar.work", "calendar.family", "calendar.work"
+    ]
+    assert ("calendar.work", POLICY_CONTROL) in permissions.calls
+
+
+async def test_other_calendar_requires_control_before_batch_write(monkeypatch):
+    from custom_components.daylight_calendar_import.storage import PendingEvent
+
+    item = pending()
+    selected = PendingEvent(item.events[0].id, item.events[0].draft,
+                            calendar_entity="calendar.work")
+    item = PendingImport(item.id, item.created_at, item.source_text, (selected,))
+    store = SimpleNamespace(async_load=AsyncMock(), get=Mock(return_value=item),
+                            async_process_events=AsyncMock())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    config = entry()
+    config.data[CONF_CALENDAR_ENTITIES] = ["calendar.family", "calendar.work"]
+    permissions = FakePermissions({"calendar.family": True, "calendar.work": False})
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    await async_setup_entry(hass, config)
+    handler = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)][0]
+    with pytest.raises(Unauthorized):
+        await handler(SimpleNamespace(data={ATTR_PENDING_ID: item.id},
+                                      context=Context(user_id="reviewer")))
+    store.async_process_events.assert_not_awaited()
+    assert hass.services.calls == []
+
+
+async def test_unlisted_persisted_destination_blocks_calendar_write(monkeypatch):
+    from custom_components.daylight_calendar_import.storage import PendingEvent
+
+    item = pending()
+    selected = PendingEvent(item.events[0].id, item.events[0].draft,
+                            calendar_entity="calendar.unlisted")
+    item = PendingImport(item.id, item.created_at, item.source_text, (selected,))
+    store = SimpleNamespace(async_load=AsyncMock(), get=Mock(return_value=item),
+                            async_process_events=AsyncMock())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)][0]
+    with pytest.raises(ServiceValidationError, match="^Event calendar is not in the allowed calendars$"):
+        await handler(SimpleNamespace(data={ATTR_PENDING_ID: item.id},
+                                      context=Context(user_id="reviewer")))
+    store.async_process_events.assert_not_awaited()

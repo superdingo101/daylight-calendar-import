@@ -46,23 +46,26 @@ class PendingEvent:
     id: str
     draft: EventDraft
     status: str = "pending"
+    calendar_entity: str | None = None
 
     @classmethod
-    def create(cls, draft: EventDraft) -> PendingEvent:
-        return cls(str(uuid4()), draft)
+    def create(cls, draft: EventDraft, calendar_entity: str | None = None) -> PendingEvent:
+        return cls(str(uuid4()), draft, calendar_entity=calendar_entity)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> PendingEvent:
         if raw["status"] not in ("pending", "write_uncertain"):
             raise ValueError("invalid pending event status")
-        return cls(raw["id"], EventDraft.from_mapping(raw["draft"]), raw["status"])
+        return cls(raw["id"], EventDraft.from_mapping(raw["draft"]), raw["status"], raw.get("calendar_entity"))
 
     def as_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "draft": self.draft.as_dict(), "status": self.status}
+        return {"id": self.id, "draft": self.draft.as_dict(), "status": self.status,
+                "calendar_entity": self.calendar_entity}
 
     def as_service_dict(self) -> dict[str, Any]:
         """Expose the stable ID alongside the existing flat draft fields."""
-        return {**self.draft.as_dict(), "id": self.id, "status": self.status}
+        return {**self.draft.as_dict(), "id": self.id, "status": self.status,
+                "calendar_entity": self.calendar_entity}
 
 
 def _migrate_v1(data: dict[str, Any]) -> dict[str, Any]:
@@ -112,13 +115,14 @@ class PendingImport:
         source_text: str,
         events: Iterable[EventDraft],
         source_fingerprint: str | None = None,
+        calendar_entity: str | None = None,
     ) -> PendingImport:
         """Create a new pending import with stable persisted metadata."""
         source_text = source_text.strip()
         if not source_text:
             raise ValueError("source_text must be a non-empty string")
 
-        event_tuple = tuple(PendingEvent.create(event) for event in events)
+        event_tuple = tuple(PendingEvent.create(event, calendar_entity) for event in events)
         if not event_tuple:
             raise ValueError("pending import must contain at least one event")
 
@@ -227,7 +231,8 @@ class PendingImportStore:
         return tuple(self._items.values())
 
     async def async_edit_event(
-        self, pending_id: str, event_id: str, draft: EventDraft
+        self, pending_id: str, event_id: str, draft: EventDraft,
+        calendar_entity: str | None = None,
     ) -> PendingEvent | None:
         """Replace a ready draft atomically while preserving its event ID."""
         async with self._lock:
@@ -239,7 +244,8 @@ class PendingImportStore:
                 return None
             if event.status != "pending":
                 raise PendingEventEditError("Uncertain calendar write must be resolved before editing")
-            if event.draft == draft:
+            target = calendar_entity or event.calendar_entity
+            if event.draft == draft and target == event.calendar_entity:
                 return event
 
             fingerprint = event_fingerprint(draft)
@@ -252,7 +258,7 @@ class PendingImportStore:
             if fingerprint in self._seen_event_fingerprints or fingerprint in other_active:
                 raise PendingEventEditError("Edited event duplicates a pending or handled event")
 
-            edited = PendingEvent(event.id, draft, event.status)
+            edited = PendingEvent(event.id, draft, event.status, target)
             updated = PendingImport(
                 id=pending.id, created_at=pending.created_at,
                 source_text=pending.source_text,
@@ -281,6 +287,7 @@ class PendingImportStore:
         source_text: str,
         events: Iterable[EventDraft],
         source_id: str | None = None,
+        calendar_entity: str | None = None,
     ) -> PendingImportAddResult:
         """Persist only events not already pending or handled."""
         source_text = source_text.strip()
@@ -340,6 +347,7 @@ class PendingImportStore:
                 source_text=source_text,
                 events=accepted_events,
                 source_fingerprint=source_fp,
+                calendar_entity=calendar_entity,
             )
             items = dict(self._items)
             items[pending.id] = pending
@@ -444,7 +452,7 @@ class PendingImportStore:
             seen_events = self._seen_event_fingerprints
             if resolution == "not_created":
                 remaining = tuple(
-                    PendingEvent(item.id, item.draft, "pending")
+                    PendingEvent(item.id, item.draft, "pending", item.calendar_entity)
                     if item.id == event_id else item for item in pending.events
                 )
             else:
@@ -477,7 +485,7 @@ class PendingImportStore:
     async def async_process_events(
         self,
         pending_id: str,
-        processor: Callable[[EventDraft], Awaitable[None]],
+        processor: Callable[[PendingEvent], Awaitable[None]],
     ) -> PendingImport | None:
         """Process pending events with durable checkpoints around each side effect."""
         async with self._lock:
@@ -496,7 +504,7 @@ class PendingImportStore:
 
     async def async_approve_event(
         self, pending_id: str, event_id: str,
-        processor: Callable[[EventDraft], Awaitable[None]],
+        processor: Callable[[PendingEvent], Awaitable[None]],
     ) -> PendingEvent | None:
         """Approve one ready event without approving its siblings."""
         async with self._lock:
@@ -513,14 +521,14 @@ class PendingImportStore:
 
     async def _async_approve_event_locked(
         self, pending: PendingImport, event: PendingEvent,
-        processor: Callable[[EventDraft], Awaitable[None]],
+        processor: Callable[[PendingEvent], Awaitable[None]],
     ) -> PendingImport | None:
         """Checkpoint the selected event around its external calendar write."""
         in_flight = PendingImport(
             id=pending.id, created_at=pending.created_at,
             source_text=pending.source_text,
             events=tuple(
-                PendingEvent(item.id, item.draft, "write_uncertain")
+                PendingEvent(item.id, item.draft, "write_uncertain", item.calendar_entity)
                 if item.id == event.id else item
                 for item in pending.events
             ),
@@ -531,7 +539,7 @@ class PendingImportStore:
         await self._async_save(items)
         self._items = items
 
-        await processor(event.draft)
+        await processor(event)
 
         remaining = tuple(item for item in pending.events if item.id != event.id)
         items = dict(self._items)

@@ -18,7 +18,7 @@ The first proof of concept supports:
 - `daylight_calendar_import.list_pending`: list pending import IDs, titles, counts, and uncertain-write flags
 - `daylight_calendar_import.get_pending`: retrieve a pending import with its source text and event drafts
 - `daylight_calendar_import.get_pending_event`: retrieve a draft using its pending import ID and stable event ID
-- `daylight_calendar_import.edit_pending_event`: replace a draft before approval, preserving its ID and checking for duplicates
+- `daylight_calendar_import.edit_pending_event`: replace a draft or select its allowed calendar before approval, preserving its ID and checking for duplicates
 - `daylight_calendar_import.reject_pending_event`: reject one draft while retaining other events in the import
 - `daylight_calendar_import.approve_pending_event`: create one draft on the configured calendar, retaining the others
 - `daylight_calendar_import.resolve_pending_event`: explicitly resolve a calendar write whose outcome is uncertain
@@ -58,7 +58,7 @@ To correct an event, call `edit_pending_event` with `pending_id`, `event_id`, an
 
 Use `reject_pending_event` with `pending_id` and `event_id` to remove only that draft. The rejection is remembered for exact event deduplication; other drafts retain their IDs and review status. The source is marked handled once the last event is resolved. A write-uncertain event requires explicit recovery before per-event rejection.
 
-Use `approve_pending_event` with the same IDs to create only that event. Both per-event and approve-all actions persist a write-in-flight checkpoint before calling the calendar and checkpoint the confirmed result afterward. An interrupted or ambiguous write blocks automatic retry until its outcome is resolved.
+To choose a destination for an individual event, call `edit_pending_event` with the complete `event` mapping and a top-level `calendar_entity` from the allowed list. The chosen destination survives restarts and appears in pending event responses. New submissions start with the configured default; existing pending events without a saved destination continue to use the default. Approval of one event or an entire import writes each event to its selected calendar. Review reads require control of every allowed calendar, and batch approval checks control of every destination before writing. Both per-event and approve-all actions persist a write-in-flight checkpoint before calling the calendar and checkpoint the confirmed result afterward. An interrupted or ambiguous write blocks automatic retry until its outcome is resolved.
 
 If an approval stops with an uncertain write, check the actual calendar before calling `resolve_pending_event`. Use `created` if the event exists (record it as handled), `not_created` if it definitely does not exist (restore the same draft and ID for retry), or `discard` if you want to abandon it (record it as rejected). The last two choices are different: `not_created` allows retry while `discard` suppresses the same event through deduplication. Batch rejection now refuses an import with any unresolved uncertain write.
 
