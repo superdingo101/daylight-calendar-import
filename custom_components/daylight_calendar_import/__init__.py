@@ -105,7 +105,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         return {
             "pending": (
-                result.pending.as_dict()
+                result.pending.as_service_dict()
                 if result.pending is not None
                 else None
             ),
@@ -150,7 +150,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "pending_id": pending.id,
             "approved": True,
             "imported": len(pending.events),
-            "events": [draft.as_dict() for draft in pending.events],
+            "events": [event.draft.as_dict() for event in pending.events],
         }
 
     async def handle_reject_pending(call: ServiceCall) -> ServiceResponse:

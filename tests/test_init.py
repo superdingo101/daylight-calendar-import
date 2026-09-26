@@ -106,12 +106,7 @@ def draft(all_day=False):
 
 
 def pending(*events):
-    return PendingImport(
-        id="pending-1",
-        created_at="2026-09-26T03:00:00+00:00",
-        source_text="hello",
-        events=tuple(events or (draft(),)),
-    )
+    return PendingImport.create(source_text="hello", events=events or (draft(),))
 
 
 async def test_setup_review_workflow_and_unload(monkeypatch):
@@ -125,7 +120,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
     async def process_pending_events(pending_id, processor):
         assert pending_id == approval.id
         for event in approval.events:
-            await processor(event)
+            await processor(event.draft)
         return approval
 
     pending_store = SimpleNamespace(
@@ -177,7 +172,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
         )
     )
     assert submit_result == {
-        "pending": submitted.as_dict(),
+        "pending": submitted.as_service_dict(),
         "duplicate": False,
         "duplicate_source": False,
         "duplicate_events": 0,
@@ -397,7 +392,7 @@ async def test_submit_text_reports_deduplication_races(
     assert result["duplicate_source"] is add_result.duplicate_source
     assert result["duplicate_events"] == add_result.duplicate_events
     assert result["pending"] == (
-        add_result.pending.as_dict()
+        add_result.pending.as_service_dict()
         if add_result.pending is not None
         else None
     )
