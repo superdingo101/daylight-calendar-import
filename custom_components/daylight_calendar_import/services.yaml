@@ -61,3 +61,35 @@ reject_pending:
       required: true
       selector:
         text:
+
+list_pending:
+  name: List pending imports
+  description: Return a summary of pending imports without their source text. Requires control of the configured AI Task and calendar entities.
+
+get_pending:
+  name: Get pending import
+  description: Return the source text and event drafts for a pending import. Requires control of the configured AI Task and calendar entities.
+  fields:
+    pending_id:
+      name: Pending import ID
+      description: Stable ID returned when the pending import was created.
+      required: true
+      selector:
+        text:
+
+get_pending_event:
+  name: Get pending event
+  description: Return one draft by its stable event ID. Requires control of the configured AI Task and calendar entities.
+  fields:
+    pending_id:
+      name: Pending import ID
+      description: Stable ID of the parent import.
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      description: Stable ID of an event within the import.
+      required: true
+      selector:
+        text:

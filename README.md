@@ -15,6 +15,9 @@ The first proof of concept supports:
 - `daylight_calendar_import.submit_text`: parse text, deduplicate it, and persist only new events for review
 - `daylight_calendar_import.approve_pending`: create every event in a pending import, then remove it from review
 - `daylight_calendar_import.reject_pending`: remove a pending import without creating calendar events
+- `daylight_calendar_import.list_pending`: list pending import IDs, titles, counts, and uncertain-write flags
+- `daylight_calendar_import.get_pending`: retrieve a pending import with its source text and event drafts
+- `daylight_calendar_import.get_pending_event`: retrieve a draft using its pending import ID and stable event ID
 - multiple events in one input
 - timed and all-day events
 - strict validation of AI output
@@ -42,6 +45,8 @@ The current minimum supported Home Assistant version is **2026.7.4**. CI tests t
 Then test `daylight_calendar_import.parse_text` from **Developer Tools → Actions**.
 
 Use `parse_text` first while evaluating extraction quality. For the review workflow, use `submit_text` and then pass the returned pending import ID to `approve_pending` or `reject_pending`. `submit_text` accepts an optional stable `source_id`; exact source duplicates can then be skipped before invoking AI. It also filters events already pending or previously approved/rejected using normalized fingerprints. `import_text` remains the explicit immediate-import path and intentionally bypasses the pending-review deduplication pipeline.
+
+The three pending read actions return responses from **Developer Tools → Actions**. `list_pending` returns summaries without the original source text; `get_pending` returns the full source and drafts; `get_pending_event` accepts both `pending_id` and `event_id`. Reads require an authenticated Home Assistant user with control permission for both the configured AI Task and calendar entities. Pending data remains available after a Home Assistant restart.
 
 ### Manual development install
 

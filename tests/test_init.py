@@ -11,6 +11,7 @@ from homeassistant.core import Context, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError, Unauthorized, UnknownUser
 
 from custom_components.daylight_calendar_import import (
+    PENDING_EVENT_SCHEMA,
     PENDING_SCHEMA,
     SUBMIT_SCHEMA,
     _async_check_entity_control_permission,
@@ -21,6 +22,7 @@ from custom_components.daylight_calendar_import import (
     async_unload_entry,
 )
 from custom_components.daylight_calendar_import.const import (
+    ATTR_EVENT_ID,
     ATTR_PENDING_ID,
     ATTR_SOURCE_ID,
     ATTR_TEXT,
@@ -28,7 +30,10 @@ from custom_components.daylight_calendar_import.const import (
     CONF_CALENDAR_ENTITY,
     DOMAIN,
     SERVICE_APPROVE_PENDING,
+    SERVICE_GET_PENDING,
+    SERVICE_GET_PENDING_EVENT,
     SERVICE_IMPORT_TEXT,
+    SERVICE_LIST_PENDING,
     SERVICE_PARSE_TEXT,
     SERVICE_REJECT_PENDING,
     SERVICE_SUBMIT_TEXT,
@@ -63,7 +68,7 @@ class FakePermissions:
 
     def check_entity(self, entity_id, permission):
         self.calls.append((entity_id, permission))
-        return self.allowed
+        return self.allowed.get(entity_id, False) if isinstance(self.allowed, dict) else self.allowed
 
 
 class FakeAuth:
@@ -228,6 +233,121 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
     assert await async_unload_entry(hass, config_entry) is True
     assert hass.services.handlers == {}
     assert hass.data[DOMAIN] == {}
+
+
+async def test_pending_read_actions_return_summaries_details_and_stable_event(monkeypatch):
+    permissions = FakePermissions()
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    item = PendingImport.create(
+        source_text="private invitation", events=[draft(), draft(True)],
+        source_fingerprint="stored-source-hash",
+    )
+    store = SimpleNamespace(
+        async_load=AsyncMock(), list=Mock(return_value=(item,)),
+        get=Mock(return_value=item),
+        get_event=Mock(return_value=item.events[1]),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    await async_setup_entry(hass, entry())
+    context = Context(user_id="reviewer")
+
+    list_handler, list_options = hass.services.handlers[(DOMAIN, SERVICE_LIST_PENDING)]
+    assert list_options["supports_response"] is SupportsResponse.ONLY
+    summary = await list_handler(SimpleNamespace(data={}, context=context))
+    assert summary == {"imports": [{
+        "id": item.id, "created_at": item.created_at, "event_count": 2,
+        "title": "Practice", "approval_in_flight": False,
+    }]}
+    assert "private invitation" not in str(summary)
+
+    get_handler, get_options = hass.services.handlers[(DOMAIN, SERVICE_GET_PENDING)]
+    assert get_options["schema"] is PENDING_SCHEMA
+    assert get_options["supports_response"] is SupportsResponse.ONLY
+    details = await get_handler(SimpleNamespace(data={ATTR_PENDING_ID: item.id}, context=context))
+    assert details["pending"]["source_text"] == "private invitation"
+    assert details["pending"]["events"][1]["id"] == item.events[1].id
+    assert "source_fingerprint" not in details["pending"]
+
+    event_handler, event_options = hass.services.handlers[(DOMAIN, SERVICE_GET_PENDING_EVENT)]
+    assert event_options["schema"] is PENDING_EVENT_SCHEMA
+    assert event_options["supports_response"] is SupportsResponse.ONLY
+    event_result = await event_handler(SimpleNamespace(
+        data={ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: item.events[1].id}, context=context,
+    ))
+    assert event_result == {"pending_id": item.id, "event": item.events[1].as_service_dict()}
+    store.get_event.assert_called_once_with(item.id, item.events[1].id)
+    assert permissions.calls == [
+        (entity, POLICY_CONTROL)
+        for _ in range(3)
+        for entity in ("ai_task.test", "calendar.family")
+    ]
+    await async_unload_entry(hass, entry())
+    assert hass.services.handlers == {}
+
+
+@pytest.mark.parametrize("missing", [SERVICE_GET_PENDING, SERVICE_GET_PENDING_EVENT])
+async def test_pending_read_actions_report_missing_id(monkeypatch, missing):
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get=Mock(return_value=None),
+        get_event=Mock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, missing)][0]
+    with pytest.raises(ServiceValidationError, match="not found"):
+        await handler(SimpleNamespace(
+            data={ATTR_PENDING_ID: "missing", ATTR_EVENT_ID: "missing"},
+            context=Context(user_id="reviewer"),
+        ))
+
+
+@pytest.mark.parametrize("context", [None, Context(user_id=None)])
+async def test_pending_reads_reject_anonymous_calls_before_store_access(monkeypatch, context):
+    store = SimpleNamespace(async_load=AsyncMock(), list=Mock())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    hass = FakeHass()
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_LIST_PENDING)][0]
+    with pytest.raises(Unauthorized):
+        await handler(SimpleNamespace(data={}, context=context))
+    store.list.assert_not_called()
+
+
+@pytest.mark.parametrize("allowed", [
+    {"ai_task.test": False, "calendar.family": True},
+    {"ai_task.test": True, "calendar.family": False},
+])
+async def test_pending_reads_require_control_of_both_entities(monkeypatch, allowed):
+    store = SimpleNamespace(async_load=AsyncMock(), list=Mock())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed)))
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_LIST_PENDING)][0]
+    with pytest.raises(Unauthorized):
+        await handler(SimpleNamespace(data={}, context=Context(user_id="reviewer")))
+    store.list.assert_not_called()
+
+
+async def test_pending_reads_reject_unknown_user(monkeypatch):
+    store = SimpleNamespace(async_load=AsyncMock(), list=Mock())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    hass = FakeHass()
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_LIST_PENDING)][0]
+    with pytest.raises(UnknownUser):
+        await handler(SimpleNamespace(data={}, context=Context(user_id="missing")))
+    store.list.assert_not_called()
 
 
 async def test_submit_text_without_events_records_source_handling(monkeypatch):

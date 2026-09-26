@@ -14,6 +14,7 @@ from homeassistant.exceptions import ServiceValidationError, Unauthorized, Unkno
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    ATTR_EVENT_ID,
     ATTR_PENDING_ID,
     ATTR_SOURCE_ID,
     ATTR_TEXT,
@@ -21,7 +22,10 @@ from .const import (
     CONF_CALENDAR_ENTITY,
     DOMAIN,
     SERVICE_APPROVE_PENDING,
+    SERVICE_GET_PENDING,
+    SERVICE_GET_PENDING_EVENT,
     SERVICE_IMPORT_TEXT,
+    SERVICE_LIST_PENDING,
     SERVICE_PARSE_TEXT,
     SERVICE_REJECT_PENDING,
     SERVICE_SUBMIT_TEXT,
@@ -43,6 +47,12 @@ SUBMIT_SCHEMA = vol.Schema(
 )
 PENDING_SCHEMA = vol.Schema(
     {vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1))}
+)
+PENDING_EVENT_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
+    }
 )
 
 
@@ -164,6 +174,51 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         return {"pending_id": pending_id, "rejected": True}
 
+    async def check_read_permission(call: ServiceCall) -> None:
+        """Protect stored source text and drafts from anonymous or limited users."""
+        if call.context is None or call.context.user_id is None:
+            raise Unauthorized(context=call.context, permission=POLICY_CONTROL)
+        await _async_check_entity_control_permission(
+            hass, entry.data[CONF_AI_TASK_ENTITY], call.context
+        )
+        await _async_check_entity_control_permission(
+            hass, entry.data[CONF_CALENDAR_ENTITY], call.context
+        )
+
+    async def handle_list_pending(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        return {"imports": [
+            {
+                "id": item.id,
+                "created_at": item.created_at,
+                "event_count": len(item.events),
+                "title": item.events[0].draft.title,
+                "approval_in_flight": item.approval_in_flight,
+            }
+            for item in pending_store.list()
+        ]}
+
+    async def handle_get_pending(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        pending = pending_store.get(pending_id)
+        if pending is None:
+            raise ServiceValidationError(f"Pending import not found: {pending_id}")
+        result = pending.as_service_dict()
+        result.pop("source_fingerprint", None)
+        return {"pending": result}
+
+    async def handle_get_pending_event(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+        event = pending_store.get_event(pending_id, event_id)
+        if event is None:
+            raise ServiceValidationError(
+                f"Pending event not found: {pending_id}/{event_id}"
+            )
+        return {"pending_id": pending_id, "event": event.as_service_dict()}
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_PARSE_TEXT,
@@ -199,6 +254,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         schema=PENDING_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN, SERVICE_LIST_PENDING, handle_list_pending,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_GET_PENDING, handle_get_pending,
+        schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_GET_PENDING_EVENT, handle_get_pending_event,
+        schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
+    )
     return True
 
 
@@ -209,6 +276,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, SERVICE_SUBMIT_TEXT)
     hass.services.async_remove(DOMAIN, SERVICE_APPROVE_PENDING)
     hass.services.async_remove(DOMAIN, SERVICE_REJECT_PENDING)
+    hass.services.async_remove(DOMAIN, SERVICE_LIST_PENDING)
+    hass.services.async_remove(DOMAIN, SERVICE_GET_PENDING)
+    hass.services.async_remove(DOMAIN, SERVICE_GET_PENDING_EVENT)
     hass.data[DOMAIN].pop(entry.entry_id, None)
     return True
 
