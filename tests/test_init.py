@@ -172,7 +172,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
         )
     )
     assert submit_result == {
-        "pending": submitted.as_dict(),
+        "pending": submitted.as_service_dict(),
         "duplicate": False,
         "duplicate_source": False,
         "duplicate_events": 0,
@@ -392,7 +392,7 @@ async def test_submit_text_reports_deduplication_races(
     assert result["duplicate_source"] is add_result.duplicate_source
     assert result["duplicate_events"] == add_result.duplicate_events
     assert result["pending"] == (
-        add_result.pending.as_dict()
+        add_result.pending.as_service_dict()
         if add_result.pending is not None
         else None
     )

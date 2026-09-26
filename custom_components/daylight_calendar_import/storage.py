@@ -141,6 +141,16 @@ class PendingImport:
             result["source_fingerprint"] = self.source_fingerprint
         return result
 
+    def as_service_dict(self) -> dict[str, Any]:
+        """Keep the existing submit response fields while exposing event IDs."""
+        result = self.as_dict()
+        result["events"] = [
+            {**event.draft.as_dict(), "id": event.id, "status": event.status}
+            for event in self.events
+        ]
+        result["approval_in_flight"] = self.approval_in_flight
+        return result
+
     @property
     def approval_in_flight(self) -> bool:
         """Keep the existing batch approval guard for uncertain first events."""

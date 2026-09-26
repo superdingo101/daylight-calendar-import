@@ -105,7 +105,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         return {
             "pending": (
-                result.pending.as_dict()
+                result.pending.as_service_dict()
                 if result.pending is not None
                 else None
             ),

@@ -106,6 +106,10 @@ def test_pending_import_create_and_round_trip():
     UUID(pending.events[0].id)
     assert pending.source_fingerprint == source_fp
     assert pending.as_dict()["source_fingerprint"] == source_fp
+    assert pending.as_service_dict()["events"][0] == {
+        **draft().as_dict(), "id": pending.events[0].id, "status": "pending",
+    }
+    assert pending.as_service_dict()["approval_in_flight"] is False
 
     restored = PendingImport.from_dict(pending.as_dict())
     assert restored == pending
