@@ -115,20 +115,29 @@ class PendingImportStore:
         """Create and persist a pending import."""
         pending = PendingImport.create(source_text=source_text, events=events)
         async with self._lock:
-            self._items[pending.id] = pending
-            await self._async_save()
+            items = dict(self._items)
+            items[pending.id] = pending
+            await self._async_save(items)
+            self._items = items
         return pending
 
     async def async_remove(self, pending_id: str) -> bool:
         """Remove and persist a pending import if it exists."""
         async with self._lock:
-            if self._items.pop(pending_id, None) is None:
+            if pending_id not in self._items:
                 return False
-            await self._async_save()
+            items = dict(self._items)
+            del items[pending_id]
+            await self._async_save(items)
+            self._items = items
         return True
 
-    async def _async_save(self) -> None:
-        """Persist the current collection."""
+    async def async_remove_storage(self) -> None:
+        """Remove the backing storage file."""
+        await self._store.async_remove()
+
+    async def _async_save(self, items: dict[str, PendingImport]) -> None:
+        """Persist a proposed collection."""
         await self._store.async_save(
-            {_STORAGE_ITEMS: [item.as_dict() for item in self._items.values()]}
+            {_STORAGE_ITEMS: [item.as_dict() for item in items.values()]}
         )
