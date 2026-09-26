@@ -1,9 +1,9 @@
 {
-  "minimum_score": 88.43,
+  "minimum_score": 95.22,
   "established_on": "2026-09-26",
   "baseline": {
-    "killed": 1315,
-    "survived": 172,
+    "killed": 1416,
+    "survived": 71,
     "timeout": 0,
     "no_tests": 0,
     "suspicious": 0,

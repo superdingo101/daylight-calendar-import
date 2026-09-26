@@ -86,4 +86,4 @@ python scripts/check_mutation_score.py
 
 CI requires 100% statement/branch coverage for the Python integration package and also enforces the mutation-testing baseline in `mutation-baseline.json`.
 
-The mutation baseline was established on September 26, 2026 at **88.43%**: 1,315 of 1,487 generated mutants were killed, 172 survived, and none were untested, suspicious, skipped, timed out, or interrupted. Future changes must not lower that score, and CI also requires zero untested, suspicious, or segfaulting mutants.
+The measured mutation score was raised on September 26, 2026 to **95.23%** after adding real Home Assistant lifecycle integration tests: 1,416 of 1,487 generated mutants were killed, 71 survived, and none were untested, suspicious, skipped, timed out, or interrupted. CI enforces a **95.22%** floor to avoid two-decimal rounding rejecting that exact result, and also requires zero untested, suspicious, or segfaulting mutants.
