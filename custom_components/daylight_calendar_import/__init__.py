@@ -27,7 +27,7 @@ from .const import (
 )
 from .models import EventDraft
 from .parser import async_parse_text
-from .storage import PendingImportStore
+from .storage import PendingImportApprovalUncertainError, PendingImportStore
 
 PARSE_SCHEMA = vol.Schema({vol.Required(ATTR_TEXT): cv.string})
 PENDING_SCHEMA = vol.Schema(
@@ -92,7 +92,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
 
         pending_id = call.data[ATTR_PENDING_ID]
-        pending = await pending_store.async_process_events(pending_id, create_event)
+        try:
+            pending = await pending_store.async_process_events(
+                pending_id, create_event
+            )
+        except PendingImportApprovalUncertainError as err:
+            raise ServiceValidationError(
+                "Pending import has an unfinished approval attempt; "
+                "inspect the calendar before rejecting or resubmitting it"
+            ) from err
         if pending is None:
             raise ServiceValidationError(
                 f"Pending import not found: {pending_id}"
