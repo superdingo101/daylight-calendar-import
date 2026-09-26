@@ -20,6 +20,7 @@ The first proof of concept supports:
 - `daylight_calendar_import.get_pending_event`: retrieve a draft using its pending import ID and stable event ID
 - `daylight_calendar_import.edit_pending_event`: replace a draft before approval, preserving its ID and checking for duplicates
 - `daylight_calendar_import.reject_pending_event`: reject one draft while retaining other events in the import
+- `daylight_calendar_import.approve_pending_event`: create one draft on the configured calendar, retaining the others
 - multiple events in one input
 - timed and all-day events
 - strict validation of AI output
@@ -53,6 +54,8 @@ The three pending read actions return responses from **Developer Tools → Actio
 To correct an event, call `edit_pending_event` with `pending_id`, `event_id`, and a complete `event` mapping (title, start, end, all_day, optional location/description/confidence). It validates the replacement, rejects exact duplicates in pending or handled history, and keeps the event ID. It also requires control of both configured entities. An event with an uncertain calendar write cannot be edited until that write is resolved.
 
 Use `reject_pending_event` with `pending_id` and `event_id` to remove only that draft. The rejection is remembered for exact event deduplication; other drafts retain their IDs and review status. The source is marked handled once the last event is resolved. A write-uncertain event requires explicit recovery before per-event rejection.
+
+Use `approve_pending_event` with the same IDs to create only that event. Both per-event and approve-all actions persist a write-in-flight checkpoint before calling the calendar and checkpoint the confirmed result afterward. An interrupted or ambiguous write blocks automatic retry until its outcome is resolved.
 
 ### Manual development install
 

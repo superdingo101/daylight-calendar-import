@@ -129,3 +129,18 @@ reject_pending_event:
       required: true
       selector:
         text:
+
+approve_pending_event:
+  name: Approve pending event
+  description: Create one event on the configured calendar using durable checkpoints, leaving sibling events for review.
+  fields:
+    pending_id:
+      name: Pending import ID
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      required: true
+      selector:
+        text:
