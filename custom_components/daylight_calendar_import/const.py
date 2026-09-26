@@ -3,6 +3,7 @@
 DOMAIN = "daylight_calendar_import"
 CONF_AI_TASK_ENTITY = "ai_task_entity"
 CONF_CALENDAR_ENTITY = "calendar_entity"
+CONF_CALENDAR_ENTITIES = "calendar_entities"
 SERVICE_PARSE_TEXT = "parse_text"
 SERVICE_IMPORT_TEXT = "import_text"
 SERVICE_SUBMIT_TEXT = "submit_text"

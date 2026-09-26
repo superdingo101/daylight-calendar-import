@@ -9,7 +9,7 @@ This repository is intentionally separate from [Daylight Calendar Card](https://
 The first proof of concept supports:
 
 - UI configuration of an existing Home Assistant AI Task entity
-- UI configuration of a target calendar
+- UI configuration of a default calendar and an allowed list of writable calendars
 - `daylight_calendar_import.parse_text`: parse text and return validated drafts without changing a calendar
 - `daylight_calendar_import.import_text`: parse text and create the validated events on the configured calendar
 - `daylight_calendar_import.submit_text`: parse text, deduplicate it, and persist only new events for review
@@ -44,7 +44,9 @@ The current minimum supported Home Assistant version is **2026.7.4**. CI tests t
 5. Find **Daylight Calendar Import** in HACS and install it.
 6. Restart Home Assistant.
 7. Go to **Settings → Devices & services → Add integration** and add **Daylight Calendar Import**.
-8. Choose an AI Task entity and a writable calendar.
+8. Choose an AI Task entity, a default writable calendar, and the allowed writable calendars. Include the default in the allowed list.
+
+Existing installations migrate their configured calendar into the allowed list automatically when the integration next loads.
 
 Then test `daylight_calendar_import.parse_text` from **Developer Tools → Actions**.
 

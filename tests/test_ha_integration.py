@@ -10,6 +10,7 @@ from custom_components.daylight_calendar_import.const import (
     ATTR_SOURCE_ID,
     ATTR_TEXT,
     CONF_AI_TASK_ENTITY,
+    CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
     DOMAIN,
     SERVICE_APPROVE_PENDING,
@@ -73,6 +74,22 @@ async def _setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_legacy_entry_migrates_on_setup(hass: HomeAssistant) -> None:
+    entry = _entry()
+    await _setup_entry(hass, entry)
+    assert entry.version == 2
+    assert entry.data[CONF_CALENDAR_ENTITIES] == ["calendar.family"]
+
+
+async def test_unsupported_entry_version_refuses_migration(hass: HomeAssistant) -> None:
+    from custom_components.daylight_calendar_import import async_migrate_entry
+
+    entry = _entry()
+    entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(entry, version=3)
+    assert await async_migrate_entry(hass, entry) is False
 
 
 def _assert_services(hass: HomeAssistant, *, registered: bool) -> None:
