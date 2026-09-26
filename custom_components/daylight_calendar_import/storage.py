@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -131,6 +131,25 @@ class PendingImportStore:
             await self._async_save(items)
             self._items = items
         return True
+
+    async def async_process(
+        self,
+        pending_id: str,
+        processor: Callable[[PendingImport], Awaitable[None]],
+    ) -> PendingImport | None:
+        """Process one pending import and remove it only after success."""
+        async with self._lock:
+            pending = self._items.get(pending_id)
+            if pending is None:
+                return None
+
+            await processor(pending)
+
+            items = dict(self._items)
+            del items[pending_id]
+            await self._async_save(items)
+            self._items = items
+            return pending
 
     async def async_remove_storage(self) -> None:
         """Remove the backing storage file."""
