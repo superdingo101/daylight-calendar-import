@@ -132,24 +132,37 @@ class PendingImportStore:
             self._items = items
         return True
 
-    async def async_process(
+    async def async_process_events(
         self,
         pending_id: str,
-        processor: Callable[[PendingImport], Awaitable[None]],
+        processor: Callable[[EventDraft], Awaitable[None]],
     ) -> PendingImport | None:
-        """Process one pending import and remove it only after success."""
+        """Process pending events in order and checkpoint after each success."""
         async with self._lock:
             pending = self._items.get(pending_id)
             if pending is None:
                 return None
 
-            await processor(pending)
+            original = pending
+            for index, event in enumerate(original.events):
+                await processor(event)
 
-            items = dict(self._items)
-            del items[pending_id]
-            await self._async_save(items)
-            self._items = items
-            return pending
+                remaining = original.events[index + 1 :]
+                items = dict(self._items)
+                if remaining:
+                    items[pending_id] = PendingImport(
+                        id=original.id,
+                        created_at=original.created_at,
+                        source_text=original.source_text,
+                        events=remaining,
+                    )
+                else:
+                    del items[pending_id]
+
+                await self._async_save(items)
+                self._items = items
+
+            return original
 
     async def async_remove_storage(self) -> None:
         """Remove the backing storage file."""
