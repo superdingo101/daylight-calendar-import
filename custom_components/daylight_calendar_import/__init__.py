@@ -29,6 +29,7 @@ from .const import (
     SERVICE_LIST_PENDING,
     SERVICE_PARSE_TEXT,
     SERVICE_REJECT_PENDING,
+    SERVICE_REJECT_PENDING_EVENT,
     SERVICE_SUBMIT_TEXT,
 )
 from .models import DraftValidationError, EventDraft
@@ -246,6 +247,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         return {"pending_id": pending_id, "event": edited.as_service_dict()}
 
+    async def handle_reject_pending_event(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+        try:
+            rejected = await pending_store.async_reject_event(pending_id, event_id)
+        except PendingImportApprovalUncertainError as err:
+            raise ServiceValidationError(
+                "This event has an uncertain calendar write; resolve it before rejecting"
+            ) from err
+        if not rejected:
+            raise ServiceValidationError(
+                f"Pending event not found: {pending_id}/{event_id}"
+            )
+        return {"pending_id": pending_id, "event_id": event_id, "rejected": True}
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_PARSE_TEXT,
@@ -297,6 +314,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN, SERVICE_EDIT_PENDING_EVENT, handle_edit_pending_event,
         schema=EDIT_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
     )
+    hass.services.async_register(
+        DOMAIN, SERVICE_REJECT_PENDING_EVENT, handle_reject_pending_event,
+        schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
+    )
     return True
 
 
@@ -311,6 +332,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, SERVICE_GET_PENDING)
     hass.services.async_remove(DOMAIN, SERVICE_GET_PENDING_EVENT)
     hass.services.async_remove(DOMAIN, SERVICE_EDIT_PENDING_EVENT)
+    hass.services.async_remove(DOMAIN, SERVICE_REJECT_PENDING_EVENT)
     hass.data[DOMAIN].pop(entry.entry_id, None)
     return True
 

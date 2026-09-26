@@ -38,6 +38,7 @@ from custom_components.daylight_calendar_import.const import (
     SERVICE_LIST_PENDING,
     SERVICE_PARSE_TEXT,
     SERVICE_REJECT_PENDING,
+    SERVICE_REJECT_PENDING_EVENT,
     SERVICE_SUBMIT_TEXT,
 )
 from custom_components.daylight_calendar_import.models import EventDraft
@@ -395,6 +396,43 @@ async def test_edit_pending_event_validates_and_checks_permissions(monkeypatch):
     with pytest.raises(Unauthorized):
         await handler(call)
     store.async_edit_event.assert_not_awaited()
+
+
+async def test_reject_pending_event_action_checks_permissions_and_uncertainty(monkeypatch):
+    item = pending()
+    event_id = item.events[0].id
+    store = SimpleNamespace(
+        async_load=AsyncMock(), async_reject_event=AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    handler, options = hass.services.handlers[(DOMAIN, SERVICE_REJECT_PENDING_EVENT)]
+    assert options["schema"] is PENDING_EVENT_SCHEMA
+    assert options["supports_response"] is SupportsResponse.OPTIONAL
+    call = SimpleNamespace(
+        data={ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: event_id},
+        context=Context(user_id="reviewer"),
+    )
+    assert await handler(call) == {
+        "pending_id": item.id, "event_id": event_id, "rejected": True,
+    }
+    store.async_reject_event.assert_awaited_once_with(item.id, event_id)
+
+    store.async_reject_event.return_value = False
+    with pytest.raises(ServiceValidationError, match="not found"):
+        await handler(call)
+    store.async_reject_event.side_effect = PendingImportApprovalUncertainError(item.id)
+    with pytest.raises(ServiceValidationError, match="uncertain calendar write"):
+        await handler(call)
+
+    store.async_reject_event.reset_mock(side_effect=True)
+    call.context = Context(user_id=None)
+    with pytest.raises(Unauthorized):
+        await handler(call)
+    store.async_reject_event.assert_not_awaited()
 
 
 async def test_submit_text_without_events_records_source_handling(monkeypatch):

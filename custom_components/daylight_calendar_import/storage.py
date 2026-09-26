@@ -377,6 +377,46 @@ class PendingImportStore:
             self._seen_event_fingerprints = seen_events
         return True
 
+    async def async_reject_event(self, pending_id: str, event_id: str) -> bool:
+        """Reject one ready event without discarding its siblings."""
+        async with self._lock:
+            pending = self._items.get(pending_id)
+            if pending is None:
+                return False
+            event = next((item for item in pending.events if item.id == event_id), None)
+            if event is None:
+                return False
+            if event.status == "write_uncertain":
+                raise PendingImportApprovalUncertainError(pending_id)
+
+            remaining = tuple(item for item in pending.events if item.id != event_id)
+            items = dict(self._items)
+            seen_sources = self._seen_source_fingerprints
+            if remaining:
+                items[pending_id] = PendingImport(
+                    id=pending.id, created_at=pending.created_at,
+                    source_text=pending.source_text, events=remaining,
+                    source_fingerprint=pending.source_fingerprint,
+                )
+            else:
+                del items[pending_id]
+                if pending.source_fingerprint is not None:
+                    seen_sources = _remember_fingerprints(
+                        seen_sources, (pending.source_fingerprint,)
+                    )
+            seen_events = _remember_fingerprints(
+                self._seen_event_fingerprints, (event_fingerprint(event.draft),)
+            )
+            await self._async_save(
+                items,
+                seen_source_fingerprints=seen_sources,
+                seen_event_fingerprints=seen_events,
+            )
+            self._items = items
+            self._seen_source_fingerprints = seen_sources
+            self._seen_event_fingerprints = seen_events
+            return True
+
     async def async_process_events(
         self,
         pending_id: str,
