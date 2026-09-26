@@ -53,7 +53,7 @@ approve_pending:
 
 reject_pending:
   name: Reject pending import
-  description: Remove a pending import without creating calendar events.
+  description: Remove a pending import without creating calendar events. Resolve uncertain writes first.
   fields:
     pending_id:
       name: Pending import ID
@@ -144,3 +144,27 @@ approve_pending_event:
       required: true
       selector:
         text:
+
+resolve_pending_event:
+  name: Resolve uncertain calendar write
+  description: After checking the calendar, confirm whether an uncertain event was created, was not created and may be retried, or should be discarded.
+  fields:
+    pending_id:
+      name: Pending import ID
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      required: true
+      selector:
+        text:
+    resolution:
+      name: Verified outcome
+      required: true
+      selector:
+        select:
+          options:
+            - created
+            - not_created
+            - discard

@@ -35,6 +35,10 @@ class PendingEventEditError(ValueError):
     """Raised when an event cannot safely be edited."""
 
 
+class PendingEventResolutionError(ValueError):
+    """Raised when resolving an event without an uncertain write."""
+
+
 @dataclass(frozen=True, slots=True)
 class PendingEvent:
     """A reviewable event with a stable identity."""
@@ -353,6 +357,8 @@ class PendingImportStore:
             pending = self._items.get(pending_id)
             if pending is None:
                 return False
+            if pending.approval_in_flight:
+                raise PendingImportApprovalUncertainError(pending_id)
 
             items = dict(self._items)
             del items[pending_id]
@@ -410,6 +416,57 @@ class PendingImportStore:
             await self._async_save(
                 items,
                 seen_source_fingerprints=seen_sources,
+                seen_event_fingerprints=seen_events,
+            )
+            self._items = items
+            self._seen_source_fingerprints = seen_sources
+            self._seen_event_fingerprints = seen_events
+            return True
+
+    async def async_resolve_uncertain(
+        self, pending_id: str, event_id: str, resolution: str
+    ) -> bool:
+        """Apply an explicit user-confirmed outcome to one uncertain write."""
+        if resolution not in ("created", "not_created", "discard"):
+            raise ValueError("invalid uncertain-write resolution")
+        async with self._lock:
+            pending = self._items.get(pending_id)
+            if pending is None:
+                return False
+            event = next((item for item in pending.events if item.id == event_id), None)
+            if event is None:
+                return False
+            if event.status != "write_uncertain":
+                raise PendingEventResolutionError("Event has no uncertain calendar write")
+
+            items = dict(self._items)
+            seen_sources = self._seen_source_fingerprints
+            seen_events = self._seen_event_fingerprints
+            if resolution == "not_created":
+                remaining = tuple(
+                    PendingEvent(item.id, item.draft, "pending")
+                    if item.id == event_id else item for item in pending.events
+                )
+            else:
+                remaining = tuple(item for item in pending.events if item.id != event_id)
+                seen_events = _remember_fingerprints(
+                    seen_events, (event_fingerprint(event.draft),)
+                )
+
+            if remaining:
+                items[pending_id] = PendingImport(
+                    id=pending.id, created_at=pending.created_at,
+                    source_text=pending.source_text, events=remaining,
+                    source_fingerprint=pending.source_fingerprint,
+                )
+            else:
+                del items[pending_id]
+                if pending.source_fingerprint is not None:
+                    seen_sources = _remember_fingerprints(
+                        seen_sources, (pending.source_fingerprint,)
+                    )
+            await self._async_save(
+                items, seen_source_fingerprints=seen_sources,
                 seen_event_fingerprints=seen_events,
             )
             self._items = items

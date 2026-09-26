@@ -31,12 +31,14 @@ from .const import (
     SERVICE_PARSE_TEXT,
     SERVICE_REJECT_PENDING,
     SERVICE_REJECT_PENDING_EVENT,
+    SERVICE_RESOLVE_PENDING_EVENT,
     SERVICE_SUBMIT_TEXT,
 )
 from .models import DraftValidationError, EventDraft
 from .parser import async_parse_text
 from .storage import (
     PendingEventEditError,
+    PendingEventResolutionError,
     PendingImportApprovalUncertainError,
     PendingImportStore,
 )
@@ -66,6 +68,13 @@ EDIT_EVENT_SCHEMA = vol.Schema(
         vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
         vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
         vol.Required("event"): dict,
+    }
+)
+RESOLVE_EVENT_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required("resolution"): vol.In(("created", "not_created", "discard")),
     }
 )
 
@@ -182,7 +191,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass, entry.data[CONF_CALENDAR_ENTITY], call.context
         )
         pending_id = call.data[ATTR_PENDING_ID]
-        if not await pending_store.async_remove(pending_id):
+        try:
+            removed = await pending_store.async_remove(pending_id)
+        except PendingImportApprovalUncertainError as err:
+            raise ServiceValidationError(
+                "Pending import has an uncertain calendar write; resolve it before rejecting"
+            ) from err
+        if not removed:
             raise ServiceValidationError(
                 f"Pending import not found: {pending_id}"
             )
@@ -293,6 +308,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "event": {**event.as_service_dict(), "status": "approved"},
         }
 
+    async def handle_resolve_pending_event(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+        resolution = call.data["resolution"]
+        try:
+            resolved = await pending_store.async_resolve_uncertain(
+                pending_id, event_id, resolution
+            )
+        except PendingEventResolutionError as err:
+            raise ServiceValidationError(str(err)) from err
+        if not resolved:
+            raise ServiceValidationError(
+                f"Pending event not found: {pending_id}/{event_id}"
+            )
+        return {"pending_id": pending_id, "event_id": event_id,
+                "resolution": resolution}
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_PARSE_TEXT,
@@ -352,6 +385,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN, SERVICE_APPROVE_PENDING_EVENT, handle_approve_pending_event,
         schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN, SERVICE_RESOLVE_PENDING_EVENT, handle_resolve_pending_event,
+        schema=RESOLVE_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
+    )
     return True
 
 
@@ -368,6 +405,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, SERVICE_EDIT_PENDING_EVENT)
     hass.services.async_remove(DOMAIN, SERVICE_REJECT_PENDING_EVENT)
     hass.services.async_remove(DOMAIN, SERVICE_APPROVE_PENDING_EVENT)
+    hass.services.async_remove(DOMAIN, SERVICE_RESOLVE_PENDING_EVENT)
     hass.data[DOMAIN].pop(entry.entry_id, None)
     return True
 
