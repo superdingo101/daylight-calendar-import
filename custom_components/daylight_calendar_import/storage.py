@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +20,10 @@ STORAGE_KEY = f"{DOMAIN}.pending_imports"
 _STORAGE_ITEMS = "items"
 
 
+class PendingImportApprovalUncertainError(RuntimeError):
+    """Raised when retrying an import with an uncertain prior approval outcome."""
+
+
 @dataclass(frozen=True, slots=True)
 class PendingImport:
     """A parsed import waiting for an explicit user decision."""
@@ -28,6 +32,7 @@ class PendingImport:
     created_at: str
     source_text: str
     events: tuple[EventDraft, ...]
+    approval_in_flight: bool = False
 
     @classmethod
     def create(
@@ -60,6 +65,7 @@ class PendingImport:
             created_at=raw["created_at"],
             source_text=raw["source_text"],
             events=tuple(EventDraft.from_mapping(event) for event in raw["events"]),
+            approval_in_flight=raw.get("approval_in_flight", False),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -69,6 +75,7 @@ class PendingImport:
             "created_at": self.created_at,
             "source_text": self.source_text,
             "events": [event.as_dict() for event in self.events],
+            "approval_in_flight": self.approval_in_flight,
         }
 
 
@@ -131,6 +138,57 @@ class PendingImportStore:
             await self._async_save(items)
             self._items = items
         return True
+
+    async def async_process_events(
+        self,
+        pending_id: str,
+        processor: Callable[[EventDraft], Awaitable[None]],
+    ) -> PendingImport | None:
+        """Process pending events with durable checkpoints around each side effect."""
+        async with self._lock:
+            pending = self._items.get(pending_id)
+            if pending is None:
+                return None
+            if pending.approval_in_flight:
+                raise PendingImportApprovalUncertainError(pending_id)
+
+            original = pending
+            while True:
+                event = pending.events[0]
+                in_flight = PendingImport(
+                    id=pending.id,
+                    created_at=pending.created_at,
+                    source_text=pending.source_text,
+                    events=pending.events,
+                    approval_in_flight=True,
+                )
+                items = dict(self._items)
+                items[pending_id] = in_flight
+                await self._async_save(items)
+                self._items = items
+                pending = in_flight
+
+                await processor(event)
+
+                remaining = pending.events[1:]
+                items = dict(self._items)
+                if remaining:
+                    pending = PendingImport(
+                        id=pending.id,
+                        created_at=pending.created_at,
+                        source_text=pending.source_text,
+                        events=remaining,
+                    )
+                    items[pending_id] = pending
+                else:
+                    del items[pending_id]
+
+                await self._async_save(items)
+                self._items = items
+                if not remaining:
+                    break
+
+            return original
 
     async def async_remove_storage(self) -> None:
         """Remove the backing storage file."""

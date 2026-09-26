@@ -1,5 +1,6 @@
 """Tests for persistent pending-import storage."""
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from uuid import UUID
@@ -12,6 +13,7 @@ from custom_components.daylight_calendar_import.storage import (
     STORAGE_KEY,
     STORAGE_VERSION,
     PendingImport,
+    PendingImportApprovalUncertainError,
     PendingImportStore,
 )
 
@@ -23,13 +25,19 @@ class FakeStoreBackend:
         self.load_result = load_result
         self.saved = []
         self.save_error = None
+        self.fail_on_save_attempt = None
+        self.save_attempts = 0
         self.removed = False
 
     async def async_load(self):
         return self.load_result
 
     async def async_save(self, data):
-        if self.save_error is not None:
+        self.save_attempts += 1
+        if self.save_error is not None and (
+            self.fail_on_save_attempt is None
+            or self.save_attempts == self.fail_on_save_attempt
+        ):
             raise self.save_error
         self.saved.append(data)
 
@@ -155,3 +163,178 @@ async def test_store_can_remove_backing_storage(monkeypatch):
     await store.async_remove_storage()
 
     assert backend.removed is True
+
+
+async def test_store_processes_events_with_checkpoints(monkeypatch):
+    second = EventDraft(
+        title="Picture Day",
+        start="2026-10-09",
+        end="2026-10-10",
+        all_day=True,
+        confidence=1,
+    )
+    existing = PendingImport.create(
+        source_text="existing",
+        events=[draft(), second],
+    )
+    backend = FakeStoreBackend(load_result={"items": [existing.as_dict()]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    processed = []
+
+    async def processor(event):
+        processed.append(event)
+
+    result = await store.async_process_events(existing.id, processor)
+
+    first_in_flight = PendingImport(
+        id=existing.id,
+        created_at=existing.created_at,
+        source_text=existing.source_text,
+        events=(draft(), second),
+        approval_in_flight=True,
+    )
+    remaining = PendingImport(
+        id=existing.id,
+        created_at=existing.created_at,
+        source_text=existing.source_text,
+        events=(second,),
+    )
+    second_in_flight = PendingImport(
+        id=existing.id,
+        created_at=existing.created_at,
+        source_text=existing.source_text,
+        events=(second,),
+        approval_in_flight=True,
+    )
+    assert result == existing
+    assert processed == [draft(), second]
+    assert store.list() == ()
+    assert backend.saved == [
+        {"items": [first_in_flight.as_dict()]},
+        {"items": [remaining.as_dict()]},
+        {"items": [second_in_flight.as_dict()]},
+        {"items": []},
+    ]
+
+    assert await store.async_process_events("missing", processor) is None
+    assert processed == [draft(), second]
+
+
+async def test_store_partial_failure_marks_remaining_approval_uncertain(monkeypatch):
+    second = EventDraft(
+        title="Picture Day",
+        start="2026-10-09",
+        end="2026-10-10",
+        all_day=True,
+        confidence=1,
+    )
+    existing = PendingImport.create(
+        source_text="existing",
+        events=[draft(), second],
+    )
+    backend = FakeStoreBackend(load_result={"items": [existing.as_dict()]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    async def processor(event):
+        if event == second:
+            raise RuntimeError("processor failed")
+
+    with pytest.raises(RuntimeError, match="processor failed"):
+        await store.async_process_events(existing.id, processor)
+
+    remaining = store.get(existing.id)
+    assert remaining is not None
+    assert remaining.events == (second,)
+    assert remaining.approval_in_flight is True
+
+    called = False
+
+    async def should_not_retry(_event):
+        nonlocal called
+        called = True
+
+    with pytest.raises(PendingImportApprovalUncertainError):
+        await store.async_process_events(existing.id, should_not_retry)
+    assert called is False
+
+
+async def test_store_checkpoint_failure_blocks_automatic_retry(monkeypatch):
+    existing = PendingImport.create(source_text="existing", events=[draft()])
+    backend = FakeStoreBackend(load_result={"items": [existing.as_dict()]})
+    backend.save_error = RuntimeError("save failed")
+    backend.fail_on_save_attempt = 2
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    processed = []
+
+    async def processor(event):
+        processed.append(event)
+
+    with pytest.raises(RuntimeError, match="save failed"):
+        await store.async_process_events(existing.id, processor)
+
+    uncertain = store.get(existing.id)
+    assert uncertain is not None
+    assert uncertain.approval_in_flight is True
+    assert processed == [draft()]
+
+    with pytest.raises(PendingImportApprovalUncertainError):
+        await store.async_process_events(existing.id, processor)
+    assert processed == [draft()]
+
+
+async def test_store_preflight_failure_has_no_external_side_effect(monkeypatch):
+    existing = PendingImport.create(source_text="existing", events=[draft()])
+    backend = FakeStoreBackend(load_result={"items": [existing.as_dict()]})
+    backend.save_error = RuntimeError("save failed")
+    backend.fail_on_save_attempt = 1
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    processed = []
+
+    async def processor(event):
+        processed.append(event)
+
+    with pytest.raises(RuntimeError, match="save failed"):
+        await store.async_process_events(existing.id, processor)
+
+    assert store.list() == (existing,)
+    assert processed == []
+
+
+async def test_process_serializes_against_reject(monkeypatch):
+    existing = PendingImport.create(source_text="existing", events=[draft()])
+    backend = FakeStoreBackend(load_result={"items": [existing.as_dict()]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def processor(_event):
+        started.set()
+        await release.wait()
+
+    process_task = asyncio.create_task(
+        store.async_process_events(existing.id, processor)
+    )
+    await started.wait()
+    reject_task = asyncio.create_task(store.async_remove(existing.id))
+    await asyncio.sleep(0)
+
+    assert reject_task.done() is False
+
+    release.set()
+    assert await process_task == existing
+    assert await reject_task is False
+    assert store.list() == ()
+
+
+def test_pending_import_restores_legacy_ready_state():
+    raw = PendingImport.create(source_text="legacy", events=[draft()]).as_dict()
+    raw.pop("approval_in_flight")
+
+    restored = PendingImport.from_dict(raw)
+
+    assert restored.approval_in_flight is False

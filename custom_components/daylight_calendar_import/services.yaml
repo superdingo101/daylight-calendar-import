@@ -21,3 +21,37 @@ import_text:
       selector:
         text:
           multiline: true
+
+submit_text:
+  name: Submit text for review
+  description: Extract validated event drafts and store them for later approval or rejection.
+  fields:
+    text:
+      name: Text
+      description: Unstructured text containing zero or more calendar events.
+      required: true
+      selector:
+        text:
+          multiline: true
+
+approve_pending:
+  name: Approve pending import
+  description: Create all events from a pending import on the configured calendar, then remove it from review.
+  fields:
+    pending_id:
+      name: Pending import ID
+      description: Stable ID returned when the pending import was created.
+      required: true
+      selector:
+        text:
+
+reject_pending:
+  name: Reject pending import
+  description: Remove a pending import without creating calendar events.
+  fields:
+    pending_id:
+      name: Pending import ID
+      description: Stable ID returned when the pending import was created.
+      required: true
+      selector:
+        text:

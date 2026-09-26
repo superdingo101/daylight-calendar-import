@@ -4,12 +4,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import voluptuous as vol
 
 from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.core import Context, SupportsResponse
-from homeassistant.exceptions import Unauthorized, UnknownUser
+from homeassistant.exceptions import ServiceValidationError, Unauthorized, UnknownUser
 
 from custom_components.daylight_calendar_import import (
+    PENDING_SCHEMA,
     _async_check_entity_control_permission,
     _async_create_calendar_event,
     _parse_for_entry,
@@ -18,13 +20,21 @@ from custom_components.daylight_calendar_import import (
     async_unload_entry,
 )
 from custom_components.daylight_calendar_import.const import (
+    ATTR_PENDING_ID,
     CONF_AI_TASK_ENTITY,
     CONF_CALENDAR_ENTITY,
     DOMAIN,
+    SERVICE_APPROVE_PENDING,
     SERVICE_IMPORT_TEXT,
     SERVICE_PARSE_TEXT,
+    SERVICE_REJECT_PENDING,
+    SERVICE_SUBMIT_TEXT,
 )
 from custom_components.daylight_calendar_import.models import EventDraft
+from custom_components.daylight_calendar_import.storage import (
+    PendingImport,
+    PendingImportApprovalUncertainError,
+)
 
 
 class FakeServices:
@@ -75,7 +85,7 @@ def entry():
         data={
             CONF_AI_TASK_ENTITY: "ai_task.test",
             CONF_CALENDAR_ENTITY: "calendar.family",
-        }
+        },
     )
 
 
@@ -91,16 +101,40 @@ def draft(all_day=False):
     )
 
 
-async def test_setup_parse_and_import_services(monkeypatch):
+def pending(*events):
+    return PendingImport(
+        id="pending-1",
+        created_at="2026-09-26T03:00:00+00:00",
+        source_text="hello",
+        events=tuple(events or (draft(),)),
+    )
+
+
+async def test_setup_review_workflow_and_unload(monkeypatch):
     permissions = FakePermissions(allowed=True)
     hass = FakeHass(user=SimpleNamespace(permissions=permissions))
     parse = AsyncMock(return_value=[draft()])
-    pending_store = SimpleNamespace(async_load=AsyncMock())
+    submitted = pending(draft())
+    approval = pending(draft(), draft(True))
+
+    async def process_pending_events(pending_id, processor):
+        assert pending_id == approval.id
+        for event in approval.events:
+            await processor(event)
+        return approval
+
+    pending_store = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_add=AsyncMock(return_value=submitted),
+        async_process_events=AsyncMock(side_effect=process_pending_events),
+        async_remove=AsyncMock(return_value=True),
+    )
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore",
         lambda _hass: pending_store,
     )
+
     config_entry = entry()
     assert await async_setup_entry(hass, config_entry) is True
     pending_store.async_load.assert_awaited_once_with()
@@ -108,26 +142,170 @@ async def test_setup_parse_and_import_services(monkeypatch):
 
     parse_handler, parse_kwargs = hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)]
     assert parse_kwargs["supports_response"] is SupportsResponse.ONLY
-    parse_context = Context(user_id=None)
-    result = await parse_handler(
-        SimpleNamespace(data={"text": "hello"}, context=parse_context)
+    parse_result = await parse_handler(
+        SimpleNamespace(data={"text": "hello"}, context=Context(user_id=None))
     )
-    assert result["events"][0]["title"] == "Practice"
+    assert parse_result["events"][0]["title"] == "Practice"
 
+    user_context = Context(user_id="test-user")
     import_handler, import_kwargs = hass.services.handlers[(DOMAIN, SERVICE_IMPORT_TEXT)]
     assert import_kwargs["supports_response"] is SupportsResponse.OPTIONAL
-    call_context = Context(user_id="test-user")
-    result = await import_handler(
-        SimpleNamespace(data={"text": "hello"}, context=call_context)
+    import_result = await import_handler(
+        SimpleNamespace(data={"text": "hello"}, context=user_context)
     )
-    assert result["imported"] == 1
-    assert hass.services.calls[0][0:2] == ("calendar", "create_event")
-    assert hass.services.calls[0][4] is call_context
-    assert permissions.calls == [("ai_task.test", POLICY_CONTROL)]
+    assert import_result["imported"] == 1
+
+    submit_handler, submit_kwargs = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)]
+    assert submit_kwargs["supports_response"] is SupportsResponse.ONLY
+    submit_result = await submit_handler(
+        SimpleNamespace(data={"text": "hello"}, context=user_context)
+    )
+    assert submit_result == {"pending": submitted.as_dict()}
+    pending_store.async_add.assert_awaited_once_with(
+        source_text="hello",
+        events=[draft()],
+    )
+
+    approve_handler, approve_kwargs = hass.services.handlers[
+        (DOMAIN, SERVICE_APPROVE_PENDING)
+    ]
+    assert approve_kwargs["supports_response"] is SupportsResponse.OPTIONAL
+    approve_result = await approve_handler(
+        SimpleNamespace(
+            data={ATTR_PENDING_ID: approval.id},
+            context=user_context,
+        )
+    )
+    assert approve_result["approved"] is True
+    assert approve_result["imported"] == 2
+    assert approve_result["pending_id"] == approval.id
+    assert len(approve_result["events"]) == 2
+
+    reject_handler, reject_kwargs = hass.services.handlers[
+        (DOMAIN, SERVICE_REJECT_PENDING)
+    ]
+    assert reject_kwargs["supports_response"] is SupportsResponse.OPTIONAL
+    reject_result = await reject_handler(
+        SimpleNamespace(
+            data={ATTR_PENDING_ID: submitted.id},
+            context=user_context,
+        )
+    )
+    assert reject_result == {"pending_id": submitted.id, "rejected": True}
+    pending_store.async_remove.assert_awaited_once_with(submitted.id)
+
+    assert [call[0:2] for call in hass.services.calls] == [
+        ("calendar", "create_event"),
+        ("calendar", "create_event"),
+        ("calendar", "create_event"),
+    ]
+    assert all(call[4] is user_context for call in hass.services.calls)
+    assert permissions.calls == [
+        ("ai_task.test", POLICY_CONTROL),
+        ("ai_task.test", POLICY_CONTROL),
+        ("calendar.family", POLICY_CONTROL),
+        ("calendar.family", POLICY_CONTROL),
+    ]
 
     assert await async_unload_entry(hass, config_entry) is True
     assert hass.services.handlers == {}
     assert hass.data[DOMAIN] == {}
+
+
+async def test_submit_text_with_no_events_does_not_create_pending(monkeypatch):
+    hass = FakeHass()
+    parse = AsyncMock(return_value=[])
+    pending_store = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_add=AsyncMock(),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: pending_store,
+    )
+
+    await async_setup_entry(hass, entry())
+    submit_handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
+
+    result = await submit_handler(
+        SimpleNamespace(data={"text": "nothing here"}, context=Context(user_id=None))
+    )
+
+    assert result == {"pending": None}
+    pending_store.async_add.assert_not_awaited()
+
+
+async def test_approve_and_reject_missing_pending_raise(monkeypatch):
+    permissions = FakePermissions(allowed=True)
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    pending_store = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_process_events=AsyncMock(return_value=None),
+        async_remove=AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: pending_store,
+    )
+
+    await async_setup_entry(hass, entry())
+    context = Context(user_id="reviewer")
+    approve_handler = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)][0]
+    reject_handler = hass.services.handlers[(DOMAIN, SERVICE_REJECT_PENDING)][0]
+
+    with pytest.raises(ServiceValidationError, match="Pending import not found: missing"):
+        await approve_handler(
+            SimpleNamespace(data={ATTR_PENDING_ID: "missing"}, context=context)
+        )
+
+    with pytest.raises(ServiceValidationError, match="Pending import not found: missing"):
+        await reject_handler(
+            SimpleNamespace(data={ATTR_PENDING_ID: "missing"}, context=context)
+        )
+
+    assert permissions.calls == [
+        ("calendar.family", POLICY_CONTROL),
+        ("calendar.family", POLICY_CONTROL),
+    ]
+    assert hass.services.calls == []
+
+
+
+async def test_approve_uncertain_pending_raises_validation_error(monkeypatch):
+    permissions = FakePermissions(allowed=True)
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    pending_store = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_process_events=AsyncMock(
+            side_effect=PendingImportApprovalUncertainError("pending-1")
+        ),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: pending_store,
+    )
+
+    await async_setup_entry(hass, entry())
+    approve_handler = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)][0]
+
+    with pytest.raises(
+        ServiceValidationError,
+        match="unfinished approval attempt",
+    ):
+        await approve_handler(
+            SimpleNamespace(
+                data={ATTR_PENDING_ID: "pending-1"},
+                context=Context(user_id="reviewer"),
+            )
+        )
+
+    assert permissions.calls == [("calendar.family", POLICY_CONTROL)]
+    assert hass.services.calls == []
+
+def test_pending_schema_rejects_empty_id():
+    with pytest.raises(vol.Invalid):
+        PENDING_SCHEMA({ATTR_PENDING_ID: ""})
 
 
 async def test_parse_for_entry(monkeypatch):

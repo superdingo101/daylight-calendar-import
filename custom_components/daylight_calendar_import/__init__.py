@@ -10,22 +10,29 @@ from homeassistant.auth.permissions.const import CAT_ENTITIES, POLICY_CONTROL
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DESCRIPTION
 from homeassistant.core import Context, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
-from homeassistant.exceptions import Unauthorized, UnknownUser
+from homeassistant.exceptions import ServiceValidationError, Unauthorized, UnknownUser
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    ATTR_PENDING_ID,
     ATTR_TEXT,
     CONF_AI_TASK_ENTITY,
     CONF_CALENDAR_ENTITY,
     DOMAIN,
+    SERVICE_APPROVE_PENDING,
     SERVICE_IMPORT_TEXT,
     SERVICE_PARSE_TEXT,
+    SERVICE_REJECT_PENDING,
+    SERVICE_SUBMIT_TEXT,
 )
 from .models import EventDraft
 from .parser import async_parse_text
-from .storage import PendingImportStore
+from .storage import PendingImportApprovalUncertainError, PendingImportStore
 
 PARSE_SCHEMA = vol.Schema({vol.Required(ATTR_TEXT): cv.string})
+PENDING_SCHEMA = vol.Schema(
+    {vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1))}
+)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -56,6 +63,68 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "imported": len(drafts),
         }
 
+    async def handle_submit_text(call: ServiceCall) -> ServiceResponse:
+        source_text = call.data[ATTR_TEXT]
+        drafts = await _parse_for_entry(
+            hass, entry, source_text, context=call.context
+        )
+        if not drafts:
+            return {"pending": None}
+
+        pending = await pending_store.async_add(
+            source_text=source_text,
+            events=drafts,
+        )
+        return {"pending": pending.as_dict()}
+
+    async def handle_approve_pending(call: ServiceCall) -> ServiceResponse:
+        calendar_entity = entry.data[CONF_CALENDAR_ENTITY]
+        await _async_check_entity_control_permission(
+            hass, calendar_entity, call.context
+        )
+
+        async def create_event(draft: EventDraft) -> None:
+            await _async_create_calendar_event(
+                hass,
+                calendar_entity,
+                draft,
+                context=call.context,
+            )
+
+        pending_id = call.data[ATTR_PENDING_ID]
+        try:
+            pending = await pending_store.async_process_events(
+                pending_id, create_event
+            )
+        except PendingImportApprovalUncertainError as err:
+            raise ServiceValidationError(
+                "Pending import has an unfinished approval attempt; "
+                "automatic retry is blocked to avoid duplicates, so inspect "
+                "the calendar before explicitly rejecting it"
+            ) from err
+        if pending is None:
+            raise ServiceValidationError(
+                f"Pending import not found: {pending_id}"
+            )
+
+        return {
+            "pending_id": pending.id,
+            "approved": True,
+            "imported": len(pending.events),
+            "events": [draft.as_dict() for draft in pending.events],
+        }
+
+    async def handle_reject_pending(call: ServiceCall) -> ServiceResponse:
+        await _async_check_entity_control_permission(
+            hass, entry.data[CONF_CALENDAR_ENTITY], call.context
+        )
+        pending_id = call.data[ATTR_PENDING_ID]
+        if not await pending_store.async_remove(pending_id):
+            raise ServiceValidationError(
+                f"Pending import not found: {pending_id}"
+            )
+        return {"pending_id": pending_id, "rejected": True}
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_PARSE_TEXT,
@@ -70,6 +139,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         schema=PARSE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SUBMIT_TEXT,
+        handle_submit_text,
+        schema=PARSE_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_APPROVE_PENDING,
+        handle_approve_pending,
+        schema=PENDING_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REJECT_PENDING,
+        handle_reject_pending,
+        schema=PENDING_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     return True
 
 
@@ -77,6 +167,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     hass.services.async_remove(DOMAIN, SERVICE_PARSE_TEXT)
     hass.services.async_remove(DOMAIN, SERVICE_IMPORT_TEXT)
+    hass.services.async_remove(DOMAIN, SERVICE_SUBMIT_TEXT)
+    hass.services.async_remove(DOMAIN, SERVICE_APPROVE_PENDING)
+    hass.services.async_remove(DOMAIN, SERVICE_REJECT_PENDING)
     hass.data[DOMAIN].pop(entry.entry_id, None)
     return True
 
