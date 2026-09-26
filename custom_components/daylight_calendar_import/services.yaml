@@ -93,3 +93,24 @@ get_pending_event:
       required: true
       selector:
         text:
+
+edit_pending_event:
+  name: Edit pending event
+  description: Replace a pending draft while keeping its event ID. An uncertain calendar write must be resolved before editing.
+  fields:
+    pending_id:
+      name: Pending import ID
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      required: true
+      selector:
+        text:
+    event:
+      name: Replacement event
+      description: Complete draft with title, ISO start/end, all_day, and optional location, description, and confidence.
+      required: true
+      selector:
+        object:

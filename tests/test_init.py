@@ -11,6 +11,7 @@ from homeassistant.core import Context, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError, Unauthorized, UnknownUser
 
 from custom_components.daylight_calendar_import import (
+    EDIT_EVENT_SCHEMA,
     PENDING_EVENT_SCHEMA,
     PENDING_SCHEMA,
     SUBMIT_SCHEMA,
@@ -30,6 +31,7 @@ from custom_components.daylight_calendar_import.const import (
     CONF_CALENDAR_ENTITY,
     DOMAIN,
     SERVICE_APPROVE_PENDING,
+    SERVICE_EDIT_PENDING_EVENT,
     SERVICE_GET_PENDING,
     SERVICE_GET_PENDING_EVENT,
     SERVICE_IMPORT_TEXT,
@@ -40,6 +42,7 @@ from custom_components.daylight_calendar_import.const import (
 )
 from custom_components.daylight_calendar_import.models import EventDraft
 from custom_components.daylight_calendar_import.storage import (
+    PendingEventEditError,
     PendingImport,
     PendingImportAddResult,
     PendingImportApprovalUncertainError,
@@ -348,6 +351,50 @@ async def test_pending_reads_reject_unknown_user(monkeypatch):
     with pytest.raises(UnknownUser):
         await handler(SimpleNamespace(data={}, context=Context(user_id="missing")))
     store.list.assert_not_called()
+
+
+async def test_edit_pending_event_validates_and_checks_permissions(monkeypatch):
+    item = pending()
+    original = item.events[0]
+    replacement = draft(True)
+    edited = type(original)(original.id, replacement)
+    store = SimpleNamespace(
+        async_load=AsyncMock(), async_edit_event=AsyncMock(return_value=edited),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    handler, options = hass.services.handlers[(DOMAIN, SERVICE_EDIT_PENDING_EVENT)]
+    assert options["schema"] is EDIT_EVENT_SCHEMA
+    assert options["supports_response"] is SupportsResponse.ONLY
+    call = SimpleNamespace(
+        data={ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: original.id, "event": replacement.as_dict()},
+        context=Context(user_id="editor"),
+    )
+    assert await handler(call) == {"pending_id": item.id, "event": edited.as_service_dict()}
+    store.async_edit_event.assert_awaited_once_with(item.id, original.id, replacement)
+
+    call.data["event"] = {**replacement.as_dict(), "end": "invalid"}
+    with pytest.raises(ServiceValidationError, match="valid ISO"):
+        await handler(call)
+    store.async_edit_event.assert_awaited_once()
+
+    call.data["event"] = replacement.as_dict()
+    store.async_edit_event.reset_mock()
+    store.async_edit_event.return_value = None
+    with pytest.raises(ServiceValidationError, match="not found"):
+        await handler(call)
+    store.async_edit_event.side_effect = PendingEventEditError("duplicates another event")
+    with pytest.raises(ServiceValidationError, match="duplicates"):
+        await handler(call)
+
+    store.async_edit_event.reset_mock(side_effect=True)
+    call.context = Context(user_id=None)
+    with pytest.raises(Unauthorized):
+        await handler(call)
+    store.async_edit_event.assert_not_awaited()
 
 
 async def test_submit_text_without_events_records_source_handling(monkeypatch):

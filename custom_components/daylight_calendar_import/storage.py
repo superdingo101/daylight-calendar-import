@@ -31,6 +31,10 @@ class PendingImportApprovalUncertainError(RuntimeError):
     """Raised when retrying an import with an uncertain prior approval outcome."""
 
 
+class PendingEventEditError(ValueError):
+    """Raised when an event cannot safely be edited."""
+
+
 @dataclass(frozen=True, slots=True)
 class PendingEvent:
     """A reviewable event with a stable identity."""
@@ -217,6 +221,45 @@ class PendingImportStore:
     def list(self) -> tuple[PendingImport, ...]:
         """Return pending imports in insertion order."""
         return tuple(self._items.values())
+
+    async def async_edit_event(
+        self, pending_id: str, event_id: str, draft: EventDraft
+    ) -> PendingEvent | None:
+        """Replace a ready draft atomically while preserving its event ID."""
+        async with self._lock:
+            pending = self._items.get(pending_id)
+            if pending is None:
+                return None
+            event = next((item for item in pending.events if item.id == event_id), None)
+            if event is None:
+                return None
+            if event.status != "pending":
+                raise PendingEventEditError("Uncertain calendar write must be resolved before editing")
+            if event.draft == draft:
+                return event
+
+            fingerprint = event_fingerprint(draft)
+            other_active = {
+                event_fingerprint(item.draft)
+                for active in self._items.values()
+                for item in active.events
+                if active.id != pending_id or item.id != event_id
+            }
+            if fingerprint in self._seen_event_fingerprints or fingerprint in other_active:
+                raise PendingEventEditError("Edited event duplicates a pending or handled event")
+
+            edited = PendingEvent(event.id, draft, event.status)
+            updated = PendingImport(
+                id=pending.id, created_at=pending.created_at,
+                source_text=pending.source_text,
+                events=tuple(edited if item.id == event_id else item for item in pending.events),
+                source_fingerprint=pending.source_fingerprint,
+            )
+            items = dict(self._items)
+            items[pending_id] = updated
+            await self._async_save(items)
+            self._items = items
+            return edited
 
     def is_source_duplicate(self, source_id: str) -> bool:
         """Return whether a source ID is already pending or handled."""

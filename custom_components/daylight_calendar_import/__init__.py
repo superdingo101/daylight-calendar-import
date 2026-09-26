@@ -22,6 +22,7 @@ from .const import (
     CONF_CALENDAR_ENTITY,
     DOMAIN,
     SERVICE_APPROVE_PENDING,
+    SERVICE_EDIT_PENDING_EVENT,
     SERVICE_GET_PENDING,
     SERVICE_GET_PENDING_EVENT,
     SERVICE_IMPORT_TEXT,
@@ -30,9 +31,13 @@ from .const import (
     SERVICE_REJECT_PENDING,
     SERVICE_SUBMIT_TEXT,
 )
-from .models import EventDraft
+from .models import DraftValidationError, EventDraft
 from .parser import async_parse_text
-from .storage import PendingImportApprovalUncertainError, PendingImportStore
+from .storage import (
+    PendingEventEditError,
+    PendingImportApprovalUncertainError,
+    PendingImportStore,
+)
 
 PARSE_SCHEMA = vol.Schema({vol.Required(ATTR_TEXT): cv.string})
 SUBMIT_SCHEMA = vol.Schema(
@@ -52,6 +57,13 @@ PENDING_EVENT_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
         vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
+    }
+)
+EDIT_EVENT_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required("event"): dict,
     }
 )
 
@@ -219,6 +231,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         return {"pending_id": pending_id, "event": event.as_service_dict()}
 
+    async def handle_edit_pending_event(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+        try:
+            draft = EventDraft.from_mapping(call.data["event"])
+            edited = await pending_store.async_edit_event(pending_id, event_id, draft)
+        except (DraftValidationError, PendingEventEditError) as err:
+            raise ServiceValidationError(str(err)) from err
+        if edited is None:
+            raise ServiceValidationError(
+                f"Pending event not found: {pending_id}/{event_id}"
+            )
+        return {"pending_id": pending_id, "event": edited.as_service_dict()}
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_PARSE_TEXT,
@@ -266,6 +293,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN, SERVICE_GET_PENDING_EVENT, handle_get_pending_event,
         schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
     )
+    hass.services.async_register(
+        DOMAIN, SERVICE_EDIT_PENDING_EVENT, handle_edit_pending_event,
+        schema=EDIT_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
+    )
     return True
 
 
@@ -279,6 +310,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, SERVICE_LIST_PENDING)
     hass.services.async_remove(DOMAIN, SERVICE_GET_PENDING)
     hass.services.async_remove(DOMAIN, SERVICE_GET_PENDING_EVENT)
+    hass.services.async_remove(DOMAIN, SERVICE_EDIT_PENDING_EVENT)
     hass.data[DOMAIN].pop(entry.entry_id, None)
     return True
 
