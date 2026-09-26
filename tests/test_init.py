@@ -13,6 +13,7 @@ from custom_components.daylight_calendar_import import (
     _async_check_entity_control_permission,
     _async_create_calendar_event,
     _parse_for_entry,
+    async_remove_entry,
     async_setup_entry,
     async_unload_entry,
 )
@@ -65,10 +66,12 @@ class FakeHass:
     def __init__(self, user=None):
         self.services = FakeServices()
         self.auth = FakeAuth(user)
+        self.data = {}
 
 
 def entry():
     return SimpleNamespace(
+        entry_id="test-entry",
         data={
             CONF_AI_TASK_ENTITY: "ai_task.test",
             CONF_CALENDAR_ENTITY: "calendar.family",
@@ -92,8 +95,16 @@ async def test_setup_parse_and_import_services(monkeypatch):
     permissions = FakePermissions(allowed=True)
     hass = FakeHass(user=SimpleNamespace(permissions=permissions))
     parse = AsyncMock(return_value=[draft()])
+    pending_store = SimpleNamespace(async_load=AsyncMock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
-    assert await async_setup_entry(hass, entry()) is True
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: pending_store,
+    )
+    config_entry = entry()
+    assert await async_setup_entry(hass, config_entry) is True
+    pending_store.async_load.assert_awaited_once_with()
+    assert hass.data[DOMAIN][config_entry.entry_id] is pending_store
 
     parse_handler, parse_kwargs = hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)]
     assert parse_kwargs["supports_response"] is SupportsResponse.ONLY
@@ -114,8 +125,9 @@ async def test_setup_parse_and_import_services(monkeypatch):
     assert hass.services.calls[0][4] is call_context
     assert permissions.calls == [("ai_task.test", POLICY_CONTROL)]
 
-    assert await async_unload_entry(hass, entry()) is True
+    assert await async_unload_entry(hass, config_entry) is True
     assert hass.services.handlers == {}
+    assert hass.data[DOMAIN] == {}
 
 
 async def test_parse_for_entry(monkeypatch):
@@ -188,3 +200,16 @@ async def test_calendar_event_payloads():
     )
     await _async_create_calendar_event(hass, "calendar.family", no_location)
     assert "location" not in hass.services.calls[-1][2]
+
+
+async def test_remove_entry_deletes_pending_storage(monkeypatch):
+    hass = FakeHass()
+    pending_store = SimpleNamespace(async_remove_storage=AsyncMock())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: pending_store,
+    )
+
+    await async_remove_entry(hass, entry())
+
+    pending_store.async_remove_storage.assert_awaited_once_with()
