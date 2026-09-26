@@ -68,3 +68,17 @@ async def test_config_flow_creates_entry():
         title="Daylight Calendar Import",
         data=user_input,
     )
+
+
+async def test_config_flow_schema_uses_expected_required_keys():
+    flow = DaylightCalendarImportConfigFlow()
+    expected = {"type": "form"}
+
+    with patch.object(flow, "async_show_form", return_value=expected) as show_form:
+        await flow.async_step_user()
+
+    schema = show_form.call_args.kwargs["data_schema"]
+    assert [marker.schema for marker in schema.schema] == [
+        CONF_AI_TASK_ENTITY,
+        CONF_CALENDAR_ENTITY,
+    ]

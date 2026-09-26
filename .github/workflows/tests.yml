@@ -37,11 +37,28 @@ jobs:
         run: |
           mutmut export-cicd-stats
           python scripts/check_mutation_score.py
+      - name: Export surviving mutants
+        if: always()
+        run: |
+          mutmut results > mutation-survivors.txt || true
+          sed -n 's/^    \(.*\): survived$/\1/p' mutation-survivors.txt > mutation-survivor-names.txt
+          : > mutation-survivor-report.txt
+          while IFS= read -r mutant; do
+            {
+              echo "===== $mutant ====="
+              mutmut show "$mutant"
+              echo
+            } >> mutation-survivor-report.txt
+          done < mutation-survivor-names.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mutation-stats
-          path: mutants/mutmut-cicd-stats.json
+          name: mutation-results
+          path: |
+            mutants/mutmut-cicd-stats.json
+            mutation-survivors.txt
+            mutation-survivor-names.txt
+            mutation-survivor-report.txt
 
   test-ha-2026-7:
     name: Test Home Assistant 2026.7.4

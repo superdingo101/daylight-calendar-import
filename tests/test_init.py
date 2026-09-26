@@ -875,3 +875,244 @@ async def test_remove_entry_deletes_pending_storage(monkeypatch):
     await async_remove_entry(hass, entry())
 
     pending_store.async_remove_storage.assert_awaited_once_with()
+
+async def test_calendar_event_payload_contract_is_exact():
+    context = Context(user_id="calendar-user")
+    hass = FakeHass()
+
+    await _async_create_calendar_event(
+        hass, "calendar.family", draft(), context=context
+    )
+    assert hass.services.calls[-1] == (
+        "calendar",
+        "create_event",
+        {
+            "entity_id": "calendar.family",
+            "summary": "Practice",
+            "description": "",
+            "location": "Park",
+            "start_date_time": "2026-10-08T17:30:00-07:00",
+            "end_date_time": "2026-10-08T18:30:00-07:00",
+        },
+        True,
+        context,
+    )
+
+    await _async_create_calendar_event(
+        hass, "calendar.family", draft(True), context=context
+    )
+    assert hass.services.calls[-1] == (
+        "calendar",
+        "create_event",
+        {
+            "entity_id": "calendar.family",
+            "summary": "Practice",
+            "description": "",
+            "location": "Park",
+            "start_date": "2026-10-08",
+            "end_date": "2026-10-09",
+        },
+        True,
+        context,
+    )
+
+
+async def test_service_registration_contracts(monkeypatch):
+    from custom_components.daylight_calendar_import import PARSE_SCHEMA
+
+    hass = FakeHass()
+    pending_store = SimpleNamespace(async_load=AsyncMock())
+    received_hass = []
+
+    def store_factory(value):
+        received_hass.append(value)
+        return pending_store
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        store_factory,
+    )
+    await async_setup_entry(hass, entry())
+    assert received_hass == [hass]
+
+    expected = {
+        SERVICE_PARSE_TEXT: (PARSE_SCHEMA, SupportsResponse.ONLY),
+        SERVICE_IMPORT_TEXT: (PARSE_SCHEMA, SupportsResponse.OPTIONAL),
+        SERVICE_SUBMIT_TEXT: (SUBMIT_SCHEMA, SupportsResponse.ONLY),
+        SERVICE_APPROVE_PENDING: (PENDING_SCHEMA, SupportsResponse.OPTIONAL),
+        SERVICE_REJECT_PENDING: (PENDING_SCHEMA, SupportsResponse.OPTIONAL),
+        SERVICE_LIST_PENDING: (None, SupportsResponse.ONLY),
+        SERVICE_GET_PENDING: (PENDING_SCHEMA, SupportsResponse.ONLY),
+        SERVICE_GET_PENDING_EVENT: (PENDING_EVENT_SCHEMA, SupportsResponse.ONLY),
+        SERVICE_EDIT_PENDING_EVENT: (EDIT_EVENT_SCHEMA, SupportsResponse.ONLY),
+        SERVICE_REJECT_PENDING_EVENT: (
+            PENDING_EVENT_SCHEMA,
+            SupportsResponse.OPTIONAL,
+        ),
+        SERVICE_APPROVE_PENDING_EVENT: (
+            PENDING_EVENT_SCHEMA,
+            SupportsResponse.OPTIONAL,
+        ),
+        SERVICE_RESOLVE_PENDING_EVENT: (
+            RESOLVE_EVENT_SCHEMA,
+            SupportsResponse.OPTIONAL,
+        ),
+    }
+    for service, (schema, supports_response) in expected.items():
+        _handler, options = hass.services.handlers[(DOMAIN, service)]
+        assert options.get("schema") is schema
+        assert options["supports_response"] is supports_response
+
+
+async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
+    config_entry = entry()
+    hass = FakeHass()
+    event = draft()
+    submitted = pending(event)
+    parse_for_entry = AsyncMock(return_value=[event])
+    parse_text = AsyncMock(return_value=[event])
+    create_calendar_event = AsyncMock()
+    pending_store = SimpleNamespace(
+        async_load=AsyncMock(),
+        is_source_duplicate=Mock(return_value=False),
+        async_add=AsyncMock(
+            return_value=PendingImportAddResult(
+                pending=submitted,
+                duplicate_source=False,
+                duplicate_events=0,
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda value: pending_store if value is hass else None,
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import._parse_for_entry",
+        parse_for_entry,
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_parse_text",
+        parse_text,
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import._async_create_calendar_event",
+        create_calendar_event,
+    )
+    await async_setup_entry(hass, config_entry)
+
+    context = Context(user_id=None)
+    parse_handler = hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)][0]
+    await parse_handler(SimpleNamespace(data={ATTR_TEXT: "parse me"}, context=context))
+    parse_for_entry.assert_awaited_once_with(
+        hass, config_entry, "parse me", context=context
+    )
+
+    import_handler = hass.services.handlers[(DOMAIN, SERVICE_IMPORT_TEXT)][0]
+    await import_handler(
+        SimpleNamespace(data={ATTR_TEXT: "import me"}, context=context)
+    )
+    assert parse_for_entry.await_args_list[-1].args == (
+        hass,
+        config_entry,
+        "import me",
+    )
+    assert parse_for_entry.await_args_list[-1].kwargs == {"context": context}
+    create_calendar_event.assert_awaited_once_with(
+        hass, "calendar.family", event, context=context
+    )
+
+    submit_handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
+    await submit_handler(
+        SimpleNamespace(
+            data={ATTR_TEXT: "submit me", ATTR_SOURCE_ID: "message-42"},
+            context=context,
+        )
+    )
+    parse_text.assert_awaited_once_with(
+        hass,
+        text="submit me",
+        ai_task_entity="ai_task.test",
+    )
+    pending_store.async_add.assert_awaited_once_with(
+        source_text="submit me",
+        events=[event],
+        source_id="message-42",
+    )
+
+
+async def test_parse_for_entry_preserves_parser_arguments(monkeypatch):
+    parse = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_parse_text", parse
+    )
+    hass = FakeHass()
+
+    assert await _parse_for_entry(hass, entry(), "source text") == []
+    parse.assert_awaited_once_with(
+        hass,
+        text="source text",
+        ai_task_entity="ai_task.test",
+    )
+
+
+async def test_pending_summary_and_lookup_preserve_identity(monkeypatch):
+    permissions = FakePermissions(allowed=True)
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    first = draft()
+    second = EventDraft(
+        title="Picture Day",
+        start="2026-10-09",
+        end="2026-10-10",
+        all_day=True,
+        confidence=1,
+    )
+    item = PendingImport.create(
+        source_text="private invitation",
+        events=[first, second],
+    )
+    store = SimpleNamespace(
+        async_load=AsyncMock(),
+        list=Mock(return_value=(item,)),
+        get=Mock(return_value=item),
+        get_event=Mock(return_value=item.events[0]),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: store,
+    )
+    await async_setup_entry(hass, entry())
+    context = Context(user_id="reviewer")
+
+    list_handler = hass.services.handlers[(DOMAIN, SERVICE_LIST_PENDING)][0]
+    result = await list_handler(SimpleNamespace(data={}, context=context))
+    assert result["imports"][0]["title"] == "Practice"
+
+    get_handler = hass.services.handlers[(DOMAIN, SERVICE_GET_PENDING)][0]
+    details = await get_handler(
+        SimpleNamespace(data={ATTR_PENDING_ID: item.id}, context=context)
+    )
+    assert details["pending"]["id"] == item.id
+    assert "source_fingerprint" not in details["pending"]
+    store.get.assert_called_once_with(item.id)
+
+
+async def test_remove_entry_uses_current_hass_instance(monkeypatch):
+    hass = FakeHass()
+    remove_storage = AsyncMock()
+    received_hass = []
+
+    def store_factory(value):
+        received_hass.append(value)
+        return SimpleNamespace(async_remove_storage=remove_storage)
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        store_factory,
+    )
+    await async_remove_entry(hass, entry())
+
+    assert received_hass == [hass]
+    remove_storage.assert_awaited_once_with()
+

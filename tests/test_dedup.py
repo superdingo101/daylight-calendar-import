@@ -92,3 +92,27 @@ def test_event_fingerprint_handles_all_day_dates():
     )
 
     assert event_fingerprint(first) == event_fingerprint(second)
+
+
+def test_event_fingerprint_v1_wire_format_is_stable():
+    """Persisted v1 fingerprints must not change without a version bump."""
+    timed_event = draft(
+        title="Café Practice",
+        location="Parque",
+        description="Bring crème brûlée",
+    )
+    assert event_fingerprint(timed_event) == (
+        "v1:event:1126c90f3cb7609ce8a8c602a273b60c64e1c9a5ad220fc285a44dd55b992c54"
+    )
+
+    all_day_event = draft(
+        title="Picture Day",
+        start="2026-10-09",
+        end="2026-10-10",
+        all_day=True,
+        location=None,
+        description=None,
+    )
+    assert event_fingerprint(all_day_event) == (
+        "v1:event:235ce1fe9f1b079d695417d776dc46a2d1c6a58e8c20d3de110c5c9d93c8a693"
+    )
