@@ -46,13 +46,13 @@ def make_store(monkeypatch, backend):
     calls = []
     hass = SimpleNamespace()
 
-    def fake_store(received_hass, version, key):
-        calls.append((received_hass, version, key))
+    def fake_store(received_hass, version, key, *, private=False):
+        calls.append((received_hass, version, key, private))
         return backend
 
     monkeypatch.setattr(storage_module, "Store", fake_store)
     store = PendingImportStore(hass)
-    assert calls == [(hass, STORAGE_VERSION, STORAGE_KEY)]
+    assert calls == [(hass, STORAGE_VERSION, STORAGE_KEY, True)]
     return store
 
 
