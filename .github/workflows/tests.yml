@@ -20,7 +20,7 @@ jobs:
       - run: pytest --cov --cov-branch --cov-fail-under=100
 
   mutation:
-    name: Mutation baseline
+    name: Mutation score
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -33,34 +33,12 @@ jobs:
       - run: pip install -r requirements_test.txt
       - name: Run mutation tests
         run: mutmut run
-      - name: Export mutation statistics
+      - name: Export and enforce mutation statistics
         run: |
           mutmut export-cicd-stats
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          stats = json.loads(Path("mutants/mutmut-cicd-stats.json").read_text())
-          tested = stats["total"] - stats["skipped"]
-          score = 0.0 if tested <= 0 else (
-              (stats["killed"] + stats["timeout"]) / tested * 100
-          )
-          summary = (
-              f"## Mutation testing\n\n"
-              f"- Score: **{score:.2f}%**\n"
-              f"- Killed: {stats['killed']}\n"
-              f"- Survived: {stats['survived']}\n"
-              f"- No tests: {stats['no_tests']}\n"
-              f"- Timeout: {stats['timeout']}\n"
-              f"- Suspicious: {stats['suspicious']}\n"
-              f"- Skipped: {stats['skipped']}\n"
-              f"- Total: {stats['total']}\n"
-          )
-          print(summary)
-          with open(Path(__import__("os").environ["GITHUB_STEP_SUMMARY"]), "a") as f:
-              f.write(summary)
-          PY
+          python scripts/check_mutation_score.py
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: mutation-stats
           path: mutants/mutmut-cicd-stats.json
