@@ -92,11 +92,10 @@ class PendingImportStore:
             self._items = {}
             return
 
-        self._items = {
-            item.id: item
-            for raw in data[_STORAGE_ITEMS]
-            if (item := PendingImport.from_dict(raw))
-        }
+        items = (
+            PendingImport.from_dict(raw) for raw in data[_STORAGE_ITEMS]
+        )
+        self._items = {item.id: item for item in items}
 
     def get(self, pending_id: str) -> PendingImport | None:
         """Return one pending import by ID."""
