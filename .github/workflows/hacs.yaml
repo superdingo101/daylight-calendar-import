@@ -1,0 +1,24 @@
+name: HACS Validation
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  validate-hacs:
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: HACS validation
+        uses: "hacs/action@main"
+        with:
+          category: "integration"
+          # These checks read repository/default-branch metadata, so an
+          # unmerged PR cannot satisfy them even when it adds the license.
+          ignore: ${{ github.event_name == 'pull_request' && 'license topics' || '' }}
