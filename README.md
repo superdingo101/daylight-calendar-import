@@ -19,6 +19,7 @@ The first proof of concept supports:
 - `daylight_calendar_import.get_pending`: retrieve a pending import with its source text and event drafts
 - `daylight_calendar_import.get_pending_event`: retrieve a draft using its pending import ID and stable event ID
 - `daylight_calendar_import.edit_pending_event`: replace a draft before approval, preserving its ID and checking for duplicates
+- `daylight_calendar_import.reject_pending_event`: reject one draft while retaining other events in the import
 - multiple events in one input
 - timed and all-day events
 - strict validation of AI output
@@ -50,6 +51,8 @@ Use `parse_text` first while evaluating extraction quality. For the review workf
 The three pending read actions return responses from **Developer Tools → Actions**. `list_pending` returns summaries without the original source text; `get_pending` returns the full source and drafts; `get_pending_event` accepts both `pending_id` and `event_id`. Reads require an authenticated Home Assistant user with control permission for both the configured AI Task and calendar entities. Pending data remains available after a Home Assistant restart.
 
 To correct an event, call `edit_pending_event` with `pending_id`, `event_id`, and a complete `event` mapping (title, start, end, all_day, optional location/description/confidence). It validates the replacement, rejects exact duplicates in pending or handled history, and keeps the event ID. It also requires control of both configured entities. An event with an uncertain calendar write cannot be edited until that write is resolved.
+
+Use `reject_pending_event` with `pending_id` and `event_id` to remove only that draft. The rejection is remembered for exact event deduplication; other drafts retain their IDs and review status. The source is marked handled once the last event is resolved. A write-uncertain event requires explicit recovery before per-event rejection.
 
 ### Manual development install
 

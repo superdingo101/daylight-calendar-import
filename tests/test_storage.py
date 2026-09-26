@@ -273,6 +273,74 @@ async def test_edit_save_failure_keeps_original_draft(monkeypatch):
     assert store.get_event(first.id, first.events[0].id) == first.events[0]
 
 
+async def test_reject_one_event_preserves_siblings_and_dedupes_rejection(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(
+        source_text="newsletter", events=[draft(), second_draft()], source_id="mail-1"
+    )).pending
+    assert item is not None
+    first, second = item.events
+
+    assert await store.async_reject_event(item.id, "missing") is False
+    assert await store.async_reject_event("missing", first.id) is False
+    assert await store.async_reject_event(item.id, first.id) is True
+    assert store.get_event(item.id, first.id) is None
+    assert store.get_event(item.id, second.id) == second
+    assert store.is_source_duplicate("mail-1")  # still actively pending
+    assert backend.saved[-1]["seen_event_fingerprints"] == [event_fingerprint(draft())]
+    assert "seen_source_fingerprints" not in backend.saved[-1]
+
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_event(item.id, second.id) == second
+    repeated = await restarted.async_add(source_text="other", events=[draft()])
+    assert repeated.pending is None and repeated.duplicate_events == 1
+
+    assert await restarted.async_reject_event(item.id, second.id) is True
+    assert restarted.get(item.id) is None
+    assert backend.saved[-1]["seen_source_fingerprints"] == [source_fingerprint("mail-1")]
+    assert backend.saved[-1]["seen_event_fingerprints"] == [
+        event_fingerprint(draft()), event_fingerprint(second_draft()),
+    ]
+    assert await restarted.async_reject_event(item.id, second.id) is False
+
+
+async def test_reject_event_save_failure_and_uncertain_guard(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(source_text="mail", events=[draft()])).pending
+    assert item is not None
+    backend.save_error = RuntimeError("disk full")
+    with pytest.raises(RuntimeError, match="disk full"):
+        await store.async_reject_event(item.id, item.events[0].id)
+    assert store.get(item.id) == item
+
+    backend.load_result = {"items": [{
+        **item.as_dict(),
+        "events": [{**item.events[0].as_dict(), "status": "write_uncertain"}],
+    }]}
+    uncertain = make_store(monkeypatch, backend)
+    await uncertain.async_load()
+    with pytest.raises(PendingImportApprovalUncertainError):
+        await uncertain.async_reject_event(item.id, item.events[0].id)
+
+
+async def test_reject_last_event_without_source_fingerprint(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(source_text="manual", events=[draft()])).pending
+    assert item is not None
+    assert await store.async_reject_event(item.id, item.events[0].id)
+    assert backend.saved[-1] == {
+        "items": [], "seen_event_fingerprints": [event_fingerprint(draft())],
+    }
+
+
 async def test_store_adds_rejects_and_remembers_source_and_event(monkeypatch):
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)

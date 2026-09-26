@@ -114,3 +114,18 @@ edit_pending_event:
       required: true
       selector:
         object:
+
+reject_pending_event:
+  name: Reject pending event
+  description: Reject one event while keeping other events in the pending import. An uncertain calendar write must be resolved separately.
+  fields:
+    pending_id:
+      name: Pending import ID
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      required: true
+      selector:
+        text:
