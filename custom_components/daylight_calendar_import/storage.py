@@ -185,6 +185,8 @@ class PendingImportStore:
 
                 await self._async_save(items)
                 self._items = items
+                if not remaining:
+                    break
 
             return original
 
