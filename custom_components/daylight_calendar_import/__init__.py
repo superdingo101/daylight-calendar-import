@@ -36,7 +36,7 @@ from .const import (
     SERVICE_SUBMIT_TEXT,
 )
 from .models import DraftValidationError, EventDraft
-from .parser import async_parse_text
+from .parser import ParseOutcome, async_parse_text
 from .storage import (
     PendingEventEditError,
     PendingEventResolutionError,
@@ -107,16 +107,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return calendar_entity
 
     async def handle_parse_text(call: ServiceCall) -> ServiceResponse:
-        drafts = await _parse_for_entry(
+        outcome = await _parse_for_entry(
             hass, entry, call.data[ATTR_TEXT], context=call.context
         )
-        return {"events": [draft.as_dict() for draft in drafts]}
+        return {"events": [draft.as_dict() for draft in outcome.events],
+                "warnings": outcome.warnings}
 
     async def handle_import_text(call: ServiceCall) -> ServiceResponse:
-        drafts = await _parse_for_entry(
+        outcome = await _parse_for_entry(
             hass, entry, call.data[ATTR_TEXT], context=call.context
         )
-        for draft in drafts:
+        for draft in outcome.events:
             await _async_create_calendar_event(
                 hass,
                 entry.data[CONF_CALENDAR_ENTITY],
@@ -124,8 +125,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 context=call.context,
             )
         return {
-            "events": [draft.as_dict() for draft in drafts],
-            "imported": len(drafts),
+            "events": [draft.as_dict() for draft in outcome.events],
+            "imported": len(outcome.events),
+            "warnings": outcome.warnings,
         }
 
     async def handle_submit_text(call: ServiceCall) -> ServiceResponse:
@@ -145,16 +147,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "duplicate": True,
                 "duplicate_source": True,
                 "duplicate_events": 0,
+                "warnings": [],
             }
 
-        drafts = await async_parse_text(
+        outcome = await async_parse_text(
             hass,
             text=source_text,
             ai_task_entity=ai_task_entity,
         )
         result = await pending_store.async_add(
             source_text=source_text,
-            events=drafts,
+            events=outcome.events,
             source_id=source_id,
             calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
         )
@@ -169,6 +172,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ),
             "duplicate_source": result.duplicate_source,
             "duplicate_events": result.duplicate_events,
+            "warnings": outcome.warnings,
         }
 
     async def handle_approve_pending(call: ServiceCall) -> ServiceResponse:
@@ -464,7 +468,7 @@ async def _parse_for_entry(
     text: str,
     *,
     context: Context | None = None,
-) -> list[EventDraft]:
+) -> ParseOutcome:
     ai_task_entity = entry.data[CONF_AI_TASK_ENTITY]
     await _async_check_entity_control_permission(hass, ai_task_entity, context)
     return await async_parse_text(

@@ -27,7 +27,7 @@ The first proof of concept supports:
 - strict validation of AI output
 - persistent deduplication by optional upstream source ID and normalized event fingerprint
 
-The parser deliberately fails closed. It instructs the AI not to invent missing event data, and integration-side validation rejects unsafe output.
+The parser instructs the AI not to invent missing event data. Invalid individual events are skipped with indexed `warnings` in parse, import, and submit responses; valid events in the same response remain available. An invalid top-level AI response still fails without creating calendar events. When every event is invalid, no event is imported or queued.
 
 The current minimum supported Home Assistant version is **2026.7.4**. CI tests that version explicitly alongside the current development test environment.
 

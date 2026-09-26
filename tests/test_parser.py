@@ -22,9 +22,10 @@ VALID = {
 
 
 def test_parse_ai_data():
-    drafts = parser.parse_ai_data({"events": [VALID]})
-    assert len(drafts) == 1
-    assert drafts[0].title == "Soccer Practice"
+    result = parser.parse_ai_data({"events": [VALID]})
+    assert len(result.events) == 1
+    assert result.events[0].title == "Soccer Practice"
+    assert result.warnings == []
 
 
 @pytest.mark.parametrize(
@@ -32,13 +33,28 @@ def test_parse_ai_data():
     [
         ([], "AI Task result must be an object"),
         ({}, "AI Task result must contain an events list"),
-        ({"events": ["bad"]}, "event 0 must be an object"),
-        ({"events": [{**VALID, "title": ""}]}, "event 0 is invalid"),
     ],
 )
 def test_parse_ai_data_rejects_bad_shapes(value, message):
     with pytest.raises(parser.ParseResultError, match=message):
         parser.parse_ai_data(value)
+
+
+def test_parse_ai_data_keeps_valid_events_and_reports_invalid_indices():
+    result = parser.parse_ai_data({"events": [
+        "bad", VALID, {**VALID, "title": ""}, {**VALID, "title": "Another event"},
+    ]})
+    assert [draft.title for draft in result.events] == ["Soccer Practice", "Another event"]
+    assert result.warnings == [
+        "event 0 must be an object",
+        "event 2 is invalid: title must be a non-empty string",
+    ]
+
+
+def test_parse_ai_data_all_invalid_produces_no_drafts_with_warnings():
+    result = parser.parse_ai_data({"events": [False]})
+    assert result.events == []
+    assert result.warnings == ["event 0 must be an object"]
 
 
 async def test_async_parse_text(monkeypatch):
@@ -54,10 +70,11 @@ async def test_async_parse_text(monkeypatch):
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="America/Los_Angeles")
     )
-    drafts = await parser.async_parse_text(
+    outcome = await parser.async_parse_text(
         hass, text="  Soccer Thursday at 5:30  ", ai_task_entity="ai_task.test"
     )
-    assert drafts[0].title == "Soccer Practice"
+    assert outcome.events[0].title == "Soccer Practice"
+    assert outcome.warnings == []
     kwargs = generate.await_args.kwargs
     assert kwargs["entity_id"] == "ai_task.test"
     assert "Soccer Thursday at 5:30" in kwargs["instructions"]

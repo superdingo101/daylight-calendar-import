@@ -46,6 +46,7 @@ from custom_components.daylight_calendar_import.const import (
     SERVICE_SUBMIT_TEXT,
 )
 from custom_components.daylight_calendar_import.models import EventDraft
+from custom_components.daylight_calendar_import.parser import ParseOutcome
 from custom_components.daylight_calendar_import.storage import (
     PendingEventEditError,
     PendingEventResolutionError,
@@ -126,7 +127,7 @@ def pending(*events):
 async def test_setup_review_workflow_and_unload(monkeypatch):
     permissions = FakePermissions(allowed=True)
     hass = FakeHass(user=SimpleNamespace(permissions=permissions))
-    parse = AsyncMock(return_value=[draft()])
+    parse = AsyncMock(return_value=ParseOutcome([draft()], []))
     submitted = pending(draft())
     approval = pending(draft(), draft(True))
     is_source_duplicate = Mock(return_value=False)
@@ -192,6 +193,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
         "duplicate": False,
         "duplicate_source": False,
         "duplicate_events": 0,
+        "warnings": [],
     }
     is_source_duplicate.assert_called_once_with("message-1")
     pending_store.async_add.assert_awaited_once_with(
@@ -552,7 +554,7 @@ async def test_reject_all_requires_resolution_of_uncertain_write(monkeypatch):
 
 async def test_submit_text_without_events_records_source_handling(monkeypatch):
     hass = FakeHass()
-    parse = AsyncMock(return_value=[])
+    parse = AsyncMock(return_value=ParseOutcome([], []))
     pending_store = SimpleNamespace(
         async_load=AsyncMock(),
         is_source_duplicate=Mock(return_value=False),
@@ -585,6 +587,7 @@ async def test_submit_text_without_events_records_source_handling(monkeypatch):
         "duplicate": False,
         "duplicate_source": False,
         "duplicate_events": 0,
+        "warnings": [],
     }
     pending_store.is_source_duplicate.assert_not_called()
     pending_store.async_add.assert_awaited_once_with(
@@ -623,6 +626,7 @@ async def test_submit_text_skips_ai_for_known_source(monkeypatch):
         "duplicate": True,
         "duplicate_source": True,
         "duplicate_events": 0,
+        "warnings": [],
     }
     parse.assert_not_awaited()
     pending_store.async_add.assert_not_awaited()
@@ -688,7 +692,7 @@ async def test_submit_text_reports_deduplication_races(
     expected_duplicate,
 ):
     hass = FakeHass()
-    parse = AsyncMock(return_value=[draft()])
+    parse = AsyncMock(return_value=ParseOutcome([draft()], []))
     pending_store = SimpleNamespace(
         async_load=AsyncMock(),
         is_source_duplicate=Mock(return_value=False),
@@ -804,11 +808,11 @@ async def test_parse_for_entry(monkeypatch):
     permissions = FakePermissions(allowed=True)
     user = SimpleNamespace(permissions=permissions)
     hass = FakeHass(user=user)
-    parse = AsyncMock(return_value=[])
+    parse = AsyncMock(return_value=ParseOutcome([], []))
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
     context = Context(user_id="allowed-user")
 
-    assert await _parse_for_entry(hass, entry(), "text", context=context) == []
+    assert await _parse_for_entry(hass, entry(), "text", context=context) == ParseOutcome([], [])
     assert hass.auth.calls == ["allowed-user"]
     assert permissions.calls == [("ai_task.test", POLICY_CONTROL)]
     assert parse.await_args.kwargs["ai_task_entity"] == "ai_task.test"
@@ -977,8 +981,8 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
     hass = FakeHass()
     event = draft()
     submitted = pending(event)
-    parse_for_entry = AsyncMock(return_value=[event])
-    parse_text = AsyncMock(return_value=[event])
+    parse_for_entry = AsyncMock(return_value=ParseOutcome([event], []))
+    parse_text = AsyncMock(return_value=ParseOutcome([event], []))
     create_calendar_event = AsyncMock()
     pending_store = SimpleNamespace(
         async_load=AsyncMock(),
@@ -1052,13 +1056,13 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
 
 
 async def test_parse_for_entry_preserves_parser_arguments(monkeypatch):
-    parse = AsyncMock(return_value=[])
+    parse = AsyncMock(return_value=ParseOutcome([], []))
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.async_parse_text", parse
     )
     hass = FakeHass()
 
-    assert await _parse_for_entry(hass, entry(), "source text") == []
+    assert await _parse_for_entry(hass, entry(), "source text") == ParseOutcome([], [])
     parse.assert_awaited_once_with(
         hass,
         text="source text",
@@ -1300,3 +1304,68 @@ async def test_unlisted_persisted_destination_blocks_calendar_write(monkeypatch)
         await handler(SimpleNamespace(data={ATTR_PENDING_ID: item.id},
                                       context=Context(user_id="reviewer")))
     store.async_process_events.assert_not_awaited()
+
+
+async def test_partial_parser_warnings_reach_parse_import_and_submit(monkeypatch):
+    warning = "event 1 is invalid: start must be a non-empty string"
+    parse = AsyncMock(return_value=ParseOutcome([draft()], [warning]))
+    store = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    hass = FakeHass()
+    await async_setup_entry(hass, entry())
+    context = Context(user_id=None)
+
+    parse_response = await hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)][0](
+        SimpleNamespace(data={ATTR_TEXT: "two events"}, context=context)
+    )
+    assert parse_response == {"events": [draft().as_dict()], "warnings": [warning]}
+
+    import_response = await hass.services.handlers[(DOMAIN, SERVICE_IMPORT_TEXT)][0](
+        SimpleNamespace(data={ATTR_TEXT: "two events"}, context=context)
+    )
+    assert import_response == {
+        "events": [draft().as_dict()], "imported": 1, "warnings": [warning]
+    }
+    assert len(hass.services.calls) == 1
+
+    submit_response = await hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0](
+        SimpleNamespace(data={ATTR_TEXT: "two events"}, context=context)
+    )
+    assert submit_response["warnings"] == [warning]
+    store.async_add.assert_awaited_once()
+    assert store.async_add.await_args.kwargs["events"] == [draft()]
+
+
+async def test_all_invalid_events_do_not_write_calendar(monkeypatch):
+    parse = AsyncMock(return_value=ParseOutcome([], ["event 0 must be an object"]))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    hass = FakeHass()
+    store = SimpleNamespace(async_load=AsyncMock(), is_source_duplicate=Mock(return_value=False),
+                            async_add=AsyncMock(
+        return_value=PendingImportAddResult(None, False, 0)
+    ))
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    await async_setup_entry(hass, entry())
+    context = Context(user_id=None)
+    response = await hass.services.handlers[(DOMAIN, SERVICE_IMPORT_TEXT)][0](
+        SimpleNamespace(data={ATTR_TEXT: "bad"}, context=context)
+    )
+    assert response == {"events": [], "imported": 0,
+                        "warnings": ["event 0 must be an object"]}
+    assert hass.services.calls == []
+    submit = await hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0](
+        SimpleNamespace(data={ATTR_TEXT: "bad", ATTR_SOURCE_ID: "message-bad"},
+                        context=context)
+    )
+    assert submit["pending"] is None
+    assert submit["warnings"] == ["event 0 must be an object"]
+    assert store.async_add.await_args.kwargs["events"] == []
+    assert store.async_add.await_args.kwargs["source_id"] == "message-bad"
