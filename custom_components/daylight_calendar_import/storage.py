@@ -206,12 +206,11 @@ class PendingImportStore:
                         self._seen_source_fingerprints,
                         (source_fp,),
                     )
-                    if seen_sources != self._seen_source_fingerprints:
-                        await self._async_save(
-                            self._items,
-                            seen_source_fingerprints=seen_sources,
-                        )
-                        self._seen_source_fingerprints = seen_sources
+                    await self._async_save(
+                        self._items,
+                        seen_source_fingerprints=seen_sources,
+                    )
+                    self._seen_source_fingerprints = seen_sources
                 return PendingImportAddResult(
                     pending=None,
                     duplicate_source=False,
