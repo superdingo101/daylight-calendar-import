@@ -31,7 +31,10 @@ from custom_components.daylight_calendar_import.const import (
     SERVICE_SUBMIT_TEXT,
 )
 from custom_components.daylight_calendar_import.models import EventDraft
-from custom_components.daylight_calendar_import.storage import PendingImport
+from custom_components.daylight_calendar_import.storage import (
+    PendingImport,
+    PendingImportApprovalUncertainError,
+)
 
 
 class FakeServices:
@@ -267,6 +270,38 @@ async def test_approve_and_reject_missing_pending_raise(monkeypatch):
     ]
     assert hass.services.calls == []
 
+
+
+async def test_approve_uncertain_pending_raises_validation_error(monkeypatch):
+    permissions = FakePermissions(allowed=True)
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    pending_store = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_process_events=AsyncMock(
+            side_effect=PendingImportApprovalUncertainError("pending-1")
+        ),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: pending_store,
+    )
+
+    await async_setup_entry(hass, entry())
+    approve_handler = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)][0]
+
+    with pytest.raises(
+        ServiceValidationError,
+        match="unfinished approval attempt",
+    ):
+        await approve_handler(
+            SimpleNamespace(
+                data={ATTR_PENDING_ID: "pending-1"},
+                context=Context(user_id="reviewer"),
+            )
+        )
+
+    assert permissions.calls == [("calendar.family", POLICY_CONTROL)]
+    assert hass.services.calls == []
 
 def test_pending_schema_rejects_empty_id():
     with pytest.raises(vol.Invalid):
