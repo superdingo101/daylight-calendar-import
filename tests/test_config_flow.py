@@ -7,12 +7,13 @@ from custom_components.daylight_calendar_import.config_flow import (
 )
 from custom_components.daylight_calendar_import.const import (
     CONF_AI_TASK_ENTITY,
+    CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
 )
 
 
 def test_config_flow_version():
-    assert DaylightCalendarImportConfigFlow.VERSION == 1
+    assert DaylightCalendarImportConfigFlow.VERSION == 2
 
 
 async def test_config_flow_shows_form():
@@ -26,7 +27,7 @@ async def test_config_flow_shows_form():
     kwargs = show_form.call_args.kwargs
     assert kwargs["step_id"] == "user"
     schema = kwargs["data_schema"]
-    assert len(schema.schema) == 2
+    assert len(schema.schema) == 3
 
     selectors = list(schema.schema.values())
     ai_task_selector = selectors[0]
@@ -44,6 +45,8 @@ async def test_config_flow_shows_form():
             "supported_features": [1],
         }
     ]
+    assert selectors[2].config["multiple"] is True
+    assert selectors[2].config["filter"] == calendar_selector.config["filter"]
 
 
 async def test_config_flow_creates_entry():
@@ -51,6 +54,7 @@ async def test_config_flow_creates_entry():
     user_input = {
         CONF_AI_TASK_ENTITY: "ai_task.test",
         CONF_CALENDAR_ENTITY: "calendar.family",
+        CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
     }
     expected = {"type": "create_entry"}
 
@@ -81,4 +85,20 @@ async def test_config_flow_schema_uses_expected_required_keys():
     assert [marker.schema for marker in schema.schema] == [
         CONF_AI_TASK_ENTITY,
         CONF_CALENDAR_ENTITY,
+        CONF_CALENDAR_ENTITIES,
     ]
+
+
+async def test_config_flow_rejects_default_outside_allowed_calendars():
+    flow = DaylightCalendarImportConfigFlow()
+    expected = {"type": "form"}
+    with patch.object(flow, "async_show_form", return_value=expected) as show_form:
+        result = await flow.async_step_user({
+            CONF_AI_TASK_ENTITY: "ai_task.test",
+            CONF_CALENDAR_ENTITY: "calendar.family",
+            CONF_CALENDAR_ENTITIES: ["calendar.work"],
+        })
+    assert result is expected
+    assert show_form.call_args.kwargs["errors"] == {
+        CONF_CALENDAR_ENTITY: "default_not_allowed"
+    }

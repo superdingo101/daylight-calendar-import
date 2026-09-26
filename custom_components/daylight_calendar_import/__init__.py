@@ -19,6 +19,7 @@ from .const import (
     ATTR_SOURCE_ID,
     ATTR_TEXT,
     CONF_AI_TASK_ENTITY,
+    CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
     DOMAIN,
     SERVICE_APPROVE_PENDING,
@@ -77,6 +78,17 @@ RESOLVE_EVENT_SCHEMA = vol.Schema(
         vol.Required("resolution"): vol.In(("created", "not_created", "discard")),
     }
 )
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Give existing single-calendar entries an explicit allowed calendar list."""
+    if entry.version == 1:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, CONF_CALENDAR_ENTITIES: [entry.data[CONF_CALENDAR_ENTITY]]},
+            version=2,
+        )
+    return entry.version == 2
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
