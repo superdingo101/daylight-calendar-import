@@ -4,9 +4,9 @@ A Home Assistant custom integration that turns unstructured text into validated 
 
 This repository is intentionally separate from [Daylight Calendar Card](https://github.com/superdingo101/daylight-calendar-card). The import integration owns ingestion/parsing; the card can later provide a richer review UI.
 
-## Proof of concept
+## v0.2.0 review domain
 
-The first proof of concept supports:
+The integration supports:
 
 - UI configuration of an existing Home Assistant AI Task entity
 - UI configuration of a default calendar and an allowed list of writable calendars
