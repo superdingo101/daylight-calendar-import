@@ -113,9 +113,7 @@ async def test_store_adds_and_removes_persistently(monkeypatch):
 
     assert store.get(pending.id) == pending
     assert store.list() == (pending,)
-    assert backend.saved == {"unexpected": "shape"} if False else [
-        {"items": [pending.as_dict()]}
-    ]
+    assert backend.saved == [{"items": [pending.as_dict()]}]
 
     save_count = len(backend.saved)
     assert await store.async_remove("missing") is False
