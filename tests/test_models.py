@@ -62,3 +62,29 @@ def test_valid_all_day_event_and_optional_cleanup():
 def test_invalid_event(changes, message):
     with pytest.raises(DraftValidationError, match=message):
         EventDraft.from_mapping(timed(**changes))
+
+
+def test_missing_and_zero_confidence_use_safe_boundary_values():
+    without_confidence = timed()
+    without_confidence.pop("confidence")
+    assert EventDraft.from_mapping(without_confidence).confidence == 0.0
+    assert EventDraft.from_mapping(timed(confidence=0)).confidence == 0.0
+
+
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [
+        ("2026-10-08T17:30:00", "2026-10-08T18:30:00-07:00"),
+        ("2026-10-08T17:30:00-07:00", "2026-10-08T18:30:00"),
+    ],
+)
+def test_timed_event_rejects_either_missing_timezone_offset(start, end):
+    with pytest.raises(DraftValidationError, match="timezone offsets"):
+        EventDraft.from_mapping(timed(start=start, end=end))
+
+
+def test_event_rejects_zero_duration():
+    with pytest.raises(DraftValidationError, match="end must be after start"):
+        EventDraft.from_mapping(
+            timed(end="2026-10-08T17:30:00-07:00")
+        )
