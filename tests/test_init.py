@@ -1,7 +1,7 @@
 """Tests for Home Assistant service wiring."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import voluptuous as vol
@@ -12,6 +12,7 @@ from homeassistant.exceptions import ServiceValidationError, Unauthorized, Unkno
 
 from custom_components.daylight_calendar_import import (
     PENDING_SCHEMA,
+    SUBMIT_SCHEMA,
     _async_check_entity_control_permission,
     _async_create_calendar_event,
     _parse_for_entry,
@@ -21,6 +22,8 @@ from custom_components.daylight_calendar_import import (
 )
 from custom_components.daylight_calendar_import.const import (
     ATTR_PENDING_ID,
+    ATTR_SOURCE_ID,
+    ATTR_TEXT,
     CONF_AI_TASK_ENTITY,
     CONF_CALENDAR_ENTITY,
     DOMAIN,
@@ -33,6 +36,7 @@ from custom_components.daylight_calendar_import.const import (
 from custom_components.daylight_calendar_import.models import EventDraft
 from custom_components.daylight_calendar_import.storage import (
     PendingImport,
+    PendingImportAddResult,
     PendingImportApprovalUncertainError,
 )
 
@@ -116,6 +120,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
     parse = AsyncMock(return_value=[draft()])
     submitted = pending(draft())
     approval = pending(draft(), draft(True))
+    is_source_duplicate = Mock(return_value=False)
 
     async def process_pending_events(pending_id, processor):
         assert pending_id == approval.id
@@ -125,7 +130,14 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
 
     pending_store = SimpleNamespace(
         async_load=AsyncMock(),
-        async_add=AsyncMock(return_value=submitted),
+        is_source_duplicate=is_source_duplicate,
+        async_add=AsyncMock(
+            return_value=PendingImportAddResult(
+                pending=submitted,
+                duplicate_source=False,
+                duplicate_events=0,
+            )
+        ),
         async_process_events=AsyncMock(side_effect=process_pending_events),
         async_remove=AsyncMock(return_value=True),
     )
@@ -157,13 +169,24 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
 
     submit_handler, submit_kwargs = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)]
     assert submit_kwargs["supports_response"] is SupportsResponse.ONLY
+    assert submit_kwargs["schema"] is SUBMIT_SCHEMA
     submit_result = await submit_handler(
-        SimpleNamespace(data={"text": "hello"}, context=user_context)
+        SimpleNamespace(
+            data={"text": "hello", ATTR_SOURCE_ID: "message-1"},
+            context=user_context,
+        )
     )
-    assert submit_result == {"pending": submitted.as_dict()}
+    assert submit_result == {
+        "pending": submitted.as_dict(),
+        "duplicate": False,
+        "duplicate_source": False,
+        "duplicate_events": 0,
+    }
+    is_source_duplicate.assert_called_once_with("message-1")
     pending_store.async_add.assert_awaited_once_with(
         source_text="hello",
         events=[draft()],
+        source_id="message-1",
     )
 
     approve_handler, approve_kwargs = hass.services.handlers[
@@ -203,6 +226,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
     assert permissions.calls == [
         ("ai_task.test", POLICY_CONTROL),
         ("ai_task.test", POLICY_CONTROL),
+        ("ai_task.test", POLICY_CONTROL),
         ("calendar.family", POLICY_CONTROL),
         ("calendar.family", POLICY_CONTROL),
     ]
@@ -212,12 +236,19 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
     assert hass.data[DOMAIN] == {}
 
 
-async def test_submit_text_with_no_events_does_not_create_pending(monkeypatch):
+async def test_submit_text_without_events_records_source_handling(monkeypatch):
     hass = FakeHass()
     parse = AsyncMock(return_value=[])
     pending_store = SimpleNamespace(
         async_load=AsyncMock(),
-        async_add=AsyncMock(),
+        is_source_duplicate=Mock(return_value=False),
+        async_add=AsyncMock(
+            return_value=PendingImportAddResult(
+                pending=None,
+                duplicate_source=False,
+                duplicate_events=0,
+            )
+        ),
     )
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
     monkeypatch.setattr(
@@ -229,11 +260,115 @@ async def test_submit_text_with_no_events_does_not_create_pending(monkeypatch):
     submit_handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
 
     result = await submit_handler(
-        SimpleNamespace(data={"text": "nothing here"}, context=Context(user_id=None))
+        SimpleNamespace(
+            data={"text": "nothing here"},
+            context=Context(user_id=None),
+        )
     )
 
-    assert result == {"pending": None}
+    assert result == {
+        "pending": None,
+        "duplicate": False,
+        "duplicate_source": False,
+        "duplicate_events": 0,
+    }
+    pending_store.is_source_duplicate.assert_not_called()
+    pending_store.async_add.assert_awaited_once_with(
+        source_text="nothing here",
+        events=[],
+        source_id=None,
+    )
+
+
+async def test_submit_text_skips_ai_for_known_source(monkeypatch):
+    hass = FakeHass()
+    parse = AsyncMock()
+    pending_store = SimpleNamespace(
+        async_load=AsyncMock(),
+        is_source_duplicate=Mock(return_value=True),
+        async_add=AsyncMock(),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: pending_store,
+    )
+
+    await async_setup_entry(hass, entry())
+    submit_handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
+    result = await submit_handler(
+        SimpleNamespace(
+            data={"text": "duplicate", ATTR_SOURCE_ID: "message-1"},
+            context=Context(user_id=None),
+        )
+    )
+
+    assert result == {
+        "pending": None,
+        "duplicate": True,
+        "duplicate_source": True,
+        "duplicate_events": 0,
+    }
+    parse.assert_not_awaited()
     pending_store.async_add.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("add_result", "expected_duplicate"),
+    [
+        (
+            PendingImportAddResult(
+                pending=pending(),
+                duplicate_source=False,
+                duplicate_events=1,
+            ),
+            True,
+        ),
+        (
+            PendingImportAddResult(
+                pending=None,
+                duplicate_source=True,
+                duplicate_events=0,
+            ),
+            True,
+        ),
+    ],
+)
+async def test_submit_text_reports_deduplication_races(
+    monkeypatch,
+    add_result,
+    expected_duplicate,
+):
+    hass = FakeHass()
+    parse = AsyncMock(return_value=[draft()])
+    pending_store = SimpleNamespace(
+        async_load=AsyncMock(),
+        is_source_duplicate=Mock(return_value=False),
+        async_add=AsyncMock(return_value=add_result),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: pending_store,
+    )
+
+    await async_setup_entry(hass, entry())
+    submit_handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
+    result = await submit_handler(
+        SimpleNamespace(
+            data={"text": "hello", ATTR_SOURCE_ID: "message-race"},
+            context=Context(user_id=None),
+        )
+    )
+
+    assert result["duplicate"] is expected_duplicate
+    assert result["duplicate_source"] is add_result.duplicate_source
+    assert result["duplicate_events"] == add_result.duplicate_events
+    assert result["pending"] == (
+        add_result.pending.as_dict()
+        if add_result.pending is not None
+        else None
+    )
 
 
 async def test_approve_and_reject_missing_pending_raise(monkeypatch):
@@ -271,7 +406,6 @@ async def test_approve_and_reject_missing_pending_raise(monkeypatch):
     assert hass.services.calls == []
 
 
-
 async def test_approve_uncertain_pending_raises_validation_error(monkeypatch):
     permissions = FakePermissions(allowed=True)
     hass = FakeHass(user=SimpleNamespace(permissions=permissions))
@@ -303,7 +437,17 @@ async def test_approve_uncertain_pending_raises_validation_error(monkeypatch):
     assert permissions.calls == [("calendar.family", POLICY_CONTROL)]
     assert hass.services.calls == []
 
-def test_pending_schema_rejects_empty_id():
+
+def test_service_schemas_validate_source_and_pending_ids():
+    validated = SUBMIT_SCHEMA(
+        {ATTR_TEXT: "text", ATTR_SOURCE_ID: "  message-1  "}
+    )
+    assert validated[ATTR_SOURCE_ID] == "message-1"
+
+    with pytest.raises(vol.Invalid):
+        SUBMIT_SCHEMA({ATTR_TEXT: "text", ATTR_SOURCE_ID: "   "})
+    with pytest.raises(vol.Invalid):
+        SUBMIT_SCHEMA({ATTR_TEXT: "text", ATTR_SOURCE_ID: "x" * 2049})
     with pytest.raises(vol.Invalid):
         PENDING_SCHEMA({ATTR_PENDING_ID: ""})
 
