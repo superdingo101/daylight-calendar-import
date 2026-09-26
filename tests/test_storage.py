@@ -22,12 +22,19 @@ class FakeStoreBackend:
     def __init__(self, load_result=None):
         self.load_result = load_result
         self.saved = []
+        self.save_error = None
+        self.removed = False
 
     async def async_load(self):
         return self.load_result
 
     async def async_save(self, data):
+        if self.save_error is not None:
+            raise self.save_error
         self.saved.append(data)
+
+    async def async_remove(self):
+        self.removed = True
 
 
 def draft():
@@ -123,3 +130,28 @@ async def test_store_adds_and_removes_persistently(monkeypatch):
     assert store.get(pending.id) is None
     assert store.list() == ()
     assert backend.saved[-1] == {"items": []}
+
+
+async def test_store_keeps_memory_unchanged_when_save_fails(monkeypatch):
+    existing = PendingImport.create(source_text="existing", events=[draft()])
+    backend = FakeStoreBackend(load_result={"items": [existing.as_dict()]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    backend.save_error = RuntimeError("save failed")
+
+    with pytest.raises(RuntimeError, match="save failed"):
+        await store.async_add(source_text="new", events=[draft()])
+    assert store.list() == (existing,)
+
+    with pytest.raises(RuntimeError, match="save failed"):
+        await store.async_remove(existing.id)
+    assert store.list() == (existing,)
+
+
+async def test_store_can_remove_backing_storage(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+
+    await store.async_remove_storage()
+
+    assert backend.removed is True
