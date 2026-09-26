@@ -312,6 +312,39 @@ async def test_submit_text_skips_ai_for_known_source(monkeypatch):
     pending_store.async_add.assert_not_awaited()
 
 
+async def test_submit_text_authorizes_before_source_lookup(monkeypatch):
+    permissions = FakePermissions(allowed=False)
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    parse = AsyncMock()
+    is_source_duplicate = Mock()
+    pending_store = SimpleNamespace(
+        async_load=AsyncMock(),
+        is_source_duplicate=is_source_duplicate,
+        async_add=AsyncMock(),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: pending_store,
+    )
+
+    await async_setup_entry(hass, entry())
+    submit_handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
+
+    with pytest.raises(Unauthorized):
+        await submit_handler(
+            SimpleNamespace(
+                data={"text": "probe", ATTR_SOURCE_ID: "known-or-guessed"},
+                context=Context(user_id="denied-user"),
+            )
+        )
+
+    assert permissions.calls == [("ai_task.test", POLICY_CONTROL)]
+    is_source_duplicate.assert_not_called()
+    parse.assert_not_awaited()
+    pending_store.async_add.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("add_result", "expected_duplicate"),
     [
