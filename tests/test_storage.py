@@ -13,6 +13,7 @@ from custom_components.daylight_calendar_import.storage import (
     STORAGE_KEY,
     STORAGE_VERSION,
     PendingImport,
+    PendingImportApprovalUncertainError,
     PendingImportStore,
 )
 
@@ -24,13 +25,19 @@ class FakeStoreBackend:
         self.load_result = load_result
         self.saved = []
         self.save_error = None
+        self.fail_on_save_attempt = None
+        self.save_attempts = 0
         self.removed = False
 
     async def async_load(self):
         return self.load_result
 
     async def async_save(self, data):
-        if self.save_error is not None:
+        self.save_attempts += 1
+        if self.save_error is not None and (
+            self.fail_on_save_attempt is None
+            or self.save_attempts == self.fail_on_save_attempt
+        ):
             raise self.save_error
         self.saved.append(data)
 
