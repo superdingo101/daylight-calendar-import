@@ -15,6 +15,7 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import (
     ATTR_PENDING_ID,
+    ATTR_SOURCE_ID,
     ATTR_TEXT,
     CONF_AI_TASK_ENTITY,
     CONF_CALENDAR_ENTITY,
@@ -30,6 +31,16 @@ from .parser import async_parse_text
 from .storage import PendingImportApprovalUncertainError, PendingImportStore
 
 PARSE_SCHEMA = vol.Schema({vol.Required(ATTR_TEXT): cv.string})
+SUBMIT_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_TEXT): cv.string,
+        vol.Optional(ATTR_SOURCE_ID): vol.All(
+            cv.string,
+            lambda value: value.strip(),
+            vol.Length(min=1, max=2048),
+        ),
+    }
+)
 PENDING_SCHEMA = vol.Schema(
     {vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1))}
 )
@@ -65,17 +76,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def handle_submit_text(call: ServiceCall) -> ServiceResponse:
         source_text = call.data[ATTR_TEXT]
-        drafts = await _parse_for_entry(
-            hass, entry, source_text, context=call.context
+        source_id = call.data.get(ATTR_SOURCE_ID)
+        ai_task_entity = entry.data[CONF_AI_TASK_ENTITY]
+        await _async_check_entity_control_permission(
+            hass, ai_task_entity, call.context
         )
-        if not drafts:
-            return {"pending": None}
 
-        pending = await pending_store.async_add(
+        if (
+            source_id is not None
+            and pending_store.is_source_duplicate(source_id)
+        ):
+            return {
+                "pending": None,
+                "duplicate": True,
+                "duplicate_source": True,
+                "duplicate_events": 0,
+            }
+
+        drafts = await async_parse_text(
+            hass,
+            text=source_text,
+            ai_task_entity=ai_task_entity,
+        )
+        result = await pending_store.async_add(
             source_text=source_text,
             events=drafts,
+            source_id=source_id,
         )
-        return {"pending": pending.as_dict()}
+        return {
+            "pending": (
+                result.pending.as_dict()
+                if result.pending is not None
+                else None
+            ),
+            "duplicate": (
+                result.duplicate_source or result.duplicate_events > 0
+            ),
+            "duplicate_source": result.duplicate_source,
+            "duplicate_events": result.duplicate_events,
+        }
 
     async def handle_approve_pending(call: ServiceCall) -> ServiceResponse:
         calendar_entity = entry.data[CONF_CALENDAR_ENTITY]
@@ -143,7 +182,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_SUBMIT_TEXT,
         handle_submit_text,
-        schema=PARSE_SCHEMA,
+        schema=SUBMIT_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
