@@ -114,15 +114,16 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
     submitted = pending(draft())
     approval = pending(draft(), draft(True))
 
-    async def process_pending(pending_id, processor):
+    async def process_pending_events(pending_id, processor):
         assert pending_id == approval.id
-        await processor(approval)
+        for event in approval.events:
+            await processor(event)
         return approval
 
     pending_store = SimpleNamespace(
         async_load=AsyncMock(),
         async_add=AsyncMock(return_value=submitted),
-        async_process=AsyncMock(side_effect=process_pending),
+        async_process_events=AsyncMock(side_effect=process_pending_events),
         async_remove=AsyncMock(return_value=True),
     )
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
@@ -237,7 +238,7 @@ async def test_approve_and_reject_missing_pending_raise(monkeypatch):
     hass = FakeHass(user=SimpleNamespace(permissions=permissions))
     pending_store = SimpleNamespace(
         async_load=AsyncMock(),
-        async_process=AsyncMock(return_value=None),
+        async_process_events=AsyncMock(return_value=None),
         async_remove=AsyncMock(return_value=False),
     )
     monkeypatch.setattr(
