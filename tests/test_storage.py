@@ -20,6 +20,7 @@ from custom_components.daylight_calendar_import.storage import (
     PendingImport,
     PendingImportApprovalUncertainError,
     PendingEvent,
+    PendingEventEditError,
     PendingImportStore,
     _migrate_v1,
     _PendingStore,
@@ -203,6 +204,73 @@ async def test_get_event_uses_stable_id_across_restart_and_checkpoints(monkeypat
     uncertain = restarted.get_event(pending.id, second.id)
     assert uncertain is not None
     assert uncertain.status == "write_uncertain"
+
+
+async def test_edit_event_updates_matching_and_survives_restart(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    first = (await store.async_add(source_text="one", events=[draft()])).pending
+    assert first is not None
+    original = first.events[0]
+    replacement = second_draft()
+    edited = await store.async_edit_event(first.id, original.id, replacement)
+    assert edited is not None
+    assert edited.id == original.id
+    assert edited.draft == replacement
+    assert store.get_event(first.id, original.id) == edited
+    assert await store.async_edit_event(first.id, original.id, replacement) == edited
+    assert len(backend.saved) == 2  # unchanged draft does not rewrite storage
+
+    # The old fingerprint is free; the new one is actively reserved.
+    old = await store.async_add(source_text="old", events=[draft()])
+    assert old.pending is not None
+    duplicate = await store.async_add(source_text="duplicate", events=[replacement])
+    assert duplicate.pending is None
+    assert duplicate.duplicate_events == 1
+    backend.load_result = backend.saved[-1]
+    reloaded = make_store(monkeypatch, backend)
+    await reloaded.async_load()
+    assert reloaded.get_event(first.id, original.id) == edited
+
+
+async def test_edit_event_rejects_missing_uncertain_or_duplicate(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    first = (await store.async_add(source_text="first", events=[draft()])).pending
+    second = (await store.async_add(source_text="second", events=[second_draft()])).pending
+    assert first is not None and second is not None
+    assert await store.async_edit_event("missing", "event", draft()) is None
+    assert await store.async_edit_event(first.id, "missing", draft()) is None
+    with pytest.raises(PendingEventEditError, match="duplicates"):
+        await store.async_edit_event(first.id, first.events[0].id, second_draft())
+    assert store.get_event(first.id, first.events[0].id) == first.events[0]
+
+    assert await store.async_remove(second.id)
+    with pytest.raises(PendingEventEditError, match="duplicates"):
+        await store.async_edit_event(first.id, first.events[0].id, second_draft())
+
+    backend.load_result = {"items": [{
+        **first.as_dict(),
+        "events": [{**first.events[0].as_dict(), "status": "write_uncertain"}],
+    }]}
+    uncertain_store = make_store(monkeypatch, backend)
+    await uncertain_store.async_load()
+    with pytest.raises(PendingEventEditError, match="Uncertain"):
+        await uncertain_store.async_edit_event(first.id, first.events[0].id, second_draft())
+
+
+async def test_edit_save_failure_keeps_original_draft(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    first = (await store.async_add(source_text="one", events=[draft()])).pending
+    assert first is not None
+    backend.save_error = RuntimeError("storage unavailable")
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await store.async_edit_event(first.id, first.events[0].id, second_draft())
+    assert store.get_event(first.id, first.events[0].id) == first.events[0]
 
 
 async def test_store_adds_rejects_and_remembers_source_and_event(monkeypatch):
