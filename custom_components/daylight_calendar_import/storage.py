@@ -52,6 +52,10 @@ class PendingEvent:
     def as_dict(self) -> dict[str, Any]:
         return {"id": self.id, "draft": self.draft.as_dict(), "status": self.status}
 
+    def as_service_dict(self) -> dict[str, Any]:
+        """Expose the stable ID alongside the existing flat draft fields."""
+        return {**self.draft.as_dict(), "id": self.id, "status": self.status}
+
 
 def _migrate_v1(data: dict[str, Any]) -> dict[str, Any]:
     """Convert v1 items, retaining source and handled-event fingerprints."""
@@ -144,10 +148,7 @@ class PendingImport:
     def as_service_dict(self) -> dict[str, Any]:
         """Keep the existing submit response fields while exposing event IDs."""
         result = self.as_dict()
-        result["events"] = [
-            {**event.draft.as_dict(), "id": event.id, "status": event.status}
-            for event in self.events
-        ]
+        result["events"] = [event.as_service_dict() for event in self.events]
         result["approval_in_flight"] = self.approval_in_flight
         return result
 
@@ -205,6 +206,13 @@ class PendingImportStore:
     def get(self, pending_id: str) -> PendingImport | None:
         """Return one pending import by ID."""
         return self._items.get(pending_id)
+
+    def get_event(self, pending_id: str, event_id: str) -> PendingEvent | None:
+        """Look up an event by its stable ID, independent of list position."""
+        pending = self.get(pending_id)
+        if pending is None:
+            return None
+        return next((event for event in pending.events if event.id == event_id), None)
 
     def list(self) -> tuple[PendingImport, ...]:
         """Return pending imports in insertion order."""

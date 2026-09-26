@@ -177,6 +177,34 @@ async def test_store_restores_items_and_deduplication_history(monkeypatch):
     assert backend.saved == []
 
 
+async def test_get_event_uses_stable_id_across_restart_and_checkpoints(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    pending = (await store.async_add(source_text="newsletter", events=[draft(), second_draft()])).pending
+    assert pending is not None
+    first, second = pending.events
+    assert store.get_event(pending.id, second.id) == second
+    assert store.get_event(pending.id, "missing") is None
+    assert store.get_event("missing", first.id) is None
+
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_event(pending.id, second.id) == second
+
+    async def processor(event):
+        if event == second_draft():
+            raise RuntimeError("calendar unavailable")
+
+    with pytest.raises(RuntimeError, match="calendar unavailable"):
+        await restarted.async_process_events(pending.id, processor)
+    assert restarted.get_event(pending.id, first.id) is None
+    uncertain = restarted.get_event(pending.id, second.id)
+    assert uncertain is not None
+    assert uncertain.status == "write_uncertain"
+
+
 async def test_store_adds_rejects_and_remembers_source_and_event(monkeypatch):
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
