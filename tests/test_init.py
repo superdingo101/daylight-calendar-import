@@ -12,6 +12,7 @@ from homeassistant.exceptions import ServiceValidationError, Unauthorized, Unkno
 
 from custom_components.daylight_calendar_import import (
     EDIT_EVENT_SCHEMA,
+    RESOLVE_EVENT_SCHEMA,
     PENDING_EVENT_SCHEMA,
     PENDING_SCHEMA,
     SUBMIT_SCHEMA,
@@ -40,11 +41,13 @@ from custom_components.daylight_calendar_import.const import (
     SERVICE_PARSE_TEXT,
     SERVICE_REJECT_PENDING,
     SERVICE_REJECT_PENDING_EVENT,
+    SERVICE_RESOLVE_PENDING_EVENT,
     SERVICE_SUBMIT_TEXT,
 )
 from custom_components.daylight_calendar_import.models import EventDraft
 from custom_components.daylight_calendar_import.storage import (
     PendingEventEditError,
+    PendingEventResolutionError,
     PendingImport,
     PendingImportAddResult,
     PendingImportApprovalUncertainError,
@@ -483,6 +486,63 @@ async def test_approve_pending_event_action_writes_only_selected_event(monkeypat
     store.async_approve_event.assert_not_awaited()
 
 
+async def test_resolve_uncertain_action_enforces_permissions_and_state(monkeypatch):
+    item = pending()
+    event_id = item.events[0].id
+    store = SimpleNamespace(
+        async_load=AsyncMock(), async_resolve_uncertain=AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    handler, options = hass.services.handlers[(DOMAIN, SERVICE_RESOLVE_PENDING_EVENT)]
+    assert options["schema"] is RESOLVE_EVENT_SCHEMA
+    assert options["supports_response"] is SupportsResponse.OPTIONAL
+    call = SimpleNamespace(
+        data={ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: event_id, "resolution": "created"},
+        context=Context(user_id="reviewer"),
+    )
+    assert await handler(call) == {
+        "pending_id": item.id, "event_id": event_id, "resolution": "created",
+    }
+    store.async_resolve_uncertain.assert_awaited_once_with(item.id, event_id, "created")
+    with pytest.raises(vol.Invalid):
+        RESOLVE_EVENT_SCHEMA({**call.data, "resolution": "retry"})
+
+    store.async_resolve_uncertain.return_value = False
+    with pytest.raises(ServiceValidationError, match="not found"):
+        await handler(call)
+    store.async_resolve_uncertain.side_effect = PendingEventResolutionError("not uncertain")
+    with pytest.raises(ServiceValidationError, match="not uncertain"):
+        await handler(call)
+
+    store.async_resolve_uncertain.reset_mock(side_effect=True)
+    call.context = Context(user_id=None)
+    with pytest.raises(Unauthorized):
+        await handler(call)
+    store.async_resolve_uncertain.assert_not_awaited()
+
+
+async def test_reject_all_requires_resolution_of_uncertain_write(monkeypatch):
+    item = pending()
+    store = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_remove=AsyncMock(side_effect=PendingImportApprovalUncertainError(item.id)),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_REJECT_PENDING)][0]
+    with pytest.raises(ServiceValidationError, match="uncertain calendar write"):
+        await handler(SimpleNamespace(
+            data={ATTR_PENDING_ID: item.id}, context=Context(user_id="reviewer"),
+        ))
+
+
 async def test_submit_text_without_events_records_source_handling(monkeypatch):
     hass = FakeHass()
     parse = AsyncMock(return_value=[])
@@ -705,7 +765,7 @@ async def test_approve_uncertain_pending_raises_validation_error(monkeypatch):
 
     with pytest.raises(
         ServiceValidationError,
-        match="unfinished approval attempt",
+        match="unfinished approval attempt.*resolve_pending_event",
     ):
         await approve_handler(
             SimpleNamespace(

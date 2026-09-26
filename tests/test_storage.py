@@ -21,6 +21,7 @@ from custom_components.daylight_calendar_import.storage import (
     PendingImportApprovalUncertainError,
     PendingEvent,
     PendingEventEditError,
+    PendingEventResolutionError,
     PendingImportStore,
     _migrate_v1,
     _PendingStore,
@@ -449,6 +450,114 @@ async def test_selected_approval_serializes_against_rejection(monkeypatch):
     release.set()
     assert await approval == pending.events[0]
     assert await rejection is False
+
+
+async def test_resolve_uncertain_as_created_preserves_siblings(monkeypatch):
+    item = PendingImport.create(
+        source_text="school", events=[draft(), second_draft()],
+        source_fingerprint=source_fingerprint("school-mail"),
+    )
+    first, second = item.events
+    raw = item.as_dict()
+    raw["events"][0]["status"] = "write_uncertain"
+    backend = FakeStoreBackend(load_result={"items": [raw]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    with pytest.raises(PendingImportApprovalUncertainError):
+        await store.async_remove(item.id)
+    assert await store.async_resolve_uncertain(item.id, first.id, "created")
+    assert store.get_event(item.id, first.id) is None
+    assert store.get_event(item.id, second.id) == second
+    assert store.get(item.id).approval_in_flight is False
+    assert backend.saved[-1]["seen_event_fingerprints"] == [event_fingerprint(draft())]
+    assert "seen_source_fingerprints" not in backend.saved[-1]
+
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_event(item.id, second.id) == second
+
+    async def uncertain_write(_draft):
+        raise RuntimeError("timeout")
+
+    with pytest.raises(RuntimeError, match="timeout"):
+        await restarted.async_approve_event(item.id, second.id, uncertain_write)
+    assert await restarted.async_resolve_uncertain(item.id, second.id, "created")
+    assert restarted.get(item.id) is None
+    assert backend.saved[-1]["seen_source_fingerprints"] == [source_fingerprint("school-mail")]
+
+
+async def test_resolve_not_created_allows_retry_with_same_id(monkeypatch):
+    item = PendingImport.create(source_text="manual", events=[draft()])
+    raw = item.as_dict()
+    raw["events"][0]["status"] = "write_uncertain"
+    backend = FakeStoreBackend(load_result={"items": [raw]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    event = item.events[0]
+
+    assert await store.async_resolve_uncertain(item.id, event.id, "not_created")
+    assert store.get_event(item.id, event.id) == event
+    assert "seen_event_fingerprints" not in backend.saved[-1]
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_event(item.id, event.id) == event
+
+    processed = []
+
+    async def processor(draft):
+        processed.append(draft)
+
+    assert await restarted.async_approve_event(item.id, event.id, processor) == event
+    assert processed == [draft()]
+    assert restarted.get(item.id) is None
+
+
+async def test_resolve_discard_is_handled_and_reject_all_requires_resolution(monkeypatch):
+    item = PendingImport.create(source_text="manual", events=[draft()])
+    raw = item.as_dict()
+    raw["events"][0]["status"] = "write_uncertain"
+    backend = FakeStoreBackend(load_result={"items": [raw]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    event = item.events[0]
+
+    with pytest.raises(PendingImportApprovalUncertainError):
+        await store.async_remove(item.id)
+    assert await store.async_resolve_uncertain(item.id, event.id, "discard")
+    assert store.get(item.id) is None
+    assert backend.saved[-1] == {
+        "items": [], "seen_event_fingerprints": [event_fingerprint(draft())],
+    }
+    duplicate = await store.async_add(source_text="same", events=[draft()])
+    assert duplicate.pending is None and duplicate.duplicate_events == 1
+
+
+async def test_resolve_rejects_invalid_state_missing_ids_and_failed_save(monkeypatch):
+    item = PendingImport.create(source_text="manual", events=[draft()])
+    raw = item.as_dict()
+    raw["events"][0]["status"] = "write_uncertain"
+    backend = FakeStoreBackend(load_result={"items": [raw]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    event = item.events[0]
+
+    with pytest.raises(ValueError, match="invalid uncertain-write resolution"):
+        await store.async_resolve_uncertain(item.id, event.id, "unknown")
+    assert await store.async_resolve_uncertain("missing", event.id, "created") is False
+    assert await store.async_resolve_uncertain(item.id, "missing", "created") is False
+
+    backend.save_error = RuntimeError("disk full")
+    with pytest.raises(RuntimeError, match="disk full"):
+        await store.async_resolve_uncertain(item.id, event.id, "not_created")
+    assert store.get_event(item.id, event.id).status == "write_uncertain"
+
+    ready = make_store(monkeypatch, FakeStoreBackend(load_result={"items": [item.as_dict()]}))
+    await ready.async_load()
+    with pytest.raises(PendingEventResolutionError, match="no uncertain"):
+        await ready.async_resolve_uncertain(item.id, event.id, "created")
 
 
 async def test_store_adds_rejects_and_remembers_source_and_event(monkeypatch):
