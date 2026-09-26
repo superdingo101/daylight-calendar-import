@@ -226,7 +226,6 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
     assert permissions.calls == [
         ("ai_task.test", POLICY_CONTROL),
         ("ai_task.test", POLICY_CONTROL),
-        ("ai_task.test", POLICY_CONTROL),
         ("calendar.family", POLICY_CONTROL),
         ("calendar.family", POLICY_CONTROL),
     ]
