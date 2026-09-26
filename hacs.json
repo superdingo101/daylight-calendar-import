@@ -1,5 +1,6 @@
 {
   "name": "Daylight Calendar Import",
+  "homeassistant": "2026.7.4",
   "content_in_root": false,
   "render_readme": true
 }
