@@ -81,6 +81,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove persisted data when the config entry is deleted."""
+    await PendingImportStore(hass).async_remove_storage()
+
+
 async def _parse_for_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
