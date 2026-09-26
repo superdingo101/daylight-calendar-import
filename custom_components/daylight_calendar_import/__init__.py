@@ -23,12 +23,16 @@ from .const import (
 )
 from .models import EventDraft
 from .parser import async_parse_text
+from .storage import PendingImportStore
 
 PARSE_SCHEMA = vol.Schema({vol.Required(ATTR_TEXT): cv.string})
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Daylight Calendar Import from a config entry."""
+    pending_store = PendingImportStore(hass)
+    await pending_store.async_load()
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
 
     async def handle_parse_text(call: ServiceCall) -> ServiceResponse:
         drafts = await _parse_for_entry(
@@ -73,6 +77,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     hass.services.async_remove(DOMAIN, SERVICE_PARSE_TEXT)
     hass.services.async_remove(DOMAIN, SERVICE_IMPORT_TEXT)
+    hass.data[DOMAIN].pop(entry.entry_id, None)
     return True
 
 
