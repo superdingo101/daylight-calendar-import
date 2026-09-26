@@ -27,7 +27,7 @@ from .const import (
 )
 from .models import EventDraft
 from .parser import async_parse_text
-from .storage import PendingImport, PendingImportStore
+from .storage import PendingImportStore
 
 PARSE_SCHEMA = vol.Schema({vol.Required(ATTR_TEXT): cv.string})
 PENDING_SCHEMA = vol.Schema(
@@ -83,17 +83,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass, calendar_entity, call.context
         )
 
-        async def create_events(pending: PendingImport) -> None:
-            for draft in pending.events:
-                await _async_create_calendar_event(
-                    hass,
-                    calendar_entity,
-                    draft,
-                    context=call.context,
-                )
+        async def create_event(draft: EventDraft) -> None:
+            await _async_create_calendar_event(
+                hass,
+                calendar_entity,
+                draft,
+                context=call.context,
+            )
 
         pending_id = call.data[ATTR_PENDING_ID]
-        pending = await pending_store.async_process(pending_id, create_events)
+        pending = await pending_store.async_process_events(pending_id, create_event)
         if pending is None:
             raise ServiceValidationError(
                 f"Pending import not found: {pending_id}"
