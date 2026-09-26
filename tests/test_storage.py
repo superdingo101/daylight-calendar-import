@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from homeassistant.helpers.storage import Store
 
 import custom_components.daylight_calendar_import.storage as storage_module
 from custom_components.daylight_calendar_import.dedup import (
@@ -18,7 +19,10 @@ from custom_components.daylight_calendar_import.storage import (
     STORAGE_VERSION,
     PendingImport,
     PendingImportApprovalUncertainError,
+    PendingEvent,
     PendingImportStore,
+    _migrate_v1,
+    _PendingStore,
     _remember_fingerprints,
 )
 
@@ -80,7 +84,7 @@ def make_store(monkeypatch, backend):
         calls.append((received_hass, version, key, private))
         return backend
 
-    monkeypatch.setattr(storage_module, "Store", fake_store)
+    monkeypatch.setattr(storage_module, "_PendingStore", fake_store)
     store = PendingImportStore(hass)
     assert calls == [(hass, STORAGE_VERSION, STORAGE_KEY, True)]
     return store
@@ -98,7 +102,8 @@ def test_pending_import_create_and_round_trip():
     created_at = datetime.fromisoformat(pending.created_at)
     assert created_at.utcoffset().total_seconds() == 0
     assert pending.source_text == "Soccer practice email"
-    assert pending.events == (draft(),)
+    assert tuple(event.draft for event in pending.events) == (draft(),)
+    UUID(pending.events[0].id)
     assert pending.source_fingerprint == source_fp
     assert pending.as_dict()["source_fingerprint"] == source_fp
 
@@ -228,7 +233,7 @@ async def test_store_filters_active_and_within_submission_event_duplicates(monke
         events=[draft(), second_draft(), second_draft()],
     )
     assert partial.pending is not None
-    assert partial.pending.events == (second_draft(),)
+    assert tuple(event.draft for event in partial.pending.events) == (second_draft(),)
     assert partial.duplicate_source is False
     assert partial.duplicate_events == 2
     assert len(store.list()) == 2
@@ -338,23 +343,21 @@ async def test_store_processes_events_and_remembers_deduplication(monkeypatch):
         id=existing.id,
         created_at=existing.created_at,
         source_text=existing.source_text,
-        events=(draft(), second_draft()),
-        approval_in_flight=True,
+        events=(PendingEvent(existing.events[0].id, draft(), "write_uncertain"), existing.events[1]),
         source_fingerprint=source_fp,
     )
     remaining = PendingImport(
         id=existing.id,
         created_at=existing.created_at,
         source_text=existing.source_text,
-        events=(second_draft(),),
+        events=(existing.events[1],),
         source_fingerprint=source_fp,
     )
     second_in_flight = PendingImport(
         id=existing.id,
         created_at=existing.created_at,
         source_text=existing.source_text,
-        events=(second_draft(),),
-        approval_in_flight=True,
+        events=(PendingEvent(existing.events[1].id, second_draft(), "write_uncertain"),),
         source_fingerprint=source_fp,
     )
     first_fp = event_fingerprint(draft())
@@ -410,7 +413,7 @@ async def test_store_partial_failure_marks_remaining_approval_uncertain(monkeypa
 
     remaining = store.get(existing.id)
     assert remaining is not None
-    assert remaining.events == (second,)
+    assert tuple(event.draft for event in remaining.events) == (second,)
     assert remaining.approval_in_flight is True
     assert backend.saved[-1]["seen_event_fingerprints"] == [
         event_fingerprint(draft())
@@ -499,13 +502,65 @@ async def test_process_serializes_against_reject(monkeypatch):
 
 
 def test_pending_import_restores_legacy_ready_state():
-    raw = PendingImport.create(source_text="legacy", events=[draft()]).as_dict()
-    raw.pop("approval_in_flight")
-
-    restored = PendingImport.from_dict(raw)
-
+    raw = {"items": [{"id": "old", "created_at": "2026-01-01", "source_text": "legacy", "events": [draft().as_dict()]}]}
+    migrated = _migrate_v1(raw)
+    restored = PendingImport.from_dict(migrated["items"][0])
     assert restored.approval_in_flight is False
     assert restored.source_fingerprint is None
+    UUID(restored.events[0].id)
+
+
+async def test_v1_store_migration_preserves_uncertainty_and_history(hass):
+    legacy = {
+        "items": [{
+            "id": "legacy-import", "created_at": "2026-09-26T03:00:00+00:00",
+            "source_text": "newsletter", "events": [draft().as_dict(), second_draft().as_dict()],
+            "approval_in_flight": True, "source_fingerprint": source_fingerprint("mail-1"),
+        }],
+        "seen_source_fingerprints": [source_fingerprint("mail-0")],
+        "seen_event_fingerprints": [event_fingerprint(second_draft())],
+    }
+    await Store(hass, 1, STORAGE_KEY, private=True).async_save(legacy)
+    store = PendingImportStore(hass)
+    await store.async_load()
+
+    pending = store.get("legacy-import")
+    assert pending is not None
+    assert pending.approval_in_flight
+    assert [event.status for event in pending.events] == ["write_uncertain", "pending"]
+    assert len({event.id for event in pending.events}) == 2
+    assert store.is_source_duplicate("mail-0")
+    assert store.is_source_duplicate("mail-1")
+    migrated = await _PendingStore(hass, STORAGE_VERSION, STORAGE_KEY, private=True).async_load()
+    assert migrated == {**legacy, "items": [pending.as_dict()]}
+    # A second load reads v2 and retains the migrated IDs and blocked retry.
+    again = PendingImportStore(hass)
+    await again.async_load()
+    assert again.get("legacy-import") == pending
+
+    async def processor(_event):
+        pytest.fail("uncertain event must not be retried")
+
+    with pytest.raises(PendingImportApprovalUncertainError):
+        await again.async_process_events("legacy-import", processor)
+
+
+async def test_v1_migration_failure_does_not_replace_storage(hass):
+    broken = {"items": [{"id": "broken", "events": [{"title": "invalid"}]}]}
+    await Store(hass, 1, STORAGE_KEY, private=True).async_save(broken)
+    with pytest.raises(Exception):
+        await PendingImportStore(hass).async_load()
+    assert await Store(hass, 1, STORAGE_KEY, private=True).async_load() == broken
+
+
+def test_pending_event_rejects_unknown_status():
+    with pytest.raises(ValueError, match="invalid pending event status"):
+        PendingEvent.from_dict({"id": "x", "draft": draft().as_dict(), "status": "unknown"})
+
+
+async def test_migration_rejects_unsupported_major_version():
+    with pytest.raises(ValueError, match="Unsupported pending storage version"):
+        await _PendingStore._async_migrate_func(None, 0, 1, {"items": []})
 
 
 def test_remember_fingerprints_deduplicates_refreshes_and_bounds(monkeypatch):

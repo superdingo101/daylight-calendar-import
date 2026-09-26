@@ -106,12 +106,7 @@ def draft(all_day=False):
 
 
 def pending(*events):
-    return PendingImport(
-        id="pending-1",
-        created_at="2026-09-26T03:00:00+00:00",
-        source_text="hello",
-        events=tuple(events or (draft(),)),
-    )
+    return PendingImport.create(source_text="hello", events=events or (draft(),))
 
 
 async def test_setup_review_workflow_and_unload(monkeypatch):
@@ -125,7 +120,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
     async def process_pending_events(pending_id, processor):
         assert pending_id == approval.id
         for event in approval.events:
-            await processor(event)
+            await processor(event.draft)
         return approval
 
     pending_store = SimpleNamespace(

@@ -19,7 +19,7 @@ from .dedup import (
 )
 from .models import EventDraft
 
-STORAGE_VERSION = 1
+STORAGE_VERSION = 2
 STORAGE_KEY = f"{DOMAIN}.pending_imports"
 DEDUP_HISTORY_LIMIT = 10_000
 _STORAGE_ITEMS = "items"
@@ -32,14 +32,65 @@ class PendingImportApprovalUncertainError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class PendingEvent:
+    """A reviewable event with a stable identity."""
+
+    id: str
+    draft: EventDraft
+    status: str = "pending"
+
+    @classmethod
+    def create(cls, draft: EventDraft) -> PendingEvent:
+        return cls(str(uuid4()), draft)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> PendingEvent:
+        if raw["status"] not in ("pending", "write_uncertain"):
+            raise ValueError("invalid pending event status")
+        return cls(raw["id"], EventDraft.from_mapping(raw["draft"]), raw["status"])
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "draft": self.draft.as_dict(), "status": self.status}
+
+
+def _migrate_v1(data: dict[str, Any]) -> dict[str, Any]:
+    """Convert v1 items, retaining source and handled-event fingerprints."""
+    result = dict(data)
+    items = []
+    for raw in data[_STORAGE_ITEMS]:
+        item = dict(raw)
+        item["events"] = [
+            PendingEvent(
+                str(uuid4()), EventDraft.from_mapping(event),
+                "write_uncertain" if index == 0 and raw.get("approval_in_flight") else "pending",
+            ).as_dict()
+            for index, event in enumerate(raw["events"])
+        ]
+        item.pop("approval_in_flight", None)
+        items.append(item)
+    result[_STORAGE_ITEMS] = items
+    return result
+
+
+class _PendingStore(Store[dict[str, Any]]):
+    """Migrate existing Home Assistant Store data before it is loaded."""
+
+    async def _async_migrate_func(
+        self, old_major_version: int, old_minor_version: int, old_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        if old_major_version != 1:
+            raise ValueError(f"Unsupported pending storage version: {old_major_version}")
+        return _migrate_v1(old_data)
+
+
+@dataclass(frozen=True, slots=True)
 class PendingImport:
     """A parsed import waiting for an explicit user decision."""
 
     id: str
     created_at: str
     source_text: str
-    events: tuple[EventDraft, ...]
-    approval_in_flight: bool = False
+    events: tuple[PendingEvent, ...]
     source_fingerprint: str | None = None
 
     @classmethod
@@ -55,7 +106,7 @@ class PendingImport:
         if not source_text:
             raise ValueError("source_text must be a non-empty string")
 
-        event_tuple = tuple(events)
+        event_tuple = tuple(PendingEvent.create(event) for event in events)
         if not event_tuple:
             raise ValueError("pending import must contain at least one event")
 
@@ -74,8 +125,7 @@ class PendingImport:
             id=raw["id"],
             created_at=raw["created_at"],
             source_text=raw["source_text"],
-            events=tuple(EventDraft.from_mapping(event) for event in raw["events"]),
-            approval_in_flight=raw.get("approval_in_flight", False),
+            events=tuple(PendingEvent.from_dict(event) for event in raw["events"]),
             source_fingerprint=raw.get("source_fingerprint"),
         )
 
@@ -86,11 +136,15 @@ class PendingImport:
             "created_at": self.created_at,
             "source_text": self.source_text,
             "events": [event.as_dict() for event in self.events],
-            "approval_in_flight": self.approval_in_flight,
         }
         if self.source_fingerprint is not None:
             result["source_fingerprint"] = self.source_fingerprint
         return result
+
+    @property
+    def approval_in_flight(self) -> bool:
+        """Keep the existing batch approval guard for uncertain first events."""
+        return self.events[0].status == "write_uncertain"
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +161,7 @@ class PendingImportStore:
 
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the pending-import store."""
-        self._store: Store[dict[str, Any]] = Store(
+        self._store: Store[dict[str, Any]] = _PendingStore(
             hass,
             STORAGE_VERSION,
             STORAGE_KEY,
@@ -249,7 +303,7 @@ class PendingImportStore:
                 )
             seen_events = _remember_fingerprints(
                 self._seen_event_fingerprints,
-                (event_fingerprint(event) for event in pending.events),
+                (event_fingerprint(event.draft) for event in pending.events),
             )
 
             await self._async_save(
@@ -282,8 +336,10 @@ class PendingImportStore:
                     id=pending.id,
                     created_at=pending.created_at,
                     source_text=pending.source_text,
-                    events=pending.events,
-                    approval_in_flight=True,
+                    events=(
+                        PendingEvent(event.id, event.draft, "write_uncertain"),
+                        *pending.events[1:],
+                    ),
                     source_fingerprint=pending.source_fingerprint,
                 )
                 items = dict(self._items)
@@ -292,14 +348,14 @@ class PendingImportStore:
                 self._items = items
                 pending = in_flight
 
-                await processor(event)
+                await processor(event.draft)
 
                 remaining = pending.events[1:]
                 items = dict(self._items)
                 seen_sources = self._seen_source_fingerprints
                 seen_events = _remember_fingerprints(
                     self._seen_event_fingerprints,
-                    (event_fingerprint(event),),
+                    (event_fingerprint(event.draft),),
                 )
                 if remaining:
                     pending = PendingImport(
@@ -345,7 +401,7 @@ class PendingImportStore:
 
     def _active_event_fingerprints(self) -> set[str]:
         return {
-            event_fingerprint(event)
+            event_fingerprint(event.draft)
             for item in self._items.values()
             for event in item.events
         }
