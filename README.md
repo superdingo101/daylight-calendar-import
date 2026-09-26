@@ -18,6 +18,8 @@ The first proof of concept supports:
 
 The parser deliberately fails closed. It instructs the AI not to invent missing event data, and integration-side validation rejects unsafe output.
 
+The current minimum supported Home Assistant version is **2026.7.4**. CI tests that version explicitly alongside the current development test environment.
+
 ## Development install
 
 Copy `custom_components/daylight_calendar_import` into Home Assistant's `custom_components` directory and restart Home Assistant. Add **Daylight Calendar Import** under Settings → Devices & services, choose an AI Task entity and a writable calendar, then test `daylight_calendar_import.parse_text` from Developer Tools → Actions.

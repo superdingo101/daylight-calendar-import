@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import probatio
+import voluptuous as vol
 
 from homeassistant.components import ai_task
 from homeassistant.core import HomeAssistant
@@ -33,9 +33,9 @@ Source text:
 {text}
 """
 
-EVENTS_STRUCTURE = probatio.Schema(
+EVENTS_STRUCTURE = vol.Schema(
     {
-        probatio.Required(
+        vol.Required(
             "events",
             description="Calendar events explicitly supported by the source text",
         ): selector.ObjectSelector(
