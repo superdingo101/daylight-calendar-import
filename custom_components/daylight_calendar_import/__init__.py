@@ -173,14 +173,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def handle_approve_pending(call: ServiceCall) -> ServiceResponse:
         pending_id = call.data[ATTR_PENDING_ID]
-        await _async_check_entity_control_permission(
-            hass, entry.data[CONF_CALENDAR_ENTITY], call.context
-        )
         pending_to_approve = pending_store.get(pending_id)
-        if pending_to_approve is not None:
+        if pending_to_approve is None:
+            await _async_check_entity_control_permission(
+                hass, entry.data[CONF_CALENDAR_ENTITY], call.context
+            )
+        else:
             for calendar_entity in {event_calendar(event) for event in pending_to_approve.events}:
-                if calendar_entity != entry.data[CONF_CALENDAR_ENTITY]:
-                    await _async_check_entity_control_permission(hass, calendar_entity, call.context)
+                await _async_check_entity_control_permission(hass, calendar_entity, call.context)
 
         async def create_event(event: PendingEvent) -> None:
             await _async_create_calendar_event(

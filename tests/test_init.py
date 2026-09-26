@@ -1207,6 +1207,36 @@ async def test_other_calendar_requires_control_before_batch_write(monkeypatch):
     assert hass.services.calls == []
 
 
+async def test_routed_batch_does_not_require_unused_default_calendar(monkeypatch):
+    from custom_components.daylight_calendar_import.storage import PendingEvent
+
+    item = pending()
+    selected = PendingEvent(item.events[0].id, item.events[0].draft,
+                            calendar_entity="calendar.work")
+    item = PendingImport(item.id, item.created_at, item.source_text, (selected,))
+
+    async def approve(_pending_id, processor):
+        await processor(selected)
+        return item
+
+    store = SimpleNamespace(async_load=AsyncMock(), get=Mock(return_value=item),
+                            async_process_events=AsyncMock(side_effect=approve))
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    config = entry()
+    config.data[CONF_CALENDAR_ENTITIES] = ["calendar.family", "calendar.work"]
+    permissions = FakePermissions({"calendar.family": False, "calendar.work": True})
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    await async_setup_entry(hass, config)
+    handler = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)][0]
+    assert (await handler(SimpleNamespace(
+        data={ATTR_PENDING_ID: item.id}, context=Context(user_id="reviewer")
+    )))["approved"] is True
+    assert permissions.calls == [("calendar.work", POLICY_CONTROL)]
+    assert hass.services.calls[0][2]["entity_id"] == "calendar.work"
+
+
 async def test_unlisted_persisted_destination_blocks_calendar_write(monkeypatch):
     from custom_components.daylight_calendar_import.storage import PendingEvent
 
