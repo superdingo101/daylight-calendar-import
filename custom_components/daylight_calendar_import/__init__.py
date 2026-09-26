@@ -183,9 +183,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await _async_check_entity_control_permission(hass, calendar_entity, call.context)
 
         async def create_event(event: PendingEvent) -> None:
+            calendar_entity = event_calendar(event)
+            await _async_check_entity_control_permission(
+                hass, calendar_entity, call.context
+            )
             await _async_create_calendar_event(
                 hass,
-                event_calendar(event),
+                calendar_entity,
                 event.draft,
                 context=call.context,
             )
@@ -320,8 +324,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
 
         async def create_event(event: PendingEvent) -> None:
+            calendar_entity = event_calendar(event)
+            await _async_check_entity_control_permission(
+                hass, calendar_entity, call.context
+            )
             await _async_create_calendar_event(
-                hass, event_calendar(event), event.draft, context=call.context
+                hass, calendar_entity, event.draft, context=call.context
             )
 
         try:

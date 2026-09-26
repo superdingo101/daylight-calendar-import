@@ -176,6 +176,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
         SimpleNamespace(data={"text": "hello"}, context=user_context)
     )
     assert import_result["imported"] == 1
+    assert import_result["events"] == [draft().as_dict()]
 
     submit_handler, submit_kwargs = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)]
     assert submit_kwargs["supports_response"] is SupportsResponse.ONLY
@@ -237,6 +238,8 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
     assert permissions.calls == [
         ("ai_task.test", POLICY_CONTROL),
         ("ai_task.test", POLICY_CONTROL),
+        ("calendar.family", POLICY_CONTROL),
+        ("calendar.family", POLICY_CONTROL),
         ("calendar.family", POLICY_CONTROL),
         ("calendar.family", POLICY_CONTROL),
     ]
@@ -1233,8 +1236,49 @@ async def test_routed_batch_does_not_require_unused_default_calendar(monkeypatch
     assert (await handler(SimpleNamespace(
         data={ATTR_PENDING_ID: item.id}, context=Context(user_id="reviewer")
     )))["approved"] is True
-    assert permissions.calls == [("calendar.work", POLICY_CONTROL)]
+    assert permissions.calls == [("calendar.work", POLICY_CONTROL)] * 2
     assert hass.services.calls[0][2]["entity_id"] == "calendar.work"
+    store.get.assert_called_once_with(item.id)
+
+
+@pytest.mark.parametrize("single", [False, True])
+async def test_approval_rechecks_destination_changed_after_preflight(monkeypatch, single):
+    from custom_components.daylight_calendar_import.storage import PendingEvent
+
+    item = pending()
+    original = item.events[0]
+    changed = PendingEvent(original.id, original.draft, calendar_entity="calendar.work")
+
+    async def process(*args):
+        await args[-1](changed)
+        return changed
+
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get=Mock(return_value=item),
+        get_event=Mock(return_value=original),
+        async_process_events=AsyncMock(side_effect=process),
+        async_approve_event=AsyncMock(side_effect=process),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    config = entry()
+    config.data[CONF_CALENDAR_ENTITIES] = ["calendar.family", "calendar.work"]
+    permissions = FakePermissions({
+        "ai_task.test": True, "calendar.family": True, "calendar.work": False,
+    })
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    await async_setup_entry(hass, config)
+    service = SERVICE_APPROVE_PENDING_EVENT if single else SERVICE_APPROVE_PENDING
+    data = {ATTR_PENDING_ID: item.id}
+    if single:
+        data[ATTR_EVENT_ID] = original.id
+    with pytest.raises(Unauthorized):
+        await hass.services.handlers[(DOMAIN, service)][0](SimpleNamespace(
+            data=data, context=Context(user_id="reviewer")
+        ))
+    assert ("calendar.work", POLICY_CONTROL) in permissions.calls
+    assert hass.services.calls == []
 
 
 async def test_unlisted_persisted_destination_blocks_calendar_write(monkeypatch):
