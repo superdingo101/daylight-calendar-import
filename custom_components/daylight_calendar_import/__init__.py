@@ -77,6 +77,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_submit_text(call: ServiceCall) -> ServiceResponse:
         source_text = call.data[ATTR_TEXT]
         source_id = call.data.get(ATTR_SOURCE_ID)
+        ai_task_entity = entry.data[CONF_AI_TASK_ENTITY]
+        await _async_check_entity_control_permission(
+            hass, ai_task_entity, call.context
+        )
 
         if (
             source_id is not None
@@ -89,8 +93,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "duplicate_events": 0,
             }
 
-        drafts = await _parse_for_entry(
-            hass, entry, source_text, context=call.context
+        drafts = await async_parse_text(
+            hass,
+            text=source_text,
+            ai_task_entity=ai_task_entity,
         )
         result = await pending_store.async_add(
             source_text=source_text,
