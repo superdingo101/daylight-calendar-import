@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import voluptuous as vol
@@ -86,12 +87,20 @@ class ParseResultError(ValueError):
     """Raised when an AI Task response cannot be converted to drafts."""
 
 
+@dataclass(frozen=True, slots=True)
+class ParseOutcome:
+    """Validated drafts and indexed problems with individual AI output items."""
+
+    events: list[EventDraft]
+    warnings: list[str]
+
+
 async def async_parse_text(
     hass: HomeAssistant,
     *,
     text: str,
     ai_task_entity: str,
-) -> list[EventDraft]:
+) -> ParseOutcome:
     """Parse free-form text into validated event drafts."""
     clean_text = text.strip()
     if not clean_text:
@@ -115,8 +124,8 @@ async def async_parse_text(
     return parse_ai_data(result.data)
 
 
-def parse_ai_data(data: Any) -> list[EventDraft]:
-    """Convert AI structured output into validated drafts."""
+def parse_ai_data(data: Any) -> ParseOutcome:
+    """Retain valid drafts when individual AI output items are malformed."""
     if not isinstance(data, dict):
         raise ParseResultError("AI Task result must be an object")
 
@@ -125,11 +134,13 @@ def parse_ai_data(data: Any) -> list[EventDraft]:
         raise ParseResultError("AI Task result must contain an events list")
 
     drafts: list[EventDraft] = []
+    warnings: list[str] = []
     for index, raw in enumerate(events):
         if not isinstance(raw, dict):
-            raise ParseResultError(f"event {index} must be an object")
+            warnings.append(f"event {index} must be an object")
+            continue
         try:
             drafts.append(EventDraft.from_mapping(raw))
         except DraftValidationError as err:
-            raise ParseResultError(f"event {index} is invalid: {err}") from err
-    return drafts
+            warnings.append(f"event {index} is invalid: {err}")
+    return ParseOutcome(drafts, warnings)

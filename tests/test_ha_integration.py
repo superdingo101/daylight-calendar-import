@@ -27,6 +27,7 @@ from custom_components.daylight_calendar_import.const import (
     SERVICE_SUBMIT_TEXT,
 )
 from custom_components.daylight_calendar_import.models import EventDraft
+from custom_components.daylight_calendar_import.parser import ParseOutcome
 from custom_components.daylight_calendar_import.storage import PendingImportStore
 
 
@@ -102,7 +103,7 @@ async def test_real_setup_registers_services_and_dispatches_submit(
 ) -> None:
     """Set up through HA and dispatch a registered action through its service registry."""
     parsed = [_draft()]
-    parse = AsyncMock(return_value=parsed)
+    parse = AsyncMock(return_value=ParseOutcome(parsed, []))
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.async_parse_text", parse
     )
