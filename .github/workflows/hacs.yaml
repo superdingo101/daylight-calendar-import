@@ -17,3 +17,6 @@ jobs:
         uses: "hacs/action@main"
         with:
           category: "integration"
+          # These checks read repository/default-branch metadata, so an
+          # unmerged PR cannot satisfy them even when it adds the license.
+          ignore: ${{ github.event_name == 'pull_request' && 'license topics' || '' }}
