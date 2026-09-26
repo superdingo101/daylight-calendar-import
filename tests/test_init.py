@@ -31,6 +31,7 @@ from custom_components.daylight_calendar_import.const import (
     CONF_CALENDAR_ENTITY,
     DOMAIN,
     SERVICE_APPROVE_PENDING,
+    SERVICE_APPROVE_PENDING_EVENT,
     SERVICE_EDIT_PENDING_EVENT,
     SERVICE_GET_PENDING,
     SERVICE_GET_PENDING_EVENT,
@@ -433,6 +434,53 @@ async def test_reject_pending_event_action_checks_permissions_and_uncertainty(mo
     with pytest.raises(Unauthorized):
         await handler(call)
     store.async_reject_event.assert_not_awaited()
+
+
+async def test_approve_pending_event_action_writes_only_selected_event(monkeypatch):
+    item = pending(draft(), draft(True))
+    selected = item.events[1]
+
+    async def approve(pending_id, event_id, processor):
+        assert (pending_id, event_id) == (item.id, selected.id)
+        await processor(selected.draft)
+        return selected
+
+    store = SimpleNamespace(
+        async_load=AsyncMock(), async_approve_event=AsyncMock(side_effect=approve),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    handler, options = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING_EVENT)]
+    assert options["schema"] is PENDING_EVENT_SCHEMA
+    assert options["supports_response"] is SupportsResponse.OPTIONAL
+    call = SimpleNamespace(
+        data={ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: selected.id},
+        context=Context(user_id="reviewer"),
+    )
+    assert await handler(call) == {
+        "pending_id": item.id, "event_id": selected.id, "approved": True,
+        "event": {**selected.as_service_dict(), "status": "approved"},
+    }
+    assert len(hass.services.calls) == 1
+    assert hass.services.calls[0][0:2] == ("calendar", "create_event")
+    assert hass.services.calls[0][2]["start_date"] == selected.draft.start
+
+    store.async_approve_event.side_effect = None
+    store.async_approve_event.return_value = None
+    with pytest.raises(ServiceValidationError, match="not found"):
+        await handler(call)
+    store.async_approve_event.side_effect = PendingImportApprovalUncertainError(item.id)
+    with pytest.raises(ServiceValidationError, match="uncertain calendar write"):
+        await handler(call)
+
+    store.async_approve_event.reset_mock(side_effect=True)
+    call.context = Context(user_id=None)
+    with pytest.raises(Unauthorized):
+        await handler(call)
+    store.async_approve_event.assert_not_awaited()
 
 
 async def test_submit_text_without_events_records_source_handling(monkeypatch):

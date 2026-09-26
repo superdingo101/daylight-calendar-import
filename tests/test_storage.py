@@ -341,6 +341,116 @@ async def test_reject_last_event_without_source_fingerprint(monkeypatch):
     }
 
 
+async def test_approve_selected_event_preserves_other_draft_and_source(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    pending = (await store.async_add(
+        source_text="newsletter", events=[draft(), second_draft()], source_id="mail-2"
+    )).pending
+    assert pending is not None
+    first, second = pending.events
+    processed = []
+
+    async def processor(event):
+        processed.append(event)
+
+    assert await store.async_approve_event("missing", second.id, processor) is None
+    assert await store.async_approve_event(pending.id, "missing", processor) is None
+    assert await store.async_approve_event(pending.id, second.id, processor) == second
+    assert processed == [second_draft()]
+    assert store.get_event(pending.id, first.id) == first
+    assert store.get_event(pending.id, second.id) is None
+    assert backend.saved[-2]["items"][0]["events"][1]["status"] == "write_uncertain"
+    assert backend.saved[-2]["items"][0]["events"][0]["status"] == "pending"
+    assert backend.saved[-1]["seen_event_fingerprints"] == [event_fingerprint(second_draft())]
+    assert "seen_source_fingerprints" not in backend.saved[-1]
+
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_event(pending.id, first.id) == first
+    assert await restarted.async_approve_event(pending.id, first.id, processor) == first
+    assert restarted.get(pending.id) is None
+    assert processed == [second_draft(), draft()]
+    assert backend.saved[-1]["seen_source_fingerprints"] == [source_fingerprint("mail-2")]
+
+
+async def test_selected_approval_failure_blocks_retry_without_sibling_loss(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    pending = (await store.async_add(source_text="two", events=[draft(), second_draft()])).pending
+    assert pending is not None
+    first, second = pending.events
+
+    async def failed_processor(_event):
+        raise RuntimeError("calendar timed out")
+
+    with pytest.raises(RuntimeError, match="calendar timed out"):
+        await store.async_approve_event(pending.id, second.id, failed_processor)
+    uncertain = store.get_event(pending.id, second.id)
+    assert uncertain is not None and uncertain.status == "write_uncertain"
+    assert store.get_event(pending.id, first.id) == first
+    assert store.get(pending.id).approval_in_flight is True
+    with pytest.raises(PendingImportApprovalUncertainError):
+        await store.async_approve_event(pending.id, second.id, failed_processor)
+    with pytest.raises(PendingImportApprovalUncertainError):
+        await store.async_process_events(pending.id, failed_processor)
+
+
+async def test_selected_approval_checkpoint_failures_and_no_source_id(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    pending = (await store.async_add(source_text="one", events=[draft()])).pending
+    assert pending is not None
+    event = pending.events[0]
+    calls = []
+
+    async def processor(draft):
+        calls.append(draft)
+
+    backend.save_error = RuntimeError("save failed")
+    backend.fail_on_save_attempt = backend.save_attempts + 1
+    with pytest.raises(RuntimeError, match="save failed"):
+        await store.async_approve_event(pending.id, event.id, processor)
+    assert calls == []
+    assert store.get(pending.id) == pending
+
+    backend.fail_on_save_attempt = backend.save_attempts + 2
+    with pytest.raises(RuntimeError, match="save failed"):
+        await store.async_approve_event(pending.id, event.id, processor)
+    assert calls == [draft()]
+    assert store.get_event(pending.id, event.id).status == "write_uncertain"
+    assert "seen_source_fingerprints" not in backend.saved[-1]
+
+
+async def test_selected_approval_serializes_against_rejection(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    pending = (await store.async_add(source_text="one", events=[draft()])).pending
+    assert pending is not None
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def processor(_draft):
+        started.set()
+        await release.wait()
+
+    approval = asyncio.create_task(
+        store.async_approve_event(pending.id, pending.events[0].id, processor)
+    )
+    await started.wait()
+    rejection = asyncio.create_task(store.async_reject_event(pending.id, pending.events[0].id))
+    await asyncio.sleep(0)
+    assert not rejection.done()
+    release.set()
+    assert await approval == pending.events[0]
+    assert await rejection is False
+
+
 async def test_store_adds_rejects_and_remembers_source_and_event(monkeypatch):
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)

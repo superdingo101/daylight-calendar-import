@@ -158,8 +158,8 @@ class PendingImport:
 
     @property
     def approval_in_flight(self) -> bool:
-        """Keep the existing batch approval guard for uncertain first events."""
-        return self.events[0].status == "write_uncertain"
+        """Report an uncertain write anywhere in the import."""
+        return any(event.status == "write_uncertain" for event in self.events)
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,62 +431,81 @@ class PendingImportStore:
                 raise PendingImportApprovalUncertainError(pending_id)
 
             original = pending
-            while True:
+            while pending is not None:
                 event = pending.events[0]
-                in_flight = PendingImport(
-                    id=pending.id,
-                    created_at=pending.created_at,
-                    source_text=pending.source_text,
-                    events=(
-                        PendingEvent(event.id, event.draft, "write_uncertain"),
-                        *pending.events[1:],
-                    ),
-                    source_fingerprint=pending.source_fingerprint,
-                )
-                items = dict(self._items)
-                items[pending_id] = in_flight
-                await self._async_save(items)
-                self._items = items
-                pending = in_flight
-
-                await processor(event.draft)
-
-                remaining = pending.events[1:]
-                items = dict(self._items)
-                seen_sources = self._seen_source_fingerprints
-                seen_events = _remember_fingerprints(
-                    self._seen_event_fingerprints,
-                    (event_fingerprint(event.draft),),
-                )
-                if remaining:
-                    pending = PendingImport(
-                        id=pending.id,
-                        created_at=pending.created_at,
-                        source_text=pending.source_text,
-                        events=remaining,
-                        source_fingerprint=pending.source_fingerprint,
-                    )
-                    items[pending_id] = pending
-                else:
-                    del items[pending_id]
-                    if pending.source_fingerprint is not None:
-                        seen_sources = _remember_fingerprints(
-                            seen_sources,
-                            (pending.source_fingerprint,),
-                        )
-
-                await self._async_save(
-                    items,
-                    seen_source_fingerprints=seen_sources,
-                    seen_event_fingerprints=seen_events,
-                )
-                self._items = items
-                self._seen_source_fingerprints = seen_sources
-                self._seen_event_fingerprints = seen_events
-                if not remaining:
-                    break
+                pending = await self._async_approve_event_locked(pending, event, processor)
 
             return original
+
+    async def async_approve_event(
+        self, pending_id: str, event_id: str,
+        processor: Callable[[EventDraft], Awaitable[None]],
+    ) -> PendingEvent | None:
+        """Approve one ready event without approving its siblings."""
+        async with self._lock:
+            pending = self._items.get(pending_id)
+            if pending is None:
+                return None
+            event = next((item for item in pending.events if item.id == event_id), None)
+            if event is None:
+                return None
+            if event.status == "write_uncertain":
+                raise PendingImportApprovalUncertainError(pending_id)
+            await self._async_approve_event_locked(pending, event, processor)
+            return event
+
+    async def _async_approve_event_locked(
+        self, pending: PendingImport, event: PendingEvent,
+        processor: Callable[[EventDraft], Awaitable[None]],
+    ) -> PendingImport | None:
+        """Checkpoint the selected event around its external calendar write."""
+        in_flight = PendingImport(
+            id=pending.id, created_at=pending.created_at,
+            source_text=pending.source_text,
+            events=tuple(
+                PendingEvent(item.id, item.draft, "write_uncertain")
+                if item.id == event.id else item
+                for item in pending.events
+            ),
+            source_fingerprint=pending.source_fingerprint,
+        )
+        items = dict(self._items)
+        items[pending.id] = in_flight
+        await self._async_save(items)
+        self._items = items
+
+        await processor(event.draft)
+
+        remaining = tuple(item for item in pending.events if item.id != event.id)
+        items = dict(self._items)
+        seen_sources = self._seen_source_fingerprints
+        seen_events = _remember_fingerprints(
+            self._seen_event_fingerprints, (event_fingerprint(event.draft),)
+        )
+        if remaining:
+            updated = PendingImport(
+                id=pending.id, created_at=pending.created_at,
+                source_text=pending.source_text, events=remaining,
+                source_fingerprint=pending.source_fingerprint,
+            )
+            items[pending.id] = updated
+        else:
+            updated = None
+            del items[pending.id]
+            if pending.source_fingerprint is not None:
+                seen_sources = _remember_fingerprints(
+                    seen_sources, (pending.source_fingerprint,)
+                )
+
+        await self._async_save(
+            items,
+            seen_source_fingerprints=seen_sources,
+            seen_event_fingerprints=seen_events,
+        )
+        self._items = items
+        self._seen_source_fingerprints = seen_sources
+        self._seen_event_fingerprints = seen_events
+        return updated
 
     async def async_remove_storage(self) -> None:
         """Remove the backing storage file."""

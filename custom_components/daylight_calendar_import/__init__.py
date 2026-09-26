@@ -22,6 +22,7 @@ from .const import (
     CONF_CALENDAR_ENTITY,
     DOMAIN,
     SERVICE_APPROVE_PENDING,
+    SERVICE_APPROVE_PENDING_EVENT,
     SERVICE_EDIT_PENDING_EVENT,
     SERVICE_GET_PENDING,
     SERVICE_GET_PENDING_EVENT,
@@ -263,6 +264,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         return {"pending_id": pending_id, "event_id": event_id, "rejected": True}
 
+    async def handle_approve_pending_event(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+
+        async def create_event(draft: EventDraft) -> None:
+            await _async_create_calendar_event(
+                hass, entry.data[CONF_CALENDAR_ENTITY], draft, context=call.context
+            )
+
+        try:
+            event = await pending_store.async_approve_event(
+                pending_id, event_id, create_event
+            )
+        except PendingImportApprovalUncertainError as err:
+            raise ServiceValidationError(
+                "This event has an uncertain calendar write; verify it before retrying"
+            ) from err
+        if event is None:
+            raise ServiceValidationError(
+                f"Pending event not found: {pending_id}/{event_id}"
+            )
+        return {
+            "pending_id": pending_id,
+            "event_id": event_id,
+            "approved": True,
+            "event": {**event.as_service_dict(), "status": "approved"},
+        }
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_PARSE_TEXT,
@@ -318,6 +348,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN, SERVICE_REJECT_PENDING_EVENT, handle_reject_pending_event,
         schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN, SERVICE_APPROVE_PENDING_EVENT, handle_approve_pending_event,
+        schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
+    )
     return True
 
 
@@ -333,6 +367,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, SERVICE_GET_PENDING_EVENT)
     hass.services.async_remove(DOMAIN, SERVICE_EDIT_PENDING_EVENT)
     hass.services.async_remove(DOMAIN, SERVICE_REJECT_PENDING_EVENT)
+    hass.services.async_remove(DOMAIN, SERVICE_APPROVE_PENDING_EVENT)
     hass.data[DOMAIN].pop(entry.entry_id, None)
     return True
 
