@@ -81,6 +81,7 @@ class PendingImportStore:
             hass,
             STORAGE_VERSION,
             STORAGE_KEY,
+            private=True,
         )
         self._items: dict[str, PendingImport] = {}
         self._lock = asyncio.Lock()
