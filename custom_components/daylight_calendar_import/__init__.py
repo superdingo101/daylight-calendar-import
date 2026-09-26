@@ -171,8 +171,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except PendingImportApprovalUncertainError as err:
             raise ServiceValidationError(
                 "Pending import has an unfinished approval attempt; "
-                "automatic retry is blocked to avoid duplicates, so inspect "
-                "the calendar before explicitly rejecting it"
+                "automatic retry is blocked to avoid duplicates. Check the "
+                "calendar and use resolve_pending_event for the uncertain event"
             ) from err
         if pending is None:
             raise ServiceValidationError(

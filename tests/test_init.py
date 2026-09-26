@@ -765,7 +765,7 @@ async def test_approve_uncertain_pending_raises_validation_error(monkeypatch):
 
     with pytest.raises(
         ServiceValidationError,
-        match="unfinished approval attempt",
+        match="unfinished approval attempt.*resolve_pending_event",
     ):
         await approve_handler(
             SimpleNamespace(
