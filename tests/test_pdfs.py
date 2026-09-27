@@ -37,6 +37,10 @@ def make_pdf(text=None, *, encrypted=False, page_count=1):
             stream = DecodedStreamObject()
             stream.set_data(f"BT /F1 12 Tf 20 200 Td ({text}) Tj ET".encode())
             page[NameObject("/Contents")] = writer._add_object(stream)
+        else:
+            stream = DecodedStreamObject()
+            stream.set_data(b"0 0 100 100 re f")
+            page[NameObject("/Contents")] = writer._add_object(stream)
     if encrypted:
         writer.encrypt("secret")
     output = BytesIO()
@@ -108,7 +112,10 @@ async def test_scanned_pdf_fallback_and_cleanup(uploaded_file, tmp_path):
 async def test_mixed_text_and_scanned_pages_retain_pdf_attachment(uploaded_file, tmp_path):
     writer = PdfWriter()
     writer.append(PdfReader(BytesIO(make_pdf("Cover page"))))
-    writer.add_blank_page(width=300, height=300)
+    scanned = writer.add_blank_page(width=300, height=300)
+    stream = DecodedStreamObject()
+    stream.set_data(b"0 0 100 100 re f")
+    scanned[NameObject("/Contents")] = writer._add_object(stream)
     output = BytesIO()
     writer.write(output)
     uploaded_file.write_bytes(output.getvalue())
@@ -118,6 +125,18 @@ async def test_mixed_text_and_scanned_pages_retain_pdf_attachment(uploaded_file,
         assert source.attachments[0].sha256 == sha256(output.getvalue()).hexdigest()
         assert len(list(tmp_path.glob("daylight-*.pdf"))) == 1
     assert not list(tmp_path.glob("daylight-*.pdf"))
+
+
+async def test_blank_page_in_text_pdf_does_not_require_attachment(uploaded_file):
+    writer = PdfWriter()
+    writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
+    writer.add_blank_page(width=300, height=300)
+    output = BytesIO()
+    writer.write(output)
+    uploaded_file.write_bytes(output.getvalue())
+    async with pdfs.async_pdf_source(UploadHass({}), "a" * 32) as source:
+        assert source.text == "Meeting Friday"
+        assert source.attachments == ()
 
 
 def test_large_compressed_page_falls_back_before_text_extraction(monkeypatch):
@@ -438,7 +457,7 @@ def test_pdf_text_limit_counts_all_pages_and_accepts_exact_limit(monkeypatch):
 
 def test_scanned_page_before_text_still_requires_attachment(monkeypatch):
     pages = [
-        SimpleNamespace(get=lambda _key: None, extract_text=lambda: ""),
+        SimpleNamespace(get=lambda key: [object()] if key == "/Annots" else None, extract_text=lambda: ""),
         SimpleNamespace(get=lambda _key: None, extract_text=lambda: "Meeting Friday"),
     ]
     monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=pages))
