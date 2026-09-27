@@ -88,6 +88,51 @@ async def test_upload_cleanup_on_parser_error(uploaded_file, tmp_path):
     assert not staged.exists()
 
 
+async def test_cancellation_during_staging_cleans_late_image(uploaded_file, tmp_path):
+    original, file_id = uploaded_file
+    original.write_bytes(PNG)
+    stage_started = asyncio.Event()
+    release_stage = asyncio.Event()
+    cleanup_done = asyncio.Event()
+
+    class DelayedHass(UploadHass):
+        async def async_add_executor_job(self, func, *args):
+            if func is uploads._stage_image:
+                stage_started.set()
+                await release_stage.wait()
+            result = await asyncio.to_thread(func, *args)
+            if func is not uploads._stage_image:
+                cleanup_done.set()
+            return result
+
+    async def parse_uploaded():
+        async with uploads.async_image_source(DelayedHass(tmp_path / "media"), file_id):
+            pytest.fail("cancelled call reached provider")
+
+    task = asyncio.create_task(parse_uploaded())
+    await asyncio.wait_for(stage_started.wait(), 2)
+    task.cancel()
+    release_stage.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 2)
+    await asyncio.wait_for(cleanup_done.wait(), 2)
+    assert not original.exists()
+    assert not list((tmp_path / "media").iterdir())
+
+
+async def test_cleanup_consumes_failed_staging_result(tmp_path):
+    staging = asyncio.get_running_loop().create_future()
+    staging.set_exception(OSError("upload unavailable"))
+    await uploads._cleanup_late_staging(UploadHass(tmp_path / "media"), staging)
+    assert not (tmp_path / "media").exists()
+
+
+async def test_late_cleanup_tolerates_already_removed_media(tmp_path):
+    staging = asyncio.get_running_loop().create_future()
+    staging.set_result((None, tmp_path / "already-removed.png"))
+    await uploads._cleanup_late_staging(UploadHass(tmp_path / "media"), staging)
+
+
 @pytest.mark.parametrize(("data", "code"), [
     (b"", "empty_attachment"),
     (b"not an image", "unsupported_media"),

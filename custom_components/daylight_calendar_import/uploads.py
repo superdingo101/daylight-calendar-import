@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -71,15 +72,29 @@ def _stage_image(
     return source, staged_path
 
 
+async def _cleanup_late_staging(hass: HomeAssistant, staging: asyncio.Future) -> None:
+    """Consume a late executor result and remove its temporary media file."""
+    try:
+        _, path = await staging
+    except Exception:
+        return
+    await asyncio.shield(hass.async_add_executor_job(path.unlink, True))
+
+
 @asynccontextmanager
 async def async_image_source(
     hass: HomeAssistant, file_id: str
 ) -> AsyncIterator[SourceDocument]:
     """Stage an upload only while a provider is using it, then remove it."""
-    source, path = await hass.async_add_executor_job(
+    staging = asyncio.ensure_future(hass.async_add_executor_job(
         _stage_image, hass, file_id, hass.config.media_dirs
-    )
+    ))
+    try:
+        source, path = await asyncio.shield(staging)
+    except asyncio.CancelledError:
+        await _cleanup_late_staging(hass, staging)
+        raise
     try:
         yield source
     finally:
-        await hass.async_add_executor_job(path.unlink, True)
+        await asyncio.shield(hass.async_add_executor_job(path.unlink, True))

@@ -1420,6 +1420,7 @@ async def test_submit_image_routes_attachment_and_text_into_review(monkeypatch):
     )
     @asynccontextmanager
     async def image_source(_hass, file_id):
+        assert _hass is hass
         assert file_id == "a" * 32
         yield image
 
@@ -1436,15 +1437,42 @@ async def test_submit_image_routes_attachment_and_text_into_review(monkeypatch):
     handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_IMAGE)][0]
     result = await handler(SimpleNamespace(data={ATTR_FILE_ID: "a" * 32, ATTR_TEXT: "  Please read  ", ATTR_SOURCE_ID: "upstream"}, context=Context(user_id=None)))
     source = parse.await_args.kwargs["source"]
+    assert parse.await_args.args == (hass,)
+    assert parse.await_args.kwargs["ai_task_entity"] == "ai_task.test"
     assert source.text == "Please read"
     assert source.attachments == image.attachments
     assert store.async_add.await_args.kwargs["source_text"] == "Please read"
     assert store.async_add.await_args.kwargs["source_id"] == "upstream"
+    assert store.async_add.await_args.kwargs["events"] == [draft()]
+    assert store.async_add.await_args.kwargs["calendar_entity"] == "calendar.family"
     assert result["pending"] is not None
     store.is_source_duplicate.return_value = True
     duplicate = await handler(SimpleNamespace(data={ATTR_FILE_ID: "a" * 32, ATTR_SOURCE_ID: "upstream"}, context=Context(user_id=None)))
     assert duplicate == {"pending": None, "duplicate": True, "duplicate_source": True, "duplicate_events": 0, "warnings": []}
     assert parse.await_count == 1
+    store.is_source_duplicate.assert_called_with("upstream")
+
+
+async def test_submit_image_checks_control_permission_and_event_duplicate(monkeypatch):
+    permissions = FakePermissions(allowed=True)
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    seed = TextSourceAdapter().create("seed")
+    image = SourceDocument(seed.id, SourceKind.IMAGE, seed.received_at,
+                           attachments=(SourceAttachment("a", "image/png", 10, "ref", sha256="digest"),))
+    @asynccontextmanager
+    async def image_source(_hass, _file_id):
+        yield image
+    store = SimpleNamespace(async_load=AsyncMock(), is_source_duplicate=Mock(return_value=False),
+                            async_add=AsyncMock(return_value=PendingImportAddResult(None, False, 1)))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_image_source", image_source)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", AsyncMock(return_value=ParseOutcome([draft()], [])))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    await async_setup_entry(hass, entry())
+    result = await hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_IMAGE)][0](
+        SimpleNamespace(data={ATTR_FILE_ID: "a" * 32}, context=Context(user_id="reviewer")))
+    assert result["duplicate"] is True
+    assert result["duplicate_events"] == 1
+    assert permissions.calls == [("ai_task.test", POLICY_CONTROL)]
 
 
 async def test_submit_image_only_persists_digest_not_bytes(monkeypatch):
