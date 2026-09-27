@@ -1,7 +1,7 @@
 """Tests for Home Assistant service wiring."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
 import voluptuous as vol
@@ -154,7 +154,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
         get=Mock(return_value=approval),
         async_remove=AsyncMock(return_value=True),
     )
-    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore",
         lambda _hass: pending_store,
@@ -568,7 +568,7 @@ async def test_submit_text_without_events_records_source_handling(monkeypatch):
             )
         ),
     )
-    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore",
         lambda _hass: pending_store,
@@ -608,7 +608,7 @@ async def test_submit_text_skips_ai_for_known_source(monkeypatch):
         is_source_duplicate=Mock(return_value=True),
         async_add=AsyncMock(),
     )
-    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore",
         lambda _hass: pending_store,
@@ -644,7 +644,7 @@ async def test_submit_text_authorizes_before_source_lookup(monkeypatch):
         is_source_duplicate=is_source_duplicate,
         async_add=AsyncMock(),
     )
-    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore",
         lambda _hass: pending_store,
@@ -700,7 +700,7 @@ async def test_submit_text_reports_deduplication_races(
         is_source_duplicate=Mock(return_value=False),
         async_add=AsyncMock(return_value=add_result),
     )
-    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore",
         lambda _hass: pending_store,
@@ -811,7 +811,7 @@ async def test_parse_for_entry(monkeypatch):
     user = SimpleNamespace(permissions=permissions)
     hass = FakeHass(user=user)
     parse = AsyncMock(return_value=ParseOutcome([], []))
-    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     context = Context(user_id="allowed-user")
 
     assert await _parse_for_entry(hass, entry(), "text", context=context) == ParseOutcome([], [])
@@ -1007,7 +1007,7 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
         parse_for_entry,
     )
     monkeypatch.setattr(
-        "custom_components.daylight_calendar_import.async_parse_text",
+        "custom_components.daylight_calendar_import.parse_source_with_provider",
         parse_text,
     )
     monkeypatch.setattr(
@@ -1046,7 +1046,7 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
     )
     parse_text.assert_awaited_once_with(
         hass,
-        text="submit me",
+        source=ANY,
         ai_task_entity="ai_task.test",
     )
     pending_store.async_add.assert_awaited_once_with(
@@ -1060,14 +1060,14 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
 async def test_parse_for_entry_preserves_parser_arguments(monkeypatch):
     parse = AsyncMock(return_value=ParseOutcome([], []))
     monkeypatch.setattr(
-        "custom_components.daylight_calendar_import.async_parse_text", parse
+        "custom_components.daylight_calendar_import.parse_source_with_provider", parse
     )
     hass = FakeHass()
 
     assert await _parse_for_entry(hass, entry(), "source text") == ParseOutcome([], [])
     parse.assert_awaited_once_with(
         hass,
-        text="source text",
+        source=ANY,
         ai_task_entity="ai_task.test",
     )
 
@@ -1315,7 +1315,7 @@ async def test_partial_parser_warnings_reach_parse_import_and_submit(monkeypatch
         async_load=AsyncMock(),
         async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)),
     )
-    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
     )
@@ -1346,7 +1346,7 @@ async def test_partial_parser_warnings_reach_parse_import_and_submit(monkeypatch
 
 async def test_all_invalid_events_do_not_write_calendar(monkeypatch):
     parse = AsyncMock(return_value=ParseOutcome([], ["event 0 must be an object"]))
-    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     hass = FakeHass()
     store = SimpleNamespace(async_load=AsyncMock(), is_source_duplicate=Mock(return_value=False),
                             async_add=AsyncMock(
@@ -1380,7 +1380,7 @@ async def test_text_services_normalize_before_parser_and_storage(monkeypatch):
         is_source_duplicate=Mock(return_value=False),
         async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)),
     )
-    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
     )
@@ -1393,7 +1393,7 @@ async def test_text_services_normalize_before_parser_and_storage(monkeypatch):
     await hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0](
         SimpleNamespace(data={ATTR_TEXT: "  hello  ", ATTR_SOURCE_ID: "source-1"}, context=context)
     )
-    assert [call.kwargs["text"] for call in parse.await_args_list] == ["hello", "hello"]
+    assert [call.kwargs["source"].text for call in parse.await_args_list] == ["hello", "hello"]
     assert store.async_add.await_args.kwargs["source_text"] == "hello"
     assert store.async_add.await_args.kwargs["source_id"] == "source-1"
 

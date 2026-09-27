@@ -69,10 +69,10 @@ Copy `custom_components/daylight_calendar_import` into Home Assistant's `custom_
 ## Architecture
 
 ```
-text adapter -> SourceDocument -> parser -> EventDraft[] -> validation -> deduplication -> pending review -> calendar
+text adapter -> SourceDocument -> ParserProvider -> EventDraft[] -> validation -> deduplication -> pending review -> calendar
 ```
 
-Text actions now normalize into a `SourceDocument` before parsing. The document describes source identity, kind, text, and attachment references; raw attachment bytes do not belong in pending review storage. Home Assistant AI Task remains the parser. A future hosted Daylight parser can return the same `EventDraft` contract, allowing BYO AI and managed paid AI to coexist without changing downstream behavior.
+Text actions normalize into a `SourceDocument` before parsing. The document describes source identity, kind, text, and attachment references; raw attachment bytes do not belong in pending review storage. The `ParserProvider` interface takes the normalized source and reference time. Its AI Task implementation is the configured parser. A future hosted Daylight parser can return the same `ParseOutcome` contract, allowing BYO AI and managed paid AI to coexist without changing downstream behavior.
 
 Email/SMS ingestion, attachments, a review UI, and hosted relay services remain future work.
 

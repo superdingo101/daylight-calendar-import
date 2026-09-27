@@ -1,6 +1,6 @@
 """Integration tests against a real Home Assistant test instance."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -105,7 +105,7 @@ async def test_real_setup_registers_services_and_dispatches_submit(
     parsed = [_draft()]
     parse = AsyncMock(return_value=ParseOutcome(parsed, []))
     monkeypatch.setattr(
-        "custom_components.daylight_calendar_import.async_parse_text", parse
+        "custom_components.daylight_calendar_import.parse_source_with_provider", parse
     )
     entry = _entry()
 
@@ -129,7 +129,7 @@ async def test_real_setup_registers_services_and_dispatches_submit(
 
     parse.assert_awaited_once_with(
         hass,
-        text="Soccer practice Thursday at 5:30",
+        source=ANY,
         ai_task_entity="ai_task.test",
     )
     assert response is not None
