@@ -74,6 +74,8 @@ text adapter -> SourceDocument -> ParserProvider -> EventDraft[] -> validation -
 
 Text actions normalize into a `SourceDocument` before parsing. The document describes source identity, kind, text, and attachment references; raw attachment bytes do not belong in pending review storage. The `ParserProvider` interface takes the normalized source and reference time. Its AI Task implementation is the configured parser. A future hosted Daylight parser can return the same `ParseOutcome` contract, allowing BYO AI and managed paid AI to coexist without changing downstream behavior.
 
+Parser capabilities validate media type, attachment count, aggregate size, and text/attachment support before calling the provider. The current AI Task adapter advertises text support; image and PDF support will be enabled alongside their ingestion adapters.
+
 Email/SMS ingestion, attachments, a review UI, and hosted relay services remain future work.
 
 ## Tests

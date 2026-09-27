@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 from homeassistant.components import ai_task
@@ -10,9 +11,61 @@ from homeassistant.core import HomeAssistant
 from .parser import EVENTS_STRUCTURE, PROMPT_TEMPLATE, TASK_NAME, ParseOutcome, parse_ai_data
 from .sources import SourceDocument
 
+IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+PDF_MEDIA_TYPE = "application/pdf"
+
+
+class SourceValidationError(ValueError):
+    """A source cannot be processed by the selected parser provider."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class ParserCapabilities:
+    """Media types and bounded attachment sizes a provider can process."""
+
+    text: bool
+    images: bool
+    pdfs: bool
+    max_attachments: int
+    max_total_bytes: int
+
+    def validate(self, source: SourceDocument) -> None:
+        """Reject unsupported or invalid inputs before invoking a provider."""
+        attachments = source.attachments
+        if len(attachments) > self.max_attachments:
+            raise SourceValidationError("too_many_attachments", "Too many source attachments")
+        total = 0
+        for attachment in attachments:
+            if attachment.size_bytes <= 0:
+                raise SourceValidationError("empty_attachment", "Source attachment is empty")
+            if attachment.media_type in IMAGE_MEDIA_TYPES:
+                supported = self.images
+            elif attachment.media_type == PDF_MEDIA_TYPE:
+                supported = self.pdfs
+            else:
+                raise SourceValidationError("unsupported_media", "Unsupported attachment media type")
+            if not supported:
+                raise SourceValidationError("unsupported_capability", "Parser does not support this attachment")
+            total += attachment.size_bytes
+            if total > self.max_total_bytes:
+                raise SourceValidationError("source_too_large", "Source attachments exceed the size limit")
+        if source.text and source.text.strip():
+            if not self.text:
+                raise SourceValidationError("unsupported_capability", "Parser does not support text")
+        elif not attachments:
+            raise SourceValidationError("empty_source", "Source must contain text or attachments")
+
 
 class ParserProvider(Protocol):
     """Convert one normalized source to candidate event drafts."""
+
+    @property
+    def capabilities(self) -> ParserCapabilities:
+        """Return supported source kinds and attachment limits."""
 
     async def async_parse(
         self, source: SourceDocument, *, reference_datetime: str, time_zone: str
@@ -27,13 +80,17 @@ class AITaskParserProvider:
         self._hass = hass
         self._entity_id = entity_id
 
+    @property
+    def capabilities(self) -> ParserCapabilities:
+        """The current AI Task adapter supports normalized text sources."""
+        return ParserCapabilities(text=True, images=False, pdfs=False, max_attachments=4, max_total_bytes=10 * 1024 * 1024)
+
     async def async_parse(
         self, source: SourceDocument, *, reference_datetime: str, time_zone: str
     ) -> ParseOutcome:
         """Ask AI Task for structured event candidates, then validate each one."""
+        self.capabilities.validate(source)
         text = (source.text or "").strip()
-        if not text:
-            raise ValueError("source must contain text")
 
         result = await ai_task.async_generate_data(
             self._hass,
