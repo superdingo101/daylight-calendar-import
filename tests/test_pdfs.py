@@ -180,6 +180,24 @@ def test_inline_image_operator_retains_pdf_attachment(monkeypatch, operator):
     assert worker.extract_text(b"%PDF-fake") == ("", True)
 
 
+def test_bi_inside_text_string_does_not_require_pdf_attachment(monkeypatch):
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT (BI meeting on Friday) Tj ET % BI is only a comment\n")
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None,
+                           extract_text=lambda: "BI meeting on Friday")
+    monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
+    assert worker.extract_text(b"%PDF-fake") == ("BI meeting on Friday", False)
+
+
+def test_vector_painting_with_text_retains_pdf_attachment(monkeypatch):
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT (Cover text) Tj ET 0 0 100 100 re f")
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None,
+                           extract_text=lambda: pytest.fail("visual content reached text-only path"))
+    monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
+    assert worker.extract_text(b"%PDF-fake") == ("", True)
+
+
 @pytest.mark.parametrize(("response", "code"), [
     (SimpleNamespace(returncode=1, stdout=b""), "invalid_pdf"),
     (SimpleNamespace(returncode=0, stdout=b"not json"), "invalid_pdf"),
@@ -298,7 +316,7 @@ def test_page_with_too_many_content_streams_falls_back():
 
 def test_last_allowed_stream_and_exact_page_byte_limit_are_accepted():
     streams = [DecodedStreamObject() for _ in range(100)]
-    streams[-1].set_data(b"x" * worker.MAX_PDF_PAGE_CONTENT_BYTES)
+    streams[-1].set_data(b" " * worker.MAX_PDF_PAGE_CONTENT_BYTES)
     contents = SimpleNamespace(get_object=lambda: streams)
     page = SimpleNamespace(get=lambda key: contents if key == "/Contents" else None)
     assert worker._bounded_text_page(page) is True

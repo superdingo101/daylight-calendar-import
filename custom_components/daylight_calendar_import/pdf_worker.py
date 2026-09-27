@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
-import re
 import sys
 import zlib
 
 from pypdf import PdfReader
 from pypdf.errors import LimitReachedError, PdfReadError
+from pypdf.generic import ContentStream, DecodedStreamObject
 
 MAX_PDF_PAGES = 30
 MAX_PDF_TEXT_CHARS = 100_000
@@ -17,6 +17,10 @@ MAX_PDF_PAGE_CONTENT_BYTES = 1_000_000
 MAX_INPUT_BYTES = 10 * 1024 * 1024
 MAX_WORKER_MEMORY_BYTES = 256 * 1024 * 1024
 MAX_WORKER_CPU_SECONDS = 10
+VISUAL_OPERATORS = frozenset({
+    b"INLINE IMAGE", b"Do", b"sh", b"S", b"s", b"f", b"F", b"f*",
+    b"B", b"B*", b"b", b"b*",
+})
 
 
 class PdfExtractionError(ValueError):
@@ -45,6 +49,7 @@ def _bounded_text_page(page: object) -> bool:
     if len(streams) > 100:
         return False
     total = 0
+    decoded_streams = []
     for item in streams:
         stream = item.get_object()
         raw = stream._data
@@ -66,10 +71,13 @@ def _bounded_text_page(page: object) -> bool:
         total += len(decoded)
         if total > MAX_PDF_PAGE_CONTENT_BYTES:
             return False
-        # Inline images use BI/ID/EI operators without an /XObject resource.
-        if re.search(rb"(?:^|[\x00\s\[\]()<>{}/%])BI(?=[\x00\s\[\]()<>{}/%])", decoded):
-            return False
-    return True
+        decoded_streams.append(decoded)
+    # ContentStream tokenizes PDF strings/comments separately from operators.
+    bounded = DecodedStreamObject()
+    bounded.set_data(b"\n".join(decoded_streams))
+    return not any(operator in VISUAL_OPERATORS for _, operator in ContentStream(
+        bounded, getattr(page, "pdf", None), "bytes"
+    ).operations)
 
 
 def extract_text(data: bytes) -> tuple[str, bool]:
