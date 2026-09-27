@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.daylight_calendar_import import parser, providers
 from custom_components.daylight_calendar_import.sources import SourceAttachment, SourceDocument, SourceKind, TextSourceAdapter
@@ -82,7 +83,7 @@ async def test_async_parse_text(monkeypatch):
     assert "Reference datetime: 2026-09-25T14:30:00-07:00" in kwargs["instructions"]
     assert "Home Assistant time zone: America/Los_Angeles" in kwargs["instructions"]
     assert kwargs["structure"] is parser.EVENTS_STRUCTURE
-    assert "attached images" in next(iter(kwargs["structure"].schema)).description
+    assert "attached images or PDFs" in next(iter(kwargs["structure"].schema)).description
     assert "attachments" not in kwargs
 
 
@@ -181,6 +182,7 @@ async def test_image_capability_detected_before_ai_task_invocation(monkeypatch):
 
     component.get_entity = lambda _id: SimpleNamespace(supported_features=providers.AITaskEntityFeature.SUPPORT_ATTACHMENTS)
     assert provider.capabilities.images is True
+    assert provider.capabilities.pdfs is True
     result = await provider.async_parse(source, reference_datetime="now", time_zone="UTC")
     assert result == parser.ParseOutcome([], [])
     assert generate.await_args.kwargs["attachments"] == [
@@ -194,6 +196,19 @@ def test_image_capability_handles_unavailable_entity():
     component = SimpleNamespace(get_entity=lambda _id: None)
     provider = providers.AITaskParserProvider(SimpleNamespace(data={providers.DATA_COMPONENT: component}), "ai_task.missing")
     assert provider.capabilities.images is False
+
+
+async def test_provider_maps_ai_task_failure_to_stable_category(monkeypatch):
+    generate = AsyncMock(side_effect=HomeAssistantError("private upstream error"))
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    source = TextSourceAdapter().create("Meeting on Friday")
+    with pytest.raises(providers.ProviderError) as caught:
+        await providers.AITaskParserProvider(object(), "ai_task.test").async_parse(
+            source, reference_datetime="now", time_zone="UTC"
+        )
+    assert caught.value.code == "provider_error"
+    assert str(caught.value) == "AI Task could not parse the source"
+    assert isinstance(caught.value.__cause__, HomeAssistantError)
 
 
 async def test_async_parse_text_preserves_ai_task_and_timezone_contract(monkeypatch):

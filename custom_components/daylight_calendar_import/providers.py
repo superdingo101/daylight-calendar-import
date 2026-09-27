@@ -8,6 +8,7 @@ from typing import Protocol
 from homeassistant.components import ai_task
 from homeassistant.components.ai_task.const import AITaskEntityFeature, DATA_COMPONENT
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 
 from .parser import EVENTS_STRUCTURE, PROMPT_TEMPLATE, TASK_NAME, ParseOutcome, parse_ai_data
 from .sources import SourceDocument
@@ -18,6 +19,14 @@ PDF_MEDIA_TYPE = "application/pdf"
 
 class SourceValidationError(ValueError):
     """A source cannot be processed by the selected parser provider."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class ProviderError(ValueError):
+    """A stable category for an upstream parser failure."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -87,7 +96,7 @@ class AITaskParserProvider:
         component = getattr(self._hass, "data", {}).get(DATA_COMPONENT)
         entity = component.get_entity(self._entity_id) if component else None
         images = bool(entity and entity.supported_features & AITaskEntityFeature.SUPPORT_ATTACHMENTS)
-        return ParserCapabilities(text=True, images=images, pdfs=False, max_attachments=4, max_total_bytes=10 * 1024 * 1024)
+        return ParserCapabilities(text=True, images=images, pdfs=images, max_attachments=4, max_total_bytes=10 * 1024 * 1024)
 
     async def async_parse(
         self, source: SourceDocument, *, reference_datetime: str, time_zone: str
@@ -100,16 +109,19 @@ class AITaskParserProvider:
             for item in source.attachments
         ]
 
-        result = await ai_task.async_generate_data(
-            self._hass,
-            task_name=TASK_NAME,
-            entity_id=self._entity_id,
-            instructions=PROMPT_TEMPLATE.format(
-                text=text,
-                reference_datetime=reference_datetime,
-                time_zone=time_zone,
-            ),
-            structure=EVENTS_STRUCTURE,
-            **({"attachments": attachments} if attachments else {}),
-        )
+        try:
+            result = await ai_task.async_generate_data(
+                self._hass,
+                task_name=TASK_NAME,
+                entity_id=self._entity_id,
+                instructions=PROMPT_TEMPLATE.format(
+                    text=text,
+                    reference_datetime=reference_datetime,
+                    time_zone=time_zone,
+                ),
+                structure=EVENTS_STRUCTURE,
+                **({"attachments": attachments} if attachments else {}),
+            )
+        except HomeAssistantError as err:
+            raise ProviderError("provider_error", "AI Task could not parse the source") from err
         return parse_ai_data(result.data)

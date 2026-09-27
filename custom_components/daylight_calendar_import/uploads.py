@@ -78,7 +78,8 @@ async def _cleanup_late_staging(hass: HomeAssistant, staging: asyncio.Future) ->
         _, path = await staging
     except Exception:
         return
-    await asyncio.shield(hass.async_add_executor_job(path.unlink, True))
+    if path is not None:
+        await asyncio.shield(hass.async_add_executor_job(path.unlink, True))
 
 
 @asynccontextmanager
