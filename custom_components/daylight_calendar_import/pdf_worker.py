@@ -80,6 +80,14 @@ def _bounded_text_page(page: object) -> bool:
     ).operations)
 
 
+def _empty_content_page(page: object) -> bool:
+    """Detect blank or comment-only streams after the bounded preflight."""
+    contents = page.get("/Contents")
+    return contents is None or not ContentStream(
+        contents, getattr(page, "pdf", None), "bytes"
+    ).operations
+
+
 def extract_text(data: bytes) -> tuple[str, bool]:
     """Extract text and report whether any page still needs PDF attachment review."""
     if not data.startswith(b"%PDF-"):
@@ -98,7 +106,7 @@ def extract_text(data: bytes) -> tuple[str, bool]:
         for page in reader.pages:
             safe = _bounded_text_page(page)
             text = (page.extract_text() or "") if safe else ""
-            needs_attachment |= not text.strip() and (not safe or page.get("/Contents") is not None)
+            needs_attachment |= not text.strip() and (not safe or not _empty_content_page(page))
             length += len(text) + (2 if pages else 0)
             if length > MAX_PDF_TEXT_CHARS:
                 raise PdfExtractionError("source_too_large", "PDF text exceeds the size limit")

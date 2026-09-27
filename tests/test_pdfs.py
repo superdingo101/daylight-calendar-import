@@ -139,6 +139,19 @@ async def test_blank_page_in_text_pdf_does_not_require_attachment(uploaded_file)
         assert source.attachments == ()
 
 
+@pytest.mark.parametrize("content", [b"", b"% blank page\n"])
+def test_empty_content_stream_in_text_pdf_needs_no_attachment(content):
+    writer = PdfWriter()
+    writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
+    blank = writer.add_blank_page(width=300, height=300)
+    stream = DecodedStreamObject()
+    stream.set_data(content)
+    blank[NameObject("/Contents")] = writer._add_object(stream)
+    output = BytesIO()
+    writer.write(output)
+    assert worker.extract_text(output.getvalue()) == ("Meeting Friday", False)
+
+
 def test_large_compressed_page_falls_back_before_text_extraction(monkeypatch):
     raw = zlib.compress(b" " * (worker.MAX_PDF_PAGE_CONTENT_BYTES + 1))
     stream = EncodedStreamObject()
