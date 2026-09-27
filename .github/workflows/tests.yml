@@ -78,6 +78,7 @@ jobs:
           "pytest-asyncio>=0.24"
           "pytest-cov>=6.0"
           "pytest-homeassistant-custom-component>=0.13.0"
+          "hypothesis>=6.168.1,<7"
           "hassil==3.8.0"
           "home-assistant-intents==2026.6.24"
           "PyTurboJPEG==1.8.3"
