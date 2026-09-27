@@ -37,6 +37,7 @@ from .const import (
 )
 from .models import DraftValidationError, EventDraft
 from .parser import ParseOutcome, async_parse_text
+from .sources import SourceDocument, TextSourceAdapter
 from .storage import (
     PendingEventEditError,
     PendingEventResolutionError,
@@ -131,7 +132,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
 
     async def handle_submit_text(call: ServiceCall) -> ServiceResponse:
-        source_text = call.data[ATTR_TEXT]
         source_id = call.data.get(ATTR_SOURCE_ID)
         ai_task_entity = entry.data[CONF_AI_TASK_ENTITY]
         await _async_check_entity_control_permission(
@@ -150,15 +150,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "warnings": [],
             }
 
-        outcome = await async_parse_text(
-            hass,
-            text=source_text,
-            ai_task_entity=ai_task_entity,
-        )
+        source = TextSourceAdapter().create(call.data[ATTR_TEXT], source_id=source_id)
+        outcome = await _async_parse_source(hass, entry, source)
         result = await pending_store.async_add(
-            source_text=source_text,
+            source_text=source.text,
             events=outcome.events,
-            source_id=source_id,
+            source_id=source.upstream_source_id,
             calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
         )
         return {
@@ -471,10 +468,20 @@ async def _parse_for_entry(
 ) -> ParseOutcome:
     ai_task_entity = entry.data[CONF_AI_TASK_ENTITY]
     await _async_check_entity_control_permission(hass, ai_task_entity, context)
+    source = TextSourceAdapter().create(text)
+    return await _async_parse_source(hass, entry, source)
+
+
+async def _async_parse_source(
+    hass: HomeAssistant, entry: ConfigEntry, source: SourceDocument
+) -> ParseOutcome:
+    """Feed a normalized source into the current text parser boundary."""
+    if source.text is None:
+        raise ServiceValidationError("This source has no text for the configured parser")
     return await async_parse_text(
         hass,
-        text=text,
-        ai_task_entity=ai_task_entity,
+        text=source.text,
+        ai_task_entity=entry.data[CONF_AI_TASK_ENTITY],
     )
 
 
