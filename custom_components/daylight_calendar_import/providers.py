@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from homeassistant.components import ai_task
+from homeassistant.components.ai_task.const import AITaskEntityFeature, DATA_COMPONENT
 from homeassistant.core import HomeAssistant
 
 from .parser import EVENTS_STRUCTURE, PROMPT_TEMPLATE, TASK_NAME, ParseOutcome, parse_ai_data
@@ -82,8 +83,11 @@ class AITaskParserProvider:
 
     @property
     def capabilities(self) -> ParserCapabilities:
-        """The current AI Task adapter supports normalized text sources."""
-        return ParserCapabilities(text=True, images=False, pdfs=False, max_attachments=4, max_total_bytes=10 * 1024 * 1024)
+        """Discover whether the configured AI Task entity accepts attachments."""
+        component = getattr(self._hass, "data", {}).get(DATA_COMPONENT)
+        entity = component.get_entity(self._entity_id) if component else None
+        images = bool(entity and entity.supported_features & AITaskEntityFeature.SUPPORT_ATTACHMENTS)
+        return ParserCapabilities(text=True, images=images, pdfs=False, max_attachments=4, max_total_bytes=10 * 1024 * 1024)
 
     async def async_parse(
         self, source: SourceDocument, *, reference_datetime: str, time_zone: str
@@ -91,6 +95,10 @@ class AITaskParserProvider:
         """Ask AI Task for structured event candidates, then validate each one."""
         self.capabilities.validate(source)
         text = (source.text or "").strip()
+        attachments = [
+            {"media_content_id": item.content_ref, "media_content_type": item.media_type}
+            for item in source.attachments
+        ]
 
         result = await ai_task.async_generate_data(
             self._hass,
@@ -102,5 +110,6 @@ class AITaskParserProvider:
                 time_zone=time_zone,
             ),
             structure=EVENTS_STRUCTURE,
+            **({"attachments": attachments} if attachments else {}),
         )
         return parse_ai_data(result.data)

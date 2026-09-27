@@ -13,6 +13,7 @@ The integration supports:
 - `daylight_calendar_import.parse_text`: parse text and return validated drafts without changing a calendar
 - `daylight_calendar_import.import_text`: parse text and create the validated events on the configured calendar
 - `daylight_calendar_import.submit_text`: parse text, deduplicate it, and persist only new events for review
+- `daylight_calendar_import.submit_image`: upload a PNG, JPEG, or WebP image with optional text, then queue drafts for review
 - `daylight_calendar_import.approve_pending`: create every event in a pending import, then remove it from review
 - `daylight_calendar_import.reject_pending`: remove a pending import without creating calendar events
 - `daylight_calendar_import.list_pending`: list pending import IDs, titles, counts, and uncertain-write flags
@@ -52,6 +53,8 @@ Then test `daylight_calendar_import.parse_text` from **Developer Tools → Actio
 
 Use `parse_text` first while evaluating extraction quality. For the review workflow, use `submit_text` and then pass the returned pending import ID to `approve_pending` or `reject_pending`. `submit_text` accepts an optional stable `source_id`; exact source duplicates can then be skipped before invoking AI. It also filters events already pending or previously approved/rejected using normalized fingerprints. `import_text` remains the explicit immediate-import path and intentionally bypasses the pending-review deduplication pipeline.
 
+For a photographed schedule or flyer, use `submit_image` in **Developer Tools → Actions**, choose an image file (maximum 10 MiB), and optionally provide context text and a stable source ID. The configured AI Task entity must support attachments. The upload and its temporary local media copy are removed after parsing or an error; pending review stores the text or an image digest, not the image bytes.
+
 The three pending read actions return responses from **Developer Tools → Actions**. `list_pending` returns summaries without the original source text; `get_pending` returns the full source and drafts; `get_pending_event` accepts both `pending_id` and `event_id`. Reads require an authenticated Home Assistant user with control permission for both the configured AI Task and calendar entities. Pending data remains available after a Home Assistant restart.
 
 To correct an event, call `edit_pending_event` with `pending_id`, `event_id`, and a complete `event` mapping (title, start, end, all_day, optional location/description/confidence). It validates the replacement, rejects exact duplicates in pending or handled history, and keeps the event ID. It also requires control of both configured entities. An event with an uncertain calendar write cannot be edited until that write is resolved.
@@ -69,12 +72,12 @@ Copy `custom_components/daylight_calendar_import` into Home Assistant's `custom_
 ## Architecture
 
 ```
-text adapter -> SourceDocument -> ParserProvider -> EventDraft[] -> validation -> deduplication -> pending review -> calendar
+text or image adapter -> SourceDocument -> ParserProvider -> EventDraft[] -> validation -> deduplication -> pending review -> calendar
 ```
 
 Text actions normalize into a `SourceDocument` before parsing. The document describes source identity, kind, text, and attachment references; raw attachment bytes do not belong in pending review storage. The `ParserProvider` interface takes the normalized source and reference time. Its AI Task implementation is the configured parser. A future hosted Daylight parser can return the same `ParseOutcome` contract, allowing BYO AI and managed paid AI to coexist without changing downstream behavior.
 
-Parser capabilities validate media type, attachment count, aggregate size, and text/attachment support before calling the provider. The current AI Task adapter advertises text support; image and PDF support will be enabled alongside their ingestion adapters.
+Parser capabilities validate media type, attachment count, aggregate size, and text/attachment support before calling the provider. The AI Task adapter checks its entity's attachment feature before accepting images. PDF support follows in the next increment.
 
 Email/SMS ingestion, attachments, a review UI, and hosted relay services remain future work.
 

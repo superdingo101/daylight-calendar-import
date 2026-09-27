@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import voluptuous as vol
@@ -15,6 +16,7 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import (
     ATTR_EVENT_ID,
+    ATTR_FILE_ID,
     ATTR_PENDING_ID,
     ATTR_SOURCE_ID,
     ATTR_TEXT,
@@ -34,10 +36,12 @@ from .const import (
     SERVICE_REJECT_PENDING_EVENT,
     SERVICE_RESOLVE_PENDING_EVENT,
     SERVICE_SUBMIT_TEXT,
+    SERVICE_SUBMIT_IMAGE,
 )
 from .models import DraftValidationError, EventDraft
 from .parser import ParseOutcome, async_parse_source as parse_source_with_provider
 from .sources import SourceDocument, TextSourceAdapter
+from .uploads import async_image_source
 from .storage import (
     PendingEventEditError,
     PendingEventResolutionError,
@@ -54,6 +58,15 @@ SUBMIT_SCHEMA = vol.Schema(
             cv.string,
             lambda value: value.strip(),
             vol.Length(min=1, max=2048),
+        ),
+    }
+)
+SUBMIT_IMAGE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_FILE_ID): vol.All(cv.string, vol.Match(r"^[0-9a-f]{32}$")),
+        vol.Optional(ATTR_TEXT, default=""): cv.string,
+        vol.Optional(ATTR_SOURCE_ID): vol.All(
+            cv.string, lambda value: value.strip(), vol.Length(min=1, max=2048)
         ),
     }
 )
@@ -171,6 +184,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "duplicate_events": result.duplicate_events,
             "warnings": outcome.warnings,
         }
+
+    async def handle_submit_image(call: ServiceCall) -> ServiceResponse:
+        """Queue event drafts from an uploaded image and optional source text."""
+        await _async_check_entity_control_permission(
+            hass, entry.data[CONF_AI_TASK_ENTITY], call.context
+        )
+        source_id = call.data.get(ATTR_SOURCE_ID)
+        async with async_image_source(hass, call.data[ATTR_FILE_ID]) as image:
+            if source_id is not None and pending_store.is_source_duplicate(source_id):
+                return {"pending": None, "duplicate": True, "duplicate_source": True,
+                        "duplicate_events": 0, "warnings": []}
+            source = replace(image, text=call.data.get(ATTR_TEXT, "").strip() or None,
+                             upstream_source_id=source_id)
+            outcome = await _async_parse_source(hass, entry, source)
+            result = await pending_store.async_add(
+                source_text=source.text or f"Image attachment (SHA-256: {source.attachments[0].sha256})",
+                events=outcome.events,
+                source_id=source.upstream_source_id,
+                calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
+            )
+        return {"pending": result.pending.as_service_dict() if result.pending else None,
+                "duplicate": result.duplicate_source or result.duplicate_events > 0,
+                "duplicate_source": result.duplicate_source,
+                "duplicate_events": result.duplicate_events,
+                "warnings": outcome.warnings}
 
     async def handle_approve_pending(call: ServiceCall) -> ServiceResponse:
         pending_id = call.data[ATTR_PENDING_ID]
@@ -392,6 +430,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
+        DOMAIN, SERVICE_SUBMIT_IMAGE, handle_submit_image,
+        schema=SUBMIT_IMAGE_SCHEMA, supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
         DOMAIN,
         SERVICE_APPROVE_PENDING,
         handle_approve_pending,
@@ -441,6 +483,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, SERVICE_PARSE_TEXT)
     hass.services.async_remove(DOMAIN, SERVICE_IMPORT_TEXT)
     hass.services.async_remove(DOMAIN, SERVICE_SUBMIT_TEXT)
+    hass.services.async_remove(DOMAIN, SERVICE_SUBMIT_IMAGE)
     hass.services.async_remove(DOMAIN, SERVICE_APPROVE_PENDING)
     hass.services.async_remove(DOMAIN, SERVICE_REJECT_PENDING)
     hass.services.async_remove(DOMAIN, SERVICE_LIST_PENDING)
@@ -476,7 +519,7 @@ async def _async_parse_source(
     hass: HomeAssistant, entry: ConfigEntry, source: SourceDocument
 ) -> ParseOutcome:
     """Feed a normalized source into the current text parser boundary."""
-    if source.text is None:
+    if source.text is None and not source.attachments:
         raise ServiceValidationError("This source has no text for the configured parser")
     return await parse_source_with_provider(
         hass,

@@ -82,6 +82,7 @@ async def test_async_parse_text(monkeypatch):
     assert "Reference datetime: 2026-09-25T14:30:00-07:00" in kwargs["instructions"]
     assert "Home Assistant time zone: America/Los_Angeles" in kwargs["instructions"]
     assert kwargs["structure"] is parser.EVENTS_STRUCTURE
+    assert "attachments" not in kwargs
 
 
 async def test_async_parse_text_rejects_empty_input():
@@ -160,6 +161,38 @@ async def test_source_boundary_passes_normalized_document_to_provider(monkeypatc
     assert provider_parse.await_args.args == (source,)
     assert provider_parse.await_args.kwargs["time_zone"] == "UTC"
     assert provider_parse.await_args.kwargs["reference_datetime"]
+
+
+async def test_image_capability_detected_before_ai_task_invocation(monkeypatch):
+    image = SourceAttachment("a", "image/png", 25, "media-source://media_source/local/image.png")
+    seed = TextSourceAdapter().create("seed")
+    source = SourceDocument(seed.id, SourceKind.IMAGE, seed.received_at, attachments=(image,))
+    generate = AsyncMock(return_value=SimpleNamespace(data={"events": []}))
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    component = SimpleNamespace(get_entity=lambda _id: SimpleNamespace(supported_features=0))
+    hass = SimpleNamespace(data={providers.DATA_COMPONENT: component})
+    provider = providers.AITaskParserProvider(hass, "ai_task.test")
+    assert provider.capabilities.images is False
+    with pytest.raises(providers.SourceValidationError) as caught:
+        await provider.async_parse(source, reference_datetime="now", time_zone="UTC")
+    assert caught.value.code == "unsupported_capability"
+    generate.assert_not_awaited()
+
+    component.get_entity = lambda _id: SimpleNamespace(supported_features=providers.AITaskEntityFeature.SUPPORT_ATTACHMENTS)
+    assert provider.capabilities.images is True
+    result = await provider.async_parse(source, reference_datetime="now", time_zone="UTC")
+    assert result == parser.ParseOutcome([], [])
+    assert generate.await_args.kwargs["attachments"] == [
+        {"media_content_id": image.content_ref, "media_content_type": "image/png"}
+    ]
+    assert "attached images" in generate.await_args.kwargs["instructions"]
+    assert "XXXX" not in generate.await_args.kwargs["instructions"]
+
+
+def test_image_capability_handles_unavailable_entity():
+    component = SimpleNamespace(get_entity=lambda _id: None)
+    provider = providers.AITaskParserProvider(SimpleNamespace(data={providers.DATA_COMPONENT: component}), "ai_task.missing")
+    assert provider.capabilities.images is False
 
 
 async def test_async_parse_text_preserves_ai_task_and_timezone_contract(monkeypatch):
