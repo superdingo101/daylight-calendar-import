@@ -18,6 +18,7 @@ from custom_components.daylight_calendar_import import (
     SUBMIT_SCHEMA,
     _async_check_entity_control_permission,
     _async_create_calendar_event,
+    _async_parse_source,
     _parse_for_entry,
     async_remove_entry,
     async_setup_entry,
@@ -47,6 +48,7 @@ from custom_components.daylight_calendar_import.const import (
 )
 from custom_components.daylight_calendar_import.models import EventDraft
 from custom_components.daylight_calendar_import.parser import ParseOutcome
+from custom_components.daylight_calendar_import.sources import SourceDocument, SourceKind, TextSourceAdapter
 from custom_components.daylight_calendar_import.storage import (
     PendingEventEditError,
     PendingEventResolutionError,
@@ -1369,3 +1371,37 @@ async def test_all_invalid_events_do_not_write_calendar(monkeypatch):
     assert submit["warnings"] == ["event 0 must be an object"]
     assert store.async_add.await_args.kwargs["events"] == []
     assert store.async_add.await_args.kwargs["source_id"] == "message-bad"
+
+
+async def test_text_services_normalize_before_parser_and_storage(monkeypatch):
+    parse = AsyncMock(return_value=ParseOutcome([draft()], []))
+    store = SimpleNamespace(
+        async_load=AsyncMock(),
+        is_source_duplicate=Mock(return_value=False),
+        async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_parse_text", parse)
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    hass = FakeHass()
+    await async_setup_entry(hass, entry())
+    context = Context(user_id=None)
+    await hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)][0](
+        SimpleNamespace(data={ATTR_TEXT: "  hello  "}, context=context)
+    )
+    await hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0](
+        SimpleNamespace(data={ATTR_TEXT: "  hello  ", ATTR_SOURCE_ID: "source-1"}, context=context)
+    )
+    assert [call.kwargs["text"] for call in parse.await_args_list] == ["hello", "hello"]
+    assert store.async_add.await_args.kwargs["source_text"] == "hello"
+    assert store.async_add.await_args.kwargs["source_id"] == "source-1"
+
+
+async def test_text_parser_boundary_rejects_attachment_only_source():
+    text_source = TextSourceAdapter().create("x")
+    attachment_only = SourceDocument(
+        id=text_source.id, kind=SourceKind.PDF, received_at=text_source.received_at
+    )
+    with pytest.raises(ServiceValidationError, match="no text"):
+        await _async_parse_source(FakeHass(), entry(), attachment_only)
