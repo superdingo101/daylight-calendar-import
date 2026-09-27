@@ -7,10 +7,11 @@ from hashlib import sha256
 from io import BytesIO
 from types import SimpleNamespace
 from uuid import UUID
+import zlib
 
 import pytest
-from pypdf import PdfWriter
-from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, EncodedStreamObject, NameObject
 
 from custom_components.daylight_calendar_import import pdfs
 from custom_components.daylight_calendar_import.providers import SourceValidationError
@@ -101,11 +102,74 @@ async def test_scanned_pdf_fallback_and_cleanup(uploaded_file, tmp_path):
     assert not staged.exists()
 
 
+async def test_mixed_text_and_scanned_pages_retain_pdf_attachment(uploaded_file, tmp_path):
+    writer = PdfWriter()
+    writer.append(PdfReader(BytesIO(make_pdf("Cover page"))))
+    writer.add_blank_page(width=300, height=300)
+    output = BytesIO()
+    writer.write(output)
+    uploaded_file.write_bytes(output.getvalue())
+    async with pdfs.async_pdf_source(UploadHass({"local": str(tmp_path)}), "a" * 32) as source:
+        assert source.text == "Cover page"
+        assert source.attachments[0].media_type == "application/pdf"
+        assert source.attachments[0].sha256 == sha256(output.getvalue()).hexdigest()
+        assert len(list(tmp_path.glob("daylight-*.pdf"))) == 1
+    assert not list(tmp_path.glob("daylight-*.pdf"))
+
+
+def test_large_compressed_page_falls_back_before_text_extraction(monkeypatch):
+    raw = zlib.compress(b" " * (pdfs.MAX_PDF_PAGE_CONTENT_BYTES + 1))
+    stream = EncodedStreamObject()
+    stream._data = raw
+    stream[NameObject("/Filter")] = NameObject("/FlateDecode")
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None,
+                           extract_text=lambda: pytest.fail("unbounded content reached extraction"))
+    monkeypatch.setattr(pdfs, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
+    assert pdfs._extract_pdf_text(b"%PDF-fake") == ("", True)
+
+
+def test_page_with_image_retains_attachment_even_with_text(monkeypatch):
+    page = SimpleNamespace(get=lambda key: {"/XObject": {"/Im0": object()}} if key == "/Resources" else None,
+                           extract_text=lambda: pytest.fail("image content reached text-only path"))
+    monkeypatch.setattr(pdfs, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
+    assert pdfs._extract_pdf_text(b"%PDF-fake") == ("", True)
+
+
+def test_indirect_page_resources_with_images_retain_attachment():
+    resources = SimpleNamespace(get_object=lambda: {"/XObject": {"/Im0": object()}})
+    page = SimpleNamespace(get=lambda key: resources if key == "/Resources" else None)
+    assert pdfs._bounded_text_page(page) is False
+
+
+@pytest.mark.parametrize(("raw", "filter_name", "expected"), [
+    (b"x" * (pdfs.MAX_PDF_PAGE_CONTENT_BYTES + 1), None, False),
+    (b"BT (Meeting) Tj ET", None, True),
+    (b"not zlib", "/FlateDecode", False),
+    (zlib.compress(b"Meeting")[:-2], "/FlateDecode", False),
+    (b"Meeting", "/ASCII85Decode", False),
+])
+def test_page_stream_decoding_is_bounded(raw, filter_name, expected):
+    stream = DecodedStreamObject()
+    stream.set_data(raw)
+    if filter_name:
+        stream[NameObject("/Filter")] = NameObject(filter_name)
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
+    assert pdfs._bounded_text_page(page) is expected
+
+
+def test_page_with_too_many_content_streams_falls_back():
+    streams = [DecodedStreamObject() for _ in range(101)]
+    contents = SimpleNamespace(get_object=lambda: streams)
+    page = SimpleNamespace(get=lambda key: contents if key == "/Contents" else None)
+    assert pdfs._bounded_text_page(page) is False
+
+
 @pytest.mark.parametrize(("data", "code", "message"), [
     (b"", "empty_attachment", "Source attachment is empty"),
     (b"not a PDF", "unsupported_media", "Unsupported attachment media type"),
     (b"%PDF-broken", "invalid_pdf", "PDF could not be read"),
     (make_pdf(encrypted=True), "unsupported_pdf", "Encrypted PDF is not supported"),
+    (make_pdf(page_count=0), "invalid_pdf", "PDF has no pages"),
     (make_pdf(page_count=pdfs.MAX_PDF_PAGES + 1), "too_many_pages", "PDF exceeds the page limit"),
     (b"%PDF-" + b"x" * pdfs.MAX_UPLOAD_BYTES, "source_too_large", "Source attachments exceed the size limit"),
 ])
@@ -186,7 +250,7 @@ async def test_cancellation_during_pdf_staging_cleans_upload(uploaded_file, tmp_
 
 
 def test_pdf_text_limit_is_enforced(monkeypatch):
-    fake_page = SimpleNamespace(extract_text=lambda: "x" * (pdfs.MAX_PDF_TEXT_CHARS + 1))
+    fake_page = SimpleNamespace(get=lambda _key: None, extract_text=lambda: "x" * (pdfs.MAX_PDF_TEXT_CHARS + 1))
     monkeypatch.setattr(pdfs, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[fake_page]))
     with pytest.raises(SourceValidationError) as caught:
         pdfs._extract_pdf_text(b"%PDF-fake")
@@ -196,20 +260,20 @@ def test_pdf_text_limit_is_enforced(monkeypatch):
 
 def test_pdf_text_limit_counts_all_pages_and_accepts_exact_limit(monkeypatch):
     text = "x" * ((pdfs.MAX_PDF_TEXT_CHARS - 2) // 2)
-    pages = [SimpleNamespace(extract_text=lambda: text) for _ in range(2)]
+    pages = [SimpleNamespace(get=lambda _key: None, extract_text=lambda: text) for _ in range(2)]
     def reader(_stream, *, strict):
         assert strict is False
         return SimpleNamespace(is_encrypted=False, pages=pages)
     monkeypatch.setattr(pdfs, "PdfReader", reader)
-    assert pdfs._extract_pdf_text(b"%PDF-fake") == text + "\n\n" + text
-    pages.append(SimpleNamespace(extract_text=lambda: "one more"))
+    assert pdfs._extract_pdf_text(b"%PDF-fake") == (text + "\n\n" + text, False)
+    pages.append(SimpleNamespace(get=lambda _key: None, extract_text=lambda: "one more"))
     with pytest.raises(SourceValidationError) as caught:
         pdfs._extract_pdf_text(b"%PDF-fake")
     assert caught.value.code == "source_too_large"
 
 
 def test_pdf_page_limit_includes_last_allowed_page():
-    assert pdfs._extract_pdf_text(make_pdf(page_count=pdfs.MAX_PDF_PAGES)) == ""
+    assert pdfs._extract_pdf_text(make_pdf(page_count=pdfs.MAX_PDF_PAGES)) == ("", True)
 
 
 async def test_scanned_pdf_creates_nested_media_directory(uploaded_file, tmp_path):
@@ -249,6 +313,6 @@ def test_pdf_read_is_bounded_before_extraction(monkeypatch, tmp_path):
 async def test_maximum_allowed_pdf_is_accepted(uploaded_file, monkeypatch):
     data = b"%PDF-" + b"x" * (pdfs.MAX_UPLOAD_BYTES - 5)
     uploaded_file.write_bytes(data)
-    monkeypatch.setattr(pdfs, "_extract_pdf_text", lambda _data: "Meeting Friday")
+    monkeypatch.setattr(pdfs, "_extract_pdf_text", lambda _data: ("Meeting Friday", False))
     async with pdfs.async_pdf_source(UploadHass({}), "a" * 32) as source:
         assert source.metadata["sha256"] == sha256(data).hexdigest()
