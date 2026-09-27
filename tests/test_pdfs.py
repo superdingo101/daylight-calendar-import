@@ -14,7 +14,7 @@ import subprocess
 import pytest
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PdfReadError
-from pypdf.generic import DecodedStreamObject, DictionaryObject, EncodedStreamObject, NameObject
+from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, EncodedStreamObject, NameObject
 
 from custom_components.daylight_calendar_import import pdfs, pdf_worker as worker
 from custom_components.daylight_calendar_import.providers import SourceValidationError
@@ -139,7 +139,7 @@ async def test_blank_page_in_text_pdf_does_not_require_attachment(uploaded_file)
         assert source.attachments == ()
 
 
-@pytest.mark.parametrize("content", [b"", b"% blank page\n"])
+@pytest.mark.parametrize("content", [b"", b"% blank page\n", b"q Q", b"BT ET"])
 def test_empty_content_stream_in_text_pdf_needs_no_attachment(content):
     writer = PdfWriter()
     writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
@@ -367,6 +367,15 @@ def test_safe_flate_stream_is_extracted_with_a_strict_decoding_bound(monkeypatch
                 return decoder.decompress(data, limit)
         return Spy()
     monkeypatch.setattr(worker.zlib, "decompressobj", bounded_decoder)
+    assert worker._bounded_text_page(page) == (True, True)
+
+
+def test_singleton_flate_filter_array_extracts_text_without_attachment():
+    stream = EncodedStreamObject()
+    stream._data = zlib.compress(b"BT (Meeting) Tj ET")
+    stream[NameObject("/Filter")] = ArrayObject([NameObject("/FlateDecode")])
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None,
+                           extract_text=lambda: "Meeting")
     assert worker._bounded_text_page(page) == (True, True)
 
 

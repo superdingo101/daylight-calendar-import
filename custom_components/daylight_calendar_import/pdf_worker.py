@@ -21,6 +21,13 @@ VISUAL_OPERATORS = frozenset({
     b"INLINE IMAGE", b"Do", b"sh", b"S", b"s", b"f", b"F", b"f*",
     b"B", b"B*", b"b", b"b*",
 })
+NON_RENDERING_OPERATORS = frozenset({
+    b"q", b"Q", b"cm", b"BT", b"ET", b"Tf", b"Td", b"TD", b"Tm", b"T*",
+    b"Tc", b"Tw", b"Tz", b"TL", b"Ts", b"Tr", b"w", b"J", b"j", b"M",
+    b"d", b"ri", b"i", b"gs", b"CS", b"cs", b"SC", b"sc", b"SCN",
+    b"scn", b"re", b"m", b"l", b"c", b"v", b"y", b"h", b"W", b"W*",
+    b"n", b"BX", b"EX", b"MP", b"DP", b"BMC", b"BDC", b"EMC",
+})
 
 
 class PdfExtractionError(ValueError):
@@ -56,6 +63,8 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
         if len(raw) > MAX_PDF_PAGE_CONTENT_BYTES:
             return False, True
         encoding = stream.get("/Filter")
+        if isinstance(encoding, list) and len(encoding) == 1:
+            encoding = encoding[0]
         if encoding is None:
             decoded = raw
         elif encoding in ("/FlateDecode", "/Fl"):
@@ -76,7 +85,8 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
     bounded = DecodedStreamObject()
     bounded.set_data(b"\n".join(decoded_streams))
     operations = ContentStream(bounded, getattr(page, "pdf", None), "bytes").operations
-    return not any(operator in VISUAL_OPERATORS for _, operator in operations), bool(operations)
+    return (not any(operator in VISUAL_OPERATORS for _, operator in operations),
+            any(operator not in NON_RENDERING_OPERATORS for _, operator in operations))
 
 
 def extract_text(data: bytes) -> tuple[str, bool]:
