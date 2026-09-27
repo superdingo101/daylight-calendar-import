@@ -151,9 +151,10 @@ def test_annotated_page_retains_form_values_as_pdf_evidence(monkeypatch):
     assert worker.extract_text(b"%PDF-fake") == ("", True)
 
 
-def test_inline_image_operator_retains_pdf_attachment(monkeypatch):
+@pytest.mark.parametrize("operator", [b"BI /W", b"BI/W"])
+def test_inline_image_operator_retains_pdf_attachment(monkeypatch, operator):
     stream = DecodedStreamObject()
-    stream.set_data(b"BT (Cover text) Tj ET BI /W 1 /H 1 ID x EI")
+    stream.set_data(b"BT (Cover text) Tj ET " + operator + b" 1/H 1 ID x EI")
     page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None,
                            extract_text=lambda: pytest.fail("inline image reached text-only path"))
     monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))

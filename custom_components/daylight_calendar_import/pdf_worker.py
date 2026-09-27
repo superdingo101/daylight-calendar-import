@@ -67,7 +67,7 @@ def _bounded_text_page(page: object) -> bool:
         if total > MAX_PDF_PAGE_CONTENT_BYTES:
             return False
         # Inline images use BI/ID/EI operators without an /XObject resource.
-        if re.search(rb"(?:^|\s)BI\s", decoded):
+        if re.search(rb"(?:^|[\x00\s\[\]()<>{}/%])BI(?=[\x00\s\[\]()<>{}/%])", decoded):
             return False
     return True
 
