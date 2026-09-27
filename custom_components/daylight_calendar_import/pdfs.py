@@ -7,16 +7,15 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from hashlib import sha256
-from io import BytesIO
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
+import json
 from uuid import uuid4
-import zlib
 
 from homeassistant.components.file_upload import process_uploaded_file
 from homeassistant.core import HomeAssistant
-from pypdf import PdfReader
-from pypdf.errors import PdfReadError
 
 from .providers import SourceValidationError
 from .sources import SourceAttachment, SourceDocument, SourceKind
@@ -24,75 +23,27 @@ from .uploads import MAX_UPLOAD_BYTES, _cleanup_late_staging
 
 MAX_PDF_PAGES = 30
 MAX_PDF_TEXT_CHARS = 100_000
-MAX_PDF_PAGE_CONTENT_BYTES = 1_000_000
-
-
-def _bounded_text_page(page: object) -> bool:
-    """Avoid decoding a large or unsupported page stream in pypdf."""
-    resources = page.get("/Resources") or {}
-    if hasattr(resources, "get_object"):
-        resources = resources.get_object()
-    if resources.get("/XObject"):
-        # Images and forms may carry event details alongside selectable text.
-        return False
-    contents = page.get("/Contents")
-    if contents is None:
-        return True
-    resolved = contents.get_object()
-    streams = resolved if isinstance(resolved, list) else [resolved]
-    if len(streams) > 100:
-        return False
-    total = 0
-    for item in streams:
-        stream = item.get_object()
-        raw = stream._data
-        if len(raw) > MAX_PDF_PAGE_CONTENT_BYTES:
-            return False
-        encoding = stream.get("/Filter")
-        if encoding is None:
-            size = len(raw)
-        elif encoding in ("/FlateDecode", "/Fl"):
-            try:
-                decoder = zlib.decompressobj()
-                size = len(decoder.decompress(raw, MAX_PDF_PAGE_CONTENT_BYTES + 1))
-                if decoder.unconsumed_tail or not decoder.eof:
-                    return False
-            except zlib.error:
-                return False
-        else:
-            return False
-        total += size
-        if total > MAX_PDF_PAGE_CONTENT_BYTES:
-            return False
-    return True
 
 
 def _extract_pdf_text(data: bytes) -> tuple[str, bool]:
-    """Read a bounded PDF text layer without invoking image AI."""
-    if not data.startswith(b"%PDF-"):
-        raise SourceValidationError("unsupported_media", "Unsupported attachment media type")
+    """Run untrusted PDF parsing with memory and CPU limits in a child process."""
     try:
-        reader = PdfReader(BytesIO(data), strict=False)
-        if reader.is_encrypted:
-            raise SourceValidationError("unsupported_pdf", "Encrypted PDF is not supported")
-        if not reader.pages:
-            raise SourceValidationError("invalid_pdf", "PDF has no pages")
-        if len(reader.pages) > MAX_PDF_PAGES:
-            raise SourceValidationError("too_many_pages", "PDF exceeds the page limit")
-        pages: list[str] = []
-        length = 0
-        needs_attachment = False
-        for page in reader.pages:
-            safe = _bounded_text_page(page)
-            text = (page.extract_text() or "") if safe else ""
-            needs_attachment |= not text.strip()
-            length += len(text) + (2 if pages else 0)
-            if length > MAX_PDF_TEXT_CHARS:
-                raise SourceValidationError("source_too_large", "PDF text exceeds the size limit")
-            pages.append(text)
-    except PdfReadError as err:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("pdf_worker.py"))],
+            input=data, capture_output=True, timeout=20, check=False,
+        )
+    except subprocess.TimeoutExpired as err:
+        raise SourceValidationError("invalid_pdf", "PDF extraction timed out") from err
+    if result.returncode:
+        raise SourceValidationError("invalid_pdf", "PDF could not be read")
+    try:
+        payload = json.loads(result.stdout)
+        if "error" not in payload:
+            return payload["text"], payload["needs_attachment"]
+        code, message = payload["error"], payload["message"]
+    except (ValueError, KeyError, TypeError) as err:
         raise SourceValidationError("invalid_pdf", "PDF could not be read") from err
-    return "\n\n".join(pages).strip(), needs_attachment
+    raise SourceValidationError(code, message)
 
 
 def _stage_pdf(

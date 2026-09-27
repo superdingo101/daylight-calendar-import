@@ -4,16 +4,19 @@ import asyncio
 from contextlib import contextmanager
 from datetime import UTC
 from hashlib import sha256
-from io import BytesIO
+from io import BytesIO, StringIO
+import json
 from types import SimpleNamespace
 from uuid import UUID
 import zlib
+import subprocess
 
 import pytest
 from pypdf import PdfReader, PdfWriter
+from pypdf.errors import PdfReadError
 from pypdf.generic import DecodedStreamObject, DictionaryObject, EncodedStreamObject, NameObject
 
-from custom_components.daylight_calendar_import import pdfs
+from custom_components.daylight_calendar_import import pdfs, pdf_worker as worker
 from custom_components.daylight_calendar_import.providers import SourceValidationError
 from custom_components.daylight_calendar_import.sources import SourceKind
 
@@ -118,31 +121,126 @@ async def test_mixed_text_and_scanned_pages_retain_pdf_attachment(uploaded_file,
 
 
 def test_large_compressed_page_falls_back_before_text_extraction(monkeypatch):
-    raw = zlib.compress(b" " * (pdfs.MAX_PDF_PAGE_CONTENT_BYTES + 1))
+    raw = zlib.compress(b" " * (worker.MAX_PDF_PAGE_CONTENT_BYTES + 1))
     stream = EncodedStreamObject()
     stream._data = raw
     stream[NameObject("/Filter")] = NameObject("/FlateDecode")
     page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None,
                            extract_text=lambda: pytest.fail("unbounded content reached extraction"))
-    monkeypatch.setattr(pdfs, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
-    assert pdfs._extract_pdf_text(b"%PDF-fake") == ("", True)
+    monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
+    assert worker.extract_text(b"%PDF-fake") == ("", True)
 
 
 def test_page_with_image_retains_attachment_even_with_text(monkeypatch):
     page = SimpleNamespace(get=lambda key: {"/XObject": {"/Im0": object()}} if key == "/Resources" else None,
                            extract_text=lambda: pytest.fail("image content reached text-only path"))
-    monkeypatch.setattr(pdfs, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
-    assert pdfs._extract_pdf_text(b"%PDF-fake") == ("", True)
+    monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
+    assert worker.extract_text(b"%PDF-fake") == ("", True)
 
 
 def test_indirect_page_resources_with_images_retain_attachment():
     resources = SimpleNamespace(get_object=lambda: {"/XObject": {"/Im0": object()}})
     page = SimpleNamespace(get=lambda key: resources if key == "/Resources" else None)
-    assert pdfs._bounded_text_page(page) is False
+    assert worker._bounded_text_page(page) is False
+
+
+def test_inline_image_operator_retains_pdf_attachment(monkeypatch):
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT (Cover text) Tj ET BI /W 1 /H 1 ID x EI")
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None,
+                           extract_text=lambda: pytest.fail("inline image reached text-only path"))
+    monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
+    assert worker.extract_text(b"%PDF-fake") == ("", True)
+
+
+@pytest.mark.parametrize(("response", "code"), [
+    (SimpleNamespace(returncode=1, stdout=b""), "invalid_pdf"),
+    (SimpleNamespace(returncode=0, stdout=b"not json"), "invalid_pdf"),
+    (SimpleNamespace(returncode=0, stdout=b"{}"), "invalid_pdf"),
+    (SimpleNamespace(returncode=0, stdout=b'{"error":"too_many_pages","message":"PDF exceeds the page limit"}'), "too_many_pages"),
+])
+def test_worker_failures_are_explicit(monkeypatch, response, code):
+    monkeypatch.setattr(pdfs.subprocess, "run", lambda *_args, **_kwargs: response)
+    with pytest.raises(SourceValidationError) as caught:
+        pdfs._extract_pdf_text(b"%PDF-fake")
+    assert caught.value.code == code
+
+
+def test_worker_timeout_is_explicit(monkeypatch):
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("pdf_worker.py", 20)
+    monkeypatch.setattr(pdfs.subprocess, "run", timeout)
+    with pytest.raises(SourceValidationError) as caught:
+        pdfs._extract_pdf_text(b"%PDF-fake")
+    assert caught.value.code == "invalid_pdf"
+    assert str(caught.value) == "PDF extraction timed out"
+
+
+@pytest.mark.parametrize(("data", "error", "message"), [
+    (make_pdf("Meeting Friday"), None, None),
+    (b"not pdf", "unsupported_media", "Unsupported attachment media type"),
+    (b"too long", "source_too_large", "Source attachments exceed the size limit"),
+])
+def test_worker_main_applies_limits_and_serializes_result(monkeypatch, data, error, message):
+    import resource
+    calls = []
+    monkeypatch.setattr(resource, "setrlimit", lambda kind, limits: calls.append((kind, limits)))
+    monkeypatch.setattr(worker.sys, "stdin", SimpleNamespace(buffer=BytesIO(data)))
+    output = StringIO()
+    monkeypatch.setattr(worker.sys, "stdout", output)
+    if error == "source_too_large":
+        monkeypatch.setattr(worker, "MAX_INPUT_BYTES", 3)
+    worker.main()
+    payload = json.loads(output.getvalue())
+    if error:
+        assert payload == {"error": error, "message": message}
+    else:
+        assert payload == {"text": "Meeting Friday", "needs_attachment": False}
+    assert calls == [
+        (resource.RLIMIT_AS, (worker.MAX_WORKER_MEMORY_BYTES, worker.MAX_WORKER_MEMORY_BYTES)),
+        (resource.RLIMIT_CPU, (worker.MAX_WORKER_CPU_SECONDS, worker.MAX_WORKER_CPU_SECONDS)),
+    ]
+
+
+def test_worker_main_maps_memory_limit(monkeypatch):
+    import resource
+    monkeypatch.setattr(resource, "setrlimit", lambda *_args: None)
+    monkeypatch.setattr(worker.sys, "stdin", SimpleNamespace(buffer=BytesIO(b"%PDF-fake")))
+    output = StringIO()
+    monkeypatch.setattr(worker.sys, "stdout", output)
+    monkeypatch.setattr(worker, "extract_text", lambda _data: (_ for _ in ()).throw(MemoryError()))
+    worker.main()
+    assert json.loads(output.getvalue()) == {
+        "error": "source_too_large", "message": "PDF exceeds the extraction resource limit"
+    }
+
+
+@pytest.mark.parametrize(("encrypted", "page_count", "code"), [
+    (True, 1, "unsupported_pdf"),
+    (False, 0, "invalid_pdf"),
+    (False, worker.MAX_PDF_PAGES + 1, "too_many_pages"),
+])
+def test_worker_rejects_unsupported_document_shapes(monkeypatch, encrypted, page_count, code):
+    monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(
+        is_encrypted=encrypted, pages=[object()] * page_count
+    ))
+    with pytest.raises(worker.PdfExtractionError) as caught:
+        worker.extract_text(b"%PDF-fake")
+    assert caught.value.code == code
+
+
+def test_worker_maps_pdf_parser_error(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise PdfReadError("private parser details")
+    monkeypatch.setattr(worker, "PdfReader", fail)
+    with pytest.raises(worker.PdfExtractionError) as caught:
+        worker.extract_text(b"%PDF-fake")
+    assert caught.value.code == "invalid_pdf"
+    assert str(caught.value) == "PDF could not be read"
 
 
 @pytest.mark.parametrize(("raw", "filter_name", "expected"), [
-    (b"x" * (pdfs.MAX_PDF_PAGE_CONTENT_BYTES + 1), None, False),
+    (b"x" * (worker.MAX_PDF_PAGE_CONTENT_BYTES + 1), None, False),
     (b"BT (Meeting) Tj ET", None, True),
     (b"not zlib", "/FlateDecode", False),
     (zlib.compress(b"Meeting")[:-2], "/FlateDecode", False),
@@ -154,14 +252,14 @@ def test_page_stream_decoding_is_bounded(raw, filter_name, expected):
     if filter_name:
         stream[NameObject("/Filter")] = NameObject(filter_name)
     page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
-    assert pdfs._bounded_text_page(page) is expected
+    assert worker._bounded_text_page(page) is expected
 
 
 def test_page_with_too_many_content_streams_falls_back():
     streams = [DecodedStreamObject() for _ in range(101)]
     contents = SimpleNamespace(get_object=lambda: streams)
     page = SimpleNamespace(get=lambda key: contents if key == "/Contents" else None)
-    assert pdfs._bounded_text_page(page) is False
+    assert worker._bounded_text_page(page) is False
 
 
 @pytest.mark.parametrize(("data", "code", "message"), [
@@ -170,7 +268,7 @@ def test_page_with_too_many_content_streams_falls_back():
     (b"%PDF-broken", "invalid_pdf", "PDF could not be read"),
     (make_pdf(encrypted=True), "unsupported_pdf", "Encrypted PDF is not supported"),
     (make_pdf(page_count=0), "invalid_pdf", "PDF has no pages"),
-    (make_pdf(page_count=pdfs.MAX_PDF_PAGES + 1), "too_many_pages", "PDF exceeds the page limit"),
+    (make_pdf(page_count=worker.MAX_PDF_PAGES + 1), "too_many_pages", "PDF exceeds the page limit"),
     (b"%PDF-" + b"x" * pdfs.MAX_UPLOAD_BYTES, "source_too_large", "Source attachments exceed the size limit"),
 ])
 async def test_invalid_pdf_is_explicit_and_consumed(uploaded_file, data, code, message):
@@ -250,30 +348,30 @@ async def test_cancellation_during_pdf_staging_cleans_upload(uploaded_file, tmp_
 
 
 def test_pdf_text_limit_is_enforced(monkeypatch):
-    fake_page = SimpleNamespace(get=lambda _key: None, extract_text=lambda: "x" * (pdfs.MAX_PDF_TEXT_CHARS + 1))
-    monkeypatch.setattr(pdfs, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[fake_page]))
-    with pytest.raises(SourceValidationError) as caught:
-        pdfs._extract_pdf_text(b"%PDF-fake")
+    fake_page = SimpleNamespace(get=lambda _key: None, extract_text=lambda: "x" * (worker.MAX_PDF_TEXT_CHARS + 1))
+    monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[fake_page]))
+    with pytest.raises(worker.PdfExtractionError) as caught:
+        worker.extract_text(b"%PDF-fake")
     assert caught.value.code == "source_too_large"
     assert str(caught.value) == "PDF text exceeds the size limit"
 
 
 def test_pdf_text_limit_counts_all_pages_and_accepts_exact_limit(monkeypatch):
-    text = "x" * ((pdfs.MAX_PDF_TEXT_CHARS - 2) // 2)
+    text = "x" * ((worker.MAX_PDF_TEXT_CHARS - 2) // 2)
     pages = [SimpleNamespace(get=lambda _key: None, extract_text=lambda: text) for _ in range(2)]
     def reader(_stream, *, strict):
         assert strict is False
         return SimpleNamespace(is_encrypted=False, pages=pages)
-    monkeypatch.setattr(pdfs, "PdfReader", reader)
-    assert pdfs._extract_pdf_text(b"%PDF-fake") == (text + "\n\n" + text, False)
+    monkeypatch.setattr(worker, "PdfReader", reader)
+    assert worker.extract_text(b"%PDF-fake") == (text + "\n\n" + text, False)
     pages.append(SimpleNamespace(get=lambda _key: None, extract_text=lambda: "one more"))
-    with pytest.raises(SourceValidationError) as caught:
-        pdfs._extract_pdf_text(b"%PDF-fake")
+    with pytest.raises(worker.PdfExtractionError) as caught:
+        worker.extract_text(b"%PDF-fake")
     assert caught.value.code == "source_too_large"
 
 
 def test_pdf_page_limit_includes_last_allowed_page():
-    assert pdfs._extract_pdf_text(make_pdf(page_count=pdfs.MAX_PDF_PAGES)) == ("", True)
+    assert worker.extract_text(make_pdf(page_count=worker.MAX_PDF_PAGES)) == ("", True)
 
 
 async def test_scanned_pdf_creates_nested_media_directory(uploaded_file, tmp_path):
