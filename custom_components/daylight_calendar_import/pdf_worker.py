@@ -25,7 +25,8 @@ NON_RENDERING_OPERATORS = frozenset({
     b"q", b"Q", b"cm", b"BT", b"ET", b"Tf", b"Td", b"TD", b"Tm", b"T*",
     b"Tc", b"Tw", b"Tz", b"TL", b"Ts", b"Tr", b"w", b"J", b"j", b"M",
     b"d", b"ri", b"i", b"gs", b"CS", b"cs", b"SC", b"sc", b"SCN",
-    b"scn", b"re", b"m", b"l", b"c", b"v", b"y", b"h", b"W", b"W*",
+    b"scn", b"g", b"G", b"rg", b"RG", b"k", b"K", b"re", b"m", b"l",
+    b"c", b"v", b"y", b"h", b"W", b"W*",
     b"n", b"BX", b"EX", b"MP", b"DP", b"BMC", b"BDC", b"EMC",
 })
 

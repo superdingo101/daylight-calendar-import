@@ -139,7 +139,9 @@ async def test_blank_page_in_text_pdf_does_not_require_attachment(uploaded_file)
         assert source.attachments == ()
 
 
-@pytest.mark.parametrize("content", [b"", b"% blank page\n", b"q Q", b"BT ET"])
+@pytest.mark.parametrize("content", [b"", b"% blank page\n", b"q Q", b"BT ET",
+                                     b"0 g", b"1 G", b"1 0 0 rg", b"1 0 0 RG",
+                                     b"0 0 0 1 k", b"0 0 0 1 K"])
 def test_empty_content_stream_in_text_pdf_needs_no_attachment(content):
     writer = PdfWriter()
     writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
