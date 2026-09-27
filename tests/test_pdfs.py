@@ -173,7 +173,7 @@ def test_page_with_image_retains_attachment_even_with_text(monkeypatch):
 def test_indirect_page_resources_with_images_retain_attachment():
     resources = SimpleNamespace(get_object=lambda: {"/XObject": {"/Im0": object()}})
     page = SimpleNamespace(get=lambda key: resources if key == "/Resources" else None)
-    assert worker._bounded_text_page(page) is False
+    assert worker._bounded_text_page(page) == (False, True)
 
 
 def test_annotated_page_retains_form_values_as_pdf_evidence(monkeypatch):
@@ -317,14 +317,14 @@ def test_page_stream_decoding_is_bounded(raw, filter_name, expected):
     if filter_name:
         stream[NameObject("/Filter")] = NameObject(filter_name)
     page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
-    assert worker._bounded_text_page(page) is expected
+    assert worker._bounded_text_page(page)[0] is expected
 
 
 def test_page_with_too_many_content_streams_falls_back():
     streams = [DecodedStreamObject() for _ in range(101)]
     contents = SimpleNamespace(get_object=lambda: streams)
     page = SimpleNamespace(get=lambda key: contents if key == "/Contents" else None)
-    assert worker._bounded_text_page(page) is False
+    assert worker._bounded_text_page(page) == (False, True)
 
 
 def test_last_allowed_stream_and_exact_page_byte_limit_are_accepted():
@@ -332,7 +332,7 @@ def test_last_allowed_stream_and_exact_page_byte_limit_are_accepted():
     streams[-1].set_data(b" " * worker.MAX_PDF_PAGE_CONTENT_BYTES)
     contents = SimpleNamespace(get_object=lambda: streams)
     page = SimpleNamespace(get=lambda key: contents if key == "/Contents" else None)
-    assert worker._bounded_text_page(page) is True
+    assert worker._bounded_text_page(page) == (True, False)
 
 
 def test_page_content_limit_applies_across_multiple_streams():
@@ -341,7 +341,7 @@ def test_page_content_limit_applies_across_multiple_streams():
     streams[1].set_data(b"y" * (worker.MAX_PDF_PAGE_CONTENT_BYTES // 2))
     contents = SimpleNamespace(get_object=lambda: streams)
     page = SimpleNamespace(get=lambda key: contents if key == "/Contents" else None)
-    assert worker._bounded_text_page(page) is False
+    assert worker._bounded_text_page(page) == (False, True)
 
 
 @pytest.mark.parametrize("filter_name", ["/FlateDecode", "/Fl"])
@@ -367,7 +367,7 @@ def test_safe_flate_stream_is_extracted_with_a_strict_decoding_bound(monkeypatch
                 return decoder.decompress(data, limit)
         return Spy()
     monkeypatch.setattr(worker.zlib, "decompressobj", bounded_decoder)
-    assert worker._bounded_text_page(page) is True
+    assert worker._bounded_text_page(page) == (True, True)
 
 
 def test_unsupported_filter_is_not_decoded_even_if_bytes_are_valid_zlib():
@@ -375,7 +375,7 @@ def test_unsupported_filter_is_not_decoded_even_if_bytes_are_valid_zlib():
     stream._data = zlib.compress(b"Meeting")
     stream[NameObject("/Filter")] = NameObject("/ASCII85Decode")
     page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
-    assert worker._bounded_text_page(page) is False
+    assert worker._bounded_text_page(page) == (False, True)
 
 
 @pytest.mark.parametrize(("data", "code", "message"), [

@@ -31,30 +31,30 @@ class PdfExtractionError(ValueError):
         self.code = code
 
 
-def _bounded_text_page(page: object) -> bool:
-    """Check page content before pypdf decompresses it for text extraction."""
+def _bounded_text_page(page: object) -> tuple[bool, bool]:
+    """Return whether text extraction is safe and whether the page has content."""
     if page.get("/Annots"):
         # AcroForm values and appearances do not appear in extracted page text.
-        return False
+        return False, True
     resources = page.get("/Resources") or {}
     if hasattr(resources, "get_object"):
         resources = resources.get_object()
     if resources.get("/XObject"):
-        return False
+        return False, True
     contents = page.get("/Contents")
     if contents is None:
-        return True
+        return True, False
     resolved = contents.get_object()
     streams = resolved if isinstance(resolved, list) else [resolved]
     if len(streams) > 100:
-        return False
+        return False, True
     total = 0
     decoded_streams = []
     for item in streams:
         stream = item.get_object()
         raw = stream._data
         if len(raw) > MAX_PDF_PAGE_CONTENT_BYTES:
-            return False
+            return False, True
         encoding = stream.get("/Filter")
         if encoding is None:
             decoded = raw
@@ -63,29 +63,20 @@ def _bounded_text_page(page: object) -> bool:
                 decoder = zlib.decompressobj()
                 decoded = decoder.decompress(raw, MAX_PDF_PAGE_CONTENT_BYTES + 1)
                 if decoder.unconsumed_tail or not decoder.eof:
-                    return False
+                    return False, True
             except zlib.error:
-                return False
+                return False, True
         else:
-            return False
+            return False, True
         total += len(decoded)
         if total > MAX_PDF_PAGE_CONTENT_BYTES:
-            return False
+            return False, True
         decoded_streams.append(decoded)
     # ContentStream tokenizes PDF strings/comments separately from operators.
     bounded = DecodedStreamObject()
     bounded.set_data(b"\n".join(decoded_streams))
-    return not any(operator in VISUAL_OPERATORS for _, operator in ContentStream(
-        bounded, getattr(page, "pdf", None), "bytes"
-    ).operations)
-
-
-def _empty_content_page(page: object) -> bool:
-    """Detect blank or comment-only streams after the bounded preflight."""
-    contents = page.get("/Contents")
-    return contents is None or not ContentStream(
-        contents, getattr(page, "pdf", None), "bytes"
-    ).operations
+    operations = ContentStream(bounded, getattr(page, "pdf", None), "bytes").operations
+    return not any(operator in VISUAL_OPERATORS for _, operator in operations), bool(operations)
 
 
 def extract_text(data: bytes) -> tuple[str, bool]:
@@ -104,9 +95,9 @@ def extract_text(data: bytes) -> tuple[str, bool]:
         length = 0
         needs_attachment = False
         for page in reader.pages:
-            safe = _bounded_text_page(page)
+            safe, has_content = _bounded_text_page(page)
             text = (page.extract_text() or "") if safe else ""
-            needs_attachment |= not text.strip() and (not safe or not _empty_content_page(page))
+            needs_attachment |= not text.strip() and (not safe or has_content)
             length += len(text) + (2 if pages else 0)
             if length > MAX_PDF_TEXT_CHARS:
                 raise PdfExtractionError("source_too_large", "PDF text exceeds the size limit")
