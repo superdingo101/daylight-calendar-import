@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from custom_components.daylight_calendar_import import parser
+from custom_components.daylight_calendar_import import parser, providers
+from custom_components.daylight_calendar_import.sources import SourceDocument, SourceKind, TextSourceAdapter
 
 
 VALID = {
@@ -59,7 +60,7 @@ def test_parse_ai_data_all_invalid_produces_no_drafts_with_warnings():
 
 async def test_async_parse_text(monkeypatch):
     generate = AsyncMock(return_value=SimpleNamespace(data={"events": [VALID]}))
-    monkeypatch.setattr(parser.ai_task, "async_generate_data", generate)
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     monkeypatch.setattr(
         parser.dt_util,
         "now",
@@ -88,6 +89,29 @@ async def test_async_parse_text_rejects_empty_input():
         await parser.async_parse_text(object(), text="  ", ai_task_entity="ai_task.test")
 
 
+async def test_provider_rejects_source_without_text():
+    source = TextSourceAdapter().create("some text")
+    empty = SourceDocument(id=source.id, kind=SourceKind.IMAGE, received_at=source.received_at)
+    with pytest.raises(ValueError, match="source must contain text"):
+        await providers.AITaskParserProvider(object(), "ai_task.test").async_parse(
+            empty, reference_datetime="2026-09-25T14:30:00-07:00", time_zone="America/Los_Angeles"
+        )
+
+
+async def test_source_boundary_passes_normalized_document_to_provider(monkeypatch):
+    provider_parse = AsyncMock(return_value=parser.ParseOutcome([], []))
+    monkeypatch.setattr(providers.AITaskParserProvider, "async_parse", provider_parse)
+    source = TextSourceAdapter().create("source text", source_id="upstream-1")
+    hass = SimpleNamespace(config=SimpleNamespace(time_zone="UTC"))
+
+    outcome = await parser.async_parse_source(hass, source=source, ai_task_entity="ai_task.test")
+
+    assert outcome == parser.ParseOutcome([], [])
+    assert provider_parse.await_args.args == (source,)
+    assert provider_parse.await_args.kwargs["time_zone"] == "UTC"
+    assert provider_parse.await_args.kwargs["reference_datetime"]
+
+
 async def test_async_parse_text_preserves_ai_task_and_timezone_contract(monkeypatch):
     from unittest.mock import Mock
 
@@ -99,7 +123,7 @@ async def test_async_parse_text_preserves_ai_task_and_timezone_contract(monkeypa
             2026, 9, 25, 14, 30, tzinfo=local_tz
         )
     )
-    monkeypatch.setattr(parser.ai_task, "async_generate_data", generate)
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     monkeypatch.setattr(parser.dt_util, "get_time_zone", get_time_zone)
     monkeypatch.setattr(parser.dt_util, "now", now)
 

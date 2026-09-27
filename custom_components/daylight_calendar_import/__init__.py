@@ -36,7 +36,7 @@ from .const import (
     SERVICE_SUBMIT_TEXT,
 )
 from .models import DraftValidationError, EventDraft
-from .parser import ParseOutcome, async_parse_text
+from .parser import ParseOutcome, async_parse_source as parse_source_with_provider
 from .sources import SourceDocument, TextSourceAdapter
 from .storage import (
     PendingEventEditError,
@@ -478,9 +478,9 @@ async def _async_parse_source(
     """Feed a normalized source into the current text parser boundary."""
     if source.text is None:
         raise ServiceValidationError("This source has no text for the configured parser")
-    return await async_parse_text(
+    return await parse_source_with_provider(
         hass,
-        text=source.text,
+        source=source,
         ai_task_entity=entry.data[CONF_AI_TASK_ENTITY],
     )
 
