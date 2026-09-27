@@ -185,11 +185,17 @@ def test_worker_main_applies_limits_and_serializes_result(monkeypatch, data, err
     import resource
     calls = []
     monkeypatch.setattr(resource, "setrlimit", lambda kind, limits: calls.append((kind, limits)))
-    monkeypatch.setattr(worker.sys, "stdin", SimpleNamespace(buffer=BytesIO(data)))
+    if error is None:
+        monkeypatch.setattr(worker, "MAX_INPUT_BYTES", len(data))
+    elif error == "source_too_large":
+        monkeypatch.setattr(worker, "MAX_INPUT_BYTES", 3)
+    class BoundedInput(BytesIO):
+        def read(self, size=-1):
+            assert size == worker.MAX_INPUT_BYTES + 1
+            return super().read(size)
+    monkeypatch.setattr(worker.sys, "stdin", SimpleNamespace(buffer=BoundedInput(data)))
     output = StringIO()
     monkeypatch.setattr(worker.sys, "stdout", output)
-    if error == "source_too_large":
-        monkeypatch.setattr(worker, "MAX_INPUT_BYTES", 3)
     worker.main()
     payload = json.loads(output.getvalue())
     if error:
@@ -215,18 +221,19 @@ def test_worker_main_maps_memory_limit(monkeypatch):
     }
 
 
-@pytest.mark.parametrize(("encrypted", "page_count", "code"), [
-    (True, 1, "unsupported_pdf"),
-    (False, 0, "invalid_pdf"),
-    (False, worker.MAX_PDF_PAGES + 1, "too_many_pages"),
+@pytest.mark.parametrize(("encrypted", "page_count", "code", "message"), [
+    (True, 1, "unsupported_pdf", "Encrypted PDF is not supported"),
+    (False, 0, "invalid_pdf", "PDF has no pages"),
+    (False, worker.MAX_PDF_PAGES + 1, "too_many_pages", "PDF exceeds the page limit"),
 ])
-def test_worker_rejects_unsupported_document_shapes(monkeypatch, encrypted, page_count, code):
+def test_worker_rejects_unsupported_document_shapes(monkeypatch, encrypted, page_count, code, message):
     monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(
         is_encrypted=encrypted, pages=[object()] * page_count
     ))
     with pytest.raises(worker.PdfExtractionError) as caught:
         worker.extract_text(b"%PDF-fake")
     assert caught.value.code == code
+    assert str(caught.value) == message
 
 
 def test_worker_maps_pdf_parser_error(monkeypatch):
@@ -259,6 +266,57 @@ def test_page_with_too_many_content_streams_falls_back():
     streams = [DecodedStreamObject() for _ in range(101)]
     contents = SimpleNamespace(get_object=lambda: streams)
     page = SimpleNamespace(get=lambda key: contents if key == "/Contents" else None)
+    assert worker._bounded_text_page(page) is False
+
+
+def test_last_allowed_stream_and_exact_page_byte_limit_are_accepted():
+    streams = [DecodedStreamObject() for _ in range(100)]
+    streams[-1].set_data(b"x" * worker.MAX_PDF_PAGE_CONTENT_BYTES)
+    contents = SimpleNamespace(get_object=lambda: streams)
+    page = SimpleNamespace(get=lambda key: contents if key == "/Contents" else None)
+    assert worker._bounded_text_page(page) is True
+
+
+def test_page_content_limit_applies_across_multiple_streams():
+    streams = [DecodedStreamObject() for _ in range(2)]
+    streams[0].set_data(b"x" * (worker.MAX_PDF_PAGE_CONTENT_BYTES // 2 + 1))
+    streams[1].set_data(b"y" * (worker.MAX_PDF_PAGE_CONTENT_BYTES // 2))
+    contents = SimpleNamespace(get_object=lambda: streams)
+    page = SimpleNamespace(get=lambda key: contents if key == "/Contents" else None)
+    assert worker._bounded_text_page(page) is False
+
+
+@pytest.mark.parametrize("filter_name", ["/FlateDecode", "/Fl"])
+def test_safe_flate_stream_is_extracted_with_a_strict_decoding_bound(monkeypatch, filter_name):
+    compressed = zlib.compress(b"BT (Meeting) Tj ET")
+    stream = EncodedStreamObject()
+    stream._data = compressed
+    stream[NameObject("/Filter")] = NameObject(filter_name)
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
+    real_decoder = zlib.decompressobj
+    def bounded_decoder():
+        decoder = real_decoder()
+        class Spy:
+            @property
+            def unconsumed_tail(self):
+                return decoder.unconsumed_tail
+            @property
+            def eof(self):
+                return decoder.eof
+            def decompress(self, data, limit):
+                assert data == compressed
+                assert limit == worker.MAX_PDF_PAGE_CONTENT_BYTES + 1
+                return decoder.decompress(data, limit)
+        return Spy()
+    monkeypatch.setattr(worker.zlib, "decompressobj", bounded_decoder)
+    assert worker._bounded_text_page(page) is True
+
+
+def test_unsupported_filter_is_not_decoded_even_if_bytes_are_valid_zlib():
+    stream = EncodedStreamObject()
+    stream._data = zlib.compress(b"Meeting")
+    stream[NameObject("/Filter")] = NameObject("/ASCII85Decode")
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
     assert worker._bounded_text_page(page) is False
 
 
@@ -364,10 +422,19 @@ def test_pdf_text_limit_counts_all_pages_and_accepts_exact_limit(monkeypatch):
         return SimpleNamespace(is_encrypted=False, pages=pages)
     monkeypatch.setattr(worker, "PdfReader", reader)
     assert worker.extract_text(b"%PDF-fake") == (text + "\n\n" + text, False)
-    pages.append(SimpleNamespace(get=lambda _key: None, extract_text=lambda: "one more"))
+    pages.append(SimpleNamespace(get=lambda _key: None, extract_text=lambda: "x"))
     with pytest.raises(worker.PdfExtractionError) as caught:
         worker.extract_text(b"%PDF-fake")
     assert caught.value.code == "source_too_large"
+
+
+def test_scanned_page_before_text_still_requires_attachment(monkeypatch):
+    pages = [
+        SimpleNamespace(get=lambda _key: None, extract_text=lambda: ""),
+        SimpleNamespace(get=lambda _key: None, extract_text=lambda: "Meeting Friday"),
+    ]
+    monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=pages))
+    assert worker.extract_text(b"%PDF-fake") == ("Meeting Friday", True)
 
 
 def test_pdf_page_limit_includes_last_allowed_page():
