@@ -29,6 +29,9 @@ class PdfExtractionError(ValueError):
 
 def _bounded_text_page(page: object) -> bool:
     """Check page content before pypdf decompresses it for text extraction."""
+    if page.get("/Annots"):
+        # AcroForm values and appearances do not appear in extracted page text.
+        return False
     resources = page.get("/Resources") or {}
     if hasattr(resources, "get_object"):
         resources = resources.get_object()

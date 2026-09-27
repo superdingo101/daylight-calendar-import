@@ -144,6 +144,13 @@ def test_indirect_page_resources_with_images_retain_attachment():
     assert worker._bounded_text_page(page) is False
 
 
+def test_annotated_page_retains_form_values_as_pdf_evidence(monkeypatch):
+    page = SimpleNamespace(get=lambda key: [object()] if key == "/Annots" else None,
+                           extract_text=lambda: pytest.fail("form values reached text-only path"))
+    monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
+    assert worker.extract_text(b"%PDF-fake") == ("", True)
+
+
 def test_inline_image_operator_retains_pdf_attachment(monkeypatch):
     stream = DecodedStreamObject()
     stream.set_data(b"BT (Cover text) Tj ET BI /W 1 /H 1 ID x EI")
