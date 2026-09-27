@@ -15,7 +15,7 @@ from .models import DraftValidationError, EventDraft
 from .sources import SourceDocument, TextSourceAdapter
 
 TASK_NAME = "Extract calendar event drafts"
-PROMPT_TEMPLATE = """Extract every calendar event explicitly supported by the source text below.
+PROMPT_TEMPLATE = """Extract every calendar event explicitly supported by the source text and any attached images.
 
 Rules:
 - Do not invent dates, times, locations, titles, or durations.
@@ -30,7 +30,7 @@ Rules:
 Reference datetime: {reference_datetime}
 Home Assistant time zone: {time_zone}
 
-Source text:
+Source text (may be empty when the event is in an image):
 {text}
 """
 
@@ -38,7 +38,7 @@ EVENTS_STRUCTURE = vol.Schema(
     {
         vol.Required(
             "events",
-            description="Calendar events explicitly supported by the source text",
+            description="Calendar events explicitly supported by the source text or attached images",
         ): selector.ObjectSelector(
             {
                 "multiple": True,

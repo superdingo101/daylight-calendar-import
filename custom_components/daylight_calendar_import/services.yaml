@@ -40,6 +40,29 @@ submit_text:
       selector:
         text:
 
+submit_image:
+  name: Submit image for review
+  description: Upload an image, extract event drafts with an attachment-capable AI Task entity, and queue them for review. The uploaded file and temporary media copy are removed after processing.
+  fields:
+    file_id:
+      name: Image upload
+      description: PNG, JPEG, or WebP image (10 MiB maximum).
+      required: true
+      selector:
+        file:
+          accept: image/png,image/jpeg,image/webp
+    text:
+      name: Text
+      description: Optional context to interpret together with the image.
+      selector:
+        text:
+          multiline: true
+    source_id:
+      name: Source ID
+      description: Optional stable upstream identifier for deduplication.
+      selector:
+        text:
+
 approve_pending:
   name: Approve pending import
   description: Create all events from a pending import on the configured calendar, then remove it from review.

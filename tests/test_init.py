@@ -1,5 +1,6 @@
 """Tests for Home Assistant service wiring."""
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, Mock
 
@@ -16,6 +17,7 @@ from custom_components.daylight_calendar_import import (
     PENDING_EVENT_SCHEMA,
     PENDING_SCHEMA,
     SUBMIT_SCHEMA,
+    SUBMIT_IMAGE_SCHEMA,
     _async_check_entity_control_permission,
     _async_create_calendar_event,
     _async_parse_source,
@@ -26,6 +28,7 @@ from custom_components.daylight_calendar_import import (
 )
 from custom_components.daylight_calendar_import.const import (
     ATTR_EVENT_ID,
+    ATTR_FILE_ID,
     ATTR_PENDING_ID,
     ATTR_SOURCE_ID,
     ATTR_TEXT,
@@ -45,10 +48,11 @@ from custom_components.daylight_calendar_import.const import (
     SERVICE_REJECT_PENDING_EVENT,
     SERVICE_RESOLVE_PENDING_EVENT,
     SERVICE_SUBMIT_TEXT,
+    SERVICE_SUBMIT_IMAGE,
 )
 from custom_components.daylight_calendar_import.models import EventDraft
 from custom_components.daylight_calendar_import.parser import ParseOutcome
-from custom_components.daylight_calendar_import.sources import SourceDocument, SourceKind, TextSourceAdapter
+from custom_components.daylight_calendar_import.sources import SourceAttachment, SourceDocument, SourceKind, TextSourceAdapter
 from custom_components.daylight_calendar_import.storage import (
     PendingEventEditError,
     PendingEventResolutionError,
@@ -953,6 +957,7 @@ async def test_service_registration_contracts(monkeypatch):
         SERVICE_PARSE_TEXT: (PARSE_SCHEMA, SupportsResponse.ONLY),
         SERVICE_IMPORT_TEXT: (PARSE_SCHEMA, SupportsResponse.OPTIONAL),
         SERVICE_SUBMIT_TEXT: (SUBMIT_SCHEMA, SupportsResponse.ONLY),
+        SERVICE_SUBMIT_IMAGE: (SUBMIT_IMAGE_SCHEMA, SupportsResponse.ONLY),
         SERVICE_APPROVE_PENDING: (PENDING_SCHEMA, SupportsResponse.OPTIONAL),
         SERVICE_REJECT_PENDING: (PENDING_SCHEMA, SupportsResponse.OPTIONAL),
         SERVICE_LIST_PENDING: (None, SupportsResponse.ONLY),
@@ -1405,3 +1410,92 @@ async def test_text_parser_boundary_rejects_attachment_only_source():
     )
     with pytest.raises(ServiceValidationError, match="no text"):
         await _async_parse_source(FakeHass(), entry(), attachment_only)
+
+
+async def test_submit_image_routes_attachment_and_text_into_review(monkeypatch):
+    image_seed = TextSourceAdapter().create("seed")
+    image = SourceDocument(
+        image_seed.id, SourceKind.IMAGE, image_seed.received_at,
+        attachments=(SourceAttachment("image", "image/png", 42, "media-source://media_source/local/image.png", sha256="abc"),),
+    )
+    @asynccontextmanager
+    async def image_source(_hass, file_id):
+        assert _hass is hass
+        assert file_id == "a" * 32
+        yield image
+
+    parse = AsyncMock(return_value=ParseOutcome([draft()], []))
+    store = SimpleNamespace(
+        async_load=AsyncMock(), is_source_duplicate=Mock(return_value=False),
+        async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_image_source", image_source)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    hass = FakeHass()
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_IMAGE)][0]
+    result = await handler(SimpleNamespace(data={ATTR_FILE_ID: "a" * 32, ATTR_TEXT: "  Please read  ", ATTR_SOURCE_ID: "upstream"}, context=Context(user_id=None)))
+    source = parse.await_args.kwargs["source"]
+    assert parse.await_args.args == (hass,)
+    assert parse.await_args.kwargs["ai_task_entity"] == "ai_task.test"
+    assert source.text == "Please read"
+    assert source.attachments == image.attachments
+    assert store.async_add.await_args.kwargs["source_text"] == "Please read"
+    assert store.async_add.await_args.kwargs["source_id"] == "upstream"
+    assert store.async_add.await_args.kwargs["events"] == [draft()]
+    assert store.async_add.await_args.kwargs["calendar_entity"] == "calendar.family"
+    assert result["pending"] is not None
+    store.is_source_duplicate.return_value = True
+    duplicate = await handler(SimpleNamespace(data={ATTR_FILE_ID: "a" * 32, ATTR_SOURCE_ID: "upstream"}, context=Context(user_id=None)))
+    assert duplicate == {"pending": None, "duplicate": True, "duplicate_source": True, "duplicate_events": 0, "warnings": []}
+    assert parse.await_count == 1
+    store.is_source_duplicate.assert_called_with("upstream")
+
+
+async def test_submit_image_checks_control_permission_and_event_duplicate(monkeypatch):
+    permissions = FakePermissions(allowed=True)
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    seed = TextSourceAdapter().create("seed")
+    image = SourceDocument(seed.id, SourceKind.IMAGE, seed.received_at,
+                           attachments=(SourceAttachment("a", "image/png", 10, "ref", sha256="digest"),))
+    @asynccontextmanager
+    async def image_source(_hass, _file_id):
+        yield image
+    store = SimpleNamespace(async_load=AsyncMock(), is_source_duplicate=Mock(return_value=False),
+                            async_add=AsyncMock(return_value=PendingImportAddResult(None, False, 1)))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_image_source", image_source)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", AsyncMock(return_value=ParseOutcome([draft()], [])))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    await async_setup_entry(hass, entry())
+    result = await hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_IMAGE)][0](
+        SimpleNamespace(data={ATTR_FILE_ID: "a" * 32}, context=Context(user_id="reviewer")))
+    assert result["duplicate"] is True
+    assert result["duplicate_events"] == 1
+    assert permissions.calls == [("ai_task.test", POLICY_CONTROL)]
+
+
+async def test_submit_image_only_persists_digest_not_bytes(monkeypatch):
+    seed = TextSourceAdapter().create("seed")
+    image = SourceDocument(seed.id, SourceKind.IMAGE, seed.received_at,
+                           attachments=(SourceAttachment("a", "image/png", 10, "media-source://media_source/local/staged.png", sha256="digest"),))
+    @asynccontextmanager
+    async def image_source(_hass, _file_id):
+        yield image
+    store = SimpleNamespace(async_load=AsyncMock(), async_add=AsyncMock(return_value=PendingImportAddResult(None, False, 0)))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_image_source", image_source)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", AsyncMock(return_value=ParseOutcome([], ["no events"])))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    hass = FakeHass()
+    await async_setup_entry(hass, entry())
+    result = await hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_IMAGE)][0](
+        SimpleNamespace(data={ATTR_FILE_ID: "a" * 32}, context=Context(user_id=None)))
+    assert result == {"pending": None, "duplicate": False, "duplicate_source": False, "duplicate_events": 0, "warnings": ["no events"]}
+    assert store.async_add.await_args.kwargs["source_text"] == "Image attachment (SHA-256: digest)"
+
+
+def test_image_upload_schema_preserves_home_assistant_file_id():
+    file_id = "a" * 32
+    assert SUBMIT_IMAGE_SCHEMA({ATTR_FILE_ID: file_id})[ATTR_FILE_ID] == file_id
+    with pytest.raises(vol.Invalid):
+        SUBMIT_IMAGE_SCHEMA({ATTR_FILE_ID: "../../some-file"})
