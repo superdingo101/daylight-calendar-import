@@ -82,6 +82,7 @@ async def test_async_parse_text(monkeypatch):
     assert "Reference datetime: 2026-09-25T14:30:00-07:00" in kwargs["instructions"]
     assert "Home Assistant time zone: America/Los_Angeles" in kwargs["instructions"]
     assert kwargs["structure"] is parser.EVENTS_STRUCTURE
+    assert "attached images" in next(iter(kwargs["structure"].schema)).description
     assert "attachments" not in kwargs
 
 

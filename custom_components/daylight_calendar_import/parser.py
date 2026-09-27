@@ -38,7 +38,7 @@ EVENTS_STRUCTURE = vol.Schema(
     {
         vol.Required(
             "events",
-            description="Calendar events explicitly supported by the source text",
+            description="Calendar events explicitly supported by the source text or attached images",
         ): selector.ObjectSelector(
             {
                 "multiple": True,
