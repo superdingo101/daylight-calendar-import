@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from custom_components.daylight_calendar_import import parser, providers
-from custom_components.daylight_calendar_import.sources import SourceDocument, SourceKind, TextSourceAdapter
+from custom_components.daylight_calendar_import.sources import SourceAttachment, SourceDocument, SourceKind, TextSourceAdapter
 
 
 VALID = {
@@ -92,10 +92,60 @@ async def test_async_parse_text_rejects_empty_input():
 async def test_provider_rejects_source_without_text():
     source = TextSourceAdapter().create("some text")
     empty = SourceDocument(id=source.id, kind=SourceKind.IMAGE, received_at=source.received_at)
-    with pytest.raises(ValueError, match="source must contain text"):
+    with pytest.raises(providers.SourceValidationError, match="Source must contain text or attachments") as caught:
         await providers.AITaskParserProvider(object(), "ai_task.test").async_parse(
             empty, reference_datetime="2026-09-25T14:30:00-07:00", time_zone="America/Los_Angeles"
         )
+    assert str(caught.value) == "Source must contain text or attachments"
+
+
+def test_parser_capabilities_reject_unsupported_source_before_invocation():
+    text_source = TextSourceAdapter().create("Some text")
+    image = SourceAttachment("a", "image/png", 128, "media-source://media_source/local/a")
+    pdf = SourceAttachment("b", "application/pdf", 128, "media-source://media_source/local/b")
+    capabilities = providers.ParserCapabilities(True, False, False, 4, 1024)
+    for attachment in (image, pdf):
+        source = SourceDocument(text_source.id, SourceKind.IMAGE, text_source.received_at, attachments=(attachment,))
+        with pytest.raises(providers.SourceValidationError) as caught:
+            capabilities.validate(source)
+        assert caught.value.code == "unsupported_capability"
+        assert str(caught.value) == "Parser does not support this attachment"
+
+
+@pytest.mark.parametrize(
+    ("attachments", "capabilities", "code", "message"),
+    [
+        ((SourceAttachment("a", "text/plain", 1, "ref"),), (True, True, True, 4, 1024), "unsupported_media", "Unsupported attachment media type"),
+        ((SourceAttachment("a", "image/png", 0, "ref"),), (True, True, True, 4, 1024), "empty_attachment", "Source attachment is empty"),
+        ((SourceAttachment("a", "image/png", 1025, "ref"),), (True, True, True, 4, 1024), "source_too_large", "Source attachments exceed the size limit"),
+        ((SourceAttachment("a", "image/png", 1, "ref"),) * 2, (True, True, True, 1, 1024), "too_many_attachments", "Too many source attachments"),
+    ],
+)
+def test_parser_capability_validation_errors(attachments, capabilities, code, message):
+    seed = TextSourceAdapter().create("source")
+    source = SourceDocument(seed.id, SourceKind.IMAGE, seed.received_at, attachments=attachments)
+    with pytest.raises(providers.SourceValidationError) as caught:
+        providers.ParserCapabilities(*capabilities).validate(source)
+    assert caught.value.code == code
+    assert str(caught.value) == message
+
+
+def test_parser_capabilities_accept_mixed_source_and_enforce_text_support():
+    seed = TextSourceAdapter().create("source")
+    image = SourceAttachment("a", "image/jpeg", 200, "ref")
+    pdf = SourceAttachment("b", "application/pdf", 300, "ref")
+    source = SourceDocument(seed.id, SourceKind.IMAGE, seed.received_at, text="See attached", attachments=(image, pdf))
+    providers.ParserCapabilities(True, True, True, 2, 500).validate(source)
+    attachment_only = SourceDocument(seed.id, SourceKind.IMAGE, seed.received_at, attachments=(image,))
+    providers.ParserCapabilities(False, True, False, 2, 500).validate(attachment_only)
+    with pytest.raises(providers.SourceValidationError) as caught:
+        providers.ParserCapabilities(False, True, True, 2, 500).validate(source)
+    assert caught.value.code == "unsupported_capability"
+    assert str(caught.value) == "Parser does not support text"
+    oversized = SourceDocument(seed.id, SourceKind.IMAGE, seed.received_at, attachments=(image, pdf))
+    with pytest.raises(providers.SourceValidationError) as caught:
+        providers.ParserCapabilities(False, True, True, 2, 499).validate(oversized)
+    assert caught.value.code == "source_too_large"
 
 
 async def test_source_boundary_passes_normalized_document_to_provider(monkeypatch):
