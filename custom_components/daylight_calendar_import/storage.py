@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -107,6 +107,10 @@ class PendingImport:
     source_text: str
     events: tuple[PendingEvent, ...]
     source_fingerprint: str | None = None
+    source_kind: str = "manual_text"
+    source_title: str | None = None
+    warnings: tuple[str, ...] = ()
+    duplicate_events: int = 0
 
     @classmethod
     def create(
@@ -116,6 +120,10 @@ class PendingImport:
         events: Iterable[EventDraft],
         source_fingerprint: str | None = None,
         calendar_entity: str | None = None,
+        source_kind: str = "manual_text",
+        source_title: str | None = None,
+        warnings: Iterable[str] = (),
+        duplicate_events: int = 0,
     ) -> PendingImport:
         """Create a new pending import with stable persisted metadata."""
         source_text = source_text.strip()
@@ -132,6 +140,10 @@ class PendingImport:
             source_text=source_text,
             events=event_tuple,
             source_fingerprint=source_fingerprint,
+            source_kind=source_kind,
+            source_title=source_title,
+            warnings=tuple(warnings),
+            duplicate_events=duplicate_events,
         )
 
     @classmethod
@@ -143,6 +155,10 @@ class PendingImport:
             source_text=raw["source_text"],
             events=tuple(PendingEvent.from_dict(event) for event in raw["events"]),
             source_fingerprint=raw.get("source_fingerprint"),
+            source_kind=raw.get("source_kind", "manual_text"),
+            source_title=raw.get("source_title"),
+            warnings=tuple(raw.get("warnings", ())),
+            duplicate_events=raw.get("duplicate_events", 0),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -153,6 +169,14 @@ class PendingImport:
             "source_text": self.source_text,
             "events": [event.as_dict() for event in self.events],
         }
+        if self.source_kind != "manual_text":
+            result["source_kind"] = self.source_kind
+        if self.source_title is not None:
+            result["source_title"] = self.source_title
+        if self.warnings:
+            result["warnings"] = list(self.warnings)
+        if self.duplicate_events:
+            result["duplicate_events"] = self.duplicate_events
         if self.source_fingerprint is not None:
             result["source_fingerprint"] = self.source_fingerprint
         return result
@@ -160,6 +184,8 @@ class PendingImport:
     def as_service_dict(self) -> dict[str, Any]:
         """Keep the existing submit response fields while exposing event IDs."""
         result = self.as_dict()
+        result.update(source_kind=self.source_kind, source_title=self.source_title,
+                      warnings=list(self.warnings), duplicate_events=self.duplicate_events)
         result["events"] = [event.as_service_dict() for event in self.events]
         result["approval_in_flight"] = self.approval_in_flight
         return result
@@ -259,12 +285,9 @@ class PendingImportStore:
                 raise PendingEventEditError("Edited event duplicates a pending or handled event")
 
             edited = PendingEvent(event.id, draft, event.status, target)
-            updated = PendingImport(
-                id=pending.id, created_at=pending.created_at,
-                source_text=pending.source_text,
-                events=tuple(edited if item.id == event_id else item for item in pending.events),
-                source_fingerprint=pending.source_fingerprint,
-            )
+            updated = replace(pending, events=tuple(
+                edited if item.id == event_id else item for item in pending.events
+            ))
             items = dict(self._items)
             items[pending_id] = updated
             await self._async_save(items)
@@ -288,6 +311,9 @@ class PendingImportStore:
         events: Iterable[EventDraft],
         source_id: str | None = None,
         calendar_entity: str | None = None,
+        source_kind: str = "manual_text",
+        source_title: str | None = None,
+        warnings: Iterable[str] = (),
     ) -> PendingImportAddResult:
         """Persist only events not already pending or handled."""
         source_text = source_text.strip()
@@ -348,6 +374,10 @@ class PendingImportStore:
                 events=accepted_events,
                 source_fingerprint=source_fp,
                 calendar_entity=calendar_entity,
+                source_kind=source_kind,
+                source_title=source_title,
+                warnings=warnings,
+                duplicate_events=duplicate_events,
             )
             items = dict(self._items)
             items[pending.id] = pending
@@ -407,11 +437,7 @@ class PendingImportStore:
             items = dict(self._items)
             seen_sources = self._seen_source_fingerprints
             if remaining:
-                items[pending_id] = PendingImport(
-                    id=pending.id, created_at=pending.created_at,
-                    source_text=pending.source_text, events=remaining,
-                    source_fingerprint=pending.source_fingerprint,
-                )
+                items[pending_id] = replace(pending, events=remaining)
             else:
                 del items[pending_id]
                 if pending.source_fingerprint is not None:
@@ -462,11 +488,7 @@ class PendingImportStore:
                 )
 
             if remaining:
-                items[pending_id] = PendingImport(
-                    id=pending.id, created_at=pending.created_at,
-                    source_text=pending.source_text, events=remaining,
-                    source_fingerprint=pending.source_fingerprint,
-                )
+                items[pending_id] = replace(pending, events=remaining)
             else:
                 del items[pending_id]
                 if pending.source_fingerprint is not None:
@@ -524,16 +546,11 @@ class PendingImportStore:
         processor: Callable[[PendingEvent], Awaitable[None]],
     ) -> PendingImport | None:
         """Checkpoint the selected event around its external calendar write."""
-        in_flight = PendingImport(
-            id=pending.id, created_at=pending.created_at,
-            source_text=pending.source_text,
-            events=tuple(
+        in_flight = replace(pending, events=tuple(
                 PendingEvent(item.id, item.draft, "write_uncertain", item.calendar_entity)
                 if item.id == event.id else item
                 for item in pending.events
-            ),
-            source_fingerprint=pending.source_fingerprint,
-        )
+            ))
         items = dict(self._items)
         items[pending.id] = in_flight
         await self._async_save(items)
@@ -548,11 +565,7 @@ class PendingImportStore:
             self._seen_event_fingerprints, (event_fingerprint(event.draft),)
         )
         if remaining:
-            updated = PendingImport(
-                id=pending.id, created_at=pending.created_at,
-                source_text=pending.source_text, events=remaining,
-                source_fingerprint=pending.source_fingerprint,
-            )
+            updated = replace(pending, events=remaining)
             items[pending.id] = updated
         else:
             updated = None

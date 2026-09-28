@@ -173,6 +173,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             events=outcome.events,
             source_id=source.upstream_source_id,
             calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
+            warnings=outcome.warnings,
         )
         return {
             "pending": (
@@ -201,6 +202,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             events=outcome.events,
             source_id=source.upstream_source_id,
             calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
+            source_kind=source.kind.value,
+            source_title=source.title,
+            warnings=outcome.warnings,
         )
         return {"pending": result.pending.as_service_dict() if result.pending else None,
                 "duplicate": result.duplicate_source or result.duplicate_events > 0,
@@ -307,6 +311,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "created_at": item.created_at,
                 "event_count": len(item.events),
                 "title": item.events[0].draft.title,
+                "source_kind": item.source_kind,
+                "source_title": item.source_title,
+                "warnings": list(item.warnings),
+                "duplicate_events": item.duplicate_events,
                 "approval_in_flight": item.approval_in_flight,
             }
             for item in pending_store.list()

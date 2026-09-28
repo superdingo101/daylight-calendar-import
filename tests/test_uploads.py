@@ -209,6 +209,7 @@ async def test_real_home_assistant_upload_is_consumed(tmp_path):
 
     async with uploads.async_image_source(hass, file_id) as source:
         assert source.attachments[0].filename == "flyer.png"
+        assert source.title == "flyer.png"
         assert not original_dir.exists()
     assert not list((tmp_path / "media").iterdir())
 

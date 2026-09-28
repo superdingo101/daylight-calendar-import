@@ -209,6 +209,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
         events=[draft()],
         source_id="message-1",
         calendar_entity="calendar.family",
+        warnings=[],
     )
 
     approve_handler, approve_kwargs = hass.services.handlers[
@@ -283,6 +284,8 @@ async def test_pending_read_actions_return_summaries_details_and_stable_event(mo
     assert summary == {"imports": [{
         "id": item.id, "created_at": item.created_at, "event_count": 2,
         "title": "Practice", "approval_in_flight": False,
+        "source_kind": "manual_text", "source_title": None,
+        "warnings": [], "duplicate_events": 0,
     }]}
     assert "private invitation" not in str(summary)
 
@@ -291,6 +294,8 @@ async def test_pending_read_actions_return_summaries_details_and_stable_event(mo
     assert get_options["supports_response"] is SupportsResponse.ONLY
     details = await get_handler(SimpleNamespace(data={ATTR_PENDING_ID: item.id}, context=context))
     assert details["pending"]["source_text"] == "private invitation"
+    assert details["pending"]["source_kind"] == "manual_text"
+    assert details["pending"]["warnings"] == []
     assert details["pending"]["events"][1]["id"] == item.events[1].id
     assert "source_fingerprint" not in details["pending"]
 
@@ -603,6 +608,7 @@ async def test_submit_text_without_events_records_source_handling(monkeypatch):
         events=[],
         source_id=None,
         calendar_entity="calendar.family",
+        warnings=[],
     )
 
 
@@ -1062,6 +1068,7 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
         events=[event],
         source_id="message-42",
         calendar_entity="calendar.family",
+        warnings=[],
     )
 
 
@@ -1519,6 +1526,8 @@ async def test_submit_pdf_text_layer_uses_review_pipeline(monkeypatch):
         SimpleNamespace(data={ATTR_FILE_ID: "a" * 32, ATTR_TEXT: "Context", ATTR_SOURCE_ID: "pdf-upstream"}, context=Context(user_id=None)))
     assert parse.await_args.kwargs["source"].kind is SourceKind.PDF
     assert store.async_add.await_args.kwargs["source_text"] == "Context\n\nExtracted schedule"
+    assert store.async_add.await_args.kwargs["source_kind"] == "pdf"
+    assert store.async_add.await_args.kwargs["warnings"] == []
     assert store.async_add.await_args.kwargs["source_id"] == "pdf-upstream"
     assert response["pending"] is not None
 
@@ -1542,6 +1551,7 @@ async def test_submit_scanned_pdf_persists_digest_only(monkeypatch):
         SimpleNamespace(data={ATTR_FILE_ID: "a" * 32}, context=Context(user_id=None)))
     assert response["pending"] is None
     assert store.async_add.await_args.kwargs["source_text"] == "PDF attachment (SHA-256: digest)"
+    assert store.async_add.await_args.kwargs["source_kind"] == "pdf"
 
 
 async def test_submit_mixed_pdf_preserves_text_and_digest_without_media_reference(monkeypatch):
