@@ -261,6 +261,18 @@ def test_indirect_link_subtype_still_allows_text_extraction():
     assert worker.extract_text(output.getvalue()) == ("Meeting Friday", False)
 
 
+@pytest.mark.parametrize("key", ["/AP", "/Contents"])
+def test_indirect_null_link_fields_do_not_require_attachment(key):
+    writer = PdfWriter()
+    writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
+    writer.add_uri(0, "https://example.com/calendar", RectangleObject((0, 0, 100, 20)))
+    annotation = writer.pages[0]["/Annots"][0].get_object()
+    annotation[NameObject(key)] = writer._add_object(NullObject())
+    output = BytesIO()
+    writer.write(output)
+    assert worker.extract_text(output.getvalue()) == ("Meeting Friday", False)
+
+
 @pytest.mark.parametrize("contents", [NullObject(), ArrayObject([NullObject()])])
 def test_null_contents_in_text_pdf_is_blank(contents):
     writer = PdfWriter()
@@ -298,6 +310,12 @@ def test_null_member_in_annotation_array_is_ignored():
     output = BytesIO()
     writer.write(output)
     assert worker.extract_text(output.getvalue()) == ("Meeting Friday", False)
+
+
+def test_null_annotation_before_widget_still_requires_attachment():
+    annotation = DictionaryObject({NameObject("/Subtype"): NameObject("/Widget")})
+    page = SimpleNamespace(get=lambda key: [NullObject(), annotation] if key == "/Annots" else None)
+    assert worker._bounded_text_page(page) == (False, True)
 
 
 @pytest.mark.parametrize("operator", [b"BI /W", b"BI/W"])
@@ -396,6 +414,11 @@ async def test_cancelled_pdf_waiter_consumes_upload_before_staging(monkeypatch, 
             return func(*args)
         return await asyncio.to_thread(func, *args)
     hass = SimpleNamespace(config=SimpleNamespace(media_dirs={}), data={}, async_add_executor_job=executor)
+    original_process = pdfs.process_uploaded_file
+    def guarded_process(actual_hass, file_id):
+        assert actual_hass is hass
+        return original_process(actual_hass, file_id)
+    monkeypatch.setattr(pdfs, "process_uploaded_file", guarded_process)
     async def consume():
         async with pdfs.async_pdf_source(hass, "a" * 32):
             pass
