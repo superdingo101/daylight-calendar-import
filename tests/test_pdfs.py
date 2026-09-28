@@ -15,6 +15,7 @@ import pytest
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PdfReadError
 from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, EncodedStreamObject, NameObject, NullObject, RectangleObject, TextStringObject
+from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.daylight_calendar_import import pdfs, pdf_worker as worker
 from custom_components.daylight_calendar_import.providers import SourceValidationError
@@ -245,6 +246,17 @@ def test_null_entry_in_content_array_is_ignored():
     assert worker._bounded_text_page(page) == (True, True)
 
 
+@pytest.mark.parametrize("optional_key", ["/Annots", "/Resources"])
+def test_null_optional_page_dictionary_is_ignored(optional_key):
+    writer = PdfWriter()
+    writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
+    blank = writer.add_blank_page(width=300, height=300)
+    blank[NameObject(optional_key)] = NullObject()
+    output = BytesIO()
+    writer.write(output)
+    assert worker.extract_text(output.getvalue()) == ("Meeting Friday", False)
+
+
 @pytest.mark.parametrize("operator", [b"BI /W", b"BI/W"])
 def test_inline_image_operator_retains_pdf_attachment(monkeypatch, operator):
     stream = DecodedStreamObject()
@@ -465,6 +477,7 @@ async def test_invalid_pdf_is_explicit_and_consumed(uploaded_file, data, code, m
             pytest.fail("invalid PDF reached parser")
     assert caught.value.code == code
     assert str(caught.value) == message
+    assert isinstance(caught.value, ServiceValidationError)
     assert not uploaded_file.exists()
 
 

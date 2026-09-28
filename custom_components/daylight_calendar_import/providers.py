@@ -8,7 +8,7 @@ from typing import Protocol
 from homeassistant.components import ai_task
 from homeassistant.components.ai_task.const import AITaskEntityFeature, DATA_COMPONENT
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from .parser import EVENTS_STRUCTURE, PROMPT_TEMPLATE, TASK_NAME, ParseOutcome, parse_ai_data
 from .sources import SourceDocument
@@ -17,7 +17,7 @@ IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 PDF_MEDIA_TYPE = "application/pdf"
 
 
-class SourceValidationError(ValueError):
+class SourceValidationError(ServiceValidationError):
     """A source cannot be processed by the selected parser provider."""
 
     def __init__(self, code: str, message: str) -> None:

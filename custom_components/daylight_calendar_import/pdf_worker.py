@@ -44,6 +44,8 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
     annotations = page.get("/Annots") or []
     if hasattr(annotations, "get_object"):
         annotations = annotations.get_object()
+    if isinstance(annotations, NullObject):
+        annotations = []
     for annotation in annotations:
         item = annotation.get_object()
         # Plain hyperlinks add no content; form values and annotation appearances
@@ -53,6 +55,8 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
     resources = page.get("/Resources") or {}
     if hasattr(resources, "get_object"):
         resources = resources.get_object()
+    if isinstance(resources, NullObject):
+        resources = {}
     if resources.get("/XObject"):
         return False, True
     contents = page.get("/Contents")
