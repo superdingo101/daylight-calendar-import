@@ -50,9 +50,17 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
         item = annotation.get_object()
         if isinstance(item, NullObject):
             continue
+        appearance = item.get("/AP")
+        contents = item.get("/Contents")
+        if hasattr(appearance, "get_object"):
+            appearance = appearance.get_object()
+        if hasattr(contents, "get_object"):
+            contents = contents.get_object()
         # Plain hyperlinks add no content; form values and annotation appearances
         # are unavailable to page.extract_text().
-        if item.get("/Subtype") != "/Link" or item.get("/AP") or item.get("/Contents"):
+        if (item.get("/Subtype") != "/Link"
+                or (appearance and not isinstance(appearance, NullObject))
+                or (contents and not isinstance(contents, NullObject))):
             return False, True
     contents = page.get("/Contents")
     if contents is None:
@@ -86,7 +94,10 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
             if hasattr(params, "get_object"):
                 params = params.get_object()
             if params is not None and not isinstance(params, NullObject):
-                if not isinstance(params, dict) or params.get("/Predictor", 1) != 1:
+                predictor = params.get("/Predictor", 1) if isinstance(params, dict) else None
+                if isinstance(predictor, NullObject):
+                    predictor = 1
+                if predictor != 1:
                     return False, True
             try:
                 decoder = zlib.decompressobj()

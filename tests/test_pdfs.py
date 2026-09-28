@@ -212,18 +212,20 @@ def test_annotated_page_retains_form_values_as_pdf_evidence(monkeypatch):
     assert worker.extract_text(b"%PDF-fake") == ("", True)
 
 
-@pytest.mark.parametrize("extra", [{}, {"/AP": "appearance"}, {"/Contents": "Schedule note"}])
+@pytest.mark.parametrize("extra", [{}, {"/AP": "appearance"}, {"/Contents": "Schedule note"},
+                                   {"/AP": NullObject()}, {"/Contents": NullObject()}])
 def test_link_annotations_only_fallback_when_they_contain_content(monkeypatch, extra):
     annotation = DictionaryObject({NameObject("/Subtype"): NameObject("/Link")})
     for key, value in extra.items():
-        annotation[NameObject(key)] = TextStringObject(value)
+        annotation[NameObject(key)] = value if isinstance(value, NullObject) else TextStringObject(value)
     stream = DecodedStreamObject()
     stream.set_data(b"BT (Meeting Friday) Tj ET")
     page = SimpleNamespace(get=lambda key: [annotation] if key == "/Annots" else
                            stream if key == "/Contents" else None,
                            extract_text=lambda: "Meeting Friday")
     monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
-    assert worker.extract_text(b"%PDF-fake") == (("Meeting Friday", False) if not extra else ("", True))
+    requires_attachment = any(not isinstance(value, NullObject) for value in extra.values())
+    assert worker.extract_text(b"%PDF-fake") == (("", True) if requires_attachment else ("Meeting Friday", False))
 
 
 def test_indirect_link_annotations_allow_text_extraction():
@@ -361,6 +363,38 @@ async def test_pdf_workers_are_serialized_before_executor_scheduling(monkeypatch
         release.set()
     await asyncio.wait_for(asyncio.gather(one, two), 2)
     assert scheduled == 2
+
+
+async def test_cancelled_pdf_waiter_consumes_upload_before_staging(monkeypatch, uploaded_file):
+    uploaded_file.write_bytes(make_pdf("Meeting"))
+    first_entered, release = asyncio.Event(), asyncio.Event()
+    staged = 0
+    monkeypatch.setattr(pdfs, "_stage_pdf", lambda *_args: (object(), None))
+    async def executor(func, *args):
+        nonlocal staged
+        if func is pdfs._stage_pdf:
+            staged += 1
+            first_entered.set()
+            await release.wait()
+            return func(*args)
+        return await asyncio.to_thread(func, *args)
+    hass = SimpleNamespace(config=SimpleNamespace(media_dirs={}), data={}, async_add_executor_job=executor)
+    async def consume():
+        async with pdfs.async_pdf_source(hass, "a" * 32):
+            pass
+    first = asyncio.create_task(consume())
+    await asyncio.wait_for(first_entered.wait(), 2)
+    waiting = asyncio.create_task(consume())
+    try:
+        await asyncio.sleep(0)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert not uploaded_file.exists()
+        assert staged == 1
+    finally:
+        release.set()
+    await asyncio.wait_for(first, 2)
 
 
 def test_pdf_worker_discards_stderr(monkeypatch):
@@ -529,6 +563,7 @@ def test_null_filter_is_treated_as_unfiltered_content(filter_value):
 @pytest.mark.parametrize(("params", "safe"), [
     (DictionaryObject({NameObject("/Predictor"): 12}), False),
     (DictionaryObject({NameObject("/Predictor"): 1}), True),
+    (DictionaryObject({NameObject("/Predictor"): NullObject()}), True),
     (ArrayObject([DictionaryObject({NameObject("/Predictor"): 12})]), False),
     (NullObject(), True),
     (ArrayObject([]), False),

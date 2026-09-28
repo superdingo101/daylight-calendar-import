@@ -26,6 +26,12 @@ MAX_PDF_TEXT_CHARS = 100_000
 PDF_WORKER_LIMIT_KEY = "daylight_calendar_import_pdf_worker_limit"
 
 
+def _discard_uploaded_pdf(hass: HomeAssistant, file_id: str) -> None:
+    """Consume an upload when cancellation happens before staging begins."""
+    with process_uploaded_file(hass, file_id):
+        pass
+
+
 def _extract_pdf_text(data: bytes) -> tuple[str, bool]:
     """Run untrusted PDF parsing with memory and CPU limits in a child process."""
     try:
@@ -98,7 +104,13 @@ async def async_pdf_source(
 ) -> AsyncIterator[SourceDocument]:
     """Expose a PDF source while ensuring the temporary copy is removed."""
     limit = hass.data.setdefault(PDF_WORKER_LIMIT_KEY, asyncio.Semaphore(1))
-    async with limit:
+    try:
+        await limit.acquire()
+    except asyncio.CancelledError:
+        discard = asyncio.ensure_future(hass.async_add_executor_job(_discard_uploaded_pdf, hass, file_id))
+        await asyncio.shield(discard)
+        raise
+    try:
         staging = asyncio.ensure_future(hass.async_add_executor_job(
             _stage_pdf, hass, file_id, hass.config.media_dirs, context
         ))
@@ -107,6 +119,8 @@ async def async_pdf_source(
         except asyncio.CancelledError:
             await _cleanup_late_staging(hass, staging)
             raise
+    finally:
+        limit.release()
     try:
         yield source
     finally:
