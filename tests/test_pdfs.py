@@ -141,7 +141,9 @@ async def test_blank_page_in_text_pdf_does_not_require_attachment(uploaded_file)
 
 @pytest.mark.parametrize("content", [b"", b"% blank page\n", b"q Q", b"BT ET",
                                      b"0 g", b"1 G", b"1 0 0 rg", b"1 0 0 RG",
-                                     b"0 0 0 1 k", b"0 0 0 1 K"])
+                                     b"0 0 0 1 k", b"0 0 0 1 K", b"BT () Tj ET",
+                                     b"BT [] TJ ET", b"BT [() 120 ()] TJ ET",
+                                     b"BT () ' ET", b'BT 0 0 () " ET'])
 def test_empty_content_stream_in_text_pdf_needs_no_attachment(content):
     writer = PdfWriter()
     writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
@@ -152,6 +154,15 @@ def test_empty_content_stream_in_text_pdf_needs_no_attachment(content):
     output = BytesIO()
     writer.write(output)
     assert worker.extract_text(output.getvalue()) == ("Meeting Friday", False)
+
+
+@pytest.mark.parametrize("content", [b"BT [(Meeting)] TJ ET", b"BT (Meeting) ' ET",
+                                     b'BT 0 0 (Meeting) " ET', b"BT Tj ET", b"BT TJ ET"])
+def test_text_show_content_is_not_mistaken_for_blank(content):
+    stream = DecodedStreamObject()
+    stream.set_data(content)
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
+    assert worker._bounded_text_page(page) == (True, True)
 
 
 def test_large_compressed_page_falls_back_before_text_extraction(monkeypatch):

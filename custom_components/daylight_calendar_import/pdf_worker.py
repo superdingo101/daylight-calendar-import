@@ -96,8 +96,16 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
     bounded = DecodedStreamObject()
     bounded.set_data(b"\n".join(decoded_streams))
     operations = ContentStream(bounded, getattr(page, "pdf", None), "bytes").operations
+    def renders(operands: object, operator: bytes) -> bool:
+        if operator in NON_RENDERING_OPERATORS:
+            return False
+        if operator in (b"Tj", b"'", b'"') and operands:
+            return bool(operands[-1])
+        if operator == b"TJ" and operands:
+            return any(isinstance(part, (str, bytes)) and bool(part) for part in operands[0])
+        return True
     return (not any(operator in VISUAL_OPERATORS for _, operator in operations),
-            any(operator not in NON_RENDERING_OPERATORS for _, operator in operations))
+            any(renders(operands, operator) for operands, operator in operations))
 
 
 def extract_text(data: bytes) -> tuple[str, bool]:
