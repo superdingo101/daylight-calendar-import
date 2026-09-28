@@ -48,6 +48,8 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
         annotations = []
     for annotation in annotations:
         item = annotation.get_object()
+        if isinstance(item, NullObject):
+            continue
         # Plain hyperlinks add no content; form values and annotation appearances
         # are unavailable to page.extract_text().
         if item.get("/Subtype") != "/Link" or item.get("/AP") or item.get("/Contents"):
@@ -78,6 +80,14 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
         if encoding is None:
             decoded = raw
         elif encoding in ("/FlateDecode", "/Fl"):
+            params = stream.get("/DecodeParms")
+            if isinstance(params, list) and len(params) == 1:
+                params = params[0]
+            if hasattr(params, "get_object"):
+                params = params.get_object()
+            if params is not None and not isinstance(params, NullObject):
+                if not isinstance(params, dict) or params.get("/Predictor", 1) != 1:
+                    return False, True
             try:
                 decoder = zlib.decompressobj()
                 decoded = decoder.decompress(raw, MAX_PDF_PAGE_CONTENT_BYTES + 1)

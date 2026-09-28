@@ -10,8 +10,6 @@ from types import SimpleNamespace
 from uuid import UUID
 import zlib
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
-from threading import Event
 
 import pytest
 from pypdf import PdfReader, PdfWriter
@@ -272,6 +270,16 @@ def test_null_optional_page_dictionary_is_ignored(optional_key):
     assert worker.extract_text(output.getvalue()) == ("Meeting Friday", False)
 
 
+def test_null_member_in_annotation_array_is_ignored():
+    writer = PdfWriter()
+    writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
+    blank = writer.add_blank_page(width=300, height=300)
+    blank[NameObject("/Annots")] = ArrayObject([NullObject()])
+    output = BytesIO()
+    writer.write(output)
+    assert worker.extract_text(output.getvalue()) == ("Meeting Friday", False)
+
+
 @pytest.mark.parametrize("operator", [b"BI /W", b"BI/W"])
 def test_inline_image_operator_retains_pdf_attachment(monkeypatch, operator):
     stream = DecodedStreamObject()
@@ -323,34 +331,44 @@ def test_worker_timeout_is_explicit(monkeypatch):
     assert str(caught.value) == "PDF extraction timed out"
 
 
-def test_pdf_workers_are_serialized(monkeypatch):
-    first_entered, second_started, second_entered, release = (Event() for _ in range(4))
-    calls = 0
-    def run(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
+async def test_pdf_workers_are_serialized_before_executor_scheduling(monkeypatch):
+    first_entered, second_started, release = (asyncio.Event() for _ in range(3))
+    scheduled = 0
+    monkeypatch.setattr(pdfs, "_stage_pdf", lambda *_args: (object(), None))
+    async def executor(func, *args):
+        nonlocal scheduled
+        assert func is pdfs._stage_pdf
+        scheduled += 1
+        if scheduled == 1:
             first_entered.set()
-            assert release.wait(2)
-        else:
-            second_entered.set()
+            await release.wait()
+        return func(*args)
+    hass = SimpleNamespace(config=SimpleNamespace(media_dirs={}), async_add_executor_job=executor)
+    async def consume(second=False):
+        if second:
+            second_started.set()
+        async with pdfs.async_pdf_source(hass, "a" * 32):
+            pass
+    one = asyncio.create_task(consume())
+    await asyncio.wait_for(first_entered.wait(), 2)
+    two = asyncio.create_task(consume(second=True))
+    try:
+        await asyncio.wait_for(second_started.wait(), 2)
+        await asyncio.sleep(0)
+        assert scheduled == 1
+    finally:
+        release.set()
+    await asyncio.wait_for(asyncio.gather(one, two), 2)
+    assert scheduled == 2
+
+
+def test_pdf_worker_discards_stderr(monkeypatch):
+    def run(*_args, **kwargs):
+        assert kwargs["stdout"] is subprocess.PIPE
+        assert kwargs["stderr"] is subprocess.DEVNULL
         return SimpleNamespace(returncode=0, stdout=b'{"text":"Meeting","needs_attachment":false}')
     monkeypatch.setattr(pdfs.subprocess, "run", run)
-    def second():
-        second_started.set()
-        return pdfs._extract_pdf_text(b"%PDF-second")
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        one = pool.submit(pdfs._extract_pdf_text, b"%PDF-first")
-        try:
-            assert first_entered.wait(2)
-            two = pool.submit(second)
-            assert second_started.wait(2)
-            assert not second_entered.wait(0.1)
-        finally:
-            release.set()
-        assert one.result(timeout=2) == ("Meeting", False)
-        assert two.result(timeout=2) == ("Meeting", False)
-    assert calls == 2
+    assert pdfs._extract_pdf_text(b"%PDF-fake") == ("Meeting", False)
 
 
 @pytest.mark.parametrize(("data", "error", "message"), [
@@ -505,6 +523,22 @@ def test_null_filter_is_treated_as_unfiltered_content(filter_value):
     stream[NameObject("/Filter")] = filter_value
     page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
     assert worker._bounded_text_page(page) == (True, True)
+
+
+@pytest.mark.parametrize(("params", "safe"), [
+    (DictionaryObject({NameObject("/Predictor"): 12}), False),
+    (DictionaryObject({NameObject("/Predictor"): 1}), True),
+    (ArrayObject([DictionaryObject({NameObject("/Predictor"): 12})]), False),
+    (NullObject(), True),
+    (ArrayObject([]), False),
+])
+def test_flate_predictor_does_not_bypass_visual_preflight(params, safe):
+    stream = EncodedStreamObject()
+    stream._data = zlib.compress(b"BT (Meeting) Tj ET")
+    stream[NameObject("/Filter")] = NameObject("/FlateDecode")
+    stream[NameObject("/DecodeParms")] = params
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
+    assert worker._bounded_text_page(page) == ((True, True) if safe else (False, True))
 
 
 def test_unsupported_filter_is_not_decoded_even_if_bytes_are_valid_zlib():

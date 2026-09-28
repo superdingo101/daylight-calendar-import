@@ -12,7 +12,6 @@ import tempfile
 import subprocess
 import sys
 import json
-from threading import BoundedSemaphore
 from uuid import uuid4
 
 from homeassistant.components.file_upload import process_uploaded_file
@@ -24,17 +23,17 @@ from .uploads import MAX_UPLOAD_BYTES, _cleanup_late_staging
 
 MAX_PDF_PAGES = 30
 MAX_PDF_TEXT_CHARS = 100_000
-PDF_WORKER_LIMIT = BoundedSemaphore(1)
+PDF_WORKER_LIMIT = asyncio.Semaphore(1)
 
 
 def _extract_pdf_text(data: bytes) -> tuple[str, bool]:
     """Run untrusted PDF parsing with memory and CPU limits in a child process."""
     try:
-        with PDF_WORKER_LIMIT:
-            result = subprocess.run(
-                [sys.executable, str(Path(__file__).with_name("pdf_worker.py"))],
-                input=data, capture_output=True, timeout=20, check=False,
-            )
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("pdf_worker.py"))],
+            input=data, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=20, check=False,
+        )
     except subprocess.TimeoutExpired as err:
         raise SourceValidationError("invalid_pdf", "PDF extraction timed out") from err
     if result.returncode:
@@ -98,14 +97,15 @@ async def async_pdf_source(
     hass: HomeAssistant, file_id: str, context: str = ""
 ) -> AsyncIterator[SourceDocument]:
     """Expose a PDF source while ensuring the temporary copy is removed."""
-    staging = asyncio.ensure_future(hass.async_add_executor_job(
-        _stage_pdf, hass, file_id, hass.config.media_dirs, context
-    ))
-    try:
-        source, path = await asyncio.shield(staging)
-    except asyncio.CancelledError:
-        await _cleanup_late_staging(hass, staging)
-        raise
+    async with PDF_WORKER_LIMIT:
+        staging = asyncio.ensure_future(hass.async_add_executor_job(
+            _stage_pdf, hass, file_id, hass.config.media_dirs, context
+        ))
+        try:
+            source, path = await asyncio.shield(staging)
+        except asyncio.CancelledError:
+            await _cleanup_late_staging(hass, staging)
+            raise
     try:
         yield source
     finally:
