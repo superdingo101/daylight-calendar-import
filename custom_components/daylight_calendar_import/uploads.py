@@ -62,6 +62,7 @@ def _stage_image(
         id=str(uuid4()),
         kind=SourceKind.IMAGE,
         received_at=datetime.now(UTC),
+        title=filename,
         attachments=(SourceAttachment(
             id=str(uuid4()), filename=filename, media_type=media_type,
             size_bytes=len(data),
