@@ -6,10 +6,14 @@ class FakeNode {
     this.tag = tag;
     this.children = [];
     this.attributes = {};
+    this.dataset = {};
   }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
+  querySelector(tag) { return this.querySelectorAll(tag)[0] || null; }
+  querySelectorAll(tag) { return [this, ...this.children.flatMap(child => child.querySelectorAll(tag))].filter(node => node.tag === tag); }
+  focus() { globalThis.focusedNode = this; }
   addEventListener(name, callback) { this[name] = callback; }
   attachShadow() { this.shadowRoot = new FakeNode("shadow"); return this.shadowRoot; }
 }
@@ -75,9 +79,15 @@ test("opens detail, renders source and events as text, and returns to inbox", as
   await panel.showImport("one");
   assert.equal(requests[1].service_data.pending_id, "one");
   assert.equal(find(panel._content, "h3").textContent, "Picnic");
+  assert.equal(find(panel._content, "section").children[1].textContent,
+    "2026-10-01 · All day");
+  assert.equal(globalThis.focusedNode.tag, "h2");
+  assert.equal(panel._announcement.textContent, undefined);
+  assert.equal(find(panel._content, "p").attributes.role, undefined);
   assert.equal(find(panel._content, "section").children[2].textContent,
     "Calendar: calendar.family · Status: pending");
   find(panel._content, "button").click();
   await flush();
   assert.equal(find(panel._content, "h2").children[0].textContent, "Picnic");
+  assert.equal(globalThis.focusedNode.textContent, "Picnic");
 });

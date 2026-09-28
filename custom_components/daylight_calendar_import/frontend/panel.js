@@ -24,6 +24,15 @@ function element(tag, text, className) {
   return node;
 }
 
+function eventRange(event) {
+  if (!event.all_day) return `${event.start} – ${event.end}`;
+  const end = new Date(`${event.end}T00:00:00Z`);
+  if (Number.isNaN(end.getTime())) return `${event.start} – ${event.end} (exclusive end)`;
+  end.setUTCDate(end.getUTCDate() - 1);
+  const lastDay = end.toISOString().slice(0, 10);
+  return event.start === lastDay ? event.start : `${event.start} – ${lastDay}`;
+}
+
 export class DaylightImportPanel extends HTMLElement {
   constructor() {
     super();
@@ -34,6 +43,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._generation = 0;
     this._selectedId = null;
     this._detail = null;
+    this._returnFocusId = null;
     const style = element("style", css);
     const main = document.createElement("main");
     const header = document.createElement("header");
@@ -43,8 +53,9 @@ export class DaylightImportPanel extends HTMLElement {
     refresh.addEventListener("click", () => void (this._selectedId ? this.showImport(this._selectedId) : this.refresh()));
     header.append(refresh);
     this._content = document.createElement("div");
-    this._content.setAttribute("aria-live", "polite");
-    main.append(header, this._content);
+    this._announcement = document.createElement("div");
+    this._announcement.setAttribute("aria-live", "polite");
+    main.append(header, this._announcement, this._content);
     this.shadowRoot.append(style, main);
   }
 
@@ -70,6 +81,12 @@ export class DaylightImportPanel extends HTMLElement {
       this._status = error instanceof Error ? error.message : "Could not load imports. Try again.";
     }
     this.render();
+    if (this._returnFocusId) {
+      const button = Array.from(this._content.querySelectorAll("button"))
+        .find((candidate) => candidate.dataset.pendingId === this._returnFocusId);
+      button?.focus();
+      this._returnFocusId = null;
+    }
   }
 
   async showImport(id) {
@@ -78,6 +95,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._detail = null;
     this._status = "loading";
     this.render();
+    this._content.querySelector("button")?.focus();
     try {
       const detail = await loadImport(this._hass, id);
       if (generation !== this._generation) return;
@@ -88,9 +106,11 @@ export class DaylightImportPanel extends HTMLElement {
       this._status = error instanceof Error ? error.message : "Could not load import. Try again.";
     }
     this.render();
+    this._content.querySelector("h2")?.focus();
   }
 
   showInbox() {
+    this._returnFocusId = this._selectedId;
     ++this._generation;
     this._selectedId = null;
     this._detail = null;
@@ -118,17 +138,23 @@ export class DaylightImportPanel extends HTMLElement {
       const back = element("button", "Back to inbox");
       back.type = "button";
       back.addEventListener("click", () => this.showInbox());
-      content.append(back, element("h2", detail.source_title || "Import detail"));
+      const heading = element("h2", detail.source_title || "Import detail");
+      heading.tabIndex = -1;
+      content.append(back, heading);
       content.append(element("p", `Source: ${detail.source_kind || "Text"}`));
       for (const warning of detail.warnings || []) content.append(element("p", `Warning: ${warning}`));
       if (detail.duplicate_events) content.append(element("p", `${detail.duplicate_events} duplicates skipped`));
       content.append(element("h2", "Source context"));
-      content.append(element("p", detail.source_text || "No source text available.", "source"));
+      const source = element("p", detail.source_text || "No source text available.", "source");
+      source.tabIndex = 0;
+      source.setAttribute("role", "region");
+      source.setAttribute("aria-label", "Source text");
+      content.append(source);
       content.append(element("h2", "Events"));
       for (const event of detail.events) {
         const card = element("section", "", "detail-event");
         card.append(element("h3", event.title || "Untitled event"));
-        card.append(element("p", `${event.start} – ${event.end}${event.all_day ? " · All day" : ""}`));
+        card.append(element("p", `${eventRange(event)}${event.all_day ? " · All day" : ""}`));
         card.append(element("p", `Calendar: ${event.calendar_entity || "Default"} · Status: ${event.status}`));
         if (event.location) card.append(element("p", `Location: ${event.location}`));
         if (event.description) card.append(element("p", event.description));
@@ -144,6 +170,7 @@ export class DaylightImportPanel extends HTMLElement {
         const card = document.createElement("li");
         const open = element("button", summary.title);
         open.type = "button";
+        open.dataset.pendingId = item.id;
         open.addEventListener("click", () => void this.showImport(item.id));
         const heading = document.createElement("h2");
         heading.append(open);
@@ -159,6 +186,10 @@ export class DaylightImportPanel extends HTMLElement {
       content.append(list);
     }
     this._content.replaceChildren(content);
+    this._announcement.replaceChildren();
+    if (this._status === "loading") this._announcement.append(element("span", "Loading imports…"));
+    else if (this._status !== "ready") this._announcement.append(element("span", this._status));
+    else this._announcement.append(element("span", this._selectedId ? "Import detail loaded" : "Inbox loaded"));
   }
 }
 
