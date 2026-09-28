@@ -25,7 +25,7 @@ class SourceValidationError(ValueError):
         self.code = code
 
 
-class ProviderError(ValueError):
+class ProviderError(HomeAssistantError):
     """A stable category for an upstream parser failure."""
 
     def __init__(self, code: str, message: str) -> None:

@@ -9,7 +9,7 @@ import zlib
 
 from pypdf import PdfReader
 from pypdf.errors import LimitReachedError, PdfReadError
-from pypdf.generic import ContentStream, DecodedStreamObject
+from pypdf.generic import ContentStream, DecodedStreamObject, NullObject
 
 MAX_PDF_PAGES = 30
 MAX_PDF_TEXT_CHARS = 100_000
@@ -59,6 +59,8 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
     if contents is None:
         return True, False
     resolved = contents.get_object()
+    if isinstance(resolved, NullObject):
+        return True, False
     streams = resolved if isinstance(resolved, list) else [resolved]
     if len(streams) > 100:
         return False, True
@@ -66,6 +68,8 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
     decoded_streams = []
     for item in streams:
         stream = item.get_object()
+        if isinstance(stream, NullObject):
+            continue
         raw = stream._data
         if len(raw) > MAX_PDF_PAGE_CONTENT_BYTES:
             return False, True

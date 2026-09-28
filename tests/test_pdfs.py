@@ -14,7 +14,7 @@ import subprocess
 import pytest
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PdfReadError
-from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, EncodedStreamObject, NameObject, RectangleObject, TextStringObject
+from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, EncodedStreamObject, NameObject, NullObject, RectangleObject, TextStringObject
 
 from custom_components.daylight_calendar_import import pdfs, pdf_worker as worker
 from custom_components.daylight_calendar_import.providers import SourceValidationError
@@ -214,6 +214,24 @@ def test_text_pdf_with_ordinary_hyperlink_needs_no_attachment():
     output = BytesIO()
     writer.write(output)
     assert worker.extract_text(output.getvalue()) == ("Meeting Friday", False)
+
+
+@pytest.mark.parametrize("contents", [NullObject(), ArrayObject([NullObject()])])
+def test_null_contents_in_text_pdf_is_blank(contents):
+    writer = PdfWriter()
+    writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
+    blank = writer.add_blank_page(width=300, height=300)
+    blank[NameObject("/Contents")] = contents
+    output = BytesIO()
+    writer.write(output)
+    assert worker.extract_text(output.getvalue()) == ("Meeting Friday", False)
+
+
+def test_null_entry_in_content_array_is_ignored():
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT (Meeting) Tj ET")
+    page = SimpleNamespace(get=lambda key: ArrayObject([NullObject(), stream]) if key == "/Contents" else None)
+    assert worker._bounded_text_page(page) == (True, True)
 
 
 @pytest.mark.parametrize("operator", [b"BI /W", b"BI/W"])
