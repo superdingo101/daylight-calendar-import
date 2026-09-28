@@ -14,7 +14,7 @@ import subprocess
 import pytest
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PdfReadError
-from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, EncodedStreamObject, NameObject, NullObject, RectangleObject, TextStringObject
+from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, EncodedStreamObject, NameObject, NullObject, NumberObject, RectangleObject, TextStringObject
 from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.daylight_calendar_import import pdfs, pdf_worker as worker
@@ -235,10 +235,27 @@ def test_indirect_link_annotations_allow_text_extraction():
     assert worker._bounded_text_page(page) == (True, False)
 
 
+def test_direct_string_link_subtype_allows_text_extraction():
+    annotation = SimpleNamespace(get_object=lambda: {"/Subtype": "/Link"})
+    page = SimpleNamespace(get=lambda key: [annotation] if key == "/Annots" else None)
+    assert worker._bounded_text_page(page) == (True, False)
+
+
 def test_text_pdf_with_ordinary_hyperlink_needs_no_attachment():
     writer = PdfWriter()
     writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
     writer.add_uri(0, "https://example.com/calendar", RectangleObject((0, 0, 100, 20)))
+    output = BytesIO()
+    writer.write(output)
+    assert worker.extract_text(output.getvalue()) == ("Meeting Friday", False)
+
+
+def test_indirect_link_subtype_still_allows_text_extraction():
+    writer = PdfWriter()
+    writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
+    writer.add_uri(0, "https://example.com/calendar", RectangleObject((0, 0, 100, 20)))
+    annotation = writer.pages[0]["/Annots"][0].get_object()
+    annotation[NameObject("/Subtype")] = writer._add_object(NameObject("/Link"))
     output = BytesIO()
     writer.write(output)
     assert worker.extract_text(output.getvalue()) == ("Meeting Friday", False)
@@ -551,6 +568,17 @@ def test_singleton_flate_filter_array_extracts_text_without_attachment():
     assert worker._bounded_text_page(page) == (True, True)
 
 
+@pytest.mark.parametrize("as_array", [False, True])
+def test_indirect_flate_filter_is_bounded_and_accepted(as_array):
+    writer = PdfWriter()
+    filter_ref = writer._add_object(NameObject("/FlateDecode"))
+    stream = EncodedStreamObject()
+    stream._data = zlib.compress(b"BT (Meeting) Tj ET")
+    stream[NameObject("/Filter")] = ArrayObject([filter_ref]) if as_array else filter_ref
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
+    assert worker._bounded_text_page(page) == (True, True)
+
+
 @pytest.mark.parametrize("filter_value", [NullObject(), ArrayObject([NullObject()])])
 def test_null_filter_is_treated_as_unfiltered_content(filter_value):
     stream = DecodedStreamObject()
@@ -575,6 +603,19 @@ def test_flate_predictor_does_not_bypass_visual_preflight(params, safe):
     stream[NameObject("/DecodeParms")] = params
     page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
     assert worker._bounded_text_page(page) == ((True, True) if safe else (False, True))
+
+
+@pytest.mark.parametrize("predictor", [NumberObject(1), NullObject()])
+def test_indirect_default_predictor_allows_bounded_text_scan(predictor):
+    writer = PdfWriter()
+    stream = EncodedStreamObject()
+    stream._data = zlib.compress(b"BT (Meeting) Tj ET")
+    stream[NameObject("/Filter")] = NameObject("/FlateDecode")
+    stream[NameObject("/DecodeParms")] = DictionaryObject({
+        NameObject("/Predictor"): writer._add_object(predictor),
+    })
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
+    assert worker._bounded_text_page(page) == (True, True)
 
 
 def test_unsupported_filter_is_not_decoded_even_if_bytes_are_valid_zlib():

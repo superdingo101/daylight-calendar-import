@@ -50,15 +50,18 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
         item = annotation.get_object()
         if isinstance(item, NullObject):
             continue
+        subtype = item.get("/Subtype")
         appearance = item.get("/AP")
         contents = item.get("/Contents")
+        if hasattr(subtype, "get_object"):
+            subtype = subtype.get_object()
         if hasattr(appearance, "get_object"):
             appearance = appearance.get_object()
         if hasattr(contents, "get_object"):
             contents = contents.get_object()
         # Plain hyperlinks add no content; form values and annotation appearances
         # are unavailable to page.extract_text().
-        if (item.get("/Subtype") != "/Link"
+        if (subtype != "/Link"
                 or (appearance and not isinstance(appearance, NullObject))
                 or (contents and not isinstance(contents, NullObject))):
             return False, True
@@ -83,6 +86,8 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
         encoding = stream.get("/Filter")
         if isinstance(encoding, list) and len(encoding) == 1:
             encoding = encoding[0]
+        if hasattr(encoding, "get_object"):
+            encoding = encoding.get_object()
         if isinstance(encoding, NullObject):
             encoding = None
         if encoding is None:
@@ -95,6 +100,8 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
                 params = params.get_object()
             if params is not None and not isinstance(params, NullObject):
                 predictor = params.get("/Predictor", 1) if isinstance(params, dict) else None
+                if hasattr(predictor, "get_object"):
+                    predictor = predictor.get_object()
                 if isinstance(predictor, NullObject):
                     predictor = 1
                 if predictor != 1:
