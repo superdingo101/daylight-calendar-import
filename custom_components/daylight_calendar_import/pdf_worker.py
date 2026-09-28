@@ -84,6 +84,8 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
         if len(raw) > MAX_PDF_PAGE_CONTENT_BYTES:
             return False, True
         encoding = stream.get("/Filter")
+        if hasattr(encoding, "get_object"):
+            encoding = encoding.get_object()
         if isinstance(encoding, list) and len(encoding) == 1:
             encoding = encoding[0]
         if hasattr(encoding, "get_object"):
@@ -94,6 +96,8 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
             decoded = raw
         elif encoding in ("/FlateDecode", "/Fl"):
             params = stream.get("/DecodeParms")
+            if hasattr(params, "get_object"):
+                params = params.get_object()
             if isinstance(params, list) and len(params) == 1:
                 params = params[0]
             if hasattr(params, "get_object"):
@@ -127,9 +131,10 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
         if operator in NON_RENDERING_OPERATORS:
             return False
         if operator in (b"Tj", b"'", b'"') and operands:
-            return bool(operands[-1])
+            value = operands[-1]
+            return bool(value.strip()) if isinstance(value, (str, bytes)) else bool(value)
         if operator == b"TJ" and operands:
-            return any(isinstance(part, (str, bytes)) and bool(part) for part in operands[0])
+            return any(isinstance(part, (str, bytes)) and bool(part.strip()) for part in operands[0])
         return True
     return (not any(operator in VISUAL_OPERATORS for _, operator in operations),
             any(renders(operands, operator) for operands, operator in operations))

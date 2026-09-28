@@ -145,7 +145,9 @@ async def test_blank_page_in_text_pdf_does_not_require_attachment(uploaded_file)
                                      b"0 g", b"1 G", b"1 0 0 rg", b"1 0 0 RG",
                                      b"0 0 0 1 k", b"0 0 0 1 K", b"BT () Tj ET",
                                      b"BT [] TJ ET", b"BT [() 120 ()] TJ ET",
-                                     b"BT () ' ET", b'BT 0 0 () " ET'])
+                                     b"BT () ' ET", b'BT 0 0 () " ET',
+                                     b"BT (   ) Tj ET", b"BT [( ) 120 (\t)] TJ ET",
+                                     b"BT ( ) ' ET", b'BT 0 0 ( ) " ET'])
 def test_empty_content_stream_in_text_pdf_needs_no_attachment(content):
     writer = PdfWriter()
     writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
@@ -602,6 +604,16 @@ def test_indirect_flate_filter_is_bounded_and_accepted(as_array):
     assert worker._bounded_text_page(page) == (True, True)
 
 
+def test_indirect_singleton_filter_array_is_accepted():
+    writer = PdfWriter()
+    filter_ref = writer._add_object(ArrayObject([NameObject("/FlateDecode")]))
+    stream = EncodedStreamObject()
+    stream._data = zlib.compress(b"BT (Meeting) Tj ET")
+    stream[NameObject("/Filter")] = filter_ref
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
+    assert worker._bounded_text_page(page) == (True, True)
+
+
 @pytest.mark.parametrize("filter_value", [NullObject(), ArrayObject([NullObject()])])
 def test_null_filter_is_treated_as_unfiltered_content(filter_value):
     stream = DecodedStreamObject()
@@ -637,6 +649,17 @@ def test_indirect_default_predictor_allows_bounded_text_scan(predictor):
     stream[NameObject("/DecodeParms")] = DictionaryObject({
         NameObject("/Predictor"): writer._add_object(predictor),
     })
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
+    assert worker._bounded_text_page(page) == (True, True)
+
+
+def test_indirect_singleton_decode_params_array_is_accepted():
+    writer = PdfWriter()
+    params = DictionaryObject({NameObject("/Predictor"): NumberObject(1)})
+    stream = EncodedStreamObject()
+    stream._data = zlib.compress(b"BT (Meeting) Tj ET")
+    stream[NameObject("/Filter")] = NameObject("/FlateDecode")
+    stream[NameObject("/DecodeParms")] = writer._add_object(ArrayObject([params]))
     page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
     assert worker._bounded_text_page(page) == (True, True)
 
