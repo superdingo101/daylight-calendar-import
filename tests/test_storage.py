@@ -1,6 +1,7 @@
 """Tests for persistent pending-import storage and deduplication."""
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 from uuid import UUID
@@ -118,6 +119,70 @@ def test_pending_import_create_and_round_trip():
 
     without_source = PendingImport.create(source_text="text", events=[draft()])
     assert "source_fingerprint" not in without_source.as_dict()
+
+
+def test_review_metadata_round_trip_and_legacy_defaults():
+    item = PendingImport.create(
+        source_text="Extracted schedule", events=[draft()], source_kind="pdf",
+        source_title="schedule.pdf", warnings=["Event 2 had no date"], duplicate_events=2,
+    )
+    assert PendingImport.from_dict(item.as_dict()) == item
+    assert item.as_service_dict()["warnings"] == ["Event 2 had no date"]
+    assert item.as_service_dict()["duplicate_events"] == 2
+    assert item.as_dict()["source_title"] == "schedule.pdf"
+    legacy = PendingImport.from_dict({
+        "id": item.id, "created_at": item.created_at, "source_text": item.source_text,
+        "events": [event.as_dict() for event in item.events],
+    })
+    assert legacy.source_kind == "manual_text"
+    assert legacy.source_title is None
+    assert legacy.warnings == ()
+    assert legacy.duplicate_events == 0
+
+
+async def test_review_metadata_survives_edit_reject_checkpoint_and_restart(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(
+        source_text="Newsletter", events=[draft(), second_draft()],
+        source_kind="pdf", source_title="school.pdf", warnings=["Review the year"],
+    )).pending
+    assert item is not None
+    first, second = item.events
+    metadata = (item.source_kind, item.source_title, item.warnings, item.duplicate_events)
+
+    await store.async_edit_event(item.id, first.id, replace(draft(), title="Updated"))
+    assert (store.get(item.id).source_kind, store.get(item.id).source_title,
+            store.get(item.id).warnings, store.get(item.id).duplicate_events) == metadata
+    async def failed(_event):
+        raise RuntimeError("calendar unavailable")
+    with pytest.raises(RuntimeError, match="calendar unavailable"):
+        await store.async_approve_event(item.id, first.id, failed)
+    assert store.get(item.id).source_title == "school.pdf"
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get(item.id).warnings == ("Review the year",)
+    assert await restarted.async_resolve_uncertain(item.id, first.id, "not_created")
+    assert await restarted.async_reject_event(item.id, second.id)
+    assert (restarted.get(item.id).source_kind, restarted.get(item.id).source_title,
+            restarted.get(item.id).warnings) == metadata[:3]
+
+
+async def test_duplicate_count_is_persisted_with_review_metadata(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    await store.async_add(source_text="First", events=[draft()])
+    result = await store.async_add(
+        source_text="Second", events=[draft(), second_draft()], source_kind="image",
+        source_title="schedule.png", warnings=["One item needs checking"],
+    )
+    assert result.pending is not None
+    assert result.duplicate_events == 1
+    assert result.pending.duplicate_events == 1
+    assert result.pending.as_service_dict()["source_title"] == "schedule.png"
 
 
 @pytest.mark.parametrize(
