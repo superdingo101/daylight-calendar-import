@@ -147,7 +147,8 @@ async def test_blank_page_in_text_pdf_does_not_require_attachment(uploaded_file)
                                      b"BT [] TJ ET", b"BT [() 120 ()] TJ ET",
                                      b"BT () ' ET", b'BT 0 0 () " ET',
                                      b"BT (   ) Tj ET", b"BT [( ) 120 (\t)] TJ ET",
-                                     b"BT ( ) ' ET", b'BT 0 0 ( ) " ET'])
+                                     b"BT ( ) ' ET", b'BT 0 0 ( ) " ET',
+                                     b"BX 42 Foo EX", b"BX BX 42 Foo EX EX"])
 def test_empty_content_stream_in_text_pdf_needs_no_attachment(content):
     writer = PdfWriter()
     writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
@@ -167,6 +168,21 @@ def test_text_show_content_is_not_mistaken_for_blank(content):
     stream.set_data(content)
     page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
     assert worker._bounded_text_page(page) == (True, True)
+
+
+@pytest.mark.parametrize(("content", "expected"), [
+    (b"42 Foo", (True, True)),
+    (b"BX 42 Foo EX", (True, False)),
+    (b"BX 42 Foo BX 43 Bar EX 44 Baz EX", (True, False)),
+    (b"BX 42 Foo /Im0 Do EX", (False, True)),
+    (b"BX 42 Foo EX 43 Bar", (True, True)),
+    (b"EX 42 Foo", (True, True)),
+])
+def test_compatibility_sections_ignore_only_unknown_operators(content, expected):
+    stream = DecodedStreamObject()
+    stream.set_data(content)
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
+    assert worker._bounded_text_page(page) == expected
 
 
 def test_large_compressed_page_falls_back_before_text_extraction(monkeypatch):

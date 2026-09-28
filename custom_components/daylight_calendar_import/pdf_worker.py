@@ -29,6 +29,7 @@ NON_RENDERING_OPERATORS = frozenset({
     b"c", b"v", b"y", b"h", b"W", b"W*",
     b"n", b"BX", b"EX", b"MP", b"DP", b"BMC", b"BDC", b"EMC",
 })
+KNOWN_OPERATORS = VISUAL_OPERATORS | NON_RENDERING_OPERATORS | {b"Tj", b"TJ", b"'", b'"'}
 
 
 class PdfExtractionError(ValueError):
@@ -142,8 +143,21 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
         if operator == b"TJ" and operands:
             return any(isinstance(part, (str, bytes)) and bool(part.strip()) for part in operands[0])
         return True
-    return (not any(operator in VISUAL_OPERATORS for _, operator in operations),
-            any(renders(operands, operator) for operands, operator in operations))
+    compatibility_depth = 0
+    has_visual = False
+    has_content = False
+    for operands, operator in operations:
+        if operator == b"BX":
+            compatibility_depth += 1
+            continue
+        if operator == b"EX":
+            compatibility_depth = max(0, compatibility_depth - 1)
+            continue
+        if compatibility_depth and operator not in KNOWN_OPERATORS:
+            continue
+        has_visual |= operator in VISUAL_OPERATORS
+        has_content |= renders(operands, operator)
+    return not has_visual, has_content
 
 
 def extract_text(data: bytes) -> tuple[str, bool]:
