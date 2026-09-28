@@ -87,7 +87,8 @@ test("opens detail, renders source and events as text, and returns to inbox", as
       id: "one", source_title: "Flyer", source_kind: "pdf", source_text: "Meet at noon",
       warnings: ["Check the time"], duplicate_events: 1,
       events: [{id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
-        all_day: true, status: "pending", calendar_entity: "calendar.family", location: "Park"}],
+        all_day: true, status: "pending", calendar_entity: "calendar.family", location: "Park",
+        confidence: 0}],
     }}};
     return {response: {imports: [{id: "one", title: "Picnic", event_count: 1,
       created_at: "2026-10-01T12:00:00Z"}]}};
@@ -103,6 +104,8 @@ test("opens detail, renders source and events as text, and returns to inbox", as
   assert.equal(find(panel._content, "p").attributes.role, undefined);
   assert.equal(find(panel._content, "section").children[2].textContent,
     "Calendar: calendar.family · Status: pending");
+  assert.equal(find(panel._content, "section").children[3].textContent,
+    "AI extraction confidence: 0% (estimate)");
   find(panel._content, "button").click();
   await flush();
   assert.equal(find(panel._content, "h2").children[0].textContent, "Picnic");

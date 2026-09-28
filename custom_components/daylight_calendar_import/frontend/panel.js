@@ -155,6 +155,9 @@ export class DaylightImportPanel extends HTMLElement {
         card.append(element("h3", event.title || "Untitled event"));
         card.append(element("p", `${eventRange(event)}${event.all_day ? " · All day" : ""}`));
         card.append(element("p", `Calendar: ${event.calendar_entity || "Default"} · Status: ${event.status}`));
+        if (typeof event.confidence === "number") {
+          card.append(element("p", `AI extraction confidence: ${Math.round(event.confidence * 100)}% (estimate)`));
+        }
         if (event.location) card.append(element("p", `Location: ${event.location}`));
         if (event.description) card.append(element("p", event.description));
         content.append(card);
