@@ -14,7 +14,7 @@ import subprocess
 import pytest
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PdfReadError
-from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, EncodedStreamObject, NameObject
+from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, EncodedStreamObject, NameObject, RectangleObject, TextStringObject
 
 from custom_components.daylight_calendar_import import pdfs, pdf_worker as worker
 from custom_components.daylight_calendar_import.providers import SourceValidationError
@@ -179,10 +179,41 @@ def test_indirect_page_resources_with_images_retain_attachment():
 
 
 def test_annotated_page_retains_form_values_as_pdf_evidence(monkeypatch):
-    page = SimpleNamespace(get=lambda key: [object()] if key == "/Annots" else None,
+    widget = DictionaryObject({NameObject("/Subtype"): NameObject("/Widget")})
+    page = SimpleNamespace(get=lambda key: [widget] if key == "/Annots" else None,
                            extract_text=lambda: pytest.fail("form values reached text-only path"))
     monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
     assert worker.extract_text(b"%PDF-fake") == ("", True)
+
+
+@pytest.mark.parametrize("extra", [{}, {"/AP": "appearance"}, {"/Contents": "Schedule note"}])
+def test_link_annotations_only_fallback_when_they_contain_content(monkeypatch, extra):
+    annotation = DictionaryObject({NameObject("/Subtype"): NameObject("/Link")})
+    for key, value in extra.items():
+        annotation[NameObject(key)] = TextStringObject(value)
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT (Meeting Friday) Tj ET")
+    page = SimpleNamespace(get=lambda key: [annotation] if key == "/Annots" else
+                           stream if key == "/Contents" else None,
+                           extract_text=lambda: "Meeting Friday")
+    monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
+    assert worker.extract_text(b"%PDF-fake") == (("Meeting Friday", False) if not extra else ("", True))
+
+
+def test_indirect_link_annotations_allow_text_extraction():
+    annotation = DictionaryObject({NameObject("/Subtype"): NameObject("/Link")})
+    annotations = SimpleNamespace(get_object=lambda: [annotation])
+    page = SimpleNamespace(get=lambda key: annotations if key == "/Annots" else None)
+    assert worker._bounded_text_page(page) == (True, False)
+
+
+def test_text_pdf_with_ordinary_hyperlink_needs_no_attachment():
+    writer = PdfWriter()
+    writer.append(PdfReader(BytesIO(make_pdf("Meeting Friday"))))
+    writer.add_uri(0, "https://example.com/calendar", RectangleObject((0, 0, 100, 20)))
+    output = BytesIO()
+    writer.write(output)
+    assert worker.extract_text(output.getvalue()) == ("Meeting Friday", False)
 
 
 @pytest.mark.parametrize("operator", [b"BI /W", b"BI/W"])
@@ -499,7 +530,7 @@ def test_pdf_text_limit_counts_all_pages_and_accepts_exact_limit(monkeypatch):
 
 def test_scanned_page_before_text_still_requires_attachment(monkeypatch):
     pages = [
-        SimpleNamespace(get=lambda key: [object()] if key == "/Annots" else None, extract_text=lambda: ""),
+        SimpleNamespace(get=lambda key: [DictionaryObject({NameObject("/Subtype"): NameObject("/Widget")})] if key == "/Annots" else None, extract_text=lambda: ""),
         SimpleNamespace(get=lambda _key: None, extract_text=lambda: "Meeting Friday"),
     ]
     monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=pages))

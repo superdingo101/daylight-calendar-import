@@ -41,9 +41,15 @@ class PdfExtractionError(ValueError):
 
 def _bounded_text_page(page: object) -> tuple[bool, bool]:
     """Return whether text extraction is safe and whether the page has content."""
-    if page.get("/Annots"):
-        # AcroForm values and appearances do not appear in extracted page text.
-        return False, True
+    annotations = page.get("/Annots") or []
+    if hasattr(annotations, "get_object"):
+        annotations = annotations.get_object()
+    for annotation in annotations:
+        item = annotation.get_object()
+        # Plain hyperlinks add no content; form values and annotation appearances
+        # are unavailable to page.extract_text().
+        if item.get("/Subtype") != "/Link" or item.get("/AP") or item.get("/Contents"):
+            return False, True
     resources = page.get("/Resources") or {}
     if hasattr(resources, "get_object"):
         resources = resources.get_object()
