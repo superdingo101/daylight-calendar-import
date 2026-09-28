@@ -3,7 +3,7 @@
   "name": "Daylight Calendar Import",
   "codeowners": ["@superdingo101"],
   "config_flow": true,
-  "dependencies": ["file_upload", "media_source"],
+  "dependencies": ["file_upload", "frontend", "media_source"],
   "documentation": "https://github.com/superdingo101/daylight-calendar-import",
   "integration_type": "service",
   "issue_tracker": "https://github.com/superdingo101/daylight-calendar-import/issues",

@@ -42,6 +42,7 @@ from .const import (
 from .models import DraftValidationError, EventDraft
 from .parser import ParseOutcome, async_parse_source as parse_source_with_provider
 from .pdfs import async_pdf_source
+from .review_panel import async_register_review_panel, async_remove_review_panel
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .uploads import async_image_source
 from .storage import (
@@ -505,11 +506,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN, SERVICE_RESOLVE_PENDING_EVENT, handle_resolve_pending_event,
         schema=RESOLVE_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
     )
+    await async_register_review_panel(hass)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    async_remove_review_panel(hass)
     hass.services.async_remove(DOMAIN, SERVICE_PARSE_TEXT)
     hass.services.async_remove(DOMAIN, SERVICE_IMPORT_TEXT)
     hass.services.async_remove(DOMAIN, SERVICE_SUBMIT_TEXT)
