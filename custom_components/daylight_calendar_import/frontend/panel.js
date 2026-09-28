@@ -49,6 +49,7 @@ export class DaylightImportPanel extends HTMLElement {
     const header = document.createElement("header");
     header.append(element("h1", "Daylight imports"));
     const refresh = element("button", "Refresh");
+    this._refreshButton = refresh;
     refresh.type = "button";
     refresh.addEventListener("click", () => void (this._selectedId ? this.showImport(this._selectedId) : this.refresh()));
     header.append(refresh);
@@ -84,7 +85,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._returnFocusId) {
       const button = Array.from(this._content.querySelectorAll("button"))
         .find((candidate) => candidate.dataset.pendingId === this._returnFocusId);
-      button?.focus();
+      (button || this._refreshButton).focus();
       this._returnFocusId = null;
     }
   }
@@ -106,7 +107,7 @@ export class DaylightImportPanel extends HTMLElement {
       this._status = error instanceof Error ? error.message : "Could not load import. Try again.";
     }
     this.render();
-    this._content.querySelector("h2")?.focus();
+    (this._content.querySelector("h2") || this._content.querySelector("button"))?.focus();
   }
 
   showInbox() {
@@ -127,11 +128,9 @@ export class DaylightImportPanel extends HTMLElement {
     }
     if (this._status === "loading") {
       const loading = element("p", "Loading imports…", "status");
-      loading.setAttribute("role", "status");
       content.append(loading);
     } else if (this._status !== "ready") {
       const error = element("p", this._status, "error");
-      error.setAttribute("role", "alert");
       content.append(error);
     } else if (this._selectedId && this._detail) {
       const detail = this._detail;

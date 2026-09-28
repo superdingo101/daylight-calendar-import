@@ -32,12 +32,29 @@ test("refresh keeps its button and announces loading and errors", async () => {
   const button = find(panel.shadowRoot, "button");
   let reject;
   panel.hass = {callWS: () => new Promise((_resolve, fail) => {reject = fail;})};
-  assert.equal(find(panel._content, "p").attributes.role, "status");
+  assert.equal(find(panel._announcement, "span").textContent, "Loading imports…");
   reject(new Error("Permission denied"));
   await flush();
-  assert.equal(find(panel._content, "p").attributes.role, "alert");
+  assert.equal(find(panel._announcement, "span").textContent, "Permission denied");
   assert.equal(find(panel._content, "p").textContent, "Permission denied");
   assert.equal(find(panel.shadowRoot, "button"), button);
+});
+
+test("detail errors and absent inbox items retain useful keyboard focus", async () => {
+  const panel = new DaylightImportPanel();
+  let fail = false;
+  panel.hass = {callWS: async (message) => {
+    if (message.service === "get_pending") throw new Error("Permission denied");
+    return {response: {imports: fail ? [] : [{id: "one", title: "Picnic", event_count: 1,
+      created_at: "2026-10-01T12:00:00Z"}]}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  assert.equal(globalThis.focusedNode.textContent, "Back to inbox");
+  fail = true;
+  panel.showInbox();
+  await flush();
+  assert.equal(globalThis.focusedNode.textContent, "Refresh");
 });
 
 test("a superseded refresh cannot replace newer data or a newer error", async () => {
