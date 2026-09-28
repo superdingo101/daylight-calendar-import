@@ -127,6 +127,7 @@ def test_review_metadata_round_trip_and_legacy_defaults():
         source_title="schedule.pdf", warnings=["Event 2 had no date"], duplicate_events=2,
     )
     assert PendingImport.from_dict(item.as_dict()) == item
+    assert item.source_kind == "pdf"
     assert item.as_service_dict()["warnings"] == ["Event 2 had no date"]
     assert item.as_service_dict()["duplicate_events"] == 2
     assert item.as_dict()["source_title"] == "schedule.pdf"
@@ -138,6 +139,8 @@ def test_review_metadata_round_trip_and_legacy_defaults():
     assert legacy.source_title is None
     assert legacy.warnings == ()
     assert legacy.duplicate_events == 0
+    assert legacy.as_service_dict()["source_title"] is None
+    assert legacy.as_service_dict()["duplicate_events"] == 0
 
 
 async def test_review_metadata_survives_edit_reject_checkpoint_and_restart(monkeypatch):
