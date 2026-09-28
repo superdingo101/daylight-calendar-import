@@ -355,10 +355,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             expected = call.data.get("expected_event")
             expected_event = None
             if expected is not None:
-                if expected.get("id") != event_id or expected.get("status") != "pending":
+                if expected.get("id") != event_id or expected.get("status") not in (
+                    "pending", "write_uncertain"
+                ):
                     raise PendingEventEditError("Event changed since it was loaded; refresh before editing")
                 expected_event = PendingEvent(
-                    event_id, EventDraft.from_mapping(expected), "pending",
+                    event_id, EventDraft.from_mapping(expected), expected["status"],
                     expected.get(CONF_CALENDAR_ENTITY),
                 )
             calendar_entity = call.data.get(CONF_CALENDAR_ENTITY)

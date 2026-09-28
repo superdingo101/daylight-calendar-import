@@ -434,6 +434,12 @@ async def test_edit_pending_event_validates_and_checks_permissions(monkeypatch):
     call.data["expected_event"]["id"] = "wrong"
     with pytest.raises(ServiceValidationError, match="changed since"):
         await handler(call)
+    call.data["expected_event"] = {
+        **original.as_service_dict(), "status": "write_uncertain"
+    }
+    store.async_edit_event.reset_mock()
+    await handler(call)
+    assert store.async_edit_event.await_args.kwargs["expected_event"].status == "write_uncertain"
     call.data.pop("expected_event")
     store.async_edit_event.reset_mock()
 
