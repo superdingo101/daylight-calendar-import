@@ -195,8 +195,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "duplicate_events": 0, "warnings": []}
         outcome = await _async_parse_source(hass, entry, source)
         label = "PDF" if source.kind is SourceKind.PDF else "Image"
+        attachment_note = f"{label} attachment (SHA-256: {source.attachments[0].sha256})" if source.attachments else ""
         result = await pending_store.async_add(
-            source_text=source.text or f"{label} attachment (SHA-256: {source.attachments[0].sha256})",
+            source_text="\n\n".join(part for part in (source.text, attachment_note) if part),
             events=outcome.events,
             source_id=source.upstream_source_id,
             calendar_entity=entry.data[CONF_CALENDAR_ENTITY],

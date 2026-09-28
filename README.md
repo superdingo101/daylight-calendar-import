@@ -4,7 +4,7 @@ A Home Assistant custom integration that turns unstructured text into validated 
 
 This repository is intentionally separate from [Daylight Calendar Card](https://github.com/superdingo101/daylight-calendar-card). The import integration owns ingestion/parsing; the card can later provide a richer review UI.
 
-## v0.2.0 review domain
+## v0.3.0 source ingestion
 
 The integration supports:
 
@@ -54,9 +54,9 @@ Then test `daylight_calendar_import.parse_text` from **Developer Tools → Actio
 
 Use `parse_text` first while evaluating extraction quality. For the review workflow, use `submit_text` and then pass the returned pending import ID to `approve_pending` or `reject_pending`. `submit_text` accepts an optional stable `source_id`; exact source duplicates can then be skipped before invoking AI. It also filters events already pending or previously approved/rejected using normalized fingerprints. `import_text` remains the explicit immediate-import path and intentionally bypasses the pending-review deduplication pipeline.
 
-For a photographed schedule or flyer, use `submit_image` in **Developer Tools → Actions**, choose an image file (maximum 10 MiB), and optionally provide context text and a stable source ID. The configured AI Task entity must support attachments. The upload and its temporary local media copy are removed after parsing or an error; pending review stores the text or an image digest, not the image bytes.
+For a photographed schedule or flyer, use `submit_image` in **Developer Tools → Actions**, choose an image file (maximum 10 MiB), and optionally provide context text and a stable source ID. The configured AI Task entity must support attachments. The upload and its temporary local media copy are removed after parsing or an error; pending review stores the context and image digest, not the image bytes.
 
-For a PDF, use `submit_pdf` with a file up to 10 MiB and 30 pages. Selectable text is extracted locally and combined with optional context, so a text-only PDF can be parsed without sending the attachment. PDFs with scanned pages, images, or page content that cannot be safely extracted retain a temporary attachment; this requires an AI Task entity that supports attachments, and PDF interpretation still depends on that entity. Invalid, encrypted, and oversized PDFs return explicit errors. Uploads and temporary copies are cleaned after processing, and pending review stores extracted text or a digest, never PDF bytes.
+For a PDF, use `submit_pdf` with a file up to 10 MiB and 30 pages. Selectable text is extracted locally and combined with optional context, so a text-only PDF can be parsed without sending the attachment. PDFs with scanned pages, images, or page content that cannot be safely extracted retain a temporary attachment alongside any extracted text; this requires an AI Task entity that supports attachments, and PDF interpretation still depends on that entity. Invalid, encrypted, and oversized PDFs return explicit errors. Uploads and temporary copies are cleaned after processing, and pending review stores extracted text and the attachment digest together when both exist, never PDF bytes or temporary media references.
 
 The three pending read actions return responses from **Developer Tools → Actions**. `list_pending` returns summaries without the original source text; `get_pending` returns the full source and drafts; `get_pending_event` accepts both `pending_id` and `event_id`. Reads require an authenticated Home Assistant user with control permission for both the configured AI Task and calendar entities. Pending data remains available after a Home Assistant restart.
 
@@ -82,7 +82,7 @@ Text actions normalize into a `SourceDocument` before parsing. The document desc
 
 Parser capabilities validate media type, attachment count, aggregate size, and text/attachment support before calling the provider. The AI Task adapter checks its entity's attachment feature before passing images or PDFs, while a text-layer PDF uses the text-only path.
 
-Email/SMS ingestion, attachments, a review UI, and hosted relay services remain future work.
+Email/SMS ingestion, a dedicated review UI, and hosted relay services remain future work.
 
 ## Tests
 

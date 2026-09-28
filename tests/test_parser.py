@@ -192,6 +192,27 @@ async def test_image_capability_detected_before_ai_task_invocation(monkeypatch):
     assert "XXXX" not in generate.await_args.kwargs["instructions"]
 
 
+async def test_mixed_pdf_keeps_text_and_attachment_in_one_ai_task_request(monkeypatch):
+    seed = TextSourceAdapter().create("seed")
+    attachment = SourceAttachment("pdf", "application/pdf", 512, "media-source://media_source/local/schedule.pdf", sha256="digest")
+    source = SourceDocument(seed.id, SourceKind.PDF, seed.received_at,
+                            text="Cover note\n\nExtracted dates", attachments=(attachment,))
+    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [VALID]}))
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    component = SimpleNamespace(get_entity=lambda _id: SimpleNamespace(
+        supported_features=providers.AITaskEntityFeature.SUPPORT_ATTACHMENTS))
+    provider = providers.AITaskParserProvider(SimpleNamespace(data={providers.DATA_COMPONENT: component}), "ai_task.test")
+
+    outcome = await provider.async_parse(source, reference_datetime="2026-10-01T12:00:00Z", time_zone="UTC")
+
+    assert outcome.events[0].title == "Soccer Practice"
+    assert outcome.warnings == []
+    kwargs = generate.await_args.kwargs
+    assert "Cover note\n\nExtracted dates" in kwargs["instructions"]
+    assert kwargs["attachments"] == [{"media_content_id": attachment.content_ref,
+                                       "media_content_type": "application/pdf"}]
+
+
 def test_image_capability_handles_unavailable_entity():
     component = SimpleNamespace(get_entity=lambda _id: None)
     provider = providers.AITaskParserProvider(SimpleNamespace(data={providers.DATA_COMPONENT: component}), "ai_task.missing")

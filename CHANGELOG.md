@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Normalize text, image, and PDF inputs as source documents and parse them through a provider boundary with explicit media capabilities.
+- Accept uploaded PNG, JPEG, and WebP images with optional context; validate size and type, then clean up uploads and temporary media.
+- Extract text from bounded PDF files in a resource-limited worker; send scanned or visual pages as temporary attachments when the AI Task entity supports them.
+- Keep valid event drafts when individual AI candidates are malformed, reporting indexed warnings for the skipped candidates.
+- Preserve text and attachment digests together in pending review without retaining upload bytes or temporary media references.
+
 ## 0.2.0
 
 - Persist stable per-event IDs, statuses, and calendar destinations with migration of existing configuration and pending storage.
