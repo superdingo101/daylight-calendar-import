@@ -86,8 +86,11 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
         encoding = stream.get("/Filter")
         if hasattr(encoding, "get_object"):
             encoding = encoding.get_object()
-        if isinstance(encoding, list) and len(encoding) == 1:
-            encoding = encoding[0]
+        if isinstance(encoding, list):
+            if not encoding:
+                encoding = None
+            elif len(encoding) == 1:
+                encoding = encoding[0]
         if hasattr(encoding, "get_object"):
             encoding = encoding.get_object()
         if isinstance(encoding, NullObject):
@@ -98,8 +101,11 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
             params = stream.get("/DecodeParms")
             if hasattr(params, "get_object"):
                 params = params.get_object()
-            if isinstance(params, list) and len(params) == 1:
-                params = params[0]
+            if isinstance(params, list):
+                if not params:
+                    params = None
+                elif len(params) == 1:
+                    params = params[0]
             if hasattr(params, "get_object"):
                 params = params.get_object()
             if params is not None and not isinstance(params, NullObject):

@@ -614,6 +614,25 @@ def test_indirect_singleton_filter_array_is_accepted():
     assert worker._bounded_text_page(page) == (True, True)
 
 
+@pytest.mark.parametrize("indirect", [False, True])
+def test_empty_filter_array_is_unfiltered_content(indirect):
+    writer = PdfWriter()
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT (Meeting) Tj ET")
+    empty_filters = ArrayObject([])
+    stream[NameObject("/Filter")] = writer._add_object(empty_filters) if indirect else empty_filters
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
+    assert worker._bounded_text_page(page) == (True, True)
+
+
+def test_multiple_filters_remain_attachment_only():
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT (Meeting) Tj ET")
+    stream[NameObject("/Filter")] = ArrayObject([NameObject("/FlateDecode"), NameObject("/FlateDecode")])
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
+    assert worker._bounded_text_page(page) == (False, True)
+
+
 @pytest.mark.parametrize("filter_value", [NullObject(), ArrayObject([NullObject()])])
 def test_null_filter_is_treated_as_unfiltered_content(filter_value):
     stream = DecodedStreamObject()
@@ -629,7 +648,8 @@ def test_null_filter_is_treated_as_unfiltered_content(filter_value):
     (DictionaryObject({NameObject("/Predictor"): NullObject()}), True),
     (ArrayObject([DictionaryObject({NameObject("/Predictor"): 12})]), False),
     (NullObject(), True),
-    (ArrayObject([]), False),
+    (ArrayObject([]), True),
+    (ArrayObject([DictionaryObject(), DictionaryObject()]), False),
 ])
 def test_flate_predictor_does_not_bypass_visual_preflight(params, safe):
     stream = EncodedStreamObject()
