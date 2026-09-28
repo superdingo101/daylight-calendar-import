@@ -316,6 +316,8 @@ async def test_pending_read_actions_return_summaries_details_and_stable_event(mo
     assert details["pending"]["source_kind"] == "manual_text"
     assert details["pending"]["warnings"] == []
     assert details["pending"]["events"][1]["id"] == item.events[1].id
+    assert details["pending"]["allowed_calendars"] == ["calendar.family"]
+    assert details["pending"]["default_calendar"] == "calendar.family"
     assert "source_fingerprint" not in details["pending"]
 
     event_handler, event_options = hass.services.handlers[(DOMAIN, SERVICE_GET_PENDING_EVENT)]
@@ -419,12 +421,32 @@ async def test_edit_pending_event_validates_and_checks_permissions(monkeypatch):
         context=Context(user_id="editor"),
     )
     assert await handler(call) == {"pending_id": item.id, "event": edited.as_service_dict()}
-    store.async_edit_event.assert_awaited_once_with(item.id, original.id, replacement, calendar_entity=None)
+    store.async_edit_event.assert_awaited_once_with(
+        item.id, original.id, replacement, calendar_entity=None, expected_event=None
+    )
+
+    store.async_edit_event.reset_mock()
+    call.data["expected_event"] = original.as_service_dict()
+    await handler(call)
+    store.async_edit_event.assert_awaited_once_with(
+        item.id, original.id, replacement, calendar_entity=None, expected_event=original
+    )
+    call.data["expected_event"]["id"] = "wrong"
+    with pytest.raises(ServiceValidationError, match="changed since"):
+        await handler(call)
+    call.data["expected_event"] = {
+        **original.as_service_dict(), "status": "write_uncertain"
+    }
+    store.async_edit_event.reset_mock()
+    await handler(call)
+    assert store.async_edit_event.await_args.kwargs["expected_event"].status == "write_uncertain"
+    call.data.pop("expected_event")
+    store.async_edit_event.reset_mock()
 
     call.data["event"] = {**replacement.as_dict(), "end": "invalid"}
     with pytest.raises(ServiceValidationError, match="valid ISO"):
         await handler(call)
-    store.async_edit_event.assert_awaited_once()
+    store.async_edit_event.assert_not_awaited()
 
     call.data["event"] = replacement.as_dict()
     store.async_edit_event.reset_mock()
@@ -1205,7 +1227,7 @@ async def test_event_calendar_edit_and_approvals_route_to_selected_destination(m
     }, context=context)
     assert (await edit(edit_call))["event"][CONF_CALENDAR_ENTITY] == "calendar.work"
     store.async_edit_event.assert_awaited_once_with(
-        item.id, second.id, second.draft, calendar_entity="calendar.work"
+        item.id, second.id, second.draft, calendar_entity="calendar.work", expected_event=None
     )
     edit_call.data[CONF_CALENDAR_ENTITY] = "calendar.unlisted"
     with pytest.raises(ServiceValidationError, match="allowed calendars"):

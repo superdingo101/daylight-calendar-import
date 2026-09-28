@@ -259,6 +259,7 @@ class PendingImportStore:
     async def async_edit_event(
         self, pending_id: str, event_id: str, draft: EventDraft,
         calendar_entity: str | None = None,
+        expected_event: PendingEvent | None = None,
     ) -> PendingEvent | None:
         """Replace a ready draft atomically while preserving its event ID."""
         async with self._lock:
@@ -268,6 +269,8 @@ class PendingImportStore:
             event = next((item for item in pending.events if item.id == event_id), None)
             if event is None:
                 return None
+            if expected_event is not None and event != expected_event:
+                raise PendingEventEditError("Event changed since it was loaded; refresh before editing")
             if event.status != "pending":
                 raise PendingEventEditError("Uncertain calendar write must be resolved before editing")
             target = calendar_entity or event.calendar_entity
