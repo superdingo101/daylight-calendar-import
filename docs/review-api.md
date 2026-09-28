@@ -17,6 +17,10 @@ skipped when the import was created). It does not return source text.
 source metadata and warnings. Its events have stable IDs, statuses, destination
 calendars, and editable draft fields. A write-uncertain event must be resolved
 with `resolve_pending_event` before it can be edited, rejected, or retried.
+It also returns `allowed_calendars` and `default_calendar` for the editor.
+`edit_pending_event` accepts an optional `expected_event` containing the event
+snapshot from `get_pending`. If the event changed before the edit acquires the
+store lock, the action fails and the client must refresh instead of overwriting it.
 `get_pending_event` returns one event by `pending_id` and `event_id`.
 
 Existing stored imports without source metadata load as `manual_text` with no

@@ -289,6 +289,11 @@ async def test_edit_event_updates_matching_and_survives_restart(monkeypatch):
     assert edited.draft == replacement
     assert store.get_event(first.id, original.id) == edited
     assert await store.async_edit_event(first.id, original.id, replacement) == edited
+    with pytest.raises(PendingEventEditError, match="changed since"):
+        await store.async_edit_event(first.id, original.id, draft(), expected_event=original)
+    assert await store.async_edit_event(
+        first.id, original.id, replacement, expected_event=edited
+    ) == edited
     assert len(backend.saved) == 2  # unchanged draft does not rewrite storage
 
     # The old fingerprint is free; the new one is actively reserved.

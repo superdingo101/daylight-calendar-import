@@ -89,6 +89,7 @@ EDIT_EVENT_SCHEMA = vol.Schema(
         vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
         vol.Required("event"): dict,
         vol.Optional(CONF_CALENDAR_ENTITY): cv.entity_id,
+        vol.Optional("expected_event"): dict,
     }
 )
 RESOLVE_EVENT_SCHEMA = vol.Schema(
@@ -330,6 +331,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise ServiceValidationError(f"Pending import not found: {pending_id}")
         result = pending.as_service_dict()
         result.pop("source_fingerprint", None)
+        result["allowed_calendars"] = list(allowed_calendars)
+        result["default_calendar"] = entry.data[CONF_CALENDAR_ENTITY]
         return {"pending": result}
 
     async def handle_get_pending_event(call: ServiceCall) -> ServiceResponse:
@@ -349,11 +352,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         event_id = call.data[ATTR_EVENT_ID]
         try:
             draft = EventDraft.from_mapping(call.data["event"])
+            expected = call.data.get("expected_event")
+            expected_event = None
+            if expected is not None:
+                if expected.get("id") != event_id or expected.get("status") != "pending":
+                    raise PendingEventEditError("Event changed since it was loaded; refresh before editing")
+                expected_event = PendingEvent(
+                    event_id, EventDraft.from_mapping(expected), "pending",
+                    expected.get(CONF_CALENDAR_ENTITY),
+                )
             calendar_entity = call.data.get(CONF_CALENDAR_ENTITY)
             if calendar_entity is not None and calendar_entity not in allowed_calendars:
                 raise ServiceValidationError("Calendar is not in the allowed calendars")
             edited = await pending_store.async_edit_event(
-                pending_id, event_id, draft, calendar_entity=calendar_entity
+                pending_id, event_id, draft, calendar_entity=calendar_entity,
+                expected_event=expected_event,
             )
         except (DraftValidationError, PendingEventEditError) as err:
             raise ServiceValidationError(str(err)) from err
