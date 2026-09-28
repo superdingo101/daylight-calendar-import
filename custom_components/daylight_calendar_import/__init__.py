@@ -37,10 +37,12 @@ from .const import (
     SERVICE_RESOLVE_PENDING_EVENT,
     SERVICE_SUBMIT_TEXT,
     SERVICE_SUBMIT_IMAGE,
+    SERVICE_SUBMIT_PDF,
 )
 from .models import DraftValidationError, EventDraft
 from .parser import ParseOutcome, async_parse_source as parse_source_with_provider
-from .sources import SourceDocument, TextSourceAdapter
+from .pdfs import async_pdf_source
+from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .uploads import async_image_source
 from .storage import (
     PendingEventEditError,
@@ -70,6 +72,7 @@ SUBMIT_IMAGE_SCHEMA = vol.Schema(
         ),
     }
 )
+SUBMIT_PDF_SCHEMA = SUBMIT_IMAGE_SCHEMA
 PENDING_SCHEMA = vol.Schema(
     {vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1))}
 )
@@ -185,30 +188,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "warnings": outcome.warnings,
         }
 
-    async def handle_submit_image(call: ServiceCall) -> ServiceResponse:
-        """Queue event drafts from an uploaded image and optional source text."""
-        await _async_check_entity_control_permission(
-            hass, entry.data[CONF_AI_TASK_ENTITY], call.context
+    async def submit_attachment_source(source: SourceDocument) -> ServiceResponse:
+        """Send a normalized upload through parsing and pending review."""
+        if source.upstream_source_id is not None and pending_store.is_source_duplicate(source.upstream_source_id):
+            return {"pending": None, "duplicate": True, "duplicate_source": True,
+                    "duplicate_events": 0, "warnings": []}
+        outcome = await _async_parse_source(hass, entry, source)
+        label = "PDF" if source.kind is SourceKind.PDF else "Image"
+        result = await pending_store.async_add(
+            source_text=source.text or f"{label} attachment (SHA-256: {source.attachments[0].sha256})",
+            events=outcome.events,
+            source_id=source.upstream_source_id,
+            calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
         )
-        source_id = call.data.get(ATTR_SOURCE_ID)
-        async with async_image_source(hass, call.data[ATTR_FILE_ID]) as image:
-            if source_id is not None and pending_store.is_source_duplicate(source_id):
-                return {"pending": None, "duplicate": True, "duplicate_source": True,
-                        "duplicate_events": 0, "warnings": []}
-            source = replace(image, text=call.data.get(ATTR_TEXT, "").strip() or None,
-                             upstream_source_id=source_id)
-            outcome = await _async_parse_source(hass, entry, source)
-            result = await pending_store.async_add(
-                source_text=source.text or f"Image attachment (SHA-256: {source.attachments[0].sha256})",
-                events=outcome.events,
-                source_id=source.upstream_source_id,
-                calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
-            )
         return {"pending": result.pending.as_service_dict() if result.pending else None,
                 "duplicate": result.duplicate_source or result.duplicate_events > 0,
                 "duplicate_source": result.duplicate_source,
                 "duplicate_events": result.duplicate_events,
                 "warnings": outcome.warnings}
+
+    async def handle_submit_image(call: ServiceCall) -> ServiceResponse:
+        """Queue event drafts from an uploaded image and optional source text."""
+        await _async_check_entity_control_permission(
+            hass, entry.data[CONF_AI_TASK_ENTITY], call.context
+        )
+        async with async_image_source(hass, call.data[ATTR_FILE_ID]) as image:
+            source = replace(image, text=call.data.get(ATTR_TEXT, "").strip() or None,
+                             upstream_source_id=call.data.get(ATTR_SOURCE_ID))
+            return await submit_attachment_source(source)
+
+    async def handle_submit_pdf(call: ServiceCall) -> ServiceResponse:
+        """Queue event drafts from a text PDF or attachment-capable parser."""
+        await _async_check_entity_control_permission(
+            hass, entry.data[CONF_AI_TASK_ENTITY], call.context
+        )
+        async with async_pdf_source(hass, call.data[ATTR_FILE_ID], call.data.get(ATTR_TEXT, "")) as pdf:
+            return await submit_attachment_source(
+                replace(pdf, upstream_source_id=call.data.get(ATTR_SOURCE_ID))
+            )
 
     async def handle_approve_pending(call: ServiceCall) -> ServiceResponse:
         pending_id = call.data[ATTR_PENDING_ID]
@@ -434,6 +451,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         schema=SUBMIT_IMAGE_SCHEMA, supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
+        DOMAIN, SERVICE_SUBMIT_PDF, handle_submit_pdf,
+        schema=SUBMIT_PDF_SCHEMA, supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
         DOMAIN,
         SERVICE_APPROVE_PENDING,
         handle_approve_pending,
@@ -484,6 +505,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, SERVICE_IMPORT_TEXT)
     hass.services.async_remove(DOMAIN, SERVICE_SUBMIT_TEXT)
     hass.services.async_remove(DOMAIN, SERVICE_SUBMIT_IMAGE)
+    hass.services.async_remove(DOMAIN, SERVICE_SUBMIT_PDF)
     hass.services.async_remove(DOMAIN, SERVICE_APPROVE_PENDING)
     hass.services.async_remove(DOMAIN, SERVICE_REJECT_PENDING)
     hass.services.async_remove(DOMAIN, SERVICE_LIST_PENDING)

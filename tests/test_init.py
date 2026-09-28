@@ -18,6 +18,7 @@ from custom_components.daylight_calendar_import import (
     PENDING_SCHEMA,
     SUBMIT_SCHEMA,
     SUBMIT_IMAGE_SCHEMA,
+    SUBMIT_PDF_SCHEMA,
     _async_check_entity_control_permission,
     _async_create_calendar_event,
     _async_parse_source,
@@ -49,6 +50,7 @@ from custom_components.daylight_calendar_import.const import (
     SERVICE_RESOLVE_PENDING_EVENT,
     SERVICE_SUBMIT_TEXT,
     SERVICE_SUBMIT_IMAGE,
+    SERVICE_SUBMIT_PDF,
 )
 from custom_components.daylight_calendar_import.models import EventDraft
 from custom_components.daylight_calendar_import.parser import ParseOutcome
@@ -958,6 +960,7 @@ async def test_service_registration_contracts(monkeypatch):
         SERVICE_IMPORT_TEXT: (PARSE_SCHEMA, SupportsResponse.OPTIONAL),
         SERVICE_SUBMIT_TEXT: (SUBMIT_SCHEMA, SupportsResponse.ONLY),
         SERVICE_SUBMIT_IMAGE: (SUBMIT_IMAGE_SCHEMA, SupportsResponse.ONLY),
+        SERVICE_SUBMIT_PDF: (SUBMIT_PDF_SCHEMA, SupportsResponse.ONLY),
         SERVICE_APPROVE_PENDING: (PENDING_SCHEMA, SupportsResponse.OPTIONAL),
         SERVICE_REJECT_PENDING: (PENDING_SCHEMA, SupportsResponse.OPTIONAL),
         SERVICE_LIST_PENDING: (None, SupportsResponse.ONLY),
@@ -1492,6 +1495,53 @@ async def test_submit_image_only_persists_digest_not_bytes(monkeypatch):
         SimpleNamespace(data={ATTR_FILE_ID: "a" * 32}, context=Context(user_id=None)))
     assert result == {"pending": None, "duplicate": False, "duplicate_source": False, "duplicate_events": 0, "warnings": ["no events"]}
     assert store.async_add.await_args.kwargs["source_text"] == "Image attachment (SHA-256: digest)"
+
+
+async def test_submit_pdf_text_layer_uses_review_pipeline(monkeypatch):
+    seed = TextSourceAdapter().create("seed")
+    pdf = SourceDocument(seed.id, SourceKind.PDF, seed.received_at,
+                         text="Context\n\nExtracted schedule", metadata={"sha256": "digest"})
+    @asynccontextmanager
+    async def pdf_source(_hass, file_id, context):
+        assert file_id == "a" * 32
+        assert context == "Context"
+        yield pdf
+
+    parse = AsyncMock(return_value=ParseOutcome([draft()], []))
+    store = SimpleNamespace(async_load=AsyncMock(), is_source_duplicate=Mock(return_value=False),
+                            async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_pdf_source", pdf_source)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    hass = FakeHass()
+    await async_setup_entry(hass, entry())
+    response = await hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_PDF)][0](
+        SimpleNamespace(data={ATTR_FILE_ID: "a" * 32, ATTR_TEXT: "Context", ATTR_SOURCE_ID: "pdf-upstream"}, context=Context(user_id=None)))
+    assert parse.await_args.kwargs["source"].kind is SourceKind.PDF
+    assert store.async_add.await_args.kwargs["source_text"] == "Context\n\nExtracted schedule"
+    assert store.async_add.await_args.kwargs["source_id"] == "pdf-upstream"
+    assert response["pending"] is not None
+
+
+async def test_submit_scanned_pdf_persists_digest_only(monkeypatch):
+    seed = TextSourceAdapter().create("seed")
+    pdf = SourceDocument(seed.id, SourceKind.PDF, seed.received_at,
+                         attachments=(SourceAttachment("a", "application/pdf", 1024,
+                                                       "media-source://media_source/local/temp.pdf", sha256="digest"),))
+    @asynccontextmanager
+    async def pdf_source(_hass, _file_id, context):
+        assert context == ""
+        yield pdf
+    store = SimpleNamespace(async_load=AsyncMock(), async_add=AsyncMock(return_value=PendingImportAddResult(None, False, 0)))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_pdf_source", pdf_source)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", AsyncMock(return_value=ParseOutcome([], [])))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    hass = FakeHass()
+    await async_setup_entry(hass, entry())
+    response = await hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_PDF)][0](
+        SimpleNamespace(data={ATTR_FILE_ID: "a" * 32}, context=Context(user_id=None)))
+    assert response["pending"] is None
+    assert store.async_add.await_args.kwargs["source_text"] == "PDF attachment (SHA-256: digest)"
 
 
 def test_image_upload_schema_preserves_home_assistant_file_id():

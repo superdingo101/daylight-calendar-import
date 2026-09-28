@@ -63,6 +63,29 @@ submit_image:
       selector:
         text:
 
+submit_pdf:
+  name: Submit PDF for review
+  description: Extract PDF text locally when available; otherwise pass the PDF to an attachment-capable AI Task entity. Uploaded files and temporary media copies are removed after processing.
+  fields:
+    file_id:
+      name: PDF upload
+      description: PDF file (10 MiB maximum, 30 pages maximum).
+      required: true
+      selector:
+        file:
+          accept: application/pdf
+    text:
+      name: Text
+      description: Optional context used together with the PDF.
+      selector:
+        text:
+          multiline: true
+    source_id:
+      name: Source ID
+      description: Optional stable upstream identifier for deduplication.
+      selector:
+        text:
+
 approve_pending:
   name: Approve pending import
   description: Create all events from a pending import on the configured calendar, then remove it from review.

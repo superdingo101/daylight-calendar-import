@@ -7,5 +7,6 @@
   "documentation": "https://github.com/superdingo101/daylight-calendar-import",
   "integration_type": "service",
   "issue_tracker": "https://github.com/superdingo101/daylight-calendar-import/issues",
+  "requirements": ["pypdf==6.14.2"],
   "version": "0.2.0"
 }
