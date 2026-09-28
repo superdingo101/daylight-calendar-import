@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from uuid import UUID
 import zlib
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pytest
 from pypdf import PdfReader, PdfWriter
@@ -178,16 +180,29 @@ def test_large_compressed_page_falls_back_before_text_extraction(monkeypatch):
 
 
 def test_page_with_image_retains_attachment_even_with_text(monkeypatch):
-    page = SimpleNamespace(get=lambda key: {"/XObject": {"/Im0": object()}} if key == "/Resources" else None,
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT (Cover) Tj ET /Im0 Do")
+    page = SimpleNamespace(get=lambda key: {"/XObject": {"/Im0": object()}} if key == "/Resources" else
+                           stream if key == "/Contents" else None,
                            extract_text=lambda: pytest.fail("image content reached text-only path"))
     monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
     assert worker.extract_text(b"%PDF-fake") == ("", True)
 
 
-def test_indirect_page_resources_with_images_retain_attachment():
+def test_unused_indirect_xobject_resource_does_not_force_attachment():
     resources = SimpleNamespace(get_object=lambda: {"/XObject": {"/Im0": object()}})
     page = SimpleNamespace(get=lambda key: resources if key == "/Resources" else None)
-    assert worker._bounded_text_page(page) == (False, True)
+    assert worker._bounded_text_page(page) == (True, False)
+
+
+def test_unused_xobject_resource_allows_text_layer(monkeypatch):
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT (Meeting) Tj ET")
+    page = SimpleNamespace(get=lambda key: {"/XObject": {"/Im0": object()}} if key == "/Resources" else
+                           stream if key == "/Contents" else None,
+                           extract_text=lambda: "Meeting")
+    monkeypatch.setattr(worker, "PdfReader", lambda *_args, **_kwargs: SimpleNamespace(is_encrypted=False, pages=[page]))
+    assert worker.extract_text(b"%PDF-fake") == ("Meeting", False)
 
 
 def test_annotated_page_retains_form_values_as_pdf_evidence(monkeypatch):
@@ -306,6 +321,36 @@ def test_worker_timeout_is_explicit(monkeypatch):
         pdfs._extract_pdf_text(b"%PDF-fake")
     assert caught.value.code == "invalid_pdf"
     assert str(caught.value) == "PDF extraction timed out"
+
+
+def test_pdf_workers_are_serialized(monkeypatch):
+    first_entered, second_started, second_entered, release = (Event() for _ in range(4))
+    calls = 0
+    def run(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_entered.set()
+            assert release.wait(2)
+        else:
+            second_entered.set()
+        return SimpleNamespace(returncode=0, stdout=b'{"text":"Meeting","needs_attachment":false}')
+    monkeypatch.setattr(pdfs.subprocess, "run", run)
+    def second():
+        second_started.set()
+        return pdfs._extract_pdf_text(b"%PDF-second")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        one = pool.submit(pdfs._extract_pdf_text, b"%PDF-first")
+        try:
+            assert first_entered.wait(2)
+            two = pool.submit(second)
+            assert second_started.wait(2)
+            assert not second_entered.wait(0.1)
+        finally:
+            release.set()
+        assert one.result(timeout=2) == ("Meeting", False)
+        assert two.result(timeout=2) == ("Meeting", False)
+    assert calls == 2
 
 
 @pytest.mark.parametrize(("data", "error", "message"), [
@@ -450,6 +495,15 @@ def test_singleton_flate_filter_array_extracts_text_without_attachment():
     stream[NameObject("/Filter")] = ArrayObject([NameObject("/FlateDecode")])
     page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None,
                            extract_text=lambda: "Meeting")
+    assert worker._bounded_text_page(page) == (True, True)
+
+
+@pytest.mark.parametrize("filter_value", [NullObject(), ArrayObject([NullObject()])])
+def test_null_filter_is_treated_as_unfiltered_content(filter_value):
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT (Meeting) Tj ET")
+    stream[NameObject("/Filter")] = filter_value
+    page = SimpleNamespace(get=lambda key: stream if key == "/Contents" else None)
     assert worker._bounded_text_page(page) == (True, True)
 
 

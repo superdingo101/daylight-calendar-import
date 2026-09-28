@@ -12,6 +12,7 @@ import tempfile
 import subprocess
 import sys
 import json
+from threading import BoundedSemaphore
 from uuid import uuid4
 
 from homeassistant.components.file_upload import process_uploaded_file
@@ -23,15 +24,17 @@ from .uploads import MAX_UPLOAD_BYTES, _cleanup_late_staging
 
 MAX_PDF_PAGES = 30
 MAX_PDF_TEXT_CHARS = 100_000
+PDF_WORKER_LIMIT = BoundedSemaphore(1)
 
 
 def _extract_pdf_text(data: bytes) -> tuple[str, bool]:
     """Run untrusted PDF parsing with memory and CPU limits in a child process."""
     try:
-        result = subprocess.run(
-            [sys.executable, str(Path(__file__).with_name("pdf_worker.py"))],
-            input=data, capture_output=True, timeout=20, check=False,
-        )
+        with PDF_WORKER_LIMIT:
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).with_name("pdf_worker.py"))],
+                input=data, capture_output=True, timeout=20, check=False,
+            )
     except subprocess.TimeoutExpired as err:
         raise SourceValidationError("invalid_pdf", "PDF extraction timed out") from err
     if result.returncode:

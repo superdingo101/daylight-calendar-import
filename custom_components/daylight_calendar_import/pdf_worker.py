@@ -52,13 +52,6 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
         # are unavailable to page.extract_text().
         if item.get("/Subtype") != "/Link" or item.get("/AP") or item.get("/Contents"):
             return False, True
-    resources = page.get("/Resources") or {}
-    if hasattr(resources, "get_object"):
-        resources = resources.get_object()
-    if isinstance(resources, NullObject):
-        resources = {}
-    if resources.get("/XObject"):
-        return False, True
     contents = page.get("/Contents")
     if contents is None:
         return True, False
@@ -80,6 +73,8 @@ def _bounded_text_page(page: object) -> tuple[bool, bool]:
         encoding = stream.get("/Filter")
         if isinstance(encoding, list) and len(encoding) == 1:
             encoding = encoding[0]
+        if isinstance(encoding, NullObject):
+            encoding = None
         if encoding is None:
             decoded = raw
         elif encoding in ("/FlateDecode", "/Fl"):
