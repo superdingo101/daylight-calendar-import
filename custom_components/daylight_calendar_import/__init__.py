@@ -42,6 +42,7 @@ from .const import (
 from .models import DraftValidationError, EventDraft
 from .parser import ParseOutcome, async_parse_source as parse_source_with_provider
 from .pdfs import async_pdf_source
+from .review_panel import async_register_review_panel, async_remove_review_panel
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .uploads import async_image_source
 from .storage import (
@@ -114,6 +115,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Daylight Calendar Import from a config entry."""
     pending_store = PendingImportStore(hass)
     await pending_store.async_load()
+    await async_register_review_panel(hass)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
     allowed_calendars = entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]])
 
@@ -510,6 +512,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    async_remove_review_panel(hass)
     hass.services.async_remove(DOMAIN, SERVICE_PARSE_TEXT)
     hass.services.async_remove(DOMAIN, SERVICE_IMPORT_TEXT)
     hass.services.async_remove(DOMAIN, SERVICE_SUBMIT_TEXT)

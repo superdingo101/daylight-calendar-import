@@ -3,6 +3,7 @@
 from unittest.mock import ANY, AsyncMock
 
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.components.frontend import async_panel_exists
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -31,6 +32,7 @@ from custom_components.daylight_calendar_import.const import (
 from custom_components.daylight_calendar_import.models import EventDraft
 from custom_components.daylight_calendar_import.parser import ParseOutcome
 from custom_components.daylight_calendar_import.storage import PendingImportStore
+from custom_components.daylight_calendar_import.review_panel import PANEL_PATH
 
 
 SERVICES = (
@@ -79,6 +81,7 @@ async def _setup_entry(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
+    assert async_panel_exists(hass, PANEL_PATH)
 
 
 async def test_legacy_entry_migrates_on_setup(hass: HomeAssistant) -> None:
@@ -166,6 +169,7 @@ async def test_real_unload_unregisters_services_but_keeps_persisted_storage(
     await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.NOT_LOADED
+    assert not async_panel_exists(hass, PANEL_PATH)
     _assert_services(hass, registered=False)
     assert entry.entry_id not in hass.data[DOMAIN]
 
@@ -173,6 +177,7 @@ async def test_real_unload_unregisters_services_but_keeps_persisted_storage(
     await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.LOADED
+    assert async_panel_exists(hass, PANEL_PATH)
     _assert_services(hass, registered=True)
     reloaded = hass.data[DOMAIN][entry.entry_id]
     restored = reloaded.get(pending_id)

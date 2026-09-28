@@ -6,6 +6,17 @@ on:
   pull_request:
 
 jobs:
+  frontend:
+    name: Review frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm test
+        working-directory: custom_components/daylight_calendar_import/frontend
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -74,6 +85,7 @@ jobs:
         run: >-
           pip install
           "homeassistant==2026.7.4"
+          "home-assistant-frontend==20260624.6"
           "pytest>=8.0"
           "pytest-asyncio>=0.24"
           "pytest-cov>=6.0"

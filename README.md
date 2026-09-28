@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration that turns unstructured text into validated calendar event drafts using the user's existing **AI Task** provider.
 
-This repository is intentionally separate from [Daylight Calendar Card](https://github.com/superdingo101/daylight-calendar-card). The import integration owns ingestion/parsing; the card can later provide a richer review UI.
+This repository is intentionally separate from [Daylight Calendar Card](https://github.com/superdingo101/daylight-calendar-card). The import integration owns ingestion, parsing, and review; the card may later provide an optional shortcut.
 
 ## v0.3.0 source ingestion
 
@@ -49,6 +49,8 @@ The current minimum supported Home Assistant version is **2026.7.4**. CI tests t
 8. Choose an AI Task entity, a default writable calendar, and the allowed writable calendars. Include the default in the allowed list.
 
 Existing installations migrate their configured calendar into the allowed list automatically when the integration next loads.
+
+The **Daylight imports** sidebar panel lists imports awaiting review, their source type and time, event count, parser warnings, duplicates skipped, and any uncertain calendar write. This first panel view is read-only; use the review actions in Developer Tools to inspect or decide an individual import until the detail and decision screens are available.
 
 Then test `daylight_calendar_import.parse_text` from **Developer Tools → Actions**.
 
