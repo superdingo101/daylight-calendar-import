@@ -23,7 +23,7 @@ from .uploads import MAX_UPLOAD_BYTES, _cleanup_late_staging
 
 MAX_PDF_PAGES = 30
 MAX_PDF_TEXT_CHARS = 100_000
-PDF_WORKER_LIMIT = asyncio.Semaphore(1)
+PDF_WORKER_LIMIT_KEY = "daylight_calendar_import_pdf_worker_limit"
 
 
 def _extract_pdf_text(data: bytes) -> tuple[str, bool]:
@@ -97,7 +97,8 @@ async def async_pdf_source(
     hass: HomeAssistant, file_id: str, context: str = ""
 ) -> AsyncIterator[SourceDocument]:
     """Expose a PDF source while ensuring the temporary copy is removed."""
-    async with PDF_WORKER_LIMIT:
+    limit = hass.data.setdefault(PDF_WORKER_LIMIT_KEY, asyncio.Semaphore(1))
+    async with limit:
         staging = asyncio.ensure_future(hass.async_add_executor_job(
             _stage_pdf, hass, file_id, hass.config.media_dirs, context
         ))

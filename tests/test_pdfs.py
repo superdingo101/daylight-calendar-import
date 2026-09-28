@@ -52,6 +52,7 @@ def make_pdf(text=None, *, encrypted=False, page_count=1):
 class UploadHass:
     def __init__(self, media_dirs):
         self.config = SimpleNamespace(media_dirs=media_dirs)
+        self.data = {}
 
     async def async_add_executor_job(self, func, *args):
         return await asyncio.to_thread(func, *args)
@@ -343,7 +344,7 @@ async def test_pdf_workers_are_serialized_before_executor_scheduling(monkeypatch
             first_entered.set()
             await release.wait()
         return func(*args)
-    hass = SimpleNamespace(config=SimpleNamespace(media_dirs={}), async_add_executor_job=executor)
+    hass = SimpleNamespace(config=SimpleNamespace(media_dirs={}), data={}, async_add_executor_job=executor)
     async def consume(second=False):
         if second:
             second_started.set()
