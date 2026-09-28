@@ -160,6 +160,11 @@ edit_pending_event:
       required: true
       selector:
         object:
+    expected_event:
+      name: Previously loaded event
+      description: Optional complete event snapshot returned by get_pending; reject the edit if it changed since loading.
+      selector:
+        object:
     calendar_entity:
       name: Destination calendar
       description: Optional writable calendar from the integration's allowed calendars.
