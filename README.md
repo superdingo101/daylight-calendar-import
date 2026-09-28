@@ -50,7 +50,7 @@ The current minimum supported Home Assistant version is **2026.7.4**. CI tests t
 
 Existing installations migrate their configured calendar into the allowed list automatically when the integration next loads.
 
-The **Daylight imports** sidebar panel lists imports awaiting review, their source type and time, event count, parser warnings, duplicates skipped, and any uncertain calendar write. This first panel view is read-only; use the review actions in Developer Tools to inspect or decide an individual import until the detail and decision screens are available.
+The **Daylight imports** sidebar panel lists imports awaiting review, their source type and time, event count, parser warnings, duplicates skipped, and any uncertain calendar write. Select an import to inspect its source context, warnings, and individual event drafts. The panel is currently read-only; use the review actions in Developer Tools to edit or decide an event until the decision screens are available.
 
 Then test `daylight_calendar_import.parse_text` from **Developer Tools → Actions**.
 

@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {loadInbox, summarizeImport} from "./inbox.js";
+import {loadInbox, loadImport, summarizeImport} from "./inbox.js";
+
+test("loads detail with a scoped pending ID and rejects a mismatched response", async () => {
+  let request;
+  const hass = {callWS: async (value) => {
+    request = value;
+    return {response: {pending: {id: "one", events: []}}};
+  }};
+  assert.deepEqual(await loadImport(hass, "one"), {id: "one", events: []});
+  assert.deepEqual(request, {type: "call_service", domain: "daylight_calendar_import",
+    service: "get_pending", service_data: {pending_id: "one"}, return_response: true});
+  await assert.rejects(loadImport(hass, "two"), /unexpected response/);
+});
 
 test("loads summaries through the response-enabled HA action", async () => {
   const calls = [];

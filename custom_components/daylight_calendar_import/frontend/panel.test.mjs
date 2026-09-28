@@ -6,10 +6,14 @@ class FakeNode {
     this.tag = tag;
     this.children = [];
     this.attributes = {};
+    this.dataset = {};
   }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
+  querySelector(tag) { return this.querySelectorAll(tag)[0] || null; }
+  querySelectorAll(tag) { return [this, ...this.children.flatMap(child => child.querySelectorAll(tag))].filter(node => node.tag === tag); }
+  focus() { globalThis.focusedNode = this; }
   addEventListener(name, callback) { this[name] = callback; }
   attachShadow() { this.shadowRoot = new FakeNode("shadow"); return this.shadowRoot; }
 }
@@ -28,12 +32,29 @@ test("refresh keeps its button and announces loading and errors", async () => {
   const button = find(panel.shadowRoot, "button");
   let reject;
   panel.hass = {callWS: () => new Promise((_resolve, fail) => {reject = fail;})};
-  assert.equal(find(panel._content, "p").attributes.role, "status");
+  assert.equal(find(panel._announcement, "span").textContent, "Loading imports…");
   reject(new Error("Permission denied"));
   await flush();
-  assert.equal(find(panel._content, "p").attributes.role, "alert");
+  assert.equal(find(panel._announcement, "span").textContent, "Permission denied");
   assert.equal(find(panel._content, "p").textContent, "Permission denied");
   assert.equal(find(panel.shadowRoot, "button"), button);
+});
+
+test("detail errors and absent inbox items retain useful keyboard focus", async () => {
+  const panel = new DaylightImportPanel();
+  let fail = false;
+  panel.hass = {callWS: async (message) => {
+    if (message.service === "get_pending") throw new Error("Permission denied");
+    return {response: {imports: fail ? [] : [{id: "one", title: "Picnic", event_count: 1,
+      created_at: "2026-10-01T12:00:00Z"}]}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  assert.equal(globalThis.focusedNode.textContent, "Back to inbox");
+  fail = true;
+  panel.showInbox();
+  await flush();
+  assert.equal(globalThis.focusedNode.textContent, "Refresh");
 });
 
 test("a superseded refresh cannot replace newer data or a newer error", async () => {
@@ -46,7 +67,7 @@ test("a superseded refresh cannot replace newer data or a newer error", async ()
   await second;
   requests[0].resolve({response: {imports: []}});
   await flush();
-  assert.equal(find(panel._content, "h2").textContent, "Latest");
+  assert.equal(find(panel._content, "h2").children[0].textContent, "Latest");
 
   const third = panel.refresh();
   const fourth = panel.refresh();
@@ -55,4 +76,38 @@ test("a superseded refresh cannot replace newer data or a newer error", async ()
   requests[2].resolve({response: {imports: []}});
   await third;
   assert.equal(find(panel._content, "p").textContent, "Latest failure");
+});
+
+test("opens detail, renders source and events as text, and returns to inbox", async () => {
+  const panel = new DaylightImportPanel();
+  const requests = [];
+  panel.hass = {callWS: async (message) => {
+    requests.push(message);
+    if (message.service === "get_pending") return {response: {pending: {
+      id: "one", source_title: "Flyer", source_kind: "pdf", source_text: "Meet at noon",
+      warnings: ["Check the time"], duplicate_events: 1,
+      events: [{id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+        all_day: true, status: "pending", calendar_entity: "calendar.family", location: "Park",
+        confidence: 0}],
+    }}};
+    return {response: {imports: [{id: "one", title: "Picnic", event_count: 1,
+      created_at: "2026-10-01T12:00:00Z"}]}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  assert.equal(requests[1].service_data.pending_id, "one");
+  assert.equal(find(panel._content, "h3").textContent, "Picnic");
+  assert.equal(find(panel._content, "section").children[1].textContent,
+    "2026-10-01 · All day");
+  assert.equal(globalThis.focusedNode.tag, "h2");
+  assert.equal(panel._announcement.textContent, undefined);
+  assert.equal(find(panel._content, "p").attributes.role, undefined);
+  assert.equal(find(panel._content, "section").children[2].textContent,
+    "Calendar: calendar.family · Status: pending");
+  assert.equal(find(panel._content, "section").children[3].textContent,
+    "AI extraction confidence: 0% (estimate)");
+  find(panel._content, "button").click();
+  await flush();
+  assert.equal(find(panel._content, "h2").children[0].textContent, "Picnic");
+  assert.equal(globalThis.focusedNode.textContent, "Picnic");
 });

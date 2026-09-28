@@ -12,6 +12,21 @@ export async function loadInbox(hass) {
   return result.response.imports;
 }
 
+export async function loadImport(hass, pendingId) {
+  const result = await hass.callWS({
+    type: "call_service",
+    domain: "daylight_calendar_import",
+    service: "get_pending",
+    service_data: {pending_id: pendingId},
+    return_response: true,
+  });
+  const pending = result?.response?.pending;
+  if (!pending || pending.id !== pendingId || !Array.isArray(pending.events)) {
+    throw new Error("The import detail returned an unexpected response. Try again.");
+  }
+  return pending;
+}
+
 export function summarizeImport(item, locale) {
   const date = new Date(item.created_at);
   return {
