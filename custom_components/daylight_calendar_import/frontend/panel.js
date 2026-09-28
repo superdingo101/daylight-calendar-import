@@ -22,13 +22,26 @@ function element(tag, text, className) {
   return node;
 }
 
-class DaylightImportPanel extends HTMLElement {
+export class DaylightImportPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({mode: "open"});
     this._items = [];
     this._status = "loading";
     this._loaded = false;
+    this._generation = 0;
+    const style = element("style", css);
+    const main = document.createElement("main");
+    const header = document.createElement("header");
+    header.append(element("h1", "Daylight imports"));
+    const refresh = element("button", "Refresh");
+    refresh.type = "button";
+    refresh.addEventListener("click", () => void this.refresh());
+    header.append(refresh);
+    this._content = document.createElement("div");
+    this._content.setAttribute("aria-live", "polite");
+    main.append(header, this._content);
+    this.shadowRoot.append(style, main);
   }
 
   set hass(value) {
@@ -40,36 +53,35 @@ class DaylightImportPanel extends HTMLElement {
   }
 
   async refresh() {
+    const generation = ++this._generation;
     this._status = "loading";
     this.render();
     try {
-      this._items = await loadInbox(this._hass);
+      const items = await loadInbox(this._hass);
+      if (generation !== this._generation) return;
+      this._items = items;
       this._status = "ready";
     } catch (error) {
+      if (generation !== this._generation) return;
       this._status = error instanceof Error ? error.message : "Could not load imports. Try again.";
     }
     this.render();
   }
 
   render() {
-    const root = this.shadowRoot;
-    const style = element("style", css);
-    const main = document.createElement("main");
-    const header = document.createElement("header");
-    header.append(element("h1", "Daylight imports"));
-    const refresh = element("button", "Refresh");
-    refresh.type = "button";
-    refresh.addEventListener("click", () => void this.refresh());
-    header.append(refresh);
-    main.append(header);
+    const content = document.createDocumentFragment();
     if (this._status === "loading") {
-      main.append(element("p", "Loading imports…", "status"));
+      const loading = element("p", "Loading imports…", "status");
+      loading.setAttribute("role", "status");
+      content.append(loading);
     } else if (this._status !== "ready") {
-      main.append(element("p", this._status, "error"));
+      const error = element("p", this._status, "error");
+      error.setAttribute("role", "alert");
+      content.append(error);
     } else if (this._items.length === 0) {
-      main.append(element("p", "No imports awaiting review.", "status"));
+      content.append(element("p", "No imports awaiting review.", "status"));
     } else {
-      main.append(element("p", `${this._items.length} imports awaiting review`, "status"));
+      content.append(element("p", `${this._items.length} imports awaiting review`, "status"));
       const list = document.createElement("ul");
       for (const item of this._items) {
         const summary = summarizeImport(item, this._hass?.locale?.language);
@@ -83,9 +95,9 @@ class DaylightImportPanel extends HTMLElement {
         if (attention.length) card.append(element("p", attention.join(" · ")));
         list.append(card);
       }
-      main.append(list);
+      content.append(list);
     }
-    root.replaceChildren(style, main);
+    this._content.replaceChildren(content);
   }
 }
 

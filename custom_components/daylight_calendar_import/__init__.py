@@ -115,6 +115,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Daylight Calendar Import from a config entry."""
     pending_store = PendingImportStore(hass)
     await pending_store.async_load()
+    await async_register_review_panel(hass)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
     allowed_calendars = entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]])
 
@@ -506,7 +507,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN, SERVICE_RESOLVE_PENDING_EVENT, handle_resolve_pending_event,
         schema=RESOLVE_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
     )
-    await async_register_review_panel(hass)
     return True
 
 

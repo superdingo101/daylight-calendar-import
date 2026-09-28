@@ -113,6 +113,18 @@ def fake_review_panel_for_service_unit_tests(monkeypatch):
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_remove_review_panel", Mock())
 
 
+async def test_panel_registration_failure_leaves_no_services_or_store(monkeypatch):
+    failure = AsyncMock(side_effect=RuntimeError("panel unavailable"))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_review_panel", failure)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore",
+                        lambda _hass: SimpleNamespace(async_load=AsyncMock()))
+    hass = FakeHass()
+    with pytest.raises(RuntimeError, match="panel unavailable"):
+        await async_setup_entry(hass, entry())
+    assert hass.services.handlers == {}
+    assert DOMAIN not in hass.data
+
+
 def entry():
     return SimpleNamespace(
         entry_id="test-entry",
