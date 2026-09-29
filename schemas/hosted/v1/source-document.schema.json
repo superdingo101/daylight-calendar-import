@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/source-document.schema.json",
+  "title": "Daylight Hosted API v1 SourceDocument",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "kind", "received_at", "attachments", "metadata"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "kind": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z][a-z0-9_]*$"},
+    "received_at": {"type": "string", "format": "date-time"},
+    "title": {"type": ["string", "null"], "minLength": 1, "maxLength": 512},
+    "text": {"type": ["string", "null"], "minLength": 1, "maxLength": 1000000},
+    "attachments": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {"$ref": "https://docs.daylightcalendar.com/schemas/hosted/v1/source-attachment.schema.json"}
+    },
+    "metadata": {"type": "object", "maxProperties": 32, "propertyNames": {"maxLength": 128}, "additionalProperties": true},
+    "upstream_source_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 512}
+  },
+  "anyOf": [
+    {"properties": {"text": {"type": "string", "minLength": 1}}, "required": ["text"]},
+    {"properties": {"attachments": {"type": "array", "minItems": 1}}, "required": ["attachments"]}
+  ]
+}
