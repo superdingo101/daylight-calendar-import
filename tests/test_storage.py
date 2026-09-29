@@ -260,6 +260,14 @@ async def test_activity_is_bounded_and_storage_failure_keeps_previous_state(monk
     assert store.get_activity(first.id) is None
     monkeypatch.setattr(storage_module, "ACTIVITY_TRANSITIONS_PER_IMPORT", 1)
     assert len(store._transition(second, "event_rejected")[0]["transitions"]) == 1
+    third = (await store.async_add(source_text="third", events=[
+        replace(draft(), title="New A"), replace(second_draft(), title="New B")])).pending
+    assert third is not None
+    assert len(store.list_activity()) == 2  # One completed plus one active.
+    assert await store.async_remove(third.id)
+    assert [row["id"] for row in store.list_activity()] == [third.id]
+    assert store.get_activity(third.id)["rejected_count"] == 2
+    assert backend.saved[-1]["activity"] == [store.get_activity(third.id)]
 
 
 async def test_editing_activity_title_is_atomic_and_only_follows_leading_event(monkeypatch):
@@ -312,6 +320,39 @@ async def test_active_activity_survives_completed_history_pruning(monkeypatch):
     restarted = make_store(monkeypatch, backend)
     await restarted.async_load()
     assert restarted.get_activity(active.id)["status"] == "mixed"
+
+
+async def test_legacy_activity_counters_and_uncertain_sibling_status(monkeypatch):
+    item = PendingImport.create(source_text="school", events=[draft(), second_draft()])
+    raw = item.as_dict()
+    raw["events"][0]["status"] = "write_uncertain"
+    old_activity = {"id": item.id, "created_at": item.created_at,
+                    "source_kind": "manual_text", "source_title": None,
+                    "title": "Practice", "status": "review_ready", "transitions": []}
+    backend = FakeStoreBackend(load_result={"items": [raw], "activity": [old_activity]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    assert await store.async_reject_event(item.id, item.events[1].id)
+    record = store.get_activity(item.id)
+    assert record["status"] == "calendar_write_uncertain"
+    assert record["created_count"] == 0
+    assert record["rejected_count"] == 1
+    assert record["transitions"][-1]["event_id"] == item.events[1].id
+    assert backend.saved[-1]["activity"][-1] == record
+    assert await store.async_resolve_uncertain(item.id, item.events[0].id, "created")
+    assert store.get_activity(item.id)["status"] == "mixed"
+    assert store.get_activity(item.id)["created_count"] == 1
+    first_only = PendingImport.create(source_text="single", events=[draft()])
+    first_raw = first_only.as_dict()
+    first_raw["events"][0]["status"] = "write_uncertain"
+    legacy = {**old_activity, "id": first_only.id, "created_at": first_only.created_at}
+    restored = make_store(monkeypatch, FakeStoreBackend(load_result={
+        "items": [first_raw], "activity": [legacy],
+    }))
+    await restored.async_load()
+    assert await restored.async_resolve_uncertain(first_only.id, first_only.events[0].id, "created")
+    assert (restored.get_activity(first_only.id)["created_count"],
+            restored.get_activity(first_only.id)["rejected_count"]) == (1, 0)
 
 
 async def test_mixed_event_activity_retains_review_status_and_atomic_checkpoints(monkeypatch):
