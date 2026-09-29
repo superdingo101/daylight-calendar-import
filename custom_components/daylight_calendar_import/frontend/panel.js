@@ -278,10 +278,18 @@ export class DaylightImportPanel extends HTMLElement {
       }
       this._decisionError = `Recovery outcome unknown; check the current event before retrying. ${reason}`;
       try {
-        this._detail = await loadImport(this._hass, pendingId);
+        this._items = await loadInbox(this._hass);
+        if (this._items.some(item => item.id === pendingId)) {
+          this._detail = await loadImport(this._hass, pendingId);
+        } else {
+          this._selectedId = null;
+          this._detail = null;
+          this._status = this._decisionError;
+        }
       } catch {
+        this._selectedId = null;
         this._detail = null;
-        this._status = `Could not reload import after recovery: ${this._decisionError}`;
+        this._status = `Could not reload imports after recovery: ${this._decisionError}`;
       }
       if (generation !== this._generation) return;
       this._resolution = null;
