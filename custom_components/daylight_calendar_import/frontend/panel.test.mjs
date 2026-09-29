@@ -110,6 +110,31 @@ test("confirmed recovery that cannot reload reports its saved outcome", async ()
   assert.equal(globalThis.focusedNode, panel._refreshButton);
 });
 
+test("lost recovery response reconciles a completed import with the inbox", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "write_uncertain", write_attempt: "attempt-a"};
+  let removed = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") {
+      return {response: {imports: removed ? [] : [{id: "import"}]}};
+    }
+    if (request.service === "get_pending") return {response: {pending: {id: "import", events: [event]}}};
+    assert.deepEqual(request.service_data.expected_event, event);
+    removed = true;
+    throw new Error("Disconnected");
+  }};
+  await flush();
+  await panel.showImport("import");
+  panel._content.querySelectorAll("button").find(button => button.dataset.resolution === "created").click();
+  await panel.runResolution(event, "created");
+  assert.equal(panel._selectedId, null);
+  assert.match(panel._status, /Recovery outcome unknown/);
+  await panel.refresh();
+  assert.equal(panel._status, "ready");
+  assert.equal(panel._selectedId, null);
+});
+
 test("refresh keeps its button and announces loading and errors", async () => {
   const panel = new DaylightImportPanel();
   const button = find(panel.shadowRoot, "button");
