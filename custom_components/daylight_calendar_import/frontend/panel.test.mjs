@@ -13,7 +13,14 @@ class FakeNode {
   replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
   querySelector(tag) { return this.querySelectorAll(tag)[0] || null; }
-  querySelectorAll(tag) { return [this, ...this.children.flatMap(child => child.querySelectorAll(tag))].filter(node => node.tag === tag); }
+  querySelectorAll(tag) {
+    if (tag.includes(" ")) {
+      const [parent, child] = tag.split(" ");
+      return this.querySelectorAll(parent).flatMap(node => node.querySelectorAll(child));
+    }
+    return [this, ...this.children.flatMap(child => child.querySelectorAll(tag))]
+      .filter(node => tag.startsWith(".") ? node.className === tag.slice(1) : node.tag === tag);
+  }
   get elements() { return {namedItem: name => this.querySelectorAll("input").concat(this.querySelectorAll("textarea"))
     .find(node => node.name === name)}; }
   focus() { globalThis.focusedNode = this; }
@@ -215,4 +222,53 @@ test("a successful save with a failed detail reload offers refresh and restores 
   await panel.saveEdit(event, find(panel._content, "form"));
   assert.match(find(panel._content, "p").textContent, /saved, but the detail could not be reloaded: Offline/);
   assert.equal(globalThis.focusedNode.textContent, "Back to inbox");
+});
+
+test("approval requires explicit confirmation and returns to the inbox", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events: [event]}}};
+    if (request.service === "list_pending") return {response: {imports: []}};
+    return {response: {pending_id: "one", event_id: "event", approved: true}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  const approve = find(panel._content, "section").querySelectorAll("button")
+    .find(button => button.textContent === "Approve Picnic");
+  approve.click();
+  assert.equal(calls.filter(call => call.service === "approve_pending_event").length, 0);
+  const confirm = find(panel._content, "section").querySelector("button");
+  assert.match(confirm.textContent, /Confirm approve/);
+  await panel.runDecision(event, "approve");
+  assert.equal(calls.at(-2).service, "approve_pending_event");
+  assert.deepEqual(calls.at(-2).service_data.expected_event, event);
+  assert.equal(panel._selectedId, null);
+  assert.equal(find(panel._announcement, "span").textContent, "Event approved");
+});
+
+test("rejected decision keeps the import visible with the backend error", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  let reads = 0;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") {
+      reads++;
+      return {response: {pending: {id: "one", events: [event]}}};
+    }
+    throw {message: "Event changed since it was loaded; refresh before deciding"};
+  }};
+  await flush();
+  await panel.showImport("one");
+  find(panel._content, "section").querySelectorAll("button")
+    .find(button => button.textContent === "Reject Picnic").click();
+  await panel.runDecision(event, "reject");
+  assert.equal(reads, 2);
+  assert.match(find(panel._content, "p").textContent, /refresh before deciding/);
+  assert.equal(globalThis.focusedNode.attributes.role, "alert");
 });
