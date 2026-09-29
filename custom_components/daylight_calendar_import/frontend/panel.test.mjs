@@ -135,12 +135,17 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   }};
   await flush();
   await panel.showImport("one");
+  const siblingEdit = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "sibling");
   const edit = find(panel._content, "section").querySelector("button");
   edit.click();
   const form = find(panel._content, "form");
   assert.equal(form.elements.namedItem("description").value, description);
   assert.equal(form.elements.namedItem("start").value, event.start);
   assert.equal(form.querySelectorAll("select").length, 0);
+  assert.equal(panel._content.querySelectorAll("button").some(button => button.dataset.eventId === "sibling"), false);
+  siblingEdit.click();
+  assert.equal(panel._editingId, "event");
   const cancel = form.querySelectorAll("button")[1];
   cancel.click();
   assert.equal(globalThis.focusedNode.dataset.eventId, "event");
@@ -148,6 +153,7 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   const activeForm = find(panel._content, "form");
   await panel.saveEdit(event, activeForm);
   assert.match(find(activeForm, "p").textContent, /refresh before editing/);
+  assert.equal(globalThis.focusedNode, find(activeForm, "p"));
   assert.equal(panel._editingId, "event");
   assert.deepEqual(requests.at(-1).service_data.expected_event, event);
   assert.equal(Object.hasOwn(requests.at(-1).service_data, "calendar_entity"), false);
@@ -159,9 +165,6 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   const saving = panel.saveEdit(event, activeForm);
   assert.equal(activeForm.elements.namedItem("description").disabled, true);
   assert.equal(panel._refreshButton.disabled, true);
-  const siblingEdit = panel._content.querySelectorAll("button")
-    .find(button => button.dataset.eventId === "sibling");
-  assert.equal(siblingEdit.disabled, true);
   siblingEdit.click();
   assert.equal(panel._editingId, "event");
   release();
@@ -170,6 +173,25 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   assert.equal(panel._detail.events[0].description, description);
   assert.equal(requests.at(-1).service, "get_pending");
   assert.equal(globalThis.focusedNode.dataset.eventId, "event");
+});
+
+test("focus falls back to the detail heading if the saved event disappears", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Meeting", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  let saved = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one",
+      events: saved ? [{...event, id: "sibling"}] : [event]}}};
+    saved = true;
+    return {response: {pending_id: "one", event}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  find(panel._content, "section").querySelector("button").click();
+  await panel.saveEdit(event, find(panel._content, "form"));
+  assert.equal(globalThis.focusedNode.tag, "h2");
 });
 
 test("a successful save with a failed detail reload offers refresh and restores focus", async () => {
