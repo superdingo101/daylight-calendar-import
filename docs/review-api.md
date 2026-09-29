@@ -48,3 +48,6 @@ checkpoint reports an uncertain current status until creation commits. Completed
 imports remain in activity after leaving the pending queue; older entries and
 transitions are pruned independently of deduplication history. Existing storage
 without activity loads with an empty history.
+Summaries include created and rejected event counts. When both outcomes occur,
+the completed import has `mixed` status regardless of decision order. Reads
+return copies so callers cannot mutate the stored ledger.
