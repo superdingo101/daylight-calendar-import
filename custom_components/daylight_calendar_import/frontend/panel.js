@@ -151,6 +151,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._saving = true;
     this._editError = null;
     this._refreshButton.disabled = true;
+    for (const button of this._content.querySelectorAll("button")) button.disabled = true;
     for (const tag of ["input", "textarea", "button"]) {
       for (const control of form.querySelectorAll(tag)) control.disabled = true;
     }
@@ -184,6 +185,7 @@ export class DaylightImportPanel extends HTMLElement {
     } finally {
       this._saving = false;
       this._refreshButton.disabled = false;
+      for (const button of this._content.querySelectorAll("button")) button.disabled = false;
     }
   }
 
@@ -280,7 +282,8 @@ export class DaylightImportPanel extends HTMLElement {
           const edit = element("button", `Edit ${event.title}`);
           edit.type = "button";
           edit.dataset.eventId = event.id;
-          edit.addEventListener("click", () => { this._editingId = event.id; this.render();
+          edit.addEventListener("click", () => { if (this._saving) return;
+            this._editingId = event.id; this.render();
             this._content.querySelector("form input")?.focus(); });
           card.append(edit);
         }
