@@ -60,7 +60,9 @@ export class DaylightImportPanel extends HTMLElement {
     const refresh = element("button", "Refresh");
     this._refreshButton = refresh;
     refresh.type = "button";
-    refresh.addEventListener("click", () => void (this._selectedId ? this.showImport(this._selectedId) : this.refresh()));
+    refresh.addEventListener("click", () => {
+      if (!this._saving) void (this._selectedId ? this.showImport(this._selectedId) : this.refresh());
+    });
     header.append(refresh);
     this._content = document.createElement("div");
     this._announcement = document.createElement("div");
@@ -78,6 +80,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async refresh() {
+    if (this._saving) return;
     const generation = ++this._generation;
     this._status = "loading";
     this.render();
@@ -100,6 +103,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async showImport(id) {
+    if (this._saving) return;
     const generation = ++this._generation;
     this._selectedId = id;
     this._detail = null;
@@ -146,26 +150,45 @@ export class DaylightImportPanel extends HTMLElement {
     const pendingId = this._selectedId;
     this._saving = true;
     this._editError = null;
-    for (const button of form.querySelectorAll("button")) button.disabled = true;
+    this._refreshButton.disabled = true;
+    for (const tag of ["input", "textarea", "button"]) {
+      for (const control of form.querySelectorAll(tag)) control.disabled = true;
+    }
     try {
-      const saved = await saveEvent(this._hass, pendingId, event, draft);
+      await saveEvent(this._hass, pendingId, event, draft);
       if (generation !== this._generation) return;
-      this._detail.events = this._detail.events.map(item => item.id === event.id ? saved : item);
       this._editingId = null;
+      this._detail = await loadImport(this._hass, pendingId);
+      if (generation !== this._generation) return;
       this.render();
       this._announcement.replaceChildren(element("span", "Event saved"));
+      this.focusEvent(event.id);
     } catch (error) {
       if (generation !== this._generation) return;
-      this._editError = error instanceof Error ? error.message : "Could not save event.";
+      this._editError = typeof error?.message === "string" ? error.message : "Could not save event.";
+      if (this._editingId === null) {
+        this._status = `Event saved, but the detail could not be reloaded: ${this._editError}`;
+        this._detail = null;
+        this.render();
+        return;
+      }
       form.querySelector(".error")?.remove();
       const message = element("p", this._editError, "error");
       message.setAttribute("role", "alert");
       form.prepend(message);
       this._announcement.replaceChildren(element("span", this._editError));
-      for (const button of form.querySelectorAll("button")) button.disabled = false;
+      for (const tag of ["input", "textarea", "button"]) {
+        for (const control of form.querySelectorAll(tag)) control.disabled = false;
+      }
     } finally {
       this._saving = false;
+      this._refreshButton.disabled = false;
     }
+  }
+
+  focusEvent(id) {
+    Array.from(this._content.querySelectorAll("button"))
+      .find(button => button.dataset.eventId === id)?.focus();
   }
 
   editForm(event) {
@@ -193,7 +216,9 @@ export class DaylightImportPanel extends HTMLElement {
     save.type = "submit";
     const cancel = element("button", "Cancel");
     cancel.type = "button";
-    cancel.addEventListener("click", () => { if (!this._saving) { this._editingId = null; this.render(); } });
+    cancel.addEventListener("click", () => { if (!this._saving) {
+      this._editingId = null; this.render(); this.focusEvent(event.id);
+    } });
     actions.append(save, cancel);
     form.append(actions);
     form.addEventListener("submit", (submitEvent) => {
@@ -253,6 +278,7 @@ export class DaylightImportPanel extends HTMLElement {
         if (event.status === "pending") {
           const edit = element("button", `Edit ${event.title}`);
           edit.type = "button";
+          edit.dataset.eventId = event.id;
           edit.addEventListener("click", () => { this._editingId = event.id; this.render();
             this._content.querySelector("form input")?.focus(); });
           card.append(edit);
