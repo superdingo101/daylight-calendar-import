@@ -626,7 +626,7 @@ async def test_resolve_uncertain_action_enforces_permissions_and_state(monkeypat
     }
     store.async_resolve_uncertain.assert_awaited_once_with(item.id, event_id, "created")
     uncertain = PendingEvent(event_id, item.events[0].draft, "write_uncertain",
-                             item.events[0].calendar_entity)
+                             item.events[0].calendar_entity, "attempt-a")
     call.data["expected_event"] = uncertain.as_service_dict()
     assert await handler(call) == {"pending_id": item.id, "event_id": event_id,
                                    "resolution": "created"}
