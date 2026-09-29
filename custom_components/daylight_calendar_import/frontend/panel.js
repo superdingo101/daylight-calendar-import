@@ -170,6 +170,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._status = `Event saved, but the detail could not be reloaded: ${this._editError}`;
         this._detail = null;
         this.render();
+        this._content.querySelector("button")?.focus();
         return;
       }
       form.querySelector(".error")?.remove();
