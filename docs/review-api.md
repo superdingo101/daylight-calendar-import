@@ -54,3 +54,5 @@ return copies so callers cannot mutate the stored ledger.
 Active import history is retained even when completed records are pruned; the
 500-record bound applies to completed history while active imports occupy
 additional slots as needed. Active titles track the next pending event.
+Editing the leading pending draft refreshes that title in the same storage
+transaction without adding a new lifecycle transition.
