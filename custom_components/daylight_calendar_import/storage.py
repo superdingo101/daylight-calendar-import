@@ -424,7 +424,10 @@ class PendingImportStore:
             self._seen_event_fingerprints = seen_events
         return True
 
-    async def async_reject_event(self, pending_id: str, event_id: str) -> bool:
+    async def async_reject_event(
+        self, pending_id: str, event_id: str,
+        expected_event: PendingEvent | None = None,
+    ) -> bool:
         """Reject one ready event without discarding its siblings."""
         async with self._lock:
             pending = self._items.get(pending_id)
@@ -433,6 +436,8 @@ class PendingImportStore:
             event = next((item for item in pending.events if item.id == event_id), None)
             if event is None:
                 return False
+            if expected_event is not None and event != expected_event:
+                raise PendingEventEditError("Event changed since it was loaded; refresh before deciding")
             if event.status == "write_uncertain":
                 raise PendingImportApprovalUncertainError(pending_id)
 
@@ -530,6 +535,7 @@ class PendingImportStore:
     async def async_approve_event(
         self, pending_id: str, event_id: str,
         processor: Callable[[PendingEvent], Awaitable[None]],
+        expected_event: PendingEvent | None = None,
     ) -> PendingEvent | None:
         """Approve one ready event without approving its siblings."""
         async with self._lock:
@@ -539,6 +545,8 @@ class PendingImportStore:
             event = next((item for item in pending.events if item.id == event_id), None)
             if event is None:
                 return None
+            if expected_event is not None and event != expected_event:
+                raise PendingEventEditError("Event changed since it was loaded; refresh before deciding")
             if event.status == "write_uncertain":
                 raise PendingImportApprovalUncertainError(pending_id)
             await self._async_approve_event_locked(pending, event, processor)

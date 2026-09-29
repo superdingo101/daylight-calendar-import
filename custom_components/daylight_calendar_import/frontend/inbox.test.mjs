@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {loadInbox, loadImport, saveEvent, summarizeImport} from "./inbox.js";
+import {decideEvent, loadInbox, loadImport, saveEvent, summarizeImport} from "./inbox.js";
+
+test("decisions carry the loaded snapshot and validate the service response", async () => {
+  const event = {id: "e", title: "Meeting", status: "pending"};
+  const calls = [];
+  const hass = {callWS: async request => {
+    calls.push(request);
+    return {response: {pending_id: "one", event_id: "e",
+      [request.service === "approve_pending_event" ? "approved" : "rejected"]: true}};
+  }};
+  await decideEvent(hass, "one", event, "approve");
+  await decideEvent(hass, "one", event, "reject");
+  assert.deepEqual(calls.map(call => call.service), ["approve_pending_event", "reject_pending_event"]);
+  assert.deepEqual(calls[0].service_data, {pending_id: "one", event_id: "e", expected_event: event});
+  await assert.rejects(decideEvent(hass, "one", event, "delete"), /Invalid review action/);
+  await assert.rejects(decideEvent({callWS: async () => ({response: {approved: true}})},
+    "one", event, "approve"), /unexpected response/);
+});
 
 test("edits use the complete stale snapshot and never request destination routing", async () => {
   const original = {id: "event", status: "pending", calendar_entity: "calendar.legacy",

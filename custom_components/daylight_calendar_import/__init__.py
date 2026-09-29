@@ -81,6 +81,7 @@ PENDING_EVENT_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
         vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Optional("expected_event"): dict,
     }
 )
 EDIT_EVENT_SCHEMA = vol.Schema(
@@ -99,6 +100,18 @@ RESOLVE_EVENT_SCHEMA = vol.Schema(
         vol.Required("resolution"): vol.In(("created", "not_created", "discard")),
     }
 )
+
+
+def _expected_event(raw: dict | None, event_id: str) -> PendingEvent | None:
+    """Decode an optional review snapshot for atomic decision checks."""
+    if raw is None:
+        return None
+    if raw.get("id") != event_id or raw.get("status") != "pending":
+        raise PendingEventEditError("Event changed since it was loaded; refresh before deciding")
+    return PendingEvent(
+        event_id, EventDraft.from_mapping(raw), raw["status"],
+        raw.get(CONF_CALENDAR_ENTITY),
+    )
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -383,11 +396,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pending_id = call.data[ATTR_PENDING_ID]
         event_id = call.data[ATTR_EVENT_ID]
         try:
-            rejected = await pending_store.async_reject_event(pending_id, event_id)
+            expected_event = _expected_event(call.data.get("expected_event"), event_id)
+            if expected_event is None:
+                rejected = await pending_store.async_reject_event(pending_id, event_id)
+            else:
+                rejected = await pending_store.async_reject_event(
+                    pending_id, event_id, expected_event=expected_event,
+                )
         except PendingImportApprovalUncertainError as err:
             raise ServiceValidationError(
                 "This event has an uncertain calendar write; resolve it before rejecting"
             ) from err
+        except (DraftValidationError, PendingEventEditError) as err:
+            raise ServiceValidationError(str(err)) from err
         if not rejected:
             raise ServiceValidationError(
                 f"Pending event not found: {pending_id}/{event_id}"
@@ -415,13 +436,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
 
         try:
-            event = await pending_store.async_approve_event(
-                pending_id, event_id, create_event
-            )
+            expected_event = _expected_event(call.data.get("expected_event"), event_id)
+            if expected_event is None:
+                event = await pending_store.async_approve_event(
+                    pending_id, event_id, create_event,
+                )
+            else:
+                event = await pending_store.async_approve_event(
+                    pending_id, event_id, create_event, expected_event=expected_event,
+                )
         except PendingImportApprovalUncertainError as err:
             raise ServiceValidationError(
                 "This event has an uncertain calendar write; verify it before retrying"
             ) from err
+        except (DraftValidationError, PendingEventEditError) as err:
+            raise ServiceValidationError(str(err)) from err
         if event is None:
             raise ServiceValidationError(
                 f"Pending event not found: {pending_id}/{event_id}"

@@ -1,4 +1,4 @@
-import {loadInbox, loadImport, saveEvent, summarizeImport} from "./inbox.js";
+import {decideEvent, loadInbox, loadImport, saveEvent, summarizeImport} from "./inbox.js";
 
 const css = `
   :host { display: block; color: var(--primary-text-color); font-family: var(--paper-font-body1_-_font-family, sans-serif); }
@@ -53,6 +53,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._editingId = null;
     this._editError = null;
     this._saving = false;
+    this._decision = null;
+    this._decisionError = null;
     const style = element("style", css);
     const main = document.createElement("main");
     const header = document.createElement("header");
@@ -109,6 +111,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._detail = null;
     this._editingId = null;
     this._editError = null;
+    this._decision = null;
+    this._decisionError = null;
     this._status = "loading";
     this.render();
     this._content.querySelector("button")?.focus();
@@ -126,12 +130,53 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   showInbox() {
-    if (this._saving || this._editingId) return;
+    if (this._saving || this._editingId || this._decision) return;
     this._returnFocusId = this._selectedId;
     ++this._generation;
     this._selectedId = null;
     this._detail = null;
     void this.refresh();
+  }
+
+  async runDecision(event, action) {
+    if (this._saving || this._decision?.id !== event.id || this._decision.action !== action) return;
+    const pendingId = this._selectedId;
+    const generation = this._generation;
+    this._saving = true;
+    this._refreshButton.disabled = true;
+    for (const button of this._content.querySelectorAll("button")) button.disabled = true;
+    try {
+      await decideEvent(this._hass, pendingId, event, action);
+      if (generation !== this._generation) return;
+      this._saving = false;
+      this._decision = null;
+      this._selectedId = null;
+      this._detail = null;
+      await this.refresh();
+      if (this._status === "ready") {
+        this._announcement.replaceChildren(element("span", `Event ${action === "approve" ? "approved" : "rejected"}`));
+      }
+      (this._content.querySelector("button") || this._refreshButton).focus();
+    } catch (error) {
+      if (generation !== this._generation) return;
+      this._decisionError = typeof error?.message === "string" ? error.message : "Could not complete review action.";
+      try {
+        this._detail = await loadImport(this._hass, pendingId);
+      } catch {
+        this._detail = null;
+        this._status = `Could not reload import after review action: ${this._decisionError}`;
+      }
+      if (generation !== this._generation) return;
+      this._saving = false;
+      this._decision = null;
+      this.render();
+      const alert = this._content.querySelector(".error");
+      if (alert) { alert.tabIndex = -1; alert.focus(); }
+      else this._content.querySelector("button")?.focus();
+    } finally {
+      this._saving = false;
+      this._refreshButton.disabled = Boolean(this._editingId || this._decision);
+    }
   }
 
   async saveEdit(event, form) {
@@ -159,6 +204,7 @@ export class DaylightImportPanel extends HTMLElement {
       await saveEvent(this._hass, pendingId, event, draft);
       if (generation !== this._generation) return;
       this._editingId = null;
+      this._decisionError = null;
       this._detail = await loadImport(this._hass, pendingId);
       if (generation !== this._generation) return;
       this.render();
@@ -234,12 +280,12 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   render() {
-    this._refreshButton.disabled = this._saving || Boolean(this._editingId);
+    this._refreshButton.disabled = this._saving || Boolean(this._editingId || this._decision);
     const content = document.createDocumentFragment();
     if (this._selectedId && !this._detail) {
       const back = element("button", "Back to inbox");
       back.type = "button";
-      back.disabled = Boolean(this._editingId);
+      back.disabled = Boolean(this._editingId || this._decision);
       back.addEventListener("click", () => this.showInbox());
       content.append(back);
     }
@@ -253,11 +299,16 @@ export class DaylightImportPanel extends HTMLElement {
       const detail = this._detail;
       const back = element("button", "Back to inbox");
       back.type = "button";
-      back.disabled = Boolean(this._editingId);
+      back.disabled = Boolean(this._editingId || this._decision);
       back.addEventListener("click", () => this.showInbox());
       const heading = element("h2", detail.source_title || "Import detail");
       heading.tabIndex = -1;
       content.append(back, heading);
+      if (this._decisionError) {
+        const error = element("p", this._decisionError, "error");
+        error.setAttribute("role", "alert");
+        content.append(error);
+      }
       content.append(element("p", `Source: ${detail.source_kind || "Text"}`));
       for (const warning of detail.warnings || []) content.append(element("p", `Warning: ${warning}`));
       if (detail.duplicate_events) content.append(element("p", `${detail.duplicate_events} duplicates skipped`));
@@ -283,14 +334,48 @@ export class DaylightImportPanel extends HTMLElement {
         }
         if (event.location) card.append(element("p", `Location: ${event.location}`));
         if (event.description) card.append(element("p", event.description));
-        if (event.status === "pending" && !this._editingId) {
+        if (event.status === "pending" && !this._editingId && !this._decision) {
           const edit = element("button", `Edit ${event.title}`);
           edit.type = "button";
           edit.dataset.eventId = event.id;
           edit.addEventListener("click", () => { if (this._saving || this._editingId) return;
+            this._decisionError = null;
             this._editingId = event.id; this.render();
             this._content.querySelector("form input")?.focus(); });
           card.append(edit);
+          for (const action of ["approve", "reject"]) {
+            const button = element("button", `${action === "approve" ? "Approve" : "Reject"} ${event.title}`);
+            button.type = "button";
+            button.dataset.action = action;
+            button.dataset.eventId = event.id;
+            button.addEventListener("click", () => {
+              if (this._saving || this._editingId || this._decision) return;
+              this._decision = {id: event.id, action};
+              this._decisionError = null;
+              this.render();
+              this._content.querySelector(".actions button")?.focus();
+            });
+            card.append(button);
+          }
+        } else if (this._decision?.id === event.id) {
+          const action = this._decision.action;
+          const actions = element("div", "", "actions");
+          const confirm = element("button", `Confirm ${action}: ${event.title}`);
+          confirm.type = "button";
+          confirm.addEventListener("click", () => void this.runDecision(event, action));
+          const cancel = element("button", "Cancel");
+          cancel.type = "button";
+          cancel.addEventListener("click", () => {
+            if (this._saving) return;
+            this._decision = null;
+            this._decisionError = null;
+            this.render();
+            (Array.from(this._content.querySelectorAll("button"))
+              .find(button => button.dataset.eventId === event.id &&
+                button.dataset.action === action) || this._refreshButton).focus();
+          });
+          actions.append(confirm, cancel);
+          card.append(actions);
         }
         content.append(card);
       }

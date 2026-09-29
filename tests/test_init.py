@@ -22,6 +22,7 @@ from custom_components.daylight_calendar_import import (
     _async_check_entity_control_permission,
     _async_create_calendar_event,
     _async_parse_source,
+    _expected_event,
     _parse_for_entry,
     async_remove_entry,
     async_setup_entry,
@@ -547,6 +548,58 @@ async def test_approve_pending_event_action_writes_only_selected_event(monkeypat
     with pytest.raises(Unauthorized):
         await handler(call)
     store.async_approve_event.assert_not_awaited()
+
+
+async def test_event_decisions_validate_and_forward_optional_snapshot(monkeypatch):
+    item = pending()
+    selected = item.events[0]
+    store = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_reject_event=AsyncMock(return_value=True),
+        async_approve_event=AsyncMock(return_value=selected),
+        get_event=Mock(return_value=selected),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store,
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    data = {ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: selected.id,
+            "expected_event": selected.as_service_dict()}
+    call = SimpleNamespace(data=data, context=Context(user_id="reviewer"))
+    reject = hass.services.handlers[(DOMAIN, SERVICE_REJECT_PENDING_EVENT)][0]
+    approve = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING_EVENT)][0]
+    assert (await reject(call))["rejected"] is True
+    store.async_reject_event.assert_awaited_once_with(
+        item.id, selected.id, expected_event=selected,
+    )
+    assert (await approve(call))["approved"] is True
+    assert store.async_approve_event.await_args.args[:2] == (item.id, selected.id)
+    assert callable(store.async_approve_event.await_args.args[2])
+    assert store.async_approve_event.await_args.kwargs == {"expected_event": selected}
+
+    routed = {**selected.as_service_dict(), CONF_CALENDAR_ENTITY: "calendar.work"}
+    decoded = _expected_event(routed, selected.id)
+    assert decoded is not None and decoded.calendar_entity == "calendar.work"
+    assert _expected_event(None, selected.id) is None
+
+    for invalid in ({**selected.as_service_dict(), "id": "other"},
+                    {**selected.as_service_dict(), "status": "write_uncertain"},
+                    {**selected.as_service_dict(), "start": "invalid"}):
+        call.data["expected_event"] = invalid
+        for handler in (reject, approve):
+            with pytest.raises(ServiceValidationError):
+                await handler(call)
+    with pytest.raises(PendingEventEditError) as mismatch:
+        _expected_event({**selected.as_service_dict(), "id": "other"}, selected.id)
+    assert str(mismatch.value) == "Event changed since it was loaded; refresh before deciding"
+    call.data["expected_event"] = selected.as_service_dict()
+    for handler, method in ((reject, store.async_reject_event),
+                            (approve, store.async_approve_event)):
+        method.side_effect = PendingEventEditError("Event changed since it was loaded")
+        with pytest.raises(ServiceValidationError, match="Event changed"):
+            await handler(call)
+        method.side_effect = None
 
 
 async def test_resolve_uncertain_action_enforces_permissions_and_state(monkeypatch):

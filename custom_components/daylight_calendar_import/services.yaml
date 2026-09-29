@@ -186,6 +186,11 @@ reject_pending_event:
       required: true
       selector:
         text:
+    expected_event:
+      name: Previously loaded event
+      description: Optional event snapshot; reject the action if the event changed since review.
+      selector:
+        object:
 
 approve_pending_event:
   name: Approve pending event
@@ -201,6 +206,11 @@ approve_pending_event:
       required: true
       selector:
         text:
+    expected_event:
+      name: Previously loaded event
+      description: Optional event snapshot; reject the action if the event changed since review.
+      selector:
+        object:
 
 resolve_pending_event:
   name: Resolve uncertain calendar write
