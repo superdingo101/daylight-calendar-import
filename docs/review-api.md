@@ -18,6 +18,11 @@ source metadata and warnings. Its events have stable IDs, statuses, destination
 calendars, and editable draft fields. A write-uncertain event must be resolved
 with `resolve_pending_event` before it can be edited, rejected, or retried.
 It also returns `allowed_calendars` and `default_calendar` for the editor.
+The normal panel edits title, ISO start/end, all-day, location, and description.
+Timed values must include an explicit UTC offset; all-day values are dates with
+an exclusive end. The panel sends no destination-calendar override, so existing
+legacy event destinations are preserved. Long descriptions and meeting details
+are sent without frontend truncation.
 `edit_pending_event` accepts an optional `expected_event` containing the event
 snapshot from `get_pending`. If the event changed before the edit acquires the
 store lock, the action fails and the client must refresh instead of overwriting it.
