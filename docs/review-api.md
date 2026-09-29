@@ -51,3 +51,6 @@ without activity loads with an empty history.
 Summaries include created and rejected event counts. When both outcomes occur,
 the completed import has `mixed` status regardless of decision order. Reads
 return copies so callers cannot mutate the stored ledger.
+Active import history is retained even when completed records are pruned; the
+500-record bound applies to completed history while active imports occupy
+additional slots as needed. Active titles track the next pending event.
