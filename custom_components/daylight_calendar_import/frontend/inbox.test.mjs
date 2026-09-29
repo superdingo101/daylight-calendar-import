@@ -1,6 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {loadInbox, loadImport, summarizeImport} from "./inbox.js";
+import {loadInbox, loadImport, saveEvent, summarizeImport} from "./inbox.js";
+
+test("edits use the complete stale snapshot and never request destination routing", async () => {
+  const original = {id: "event", status: "pending", calendar_entity: "calendar.legacy",
+    title: "Meeting", start: "2026-10-01T10:00:00-04:00", end: "2026-10-01T11:00:00-04:00",
+    all_day: false, description: "Zoom meeting ID 123, passcode abc"};
+  const draft = {...original, description: "x".repeat(12000)};
+  let request;
+  const saved = await saveEvent({callWS: async (message) => {
+    request = message;
+    return {response: {pending_id: "one", event: {...original, ...draft}}};
+  }}, "one", original, draft);
+  assert.equal(saved.description.length, 12000);
+  assert.equal(request.service, "edit_pending_event");
+  assert.deepEqual(request.service_data.expected_event, original);
+  assert.equal(request.service_data.event.description.length, 12000);
+  assert.equal(Object.hasOwn(request.service_data, "calendar_entity"), false);
+  await assert.rejects(saveEvent({callWS: async () => ({response: {event: original}})},
+    "one", original, draft), /unexpected response/);
+});
 
 test("loads detail with a scoped pending ID and rejects a mismatched response", async () => {
   let request;
