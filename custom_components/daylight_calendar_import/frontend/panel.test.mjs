@@ -279,3 +279,61 @@ test("rejected decision keeps the import visible with the backend error", async 
     .find(button => button.textContent === "Edit Picnic").click();
   assert.equal(panel._decisionError, null);
 });
+
+test("bulk approval reports each result and leaves failed events in review", async () => {
+  const panel = new DaylightImportPanel();
+  const first = {id: "first", title: "Practice", start: "2026-10-01",
+    end: "2026-10-02", all_day: true, status: "pending", confidence: 0};
+  const second = {...first, id: "second", title: "Game"};
+  const calls = [];
+  let remaining = [first, second];
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "list_pending") return {response: {imports: [{id: "one"}]}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events: remaining}}};
+    if (request.service === "approve_pending_event" && request.service_data.event_id === "second") {
+      throw {message: "Calendar write uncertain; verify before retrying"};
+    }
+    remaining = [second];
+    return {response: {pending_id: "one", event_id: "first", approved: true}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  const bulk = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.batchAction === "approve");
+  bulk.click();
+  assert.equal(calls.filter(call => call.service === "approve_pending_event").length, 0);
+  assert.equal(panel._content.querySelectorAll("button")
+    .some(button => button.textContent === "Edit Practice"), false);
+  await panel.runBatch("approve");
+  const decisions = calls.filter(call => call.service === "approve_pending_event");
+  assert.deepEqual(decisions.map(call => call.service_data.event_id), ["first", "second"]);
+  assert.deepEqual(decisions.map(call => call.service_data.expected_event), [first, second]);
+  assert.deepEqual(panel._batchResults, [
+    {title: "Practice", outcome: "success"},
+    {title: "Game", outcome: "Calendar write uncertain; verify before retrying"},
+  ]);
+  assert.equal(panel._detail.events[0].id, "second");
+  assert.equal(globalThis.focusedNode.className, "batch-results");
+});
+
+test("bulk confirmation can be canceled without calling a review action", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "one", title: "One", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request.service);
+    return request.service === "get_pending" ? {response: {pending: {id: "import",
+      events: [event, {...event, id: "two", title: "Two"}]}}} : {response: {imports: []}};
+  }};
+  await flush();
+  await panel.showImport("import");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.batchAction === "reject").click();
+  panel._content.querySelectorAll("button")
+    .find(button => button.textContent === "Cancel bulk review").click();
+  assert.equal(panel._batchAction, null);
+  assert.equal(globalThis.focusedNode.dataset.batchAction, "reject");
+  assert.deepEqual(calls, ["list_pending", "get_pending"]);
+});
