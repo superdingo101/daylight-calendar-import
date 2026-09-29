@@ -383,6 +383,47 @@ async def test_reject_one_event_preserves_siblings_and_dedupes_rejection(monkeyp
     assert await restarted.async_reject_event(item.id, second.id) is False
 
 
+async def test_decisions_reject_stale_event_without_side_effects(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(source_text="notice", events=[draft()])).pending
+    assert item is not None
+    original = item.events[0]
+    await store.async_edit_event(item.id, original.id, second_draft())
+    saved_count = len(backend.saved)
+
+    async def processor(_event):
+        pytest.fail("stale approval must not write to the calendar")
+
+    with pytest.raises(PendingEventEditError, match="refresh before deciding"):
+        await store.async_approve_event(
+            item.id, original.id, processor, expected_event=original,
+        )
+    with pytest.raises(PendingEventEditError, match="refresh before deciding"):
+        await store.async_reject_event(
+            item.id, original.id, expected_event=original,
+        )
+    assert len(backend.saved) == saved_count
+    edited = store.get_event(item.id, original.id)
+    assert edited is not None
+    assert await store.async_reject_event(
+        item.id, original.id, expected_event=edited,
+    )
+    next_item = (await store.async_add(source_text="other", events=[draft(True)])).pending
+    assert next_item is not None
+    next_event = next_item.events[0]
+    processed = []
+
+    async def write(event):
+        processed.append(event)
+
+    assert await store.async_approve_event(
+        next_item.id, next_event.id, write, expected_event=next_event,
+    ) == next_event
+    assert processed == [next_event]
+
+
 async def test_reject_event_save_failure_and_uncertain_guard(monkeypatch):
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
