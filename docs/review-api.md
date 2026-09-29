@@ -19,7 +19,9 @@ calendars, and editable draft fields. A write-uncertain event must be resolved
 with `resolve_pending_event` before it can be edited, rejected, or retried.
 Recovery controls send the loaded `expected_event` snapshot. The backend
 compares it under the storage lock so an older calendar check cannot resolve
-a newer uncertain attempt with the same event ID. Existing callers may omit
+a newer uncertain attempt with the same event ID. Each write checkpoint stores
+a new `write_attempt` token; unchanged retries therefore remain distinguishable.
+Existing callers may omit
 the snapshot for compatibility.
 It also returns `allowed_calendars` and `default_calendar` for the editor.
 The normal panel edits title, ISO start/end, all-day, location, and description.
