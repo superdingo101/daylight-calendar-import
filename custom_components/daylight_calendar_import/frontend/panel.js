@@ -57,6 +57,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._decisionError = null;
     this._batchAction = null;
     this._batchResults = [];
+    this._batchContext = null;
     const style = element("style", css);
     const main = document.createElement("main");
     const header = document.createElement("header");
@@ -85,6 +86,8 @@ export class DaylightImportPanel extends HTMLElement {
 
   async refresh() {
     if (this._saving || this._editingId || this._batchAction) return;
+    this._batchResults = [];
+    this._batchContext = null;
     const generation = ++this._generation;
     this._status = "loading";
     this.render();
@@ -117,6 +120,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._decisionError = null;
     this._batchAction = null;
     this._batchResults = [];
+    this._batchContext = null;
     this._status = "loading";
     this.render();
     this._content.querySelector("button")?.focus();
@@ -135,6 +139,8 @@ export class DaylightImportPanel extends HTMLElement {
 
   showInbox() {
     if (this._saving || this._editingId || this._decision || this._batchAction) return;
+    this._batchResults = [];
+    this._batchContext = null;
     this._returnFocusId = this._selectedId;
     ++this._generation;
     this._selectedId = null;
@@ -146,6 +152,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._batchAction !== action) return;
     const pendingId = this._selectedId;
     const events = this._detail.events.filter(event => event.status === "pending");
+    this._batchContext = {pendingId, action, title: this._detail.source_title || "Import"};
     this._saving = true;
     this._refreshButton.disabled = true;
     for (const button of this._content.querySelectorAll("button")) button.disabled = true;
@@ -153,10 +160,12 @@ export class DaylightImportPanel extends HTMLElement {
     for (const event of events) {
       try {
         await decideEvent(this._hass, pendingId, event, action);
-        results.push({title: event.title, outcome: "success"});
+        results.push({id: event.id, title: event.title, range: eventRange(event), outcome: "success"});
       } catch (error) {
-        results.push({title: event.title, outcome: typeof error?.message === "string" ?
-          error.message : "Review action failed; check the calendar before retrying."});
+        const reason = typeof error?.message === "string" ? error.message : "Review action failed";
+        results.push({id: event.id, title: event.title, range: eventRange(event),
+          outcome: action === "approve" ?
+            `Approval outcome unknown; check the calendar before retrying. ${reason}` : reason});
       }
     }
     this._batchResults = results;
@@ -327,10 +336,19 @@ export class DaylightImportPanel extends HTMLElement {
       const summary = element("section", "", "batch-results");
       summary.tabIndex = -1;
       summary.setAttribute("role", "status");
-      summary.append(element("h2", "Bulk review results"));
+      summary.append(element("h2", `Bulk ${this._batchContext.action} results for ${this._batchContext.title}`));
       for (const result of this._batchResults) {
-        summary.append(element("p", `${result.title}: ${result.outcome === "success" ? "Done" : result.outcome}`));
+        summary.append(element("p", `${result.title} (${result.range}; event ID ${result.id}): ${result.outcome === "success" ? "Done" : result.outcome}`));
       }
+      const dismiss = element("button", "Dismiss results");
+      dismiss.type = "button";
+      dismiss.addEventListener("click", () => {
+        this._batchResults = [];
+        this._batchContext = null;
+        this.render();
+        (this._content.querySelector("h2") || this._refreshButton).focus();
+      });
+      summary.append(dismiss);
       content.append(summary);
     }
     if (this._selectedId && !this._detail) {
@@ -396,6 +414,8 @@ export class DaylightImportPanel extends HTMLElement {
             button.addEventListener("click", () => {
               if (this._saving) return;
               this._batchResults = [];
+              this._batchContext = null;
+              this._decisionError = null;
               this._batchAction = action;
               this.render();
               this._content.querySelector(".actions button")?.focus();
