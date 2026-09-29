@@ -257,6 +257,36 @@ async def test_activity_is_bounded_and_storage_failure_keeps_previous_state(monk
     assert len(store._transition(second, "event_rejected")[0]["transitions"]) == 1
 
 
+async def test_active_activity_survives_completed_history_pruning(monkeypatch):
+    monkeypatch.setattr(storage_module, "ACTIVITY_LIMIT", 1)
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    active = (await store.async_add(source_text="active", events=[draft(), second_draft()])).pending
+    assert active is not None
+    first, second = active.events
+    async def created(_event):
+        pass
+    await store.async_approve_event(active.id, first.id, created)
+    assert store.get_activity(active.id)["title"] == second.draft.title
+    assert store.get_activity(active.id)["created_count"] == 1
+    # Keep an active record even when all slots are occupied by active imports.
+    another = (await store.async_add(source_text="other", events=[
+        replace(draft(), title="Different")])).pending
+    assert another is not None
+    assert {row["id"] for row in store.list_activity()} == {active.id, another.id}
+    await store.async_reject_event(another.id, another.events[0].id)
+    assert store.get_activity(active.id) is not None
+    await store.async_reject_event(active.id, second.id)
+    assert store.get_activity(active.id)["status"] == "mixed"
+    assert (store.get_activity(active.id)["created_count"],
+            store.get_activity(active.id)["rejected_count"]) == (1, 1)
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_activity(active.id)["status"] == "mixed"
+
+
 async def test_mixed_event_activity_retains_review_status_and_atomic_checkpoints(monkeypatch):
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
