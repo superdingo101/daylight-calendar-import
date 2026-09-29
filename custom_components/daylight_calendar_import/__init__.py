@@ -98,6 +98,7 @@ RESOLVE_EVENT_SCHEMA = vol.Schema(
         vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
         vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
         vol.Required("resolution"): vol.In(("created", "not_created", "discard")),
+        vol.Optional("expected_event"): dict,
     }
 )
 
@@ -468,10 +469,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         event_id = call.data[ATTR_EVENT_ID]
         resolution = call.data["resolution"]
         try:
-            resolved = await pending_store.async_resolve_uncertain(
-                pending_id, event_id, resolution
-            )
-        except PendingEventResolutionError as err:
+            snapshot = call.data.get("expected_event")
+            expected = None
+            if snapshot is not None:
+                if snapshot.get("id") != event_id or snapshot.get("status") != "write_uncertain":
+                    raise PendingEventResolutionError("Event changed since it was loaded; refresh before resolving")
+                expected = PendingEvent(event_id, EventDraft.from_mapping(snapshot),
+                                        snapshot["status"], snapshot.get(CONF_CALENDAR_ENTITY))
+            if expected is None:
+                resolved = await pending_store.async_resolve_uncertain(pending_id, event_id, resolution)
+            else:
+                resolved = await pending_store.async_resolve_uncertain(
+                    pending_id, event_id, resolution, expected_event=expected,
+                )
+        except (DraftValidationError, PendingEventResolutionError) as err:
             raise ServiceValidationError(str(err)) from err
         if not resolved:
             raise ServiceValidationError(
