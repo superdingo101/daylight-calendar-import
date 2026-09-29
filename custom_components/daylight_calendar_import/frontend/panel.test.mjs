@@ -165,3 +165,24 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   assert.equal(requests.at(-1).service, "get_pending");
   assert.equal(globalThis.focusedNode.dataset.eventId, "event");
 });
+
+test("a successful save with a failed detail reload offers refresh and restores focus", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Meeting", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  let reads = 0;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") {
+      if (++reads === 2) throw {message: "Offline"};
+      return {response: {pending: {id: "one", events: [event]}}};
+    }
+    return {response: {pending_id: "one", event}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  find(panel._content, "section").querySelector("button").click();
+  await panel.saveEdit(event, find(panel._content, "form"));
+  assert.match(find(panel._content, "p").textContent, /saved, but the detail could not be reloaded: Offline/);
+  assert.equal(globalThis.focusedNode.textContent, "Back to inbox");
+});
