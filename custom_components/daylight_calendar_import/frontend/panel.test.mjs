@@ -284,7 +284,7 @@ test("bulk approval reports each result and leaves failed events in review", asy
   const panel = new DaylightImportPanel();
   const first = {id: "first", title: "Practice", start: "2026-10-01",
     end: "2026-10-02", all_day: true, status: "pending", confidence: 0};
-  const second = {...first, id: "second", title: "Game"};
+  const second = {...first, id: "second"};
   const calls = [];
   let remaining = [first, second];
   panel.hass = {callWS: async request => {
@@ -310,11 +310,21 @@ test("bulk approval reports each result and leaves failed events in review", asy
   assert.deepEqual(decisions.map(call => call.service_data.event_id), ["first", "second"]);
   assert.deepEqual(decisions.map(call => call.service_data.expected_event), [first, second]);
   assert.deepEqual(panel._batchResults, [
-    {title: "Practice", outcome: "success"},
-    {title: "Game", outcome: "Calendar write uncertain; verify before retrying"},
+    {id: "first", title: "Practice", range: "2026-10-01", outcome: "success"},
+    {id: "second", title: "Practice", range: "2026-10-01",
+      outcome: "Approval outcome unknown; check the calendar before retrying. Calendar write uncertain; verify before retrying"},
   ]);
   assert.equal(panel._detail.events[0].id, "second");
   assert.equal(globalThis.focusedNode.className, "batch-results");
+  assert.match(panel._content.querySelector(".batch-results").querySelectorAll("p")[0].textContent,
+    /event ID first/);
+  assert.match(panel._content.querySelector(".batch-results").querySelectorAll("p")[1].textContent,
+    /event ID second/);
+  assert.match(panel._content.querySelector(".batch-results").querySelector("h2").textContent,
+    /Bulk approve results for Import/);
+  panel.showInbox();
+  await flush();
+  assert.equal(panel._batchResults.length, 0);
 });
 
 test("bulk confirmation can be canceled without calling a review action", async () => {
