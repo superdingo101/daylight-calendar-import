@@ -30,7 +30,7 @@ VALID_FIXTURES = (
     ("parse-request.schema.json", "parse-request-text.json"),
     ("parse-request.schema.json", "parse-request-image.json"),
     ("parse-request.schema.json", "parse-request-pdf.json"),
-    ("parse-response.schema.json", "parse-response-zoom.json"),
+    ("parse-response.schema.json", "parse-response-remote-meeting.json"),
     ("parse-response.schema.json", "parse-response-long-description.json"),
     ("parse-response.schema.json", "parse-response-partial.json"),
     ("error.schema.json", "error-provider-rate-limited.json"),
@@ -83,10 +83,10 @@ def test_invalid_hosted_v1_fixtures(
         )
 
 
-def test_zoom_fixture_preserves_join_information(
+def test_remote_meeting_fixture_preserves_join_information(
     schemas: dict[str, dict], registry: Registry
 ) -> None:
-    instance = _load(FIXTURE_DIR / "valid" / "parse-response-zoom.json")
+    instance = _load(FIXTURE_DIR / "valid" / "parse-response-remote-meeting.json")
     _validator("parse-response.schema.json", schemas, registry).validate(instance)
     description = instance["events"][0]["draft"]["description"]
     assert "zoom.us" in description
