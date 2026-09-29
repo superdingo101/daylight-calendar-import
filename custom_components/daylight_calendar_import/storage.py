@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -264,11 +265,11 @@ class PendingImportStore:
 
     def list_activity(self) -> tuple[dict[str, Any], ...]:
         """Return bounded lifecycle summaries, newest first, without source text."""
-        return tuple(reversed(self._activity))
+        return tuple(deepcopy(item) for item in reversed(self._activity))
 
     def get_activity(self, pending_id: str) -> dict[str, Any] | None:
         """Return a durable activity record even after an import leaves review."""
-        return next((item for item in self._activity if item["id"] == pending_id), None)
+        return next((deepcopy(item) for item in self._activity if item["id"] == pending_id), None)
 
     def _transition(
         self, pending: PendingImport, kind: str, *, event_id: str | None = None,
@@ -279,13 +280,20 @@ class PendingImportStore:
         transitions = list(previous["transitions"]) if previous else []
         transitions.append({"type": kind, "at": datetime.now(UTC).isoformat(),
                             "event_id": event_id})
+        created = (previous.get("created_count", 0) if previous else 0) + (kind == "calendar_created")
+        rejected = (previous.get("rejected_count", 0) if previous else 0) + (
+            len(pending.events) if kind == "event_rejected" and event_id is None else
+            int(kind == "event_rejected")
+        )
         record = {
             "id": pending.id, "created_at": pending.created_at,
             "source_kind": pending.source_kind, "source_title": pending.source_title,
             "title": pending.events[0].draft.title,
+            "created_count": created, "rejected_count": rejected,
             "status": (("calendar_write_uncertain" if any(event.status == "write_uncertain" for event in remaining)
                         else "review_ready") if remaining else
-                       "calendar_write_uncertain" if kind == "calendar_write_started" else kind),
+                       "calendar_write_uncertain" if kind == "calendar_write_started" else
+                       "mixed" if created and rejected else kind),
             "transitions": transitions[-ACTIVITY_TRANSITIONS_PER_IMPORT:],
         }
         return (tuple(item for item in self._activity if item["id"] != pending.id) + (record,))[-ACTIVITY_LIMIT:]
@@ -622,8 +630,13 @@ class PendingImportStore:
             await processor(event)
         except Exception:
             uncertain = self._transition(pending, "calendar_write_uncertain", event_id=event.id)
-            await self._async_save(self._items, activity=uncertain)
-            self._activity = uncertain
+            try:
+                await self._async_save(self._items, activity=uncertain)
+            except Exception:
+                # The write-started checkpoint already records an uncertain status.
+                pass
+            else:
+                self._activity = uncertain
             raise
 
         remaining = tuple(item for item in pending.events if item.id != event.id)
