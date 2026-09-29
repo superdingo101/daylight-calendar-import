@@ -155,8 +155,8 @@ export class DaylightImportPanel extends HTMLElement {
       await this.refresh();
       if (this._status === "ready") {
         this._announcement.replaceChildren(element("span", `Event ${action === "approve" ? "approved" : "rejected"}`));
-        this._content.querySelector("button")?.focus();
       }
+      (this._content.querySelector("button") || this._refreshButton).focus();
     } catch (error) {
       if (generation !== this._generation) return;
       this._decisionError = typeof error?.message === "string" ? error.message : "Could not complete review action.";
@@ -204,6 +204,7 @@ export class DaylightImportPanel extends HTMLElement {
       await saveEvent(this._hass, pendingId, event, draft);
       if (generation !== this._generation) return;
       this._editingId = null;
+      this._decisionError = null;
       this._detail = await loadImport(this._hass, pendingId);
       if (generation !== this._generation) return;
       this.render();
@@ -338,12 +339,15 @@ export class DaylightImportPanel extends HTMLElement {
           edit.type = "button";
           edit.dataset.eventId = event.id;
           edit.addEventListener("click", () => { if (this._saving || this._editingId) return;
+            this._decisionError = null;
             this._editingId = event.id; this.render();
             this._content.querySelector("form input")?.focus(); });
           card.append(edit);
           for (const action of ["approve", "reject"]) {
             const button = element("button", `${action === "approve" ? "Approve" : "Reject"} ${event.title}`);
             button.type = "button";
+            button.dataset.action = action;
+            button.dataset.eventId = event.id;
             button.addEventListener("click", () => {
               if (this._saving || this._editingId || this._decision) return;
               this._decision = {id: event.id, action};
@@ -354,10 +358,11 @@ export class DaylightImportPanel extends HTMLElement {
             card.append(button);
           }
         } else if (this._decision?.id === event.id) {
+          const action = this._decision.action;
           const actions = element("div", "", "actions");
-          const confirm = element("button", `Confirm ${this._decision.action}: ${event.title}`);
+          const confirm = element("button", `Confirm ${action}: ${event.title}`);
           confirm.type = "button";
-          confirm.addEventListener("click", () => void this.runDecision(event, this._decision.action));
+          confirm.addEventListener("click", () => void this.runDecision(event, action));
           const cancel = element("button", "Cancel");
           cancel.type = "button";
           cancel.addEventListener("click", () => {
@@ -365,7 +370,9 @@ export class DaylightImportPanel extends HTMLElement {
             this._decision = null;
             this._decisionError = null;
             this.render();
-            this.focusEvent(event.id);
+            (Array.from(this._content.querySelectorAll("button"))
+              .find(button => button.dataset.eventId === event.id &&
+                button.dataset.action === action) || this._refreshButton).focus();
           });
           actions.append(confirm, cancel);
           card.append(actions);
