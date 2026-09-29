@@ -27,6 +27,10 @@ are sent without frontend truncation.
 snapshot from `get_pending`. If the event changed before the edit acquires the
 store lock, the action fails and the client must refresh instead of overwriting it.
 `get_pending_event` returns one event by `pending_id` and `event_id`.
+The panel's approve/reject controls require explicit confirmation and submit
+the complete loaded `expected_event`. The backend compares it under the store
+lock before any calendar write or rejection; stale decisions fail with a refresh
+message. Existing action callers may omit the snapshot for compatibility.
 
 Existing stored imports without source metadata load as `manual_text` with no
 source title, warnings, or skipped duplicate count. Upload bytes, temporary
