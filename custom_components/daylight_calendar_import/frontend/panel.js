@@ -61,7 +61,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton = refresh;
     refresh.type = "button";
     refresh.addEventListener("click", () => {
-      if (!this._saving) void (this._selectedId ? this.showImport(this._selectedId) : this.refresh());
+      if (!this._saving && !this._editingId) void (this._selectedId ? this.showImport(this._selectedId) : this.refresh());
     });
     header.append(refresh);
     this._content = document.createElement("div");
@@ -80,7 +80,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async refresh() {
-    if (this._saving) return;
+    if (this._saving || this._editingId) return;
     const generation = ++this._generation;
     this._status = "loading";
     this.render();
@@ -103,7 +103,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async showImport(id) {
-    if (this._saving) return;
+    if (this._saving || this._editingId) return;
     const generation = ++this._generation;
     this._selectedId = id;
     this._detail = null;
@@ -126,7 +126,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   showInbox() {
-    if (this._saving) return;
+    if (this._saving || this._editingId) return;
     this._returnFocusId = this._selectedId;
     ++this._generation;
     this._selectedId = null;
@@ -177,21 +177,24 @@ export class DaylightImportPanel extends HTMLElement {
       form.querySelector(".error")?.remove();
       const message = element("p", this._editError, "error");
       message.setAttribute("role", "alert");
+      message.tabIndex = -1;
       form.prepend(message);
       this._announcement.replaceChildren(element("span", this._editError));
       for (const tag of ["input", "textarea", "button"]) {
         for (const control of form.querySelectorAll(tag)) control.disabled = false;
       }
+      message.focus();
     } finally {
       this._saving = false;
-      this._refreshButton.disabled = false;
+      this._refreshButton.disabled = Boolean(this._editingId);
       for (const button of this._content.querySelectorAll("button")) button.disabled = false;
     }
   }
 
   focusEvent(id) {
-    Array.from(this._content.querySelectorAll("button"))
-      .find(button => button.dataset.eventId === id)?.focus();
+    (Array.from(this._content.querySelectorAll("button"))
+      .find(button => button.dataset.eventId === id) ||
+      this._content.querySelector("h2") || this._content.querySelector("button"))?.focus();
   }
 
   editForm(event) {
@@ -232,10 +235,12 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   render() {
+    this._refreshButton.disabled = this._saving || Boolean(this._editingId);
     const content = document.createDocumentFragment();
     if (this._selectedId && !this._detail) {
       const back = element("button", "Back to inbox");
       back.type = "button";
+      back.disabled = Boolean(this._editingId);
       back.addEventListener("click", () => this.showInbox());
       content.append(back);
     }
@@ -278,11 +283,11 @@ export class DaylightImportPanel extends HTMLElement {
         }
         if (event.location) card.append(element("p", `Location: ${event.location}`));
         if (event.description) card.append(element("p", event.description));
-        if (event.status === "pending") {
+        if (event.status === "pending" && !this._editingId) {
           const edit = element("button", `Edit ${event.title}`);
           edit.type = "button";
           edit.dataset.eventId = event.id;
-          edit.addEventListener("click", () => { if (this._saving) return;
+          edit.addEventListener("click", () => { if (this._saving || this._editingId) return;
             this._editingId = event.id; this.render();
             this._content.querySelector("form input")?.focus(); });
           card.append(edit);
