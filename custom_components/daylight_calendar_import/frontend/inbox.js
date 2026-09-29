@@ -27,6 +27,21 @@ export async function loadImport(hass, pendingId) {
   return pending;
 }
 
+export async function saveEvent(hass, pendingId, original, draft) {
+  const result = await hass.callWS({
+    type: "call_service", domain: "daylight_calendar_import",
+    service: "edit_pending_event",
+    service_data: {pending_id: pendingId, event_id: original.id, event: draft,
+      expected_event: original},
+    return_response: true,
+  });
+  if (result?.response?.pending_id !== pendingId ||
+      result?.response?.event?.id !== original.id) {
+    throw new Error("The saved event returned an unexpected response. Refresh before editing again.");
+  }
+  return result.response.event;
+}
+
 export function summarizeImport(item, locale) {
   const date = new Date(item.created_at);
   return {
