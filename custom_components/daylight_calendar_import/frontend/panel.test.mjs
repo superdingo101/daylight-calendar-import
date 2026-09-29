@@ -143,6 +143,7 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   assert.equal(form.elements.namedItem("description").value, description);
   assert.equal(form.elements.namedItem("start").value, event.start);
   assert.equal(form.querySelectorAll("select").length, 0);
+  assert.equal(panel._content.querySelectorAll("button")[0].disabled, true);
   assert.equal(panel._content.querySelectorAll("button").some(button => button.dataset.eventId === "sibling"), false);
   siblingEdit.click();
   assert.equal(panel._editingId, "event");
