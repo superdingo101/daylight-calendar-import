@@ -157,6 +157,7 @@ export class DaylightImportPanel extends HTMLElement {
     } catch (error) {
       if (generation !== this._generation) return;
       this._editError = error instanceof Error ? error.message : "Could not save event.";
+      form.querySelector(".error")?.remove();
       const message = element("p", this._editError, "error");
       message.setAttribute("role", "alert");
       form.prepend(message);
