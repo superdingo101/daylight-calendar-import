@@ -93,6 +93,33 @@ async def test_recovery_snapshot_cannot_resolve_a_new_write_attempt(monkeypatch)
     assert store.get_event(item.id, original.id).status == "write_uncertain"
     assert store.get_event(item.id, original.id).draft.title == "Changed meeting"
 
+    same = PendingImport.create(source_text="same draft", events=[draft()])
+    same_raw = same.as_dict()
+    same_raw["events"][0]["status"] = "write_uncertain"
+    same_backend = FakeStoreBackend(load_result={"items": [same_raw]})
+    retry = make_store(monkeypatch, same_backend)
+    await retry.async_load()
+    previous_attempt = retry.get_event(same.id, same.events[0].id)
+    assert previous_attempt is not None
+    await retry.async_resolve_uncertain(same.id, previous_attempt.id, "not_created",
+                                        expected_event=previous_attempt)
+    with pytest.raises(RuntimeError, match="calendar response lost"):
+        await retry.async_approve_event(same.id, previous_attempt.id, failed)
+    next_attempt = retry.get_event(same.id, previous_attempt.id)
+    assert next_attempt is not None
+    assert next_attempt.draft == previous_attempt.draft
+    assert next_attempt.write_attempt is not None
+    assert next_attempt.as_service_dict()["write_attempt"] == next_attempt.write_attempt
+    same_backend.load_result = same_backend.saved[-1]
+    restarted = make_store(monkeypatch, same_backend)
+    await restarted.async_load()
+    assert restarted.get_event(same.id, previous_attempt.id) == next_attempt
+    with pytest.raises(PendingEventResolutionError, match="changed since it was loaded"):
+        await restarted.async_resolve_uncertain(same.id, previous_attempt.id, "created",
+                                               expected_event=previous_attempt)
+    assert await restarted.async_resolve_uncertain(same.id, previous_attempt.id, "created",
+                                                  expected_event=next_attempt)
+
 
 def second_draft():
     return EventDraft(
@@ -897,6 +924,18 @@ async def test_store_processes_events_and_remembers_deduplication(monkeypatch):
     assert result == existing
     assert processed == list(existing.events)
     assert store.list() == ()
+    first_attempt = backend.saved[0]["items"][0]["events"][0]["write_attempt"]
+    second_attempt = backend.saved[2]["items"][0]["events"][0]["write_attempt"]
+    UUID(first_attempt)
+    UUID(second_attempt)
+    assert first_attempt != second_attempt
+    first_in_flight = replace(first_in_flight, events=(
+        replace(first_in_flight.events[0], write_attempt=first_attempt),
+        *first_in_flight.events[1:],
+    ))
+    second_in_flight = replace(second_in_flight, events=(
+        replace(second_in_flight.events[0], write_attempt=second_attempt),
+    ))
     assert backend.saved == [
         {"items": [first_in_flight.as_dict()]},
         {
