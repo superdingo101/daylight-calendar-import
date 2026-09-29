@@ -254,6 +254,7 @@ export class DaylightImportPanel extends HTMLElement {
       const detail = this._detail;
       const back = element("button", "Back to inbox");
       back.type = "button";
+      back.disabled = Boolean(this._editingId);
       back.addEventListener("click", () => this.showInbox());
       const heading = element("h2", detail.source_title || "Import detail");
       heading.tabIndex = -1;
