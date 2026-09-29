@@ -36,3 +36,15 @@ Existing stored imports without source metadata load as `manual_text` with no
 source title, warnings, or skipped duplicate count. Upload bytes, temporary
 media paths, upstream source IDs, and source fingerprints are not exposed by
 the read actions.
+
+`list_activity` returns the most recent 500 import summaries, newest first,
+without source text or transition detail. `get_activity` accepts `pending_id`
+and returns the same summary with its latest 32 transitions. These reads share
+the authenticated control check used by pending reads. Each transition has a
+type, timestamp, and optional event ID. Review ready, reject, write checkpoint,
+calendar creation, uncertain write, and explicit uncertainty resolutions are
+stored with the corresponding pending or deduplication update. A write-started
+checkpoint reports an uncertain current status until creation commits. Completed
+imports remain in activity after leaving the pending queue; older entries and
+transitions are pruned independently of deduplication history. Existing storage
+without activity loads with an empty history.
