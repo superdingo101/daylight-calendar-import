@@ -95,4 +95,6 @@ jobs:
           "home-assistant-intents==2026.6.24"
           "PyTurboJPEG==1.8.3"
           "pypdf==6.14.2"
+          "jsonschema>=4.23,<5"
+          "referencing>=0.35,<1"
       - run: pytest --cov --cov-branch --cov-fail-under=100
