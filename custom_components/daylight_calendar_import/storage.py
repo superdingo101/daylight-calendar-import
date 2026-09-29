@@ -22,7 +22,10 @@ from .models import EventDraft
 STORAGE_VERSION = 2
 STORAGE_KEY = f"{DOMAIN}.pending_imports"
 DEDUP_HISTORY_LIMIT = 10_000
+ACTIVITY_LIMIT = 500
+ACTIVITY_TRANSITIONS_PER_IMPORT = 32
 _STORAGE_ITEMS = "items"
+_STORAGE_ACTIVITY = "activity"
 _STORAGE_SEEN_SOURCES = "seen_source_fingerprints"
 _STORAGE_SEEN_EVENTS = "seen_event_fingerprints"
 
@@ -217,6 +220,7 @@ class PendingImportStore:
             private=True,
         )
         self._items: dict[str, PendingImport] = {}
+        self._activity: tuple[dict[str, Any], ...] = ()
         self._seen_source_fingerprints: tuple[str, ...] = ()
         self._seen_event_fingerprints: tuple[str, ...] = ()
         self._lock = asyncio.Lock()
@@ -226,6 +230,7 @@ class PendingImportStore:
         data = await self._store.async_load()
         if data is None:
             self._items = {}
+            self._activity = ()
             self._seen_source_fingerprints = ()
             self._seen_event_fingerprints = ()
             return
@@ -234,6 +239,7 @@ class PendingImportStore:
             PendingImport.from_dict(raw) for raw in data[_STORAGE_ITEMS]
         )
         self._items = {item.id: item for item in items}
+        self._activity = tuple(data.get(_STORAGE_ACTIVITY, ()))
         self._seen_source_fingerprints = tuple(
             data.get(_STORAGE_SEEN_SOURCES, ())
         )
@@ -255,6 +261,34 @@ class PendingImportStore:
     def list(self) -> tuple[PendingImport, ...]:
         """Return pending imports in insertion order."""
         return tuple(self._items.values())
+
+    def list_activity(self) -> tuple[dict[str, Any], ...]:
+        """Return bounded lifecycle summaries, newest first, without source text."""
+        return tuple(reversed(self._activity))
+
+    def get_activity(self, pending_id: str) -> dict[str, Any] | None:
+        """Return a durable activity record even after an import leaves review."""
+        return next((item for item in self._activity if item["id"] == pending_id), None)
+
+    def _transition(
+        self, pending: PendingImport, kind: str, *, event_id: str | None = None,
+        remaining: tuple[PendingEvent, ...] | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        """Propose a bounded lifecycle change for the same storage transaction."""
+        previous = self.get_activity(pending.id)
+        transitions = list(previous["transitions"]) if previous else []
+        transitions.append({"type": kind, "at": datetime.now(UTC).isoformat(),
+                            "event_id": event_id})
+        record = {
+            "id": pending.id, "created_at": pending.created_at,
+            "source_kind": pending.source_kind, "source_title": pending.source_title,
+            "title": pending.events[0].draft.title,
+            "status": (("calendar_write_uncertain" if any(event.status == "write_uncertain" for event in remaining)
+                        else "review_ready") if remaining else
+                       "calendar_write_uncertain" if kind == "calendar_write_started" else kind),
+            "transitions": transitions[-ACTIVITY_TRANSITIONS_PER_IMPORT:],
+        }
+        return (tuple(item for item in self._activity if item["id"] != pending.id) + (record,))[-ACTIVITY_LIMIT:]
 
     async def async_edit_event(
         self, pending_id: str, event_id: str, draft: EventDraft,
@@ -384,8 +418,10 @@ class PendingImportStore:
             )
             items = dict(self._items)
             items[pending.id] = pending
-            await self._async_save(items)
+            activity = self._transition(pending, "review_ready")
+            await self._async_save(items, activity=activity)
             self._items = items
+            self._activity = activity
             return PendingImportAddResult(
                 pending=pending,
                 duplicate_source=False,
@@ -414,12 +450,15 @@ class PendingImportStore:
                 (event_fingerprint(event.draft) for event in pending.events),
             )
 
+            activity = self._transition(pending, "event_rejected")
             await self._async_save(
                 items,
                 seen_source_fingerprints=seen_sources,
                 seen_event_fingerprints=seen_events,
+                activity=activity,
             )
             self._items = items
+            self._activity = activity
             self._seen_source_fingerprints = seen_sources
             self._seen_event_fingerprints = seen_events
         return True
@@ -455,12 +494,16 @@ class PendingImportStore:
             seen_events = _remember_fingerprints(
                 self._seen_event_fingerprints, (event_fingerprint(event.draft),)
             )
+            activity = self._transition(pending, "event_rejected", event_id=event_id,
+                                        remaining=remaining)
             await self._async_save(
                 items,
                 seen_source_fingerprints=seen_sources,
                 seen_event_fingerprints=seen_events,
+                activity=activity,
             )
             self._items = items
+            self._activity = activity
             self._seen_source_fingerprints = seen_sources
             self._seen_event_fingerprints = seen_events
             return True
@@ -503,11 +546,17 @@ class PendingImportStore:
                     seen_sources = _remember_fingerprints(
                         seen_sources, (pending.source_fingerprint,)
                     )
+            transition = {"created": "calendar_created", "not_created": "review_ready",
+                          "discard": "event_rejected"}[resolution]
+            activity = self._transition(pending, transition, event_id=event_id,
+                                        remaining=remaining)
             await self._async_save(
                 items, seen_source_fingerprints=seen_sources,
                 seen_event_fingerprints=seen_events,
+                activity=activity,
             )
             self._items = items
+            self._activity = activity
             self._seen_source_fingerprints = seen_sources
             self._seen_event_fingerprints = seen_events
             return True
@@ -564,10 +613,18 @@ class PendingImportStore:
             ))
         items = dict(self._items)
         items[pending.id] = in_flight
-        await self._async_save(items)
+        activity = self._transition(pending, "calendar_write_started", event_id=event.id)
+        await self._async_save(items, activity=activity)
         self._items = items
+        self._activity = activity
 
-        await processor(event)
+        try:
+            await processor(event)
+        except Exception:
+            uncertain = self._transition(pending, "calendar_write_uncertain", event_id=event.id)
+            await self._async_save(self._items, activity=uncertain)
+            self._activity = uncertain
+            raise
 
         remaining = tuple(item for item in pending.events if item.id != event.id)
         items = dict(self._items)
@@ -586,12 +643,16 @@ class PendingImportStore:
                     seen_sources, (pending.source_fingerprint,)
                 )
 
+        activity = self._transition(pending, "calendar_created", event_id=event.id,
+                                    remaining=remaining)
         await self._async_save(
             items,
             seen_source_fingerprints=seen_sources,
             seen_event_fingerprints=seen_events,
+            activity=activity,
         )
         self._items = items
+        self._activity = activity
         self._seen_source_fingerprints = seen_sources
         self._seen_event_fingerprints = seen_events
         return updated
@@ -621,6 +682,7 @@ class PendingImportStore:
         *,
         seen_source_fingerprints: tuple[str, ...] | None = None,
         seen_event_fingerprints: tuple[str, ...] | None = None,
+        activity: tuple[dict[str, Any], ...] | None = None,
     ) -> None:
         """Persist a proposed collection and deduplication history."""
         seen_sources = (
@@ -640,6 +702,9 @@ class PendingImportStore:
             data[_STORAGE_SEEN_SOURCES] = list(seen_sources)
         if seen_events:
             data[_STORAGE_SEEN_EVENTS] = list(seen_events)
+        history = self._activity if activity is None else activity
+        if history:
+            data[_STORAGE_ACTIVITY] = list(history[-ACTIVITY_LIMIT:])
         await self._store.async_save(data)
 
 
