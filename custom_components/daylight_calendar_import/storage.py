@@ -347,8 +347,12 @@ class PendingImportStore:
             ))
             items = dict(self._items)
             items[pending_id] = updated
-            await self._async_save(items)
+            activity = tuple({**record, "title": updated.events[0].draft.title}
+                             if record["id"] == pending_id else record
+                             for record in self._activity)
+            await self._async_save(items, activity=activity)
             self._items = items
+            self._activity = activity
             return edited
 
     def is_source_duplicate(self, source_id: str) -> bool:
