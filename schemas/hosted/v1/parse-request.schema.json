@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/parse-request.schema.json",
+  "title": "Daylight Hosted API v1 Parse Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source", "reference_datetime", "time_zone"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "source": {"$ref": "https://docs.daylightcalendar.com/schemas/hosted/v1/source-document.schema.json"},
+    "reference_datetime": {"type": "string", "format": "date-time"},
+    "time_zone": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^(UTC|[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)+)$"}
+  }
+}
