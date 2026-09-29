@@ -302,11 +302,9 @@ class PendingImportStore:
             active_ids.discard(pending.id)
         elif kind == "review_ready" or remaining:
             active_ids.add(pending.id)
-        while len(history) > ACTIVITY_LIMIT:
+        while sum(item["id"] not in active_ids for item in history) > ACTIVITY_LIMIT:
             oldest_completed = next((index for index, item in enumerate(history)
-                                     if item["id"] not in active_ids), None)
-            if oldest_completed is None:
-                break
+                                     if item["id"] not in active_ids))
             history.pop(oldest_completed)
         return tuple(history)
 
