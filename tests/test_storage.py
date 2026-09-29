@@ -156,6 +156,9 @@ async def test_review_metadata_survives_edit_reject_checkpoint_and_restart(monke
     metadata = (item.source_kind, item.source_title, item.warnings, item.duplicate_events)
 
     await store.async_edit_event(item.id, first.id, replace(draft(), title="Updated"))
+    assert store.get_activity(item.id)["title"] == "Updated"
+    assert backend.saved[-1]["activity"][-1]["title"] == "Updated"
+    assert [row["type"] for row in store.get_activity(item.id)["transitions"]] == ["review_ready"]
     assert (store.get(item.id).source_kind, store.get(item.id).source_title,
             store.get(item.id).warnings, store.get(item.id).duplicate_events) == metadata
     async def failed(_event):
@@ -255,6 +258,28 @@ async def test_activity_is_bounded_and_storage_failure_keeps_previous_state(monk
     assert store.get_activity(first.id) is None
     monkeypatch.setattr(storage_module, "ACTIVITY_TRANSITIONS_PER_IMPORT", 1)
     assert len(store._transition(second, "event_rejected")[0]["transitions"]) == 1
+
+
+async def test_editing_activity_title_is_atomic_and_only_follows_leading_event(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(source_text="school", events=[draft(), second_draft()])).pending
+    assert item is not None
+    first, second = item.events
+    await store.async_edit_event(item.id, second.id, replace(second_draft(), title="Other photo"))
+    assert store.get_activity(item.id)["title"] == first.draft.title
+    backend.save_error = RuntimeError("disk full")
+    with pytest.raises(RuntimeError, match="disk full"):
+        await store.async_edit_event(item.id, first.id, replace(draft(), title="Changed"))
+    assert store.get_activity(item.id)["title"] == first.draft.title
+    backend.save_error = None
+    await store.async_edit_event(item.id, first.id, replace(draft(), title="Changed"))
+    assert store.get_activity(item.id)["title"] == "Changed"
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_activity(item.id)["title"] == "Changed"
 
 
 async def test_active_activity_survives_completed_history_pruning(monkeypatch):
