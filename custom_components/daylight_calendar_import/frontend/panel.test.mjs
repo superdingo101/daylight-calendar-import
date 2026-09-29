@@ -9,10 +9,13 @@ class FakeNode {
     this.dataset = {};
   }
   append(...children) { this.children.push(...children); }
+  prepend(...children) { this.children.unshift(...children); }
   replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
   querySelector(tag) { return this.querySelectorAll(tag)[0] || null; }
   querySelectorAll(tag) { return [this, ...this.children.flatMap(child => child.querySelectorAll(tag))].filter(node => node.tag === tag); }
+  get elements() { return {namedItem: name => this.querySelectorAll("input").concat(this.querySelectorAll("textarea"))
+    .find(node => node.name === name)}; }
   focus() { globalThis.focusedNode = this; }
   addEventListener(name, callback) { this[name] = callback; }
   attachShadow() { this.shadowRoot = new FakeNode("shadow"); return this.shadowRoot; }
@@ -110,4 +113,39 @@ test("opens detail, renders source and events as text, and returns to inbox", as
   await flush();
   assert.equal(find(panel._content, "h2").children[0].textContent, "Picnic");
   assert.equal(globalThis.focusedNode.textContent, "Picnic");
+});
+
+test("editor preserves long meeting descriptions and retains a stale edit on failure", async () => {
+  const panel = new DaylightImportPanel();
+  const description = `Zoom: https://zoom.us/j/123 passcode abc ${"bring cupcakes ".repeat(900)}`;
+  const event = {id: "event", title: "Meeting", start: "2026-10-01T10:00:00-04:00",
+    end: "2026-10-01T11:00:00-04:00", all_day: false, status: "pending",
+    calendar_entity: "calendar.legacy", confidence: 0.8, description};
+  const requests = [];
+  let stale = true;
+  panel.hass = {callWS: async request => {
+    requests.push(request);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one",
+      default_calendar: "calendar.family", events: [event]}}};
+    if (stale) throw new Error("Event changed since it was loaded; refresh before editing");
+    return {response: {pending_id: "one", event: {...event, ...request.service_data.event}}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  const edit = find(panel._content, "section").querySelector("button");
+  edit.click();
+  const form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("description").value, description);
+  assert.equal(form.elements.namedItem("start").value, event.start);
+  assert.equal(form.querySelectorAll("select").length, 0);
+  await panel.saveEdit(event, form);
+  assert.match(find(form, "p").textContent, /refresh before editing/);
+  assert.equal(panel._editingId, "event");
+  assert.deepEqual(requests.at(-1).service_data.expected_event, event);
+  assert.equal(Object.hasOwn(requests.at(-1).service_data, "calendar_entity"), false);
+  stale = false;
+  await panel.saveEdit(event, form);
+  assert.equal(panel._editingId, null);
+  assert.equal(panel._detail.events[0].description, description);
 });
