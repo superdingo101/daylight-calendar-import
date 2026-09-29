@@ -72,11 +72,14 @@ test("uncertain recovery requires confirmation, retains errors, and restores rev
   assert.equal(globalThis.focusedNode.attributes.role, "alert");
   assert.equal(panel._detail.events[0].status, "write_uncertain");
   fail = false;
+  panel._batchResults = [{id: "event", title: "Picnic", outcome: "Approval outcome unknown"}];
+  panel._batchContext = {pendingId: "import", title: "Import", action: "approve"};
   panel._content.querySelectorAll("button")
     .find(button => button.dataset.resolution === "not_created").click();
   await panel.runResolution(uncertain, "not_created");
   assert.equal(panel._detail.events[0].status, "pending");
   assert.equal(panel._decisionError, null);
+  assert.deepEqual(panel._batchResults, []);
   assert.deepEqual(calls.filter(call => call.service === "resolve_pending_event")
     .map(call => call.service_data.resolution), ["not_created", "not_created"]);
 });
@@ -103,6 +106,7 @@ test("confirmed recovery that cannot reload reports its saved outcome", async ()
   assert.equal(saved, true);
   assert.match(panel._status, /Recovery choice saved, but the view could not reload/);
   assert.equal(panel._resolution, null);
+  assert.equal(panel._selectedId, null);
   assert.equal(globalThis.focusedNode, panel._refreshButton);
 });
 
