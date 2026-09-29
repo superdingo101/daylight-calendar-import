@@ -410,7 +410,9 @@ async def test_decisions_reject_stale_event_without_side_effects(monkeypatch):
     assert await store.async_reject_event(
         item.id, original.id, expected_event=edited,
     )
-    next_item = (await store.async_add(source_text="other", events=[draft(True)])).pending
+    next_item = (await store.async_add(
+        source_text="other", events=[replace(second_draft(), title="Another event")],
+    )).pending
     assert next_item is not None
     next_event = next_item.events[0]
     processed = []
