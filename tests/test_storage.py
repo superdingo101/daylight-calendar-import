@@ -254,6 +254,8 @@ async def test_activity_is_bounded_and_storage_failure_keeps_previous_state(monk
     monkeypatch.setattr(storage_module, "ACTIVITY_LIMIT", 1)
     second = (await store.async_add(source_text="second", events=[second_draft()])).pending
     assert second is not None
+    assert [row["id"] for row in store.list_activity()] == [second.id, first.id]
+    assert await store.async_reject_event(second.id, second.events[0].id)
     assert [row["id"] for row in store.list_activity()] == [second.id]
     assert store.get_activity(first.id) is None
     monkeypatch.setattr(storage_module, "ACTIVITY_TRANSITIONS_PER_IMPORT", 1)
