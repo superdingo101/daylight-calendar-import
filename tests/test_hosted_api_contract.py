@@ -10,7 +10,10 @@ from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
 
-ROOT = Path(__file__).parents[1]
+ROOT = Path(__file__).resolve().parents[1]
+if not (ROOT / "schemas").is_dir():
+    ROOT = ROOT.parent
+
 SCHEMA_DIR = ROOT / "schemas" / "hosted" / "v1"
 FIXTURE_DIR = ROOT / "tests" / "fixtures" / "hosted" / "v1"
 
