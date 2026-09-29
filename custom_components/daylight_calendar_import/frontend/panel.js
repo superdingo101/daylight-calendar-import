@@ -240,7 +240,7 @@ export class DaylightImportPanel extends HTMLElement {
     for (const button of this._content.querySelectorAll("button")) button.disabled = true;
     let saved = false;
     try {
-      await resolveEvent(this._hass, pendingId, event.id, resolution);
+      await resolveEvent(this._hass, pendingId, event, resolution);
       saved = true;
       if (generation !== this._generation) return;
       this._resolution = null;
@@ -254,6 +254,8 @@ export class DaylightImportPanel extends HTMLElement {
       }
       if (generation !== this._generation) return;
       this._status = "ready";
+      this._batchResults = [];
+      this._batchContext = null;
       this.render();
       this._announcement.replaceChildren(element("span", "Recovery choice saved"));
       (Array.from(this._content.querySelectorAll("button"))
@@ -266,6 +268,9 @@ export class DaylightImportPanel extends HTMLElement {
       if (saved) {
         this._resolution = null;
         this._detail = null;
+        this._selectedId = null;
+        this._batchResults = [];
+        this._batchContext = null;
         this._status = `Recovery choice saved, but the view could not reload: ${reason}. Refresh to see the current state.`;
         this.render();
         this._refreshButton.focus();
