@@ -466,7 +466,8 @@ class PendingImportStore:
             return True
 
     async def async_resolve_uncertain(
-        self, pending_id: str, event_id: str, resolution: str
+        self, pending_id: str, event_id: str, resolution: str,
+        expected_event: PendingEvent | None = None,
     ) -> bool:
         """Apply an explicit user-confirmed outcome to one uncertain write."""
         if resolution not in ("created", "not_created", "discard"):
@@ -478,6 +479,8 @@ class PendingImportStore:
             event = next((item for item in pending.events if item.id == event_id), None)
             if event is None:
                 return False
+            if expected_event is not None and event != expected_event:
+                raise PendingEventResolutionError("Event changed since it was loaded; refresh before resolving")
             if event.status != "write_uncertain":
                 raise PendingEventResolutionError("Event has no uncertain calendar write")
 
