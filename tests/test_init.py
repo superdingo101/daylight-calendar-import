@@ -22,6 +22,7 @@ from custom_components.daylight_calendar_import import (
     _async_check_entity_control_permission,
     _async_create_calendar_event,
     _async_parse_source,
+    _expected_event,
     _parse_for_entry,
     async_remove_entry,
     async_setup_entry,
@@ -573,7 +574,14 @@ async def test_event_decisions_validate_and_forward_optional_snapshot(monkeypatc
         item.id, selected.id, expected_event=selected,
     )
     assert (await approve(call))["approved"] is True
-    assert store.async_approve_event.await_args.kwargs["expected_event"] == selected
+    assert store.async_approve_event.await_args.args[:2] == (item.id, selected.id)
+    assert callable(store.async_approve_event.await_args.args[2])
+    assert store.async_approve_event.await_args.kwargs == {"expected_event": selected}
+
+    routed = {**selected.as_service_dict(), CONF_CALENDAR_ENTITY: "calendar.work"}
+    decoded = _expected_event(routed, selected.id)
+    assert decoded is not None and decoded.calendar_entity == "calendar.work"
+    assert _expected_event(None, selected.id) is None
 
     for invalid in ({**selected.as_service_dict(), "id": "other"},
                     {**selected.as_service_dict(), "status": "write_uncertain"},
@@ -582,6 +590,9 @@ async def test_event_decisions_validate_and_forward_optional_snapshot(monkeypatc
         for handler in (reject, approve):
             with pytest.raises(ServiceValidationError):
                 await handler(call)
+    with pytest.raises(PendingEventEditError) as mismatch:
+        _expected_event({**selected.as_service_dict(), "id": "other"}, selected.id)
+    assert str(mismatch.value) == "Event changed since it was loaded; refresh before deciding"
     call.data["expected_event"] = selected.as_service_dict()
     for handler, method in ((reject, store.async_reject_event),
                             (approve, store.async_approve_event)):
