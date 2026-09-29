@@ -173,6 +173,57 @@ async def test_review_metadata_survives_edit_reject_checkpoint_and_restart(monke
             restarted.get(item.id).warnings) == metadata[:3]
 
 
+async def test_activity_survives_completion_failure_and_restart(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(source_text="private source", events=[draft()],
+                                  source_kind="pdf", source_title="schedule.pdf")).pending
+    assert item is not None
+    assert store.list_activity()[0]["status"] == "review_ready"
+    assert "private source" not in str(store.list_activity())
+
+    async def failed(_event):
+        raise RuntimeError("unconfirmed")
+
+    with pytest.raises(RuntimeError, match="unconfirmed"):
+        await store.async_approve_event(item.id, item.events[0].id, failed)
+    assert [row["type"] for row in store.get_activity(item.id)["transitions"]] == [
+        "review_ready", "calendar_write_started", "calendar_write_uncertain",
+    ]
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_activity(item.id)["status"] == "calendar_write_uncertain"
+    assert await restarted.async_resolve_uncertain(item.id, item.events[0].id, "created")
+    assert restarted.get(item.id) is None
+    assert restarted.get_activity(item.id)["status"] == "calendar_created"
+
+
+async def test_activity_is_bounded_and_storage_failure_keeps_previous_state(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    first = (await store.async_add(source_text="first", events=[draft()])).pending
+    assert first is not None
+    backend.save_error = RuntimeError("disk full")
+    with pytest.raises(RuntimeError, match="disk full"):
+        await store.async_reject_event(first.id, first.events[0].id)
+    assert store.get_activity(first.id)["status"] == "review_ready"
+    backend.save_error = None
+    assert await store.async_reject_event(first.id, first.events[0].id)
+    assert store.get_activity(first.id)["status"] == "event_rejected"
+    assert store.list() == ()
+    assert len(store._transition(first, "review_ready")) == 1
+    monkeypatch.setattr(storage_module, "ACTIVITY_LIMIT", 1)
+    second = (await store.async_add(source_text="second", events=[second_draft()])).pending
+    assert second is not None
+    assert [row["id"] for row in store.list_activity()] == [second.id]
+    assert store.get_activity(first.id) is None
+    monkeypatch.setattr(storage_module, "ACTIVITY_TRANSITIONS_PER_IMPORT", 1)
+    assert len(store._transition(second, "event_rejected")[0]["transitions"]) == 1
+
+
 async def test_duplicate_count_is_persisted_with_review_metadata(monkeypatch):
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
@@ -456,7 +507,7 @@ async def test_reject_last_event_without_source_fingerprint(monkeypatch):
     item = (await store.async_add(source_text="manual", events=[draft()])).pending
     assert item is not None
     assert await store.async_reject_event(item.id, item.events[0].id)
-    assert backend.saved[-1] == {
+    assert {key: value for key, value in backend.saved[-1].items() if key != "activity"} == {
         "items": [], "seen_event_fingerprints": [event_fingerprint(draft())],
     }
 
@@ -647,7 +698,7 @@ async def test_resolve_discard_is_handled_and_reject_all_requires_resolution(mon
         await store.async_remove(item.id)
     assert await store.async_resolve_uncertain(item.id, event.id, "discard")
     assert store.get(item.id) is None
-    assert backend.saved[-1] == {
+    assert {key: value for key, value in backend.saved[-1].items() if key != "activity"} == {
         "items": [], "seen_event_fingerprints": [event_fingerprint(draft())],
     }
     duplicate = await store.async_add(source_text="same", events=[draft()])
@@ -696,7 +747,7 @@ async def test_store_adds_rejects_and_remembers_source_and_event(monkeypatch):
     assert pending.source_fingerprint == source_fingerprint("message-1")
     assert store.get(pending.id) == pending
     assert store.is_source_duplicate("message-1") is True
-    assert backend.saved == [{"items": [pending.as_dict()]}]
+    assert [{key: value for key, value in row.items() if key != "activity"} for row in backend.saved] == [{"items": [pending.as_dict()]}]
 
     save_count = len(backend.saved)
     assert await store.async_remove("missing") is False
@@ -705,7 +756,7 @@ async def test_store_adds_rejects_and_remembers_source_and_event(monkeypatch):
     assert await store.async_remove(pending.id) is True
     assert store.get(pending.id) is None
     assert store.list() == ()
-    assert backend.saved[-1] == {
+    assert {key: value for key, value in backend.saved[-1].items() if key != "activity"} == {
         "items": [],
         "seen_source_fingerprints": [source_fingerprint("message-1")],
         "seen_event_fingerprints": [event_fingerprint(draft())],
@@ -758,7 +809,7 @@ async def test_store_marks_source_seen_when_no_new_events(monkeypatch):
     assert empty.pending is None
     assert empty.duplicate_source is False
     assert empty.duplicate_events == 0
-    assert backend.saved[-1] == {
+    assert {key: value for key, value in backend.saved[-1].items() if key != "activity"} == {
         "items": [],
         "seen_source_fingerprints": [source_fingerprint("empty-source")],
     }
@@ -872,7 +923,7 @@ async def test_store_processes_events_and_remembers_deduplication(monkeypatch):
     assert result == existing
     assert processed == list(existing.events)
     assert store.list() == ()
-    assert backend.saved == [
+    assert [{key: value for key, value in row.items() if key != "activity"} for row in backend.saved] == [
         {"items": [first_in_flight.as_dict()]},
         {
             "items": [remaining.as_dict()],
