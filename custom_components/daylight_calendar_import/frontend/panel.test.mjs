@@ -155,6 +155,7 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   await panel.saveEdit(event, activeForm);
   assert.match(find(activeForm, "p").textContent, /refresh before editing/);
   assert.equal(globalThis.focusedNode, find(activeForm, "p"));
+  assert.equal(panel._content.querySelectorAll("button")[0].disabled, true);
   assert.equal(panel._editingId, "event");
   assert.deepEqual(requests.at(-1).service_data.expected_event, event);
   assert.equal(Object.hasOwn(requests.at(-1).service_data, "calendar_entity"), false);
