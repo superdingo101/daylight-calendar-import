@@ -58,6 +58,24 @@ export async function decideEvent(hass, pendingId, event, action) {
   return response;
 }
 
+export async function resolveEvent(hass, pendingId, eventId, resolution) {
+  if (!["created", "not_created", "discard"].includes(resolution)) {
+    throw new Error("Invalid recovery choice");
+  }
+  const result = await hass.callWS({
+    type: "call_service", domain: "daylight_calendar_import",
+    service: "resolve_pending_event",
+    service_data: {pending_id: pendingId, event_id: eventId, resolution},
+    return_response: true,
+  });
+  if (result?.response?.pending_id !== pendingId ||
+      result?.response?.event_id !== eventId ||
+      result?.response?.resolution !== resolution) {
+    throw new Error("Recovery returned an unexpected response. Refresh before trying again.");
+  }
+  return result.response;
+}
+
 export function summarizeImport(item, locale) {
   const date = new Date(item.created_at);
   return {
