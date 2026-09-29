@@ -118,7 +118,7 @@ test("opens detail, renders source and events as text, and returns to inbox", as
 test("editor preserves long meeting descriptions and retains a stale edit on failure", async () => {
   const panel = new DaylightImportPanel();
   const description = `Zoom: https://zoom.us/j/123 passcode abc ${"bring cupcakes ".repeat(900)}`;
-  const event = {id: "event", title: "Meeting", start: "2026-10-01T10:00:00-04:00",
+  let event = {id: "event", title: "Meeting", start: "2026-10-01T10:00:00-04:00",
     end: "2026-10-01T11:00:00-04:00", all_day: false, status: "pending",
     calendar_entity: "calendar.legacy", confidence: 0.8, description};
   const requests = [];
@@ -128,8 +128,9 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
     if (request.service === "list_pending") return {response: {imports: []}};
     if (request.service === "get_pending") return {response: {pending: {id: "one",
       default_calendar: "calendar.family", events: [event]}}};
-    if (stale) throw new Error("Event changed since it was loaded; refresh before editing");
-    return {response: {pending_id: "one", event: {...event, ...request.service_data.event}}};
+    if (stale) throw {message: "Event changed since it was loaded; refresh before editing"};
+    event = {...event, ...request.service_data.event};
+    return {response: {pending_id: "one", event}};
   }};
   await flush();
   await panel.showImport("one");
@@ -139,13 +140,28 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   assert.equal(form.elements.namedItem("description").value, description);
   assert.equal(form.elements.namedItem("start").value, event.start);
   assert.equal(form.querySelectorAll("select").length, 0);
-  await panel.saveEdit(event, form);
-  assert.match(find(form, "p").textContent, /refresh before editing/);
+  const cancel = form.querySelectorAll("button")[1];
+  cancel.click();
+  assert.equal(globalThis.focusedNode.dataset.eventId, "event");
+  globalThis.focusedNode.click();
+  const activeForm = find(panel._content, "form");
+  await panel.saveEdit(event, activeForm);
+  assert.match(find(activeForm, "p").textContent, /refresh before editing/);
   assert.equal(panel._editingId, "event");
   assert.deepEqual(requests.at(-1).service_data.expected_event, event);
   assert.equal(Object.hasOwn(requests.at(-1).service_data, "calendar_entity"), false);
   stale = false;
-  await panel.saveEdit(event, form);
+  let release;
+  const realCallWS = panel._hass.callWS;
+  panel._hass.callWS = request => request.service === "edit_pending_event" ?
+    new Promise(resolve => {release = () => resolve(realCallWS(request));}) : realCallWS(request);
+  const saving = panel.saveEdit(event, activeForm);
+  assert.equal(activeForm.elements.namedItem("description").disabled, true);
+  assert.equal(panel._refreshButton.disabled, true);
+  release();
+  await saving;
   assert.equal(panel._editingId, null);
   assert.equal(panel._detail.events[0].description, description);
+  assert.equal(requests.at(-1).service, "get_pending");
+  assert.equal(globalThis.focusedNode.dataset.eventId, "event");
 });
