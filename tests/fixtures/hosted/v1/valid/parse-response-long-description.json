@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "events": [
+    {
+      "draft": {
+        "title": "Class party",
+        "start": "2026-10-30T13:00:00-07:00",
+        "end": "2026-10-30T15:00:00-07:00",
+        "all_day": false,
+        "location": "Room 12",
+        "description": "Bring 24 cupcakes: 8 red, 8 blue, and 8 yellow, with equal numbers of vanilla and chocolate. Please label allergen-containing items and keep nut-free items separately packaged. Bring two age-appropriate games that can be played in groups of four, plus pencils and name tags for each child. Parents should arrive 20 minutes early for setup, check in at the front office, and use the east parking lot. The class will rotate through three activity stations, so supplies should be grouped into three clearly labeled bins. If weather prevents the outdoor relay, the backup activity is the gym scavenger hunt; bring clean indoor shoes. Send the teacher a final attendee count the evening before the event and note any accessibility accommodations. Bring 24 cupcakes: 8 red, 8 blue, and 8 yellow, with equal numbers of vanilla and chocolate. Please label allergen-containing items and keep nut-free items separately packaged. Bring two age-appropriate games that can be played in groups of four, plus pencils and name tags for each child. Parents should arrive 20 minutes early for setup, check in at the front office, and use the east parking lot. The class will rotate through three activity stations, so supplies should be grouped into three clearly labeled bins. If weather prevents the outdoor relay, the backup activity is the gym scavenger hunt; bring clean indoor shoes. Send the teacher a final attendee count the evening before the event and note any accessibility accommodations. Bring 24 cupcakes: 8 red, 8 blue, and 8 yellow, with equal numbers of vanilla and chocolate. Please label allergen-containing items and keep nut-free items separately packaged. Bring two age-appropriate games that can be played in groups of four, plus pencils and name tags for each child. Parents should arrive 20 minutes early for setup, check in at the front office, and use the east parking lot. The class will rotate through three activity stations, so supplies should be grouped into three clearly labeled bins. If weather prevents the outdoor relay, the backup activity is the gym scavenger hunt; bring clean indoor shoes. Send the teacher a final attendee count the evening before the event and note any accessibility accommodations. ",
+        "confidence": 0.96
+      },
+      "warnings": []
+    }
+  ],
+  "rejected": [],
+  "warnings": [],
+  "provider_metadata": {
+    "model_family": "fixture"
+  }
+}

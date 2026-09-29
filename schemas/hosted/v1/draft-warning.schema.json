@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/draft-warning.schema.json",
+  "title": "Daylight Hosted API v1 DraftWarning",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code", "message", "field"],
+  "properties": {
+    "code": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z][a-z0-9_]*$"},
+    "message": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "field": {"type": ["string", "null"], "minLength": 1, "maxLength": 128}
+  }
+}

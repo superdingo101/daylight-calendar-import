@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "error": {
+    "code": "provider_timeout",
+    "message": "The provider timed out."
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "source": {
+    "id": "source-image-1",
+    "kind": "image",
+    "received_at": "2026-09-28T17:00:00-07:00",
+    "title": "Soccer flyer",
+    "text": "Please extract the schedule from the attached flyer.",
+    "attachments": [
+      {
+        "id": "flyer",
+        "filename": "soccer.png",
+        "media_type": "image/png",
+        "size_bytes": 245678,
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    ],
+    "metadata": {},
+    "upstream_source_id": null
+  },
+  "reference_datetime": "2026-09-28T17:00:00-07:00",
+  "time_zone": "America/Los_Angeles"
+}

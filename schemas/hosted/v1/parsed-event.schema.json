@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/parsed-event.schema.json",
+  "title": "Daylight Hosted API v1 ParsedEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["draft", "warnings"],
+  "properties": {
+    "draft": {"$ref": "https://docs.daylightcalendar.com/schemas/hosted/v1/event-draft.schema.json"},
+    "warnings": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "https://docs.daylightcalendar.com/schemas/hosted/v1/draft-warning.schema.json"}
+    }
+  }
+}
