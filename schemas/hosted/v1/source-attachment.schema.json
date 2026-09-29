@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/source-attachment.schema.json",
+  "title": "Daylight Hosted API v1 SourceAttachment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "media_type", "size_bytes"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "filename": {"type": ["string", "null"], "minLength": 1, "maxLength": 512},
+    "media_type": {"type": "string", "enum": ["image/jpeg", "image/png", "image/webp", "application/pdf"]},
+    "size_bytes": {"type": "integer", "minimum": 1, "maximum": 10485760},
+    "sha256": {"type": ["string", "null"], "pattern": "^[A-Fa-f0-9]{64}$"}
+  }
+}
