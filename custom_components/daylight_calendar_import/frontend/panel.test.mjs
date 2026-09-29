@@ -9,10 +9,13 @@ class FakeNode {
     this.dataset = {};
   }
   append(...children) { this.children.push(...children); }
+  prepend(...children) { this.children.unshift(...children); }
   replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
   querySelector(tag) { return this.querySelectorAll(tag)[0] || null; }
   querySelectorAll(tag) { return [this, ...this.children.flatMap(child => child.querySelectorAll(tag))].filter(node => node.tag === tag); }
+  get elements() { return {namedItem: name => this.querySelectorAll("input").concat(this.querySelectorAll("textarea"))
+    .find(node => node.name === name)}; }
   focus() { globalThis.focusedNode = this; }
   addEventListener(name, callback) { this[name] = callback; }
   attachShadow() { this.shadowRoot = new FakeNode("shadow"); return this.shadowRoot; }
@@ -110,4 +113,106 @@ test("opens detail, renders source and events as text, and returns to inbox", as
   await flush();
   assert.equal(find(panel._content, "h2").children[0].textContent, "Picnic");
   assert.equal(globalThis.focusedNode.textContent, "Picnic");
+});
+
+test("editor preserves long meeting descriptions and retains a stale edit on failure", async () => {
+  const panel = new DaylightImportPanel();
+  const description = `Zoom: https://zoom.us/j/123 passcode abc ${"bring cupcakes ".repeat(900)}`;
+  let event = {id: "event", title: "Meeting", start: "2026-10-01T10:00:00-04:00",
+    end: "2026-10-01T11:00:00-04:00", all_day: false, status: "pending",
+    calendar_entity: "calendar.legacy", confidence: 0.8, description};
+  const sibling = {...event, id: "sibling", title: "Other meeting"};
+  const requests = [];
+  let stale = true;
+  panel.hass = {callWS: async request => {
+    requests.push(request);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one",
+      default_calendar: "calendar.family", events: [event, sibling]}}};
+    if (stale) throw {message: "Event changed since it was loaded; refresh before editing"};
+    event = {...event, ...request.service_data.event};
+    return {response: {pending_id: "one", event}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  const siblingEdit = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "sibling");
+  const edit = find(panel._content, "section").querySelector("button");
+  edit.click();
+  const form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("description").value, description);
+  assert.equal(form.elements.namedItem("start").value, event.start);
+  assert.equal(form.querySelectorAll("select").length, 0);
+  assert.equal(panel._content.querySelectorAll("button")[0].disabled, true);
+  assert.equal(panel._content.querySelectorAll("button").some(button => button.dataset.eventId === "sibling"), false);
+  siblingEdit.click();
+  assert.equal(panel._editingId, "event");
+  const cancel = form.querySelectorAll("button")[1];
+  cancel.click();
+  assert.equal(globalThis.focusedNode.dataset.eventId, "event");
+  globalThis.focusedNode.click();
+  const activeForm = find(panel._content, "form");
+  await panel.saveEdit(event, activeForm);
+  assert.match(find(activeForm, "p").textContent, /refresh before editing/);
+  assert.equal(globalThis.focusedNode, find(activeForm, "p"));
+  assert.equal(panel._content.querySelectorAll("button")[0].disabled, true);
+  assert.equal(panel._editingId, "event");
+  assert.deepEqual(requests.at(-1).service_data.expected_event, event);
+  assert.equal(Object.hasOwn(requests.at(-1).service_data, "calendar_entity"), false);
+  stale = false;
+  let release;
+  const realCallWS = panel._hass.callWS;
+  panel._hass.callWS = request => request.service === "edit_pending_event" ?
+    new Promise(resolve => {release = () => resolve(realCallWS(request));}) : realCallWS(request);
+  const saving = panel.saveEdit(event, activeForm);
+  assert.equal(activeForm.elements.namedItem("description").disabled, true);
+  assert.equal(panel._refreshButton.disabled, true);
+  siblingEdit.click();
+  assert.equal(panel._editingId, "event");
+  release();
+  await saving;
+  assert.equal(panel._editingId, null);
+  assert.equal(panel._detail.events[0].description, description);
+  assert.equal(requests.at(-1).service, "get_pending");
+  assert.equal(globalThis.focusedNode.dataset.eventId, "event");
+});
+
+test("focus falls back to the detail heading if the saved event disappears", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Meeting", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  let saved = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one",
+      events: saved ? [{...event, id: "sibling"}] : [event]}}};
+    saved = true;
+    return {response: {pending_id: "one", event}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  find(panel._content, "section").querySelector("button").click();
+  await panel.saveEdit(event, find(panel._content, "form"));
+  assert.equal(globalThis.focusedNode.tag, "h2");
+});
+
+test("a successful save with a failed detail reload offers refresh and restores focus", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Meeting", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  let reads = 0;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") {
+      if (++reads === 2) throw {message: "Offline"};
+      return {response: {pending: {id: "one", events: [event]}}};
+    }
+    return {response: {pending_id: "one", event}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  find(panel._content, "section").querySelector("button").click();
+  await panel.saveEdit(event, find(panel._content, "form"));
+  assert.match(find(panel._content, "p").textContent, /saved, but the detail could not be reloaded: Offline/);
+  assert.equal(globalThis.focusedNode.textContent, "Back to inbox");
 });
