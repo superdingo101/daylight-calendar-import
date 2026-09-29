@@ -396,14 +396,16 @@ async def test_decisions_reject_stale_event_without_side_effects(monkeypatch):
     async def processor(_event):
         pytest.fail("stale approval must not write to the calendar")
 
-    with pytest.raises(PendingEventEditError, match="refresh before deciding"):
+    with pytest.raises(PendingEventEditError) as approval_error:
         await store.async_approve_event(
             item.id, original.id, processor, expected_event=original,
         )
-    with pytest.raises(PendingEventEditError, match="refresh before deciding"):
+    assert str(approval_error.value) == "Event changed since it was loaded; refresh before deciding"
+    with pytest.raises(PendingEventEditError) as rejection_error:
         await store.async_reject_event(
             item.id, original.id, expected_event=original,
         )
+    assert str(rejection_error.value) == "Event changed since it was loaded; refresh before deciding"
     assert len(backend.saved) == saved_count
     edited = store.get_event(item.id, original.id)
     assert edited is not None
