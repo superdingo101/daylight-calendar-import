@@ -180,7 +180,19 @@ async def test_activity_survives_completion_failure_and_restart(monkeypatch):
     item = (await store.async_add(source_text="private source", events=[draft()],
                                   source_kind="pdf", source_title="schedule.pdf")).pending
     assert item is not None
-    assert store.list_activity()[0]["status"] == "review_ready"
+    assert store.list_activity()[0] == {
+        "id": item.id, "created_at": item.created_at, "source_kind": "pdf",
+        "source_title": "schedule.pdf", "title": "Practice", "status": "review_ready",
+        "created_count": 0, "rejected_count": 0,
+        "transitions": [{"type": "review_ready", "at": store.list_activity()[0]["transitions"][0]["at"],
+                         "event_id": None}],
+    }
+    assert datetime.fromisoformat(store.list_activity()[0]["transitions"][0]["at"]).utcoffset().total_seconds() == 0
+    assert backend.saved[-1]["activity"] == list(store.list_activity())
+    store.get_activity(item.id)["transitions"].clear()
+    store.list_activity()[0]["status"] = "tampered"
+    assert store.get_activity(item.id)["status"] == "review_ready"
+    assert len(store.get_activity(item.id)["transitions"]) == 1
     assert "private source" not in str(store.list_activity())
 
     async def failed(_event):
@@ -191,6 +203,9 @@ async def test_activity_survives_completion_failure_and_restart(monkeypatch):
     assert [row["type"] for row in store.get_activity(item.id)["transitions"]] == [
         "review_ready", "calendar_write_started", "calendar_write_uncertain",
     ]
+    assert backend.saved[-2]["activity"][0]["status"] == "calendar_write_uncertain"
+    assert backend.saved[-2]["activity"][0]["transitions"][-1]["event_id"] == item.events[0].id
+    assert backend.saved[-1]["activity"] == list(reversed(store.list_activity()))
     backend.load_result = backend.saved[-1]
     restarted = make_store(monkeypatch, backend)
     await restarted.async_load()
@@ -198,6 +213,23 @@ async def test_activity_survives_completion_failure_and_restart(monkeypatch):
     assert await restarted.async_resolve_uncertain(item.id, item.events[0].id, "created")
     assert restarted.get(item.id) is None
     assert restarted.get_activity(item.id)["status"] == "calendar_created"
+    assert backend.saved[-1]["activity"] == list(reversed(restarted.list_activity()))
+
+
+async def test_failed_uncertainty_logging_preserves_calendar_exception(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(source_text="source", events=[draft()])).pending
+    assert item is not None
+    async def processor(_event):
+        backend.save_error = RuntimeError("activity disk failed")
+        raise ConnectionError("calendar response lost")
+    with pytest.raises(ConnectionError, match="calendar response lost"):
+        await store.async_approve_event(item.id, item.events[0].id, processor)
+    assert store.get_event(item.id, item.events[0].id).status == "write_uncertain"
+    assert store.get_activity(item.id)["status"] == "calendar_write_uncertain"
+    assert store.get_activity(item.id)["transitions"][-1]["type"] == "calendar_write_started"
 
 
 async def test_activity_is_bounded_and_storage_failure_keeps_previous_state(monkeypatch):
@@ -213,6 +245,7 @@ async def test_activity_is_bounded_and_storage_failure_keeps_previous_state(monk
     backend.save_error = None
     assert await store.async_reject_event(first.id, first.events[0].id)
     assert store.get_activity(first.id)["status"] == "event_rejected"
+    assert backend.saved[-1]["activity"] == list(reversed(store.list_activity()))
     assert store.list() == ()
     assert len(store._transition(first, "review_ready")) == 1
     monkeypatch.setattr(storage_module, "ACTIVITY_LIMIT", 1)
@@ -222,6 +255,50 @@ async def test_activity_is_bounded_and_storage_failure_keeps_previous_state(monk
     assert store.get_activity(first.id) is None
     monkeypatch.setattr(storage_module, "ACTIVITY_TRANSITIONS_PER_IMPORT", 1)
     assert len(store._transition(second, "event_rejected")[0]["transitions"]) == 1
+
+
+async def test_mixed_event_activity_retains_review_status_and_atomic_checkpoints(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(source_text="school", events=[draft(), second_draft()])).pending
+    assert item is not None
+    first, second = item.events
+
+    async def created(_event):
+        assert backend.saved[-1]["activity"][-1]["transitions"][-1]["type"] == "calendar_write_started"
+        assert backend.saved[-1]["activity"][-1]["status"] == "calendar_write_uncertain"
+
+    assert await store.async_approve_event(item.id, first.id, created) == first
+    record = store.get_activity(item.id)
+    assert record["status"] == "review_ready"
+    assert record["transitions"][-1] == {
+        "type": "calendar_created", "at": record["transitions"][-1]["at"], "event_id": first.id,
+    }
+    assert backend.saved[-1]["activity"][-1] == record
+    assert await store.async_reject_event(item.id, second.id)
+    assert store.get_activity(item.id)["status"] == "mixed"
+    assert (store.get_activity(item.id)["created_count"],
+            store.get_activity(item.id)["rejected_count"]) == (1, 1)
+    assert store.get_activity(item.id)["transitions"][-1]["event_id"] == second.id
+    assert backend.saved[-1]["activity"][-1] == store.get_activity(item.id)
+
+    other = (await store.async_add(source_text="new", events=[draft(), second_draft()])).pending
+    # Previously handled fingerprints prevent the same drafts from being requeued.
+    assert other is None
+
+    reverse = make_store(monkeypatch, FakeStoreBackend())
+    await reverse.async_load()
+    item = (await reverse.async_add(source_text="reverse", events=[draft(), second_draft()])).pending
+    assert item is not None
+    assert await reverse.async_reject_event(item.id, item.events[0].id)
+    assert reverse.get_activity(item.id)["status"] == "review_ready"
+    async def noop(_event):
+        pass
+    assert await reverse.async_approve_event(item.id, item.events[1].id, noop) == item.events[1]
+    assert reverse.get_activity(item.id)["status"] == "mixed"
+    assert (reverse.get_activity(item.id)["created_count"],
+            reverse.get_activity(item.id)["rejected_count"]) == (1, 1)
 
 
 async def test_duplicate_count_is_persisted_with_review_metadata(monkeypatch):
