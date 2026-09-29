@@ -241,6 +241,9 @@ test("approval requires explicit confirmation and returns to the inbox", async (
     .find(button => button.textContent === "Approve Picnic");
   approve.click();
   assert.equal(calls.filter(call => call.service === "approve_pending_event").length, 0);
+  find(panel._content, "section").querySelectorAll("button")[1].click();
+  assert.equal(globalThis.focusedNode.dataset.action, "approve");
+  globalThis.focusedNode.click();
   const confirm = find(panel._content, "section").querySelector("button");
   assert.match(confirm.textContent, /Confirm approve/);
   await panel.runDecision(event, "approve");
@@ -248,6 +251,7 @@ test("approval requires explicit confirmation and returns to the inbox", async (
   assert.deepEqual(calls.at(-2).service_data.expected_event, event);
   assert.equal(panel._selectedId, null);
   assert.equal(find(panel._announcement, "span").textContent, "Event approved");
+  assert.equal(globalThis.focusedNode, panel._refreshButton);
 });
 
 test("rejected decision keeps the import visible with the backend error", async () => {
@@ -271,4 +275,7 @@ test("rejected decision keeps the import visible with the backend error", async 
   assert.equal(reads, 2);
   assert.match(find(panel._content, "p").textContent, /refresh before deciding/);
   assert.equal(globalThis.focusedNode.attributes.role, "alert");
+  find(panel._content, "section").querySelectorAll("button")
+    .find(button => button.textContent === "Edit Picnic").click();
+  assert.equal(panel._decisionError, null);
 });
