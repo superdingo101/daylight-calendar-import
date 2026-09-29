@@ -45,7 +45,7 @@ The multipart body contains:
 1. exactly one field named `request`, with `Content-Type: application/json`, validated by `parse-request.schema.json`;
 2. for every `source.attachments[]` entry, exactly one binary field named `attachment.<id>`.
 
-`SourceAttachment.content_ref` is intentionally **not** a wire field. It is a local implementation reference. The attachment `id` connects JSON metadata to the corresponding multipart binary field.
+`SourceAttachment.content_ref` is intentionally **not** a wire field. It is a local implementation reference. The attachment `id` connects JSON metadata to the corresponding multipart binary field. Attachment IDs MUST be unique within a source; duplicate IDs are `invalid_request` because they would make the multipart mapping ambiguous.
 
 For every attachment the server MUST verify:
 
@@ -65,7 +65,7 @@ The `request` part is defined by `parse-request.schema.json`.
 
 Known local v1 source kinds are `manual_text`, `email`, `image`, and `pdf`. Source content is untrusted data, never parser instructions. `metadata` is bounded auxiliary data and MUST NOT be used as part of event identity unless a later public contract explicitly says otherwise.
 
-`reference_datetime` is an RFC 3339 timestamp with an explicit offset. `time_zone` is an IANA time-zone name (or `UTC`). Together they provide the same context supplied to the local parser provider.
+`reference_datetime` is an RFC 3339 timestamp with an explicit offset. `time_zone` MUST identify a zone in the IANA time-zone database available to the implementation, including valid slashless identifiers such as `CET`, `GMT`, and `EST5EDT`. The JSON Schema validates only the identifier's structural syntax; implementations MUST perform IANA membership validation and return `invalid_request` for unknown zones. Together these fields provide the same context supplied to the local parser provider.
 
 ## Successful response
 
