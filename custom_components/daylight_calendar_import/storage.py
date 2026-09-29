@@ -472,7 +472,7 @@ class PendingImportStore:
                 (event_fingerprint(event.draft) for event in pending.events),
             )
 
-            activity = self._transition(pending, "event_rejected")
+            activity = self._transition(pending, "event_rejected", remaining=())
             await self._async_save(
                 items,
                 seen_source_fingerprints=seen_sources,
