@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/parse-response.schema.json",
+  "title": "Daylight Hosted API v1 ParseResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "events", "rejected", "warnings", "provider_metadata"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "events": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"$ref": "https://docs.daylightcalendar.com/schemas/hosted/v1/parsed-event.schema.json"}
+    },
+    "rejected": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"$ref": "https://docs.daylightcalendar.com/schemas/hosted/v1/rejected-candidate.schema.json"}
+    },
+    "warnings": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {"$ref": "https://docs.daylightcalendar.com/schemas/hosted/v1/draft-warning.schema.json"}
+    },
+    "provider_metadata": {
+      "type": ["object", "null"],
+      "maxProperties": 32,
+      "propertyNames": {"maxLength": 128},
+      "additionalProperties": true
+    }
+  }
+}
