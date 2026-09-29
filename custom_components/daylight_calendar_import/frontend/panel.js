@@ -187,7 +187,6 @@ export class DaylightImportPanel extends HTMLElement {
     } finally {
       this._saving = false;
       this._refreshButton.disabled = Boolean(this._editingId);
-      for (const button of this._content.querySelectorAll("button")) button.disabled = false;
     }
   }
 
