@@ -121,13 +121,14 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   let event = {id: "event", title: "Meeting", start: "2026-10-01T10:00:00-04:00",
     end: "2026-10-01T11:00:00-04:00", all_day: false, status: "pending",
     calendar_entity: "calendar.legacy", confidence: 0.8, description};
+  const sibling = {...event, id: "sibling", title: "Other meeting"};
   const requests = [];
   let stale = true;
   panel.hass = {callWS: async request => {
     requests.push(request);
     if (request.service === "list_pending") return {response: {imports: []}};
     if (request.service === "get_pending") return {response: {pending: {id: "one",
-      default_calendar: "calendar.family", events: [event]}}};
+      default_calendar: "calendar.family", events: [event, sibling]}}};
     if (stale) throw {message: "Event changed since it was loaded; refresh before editing"};
     event = {...event, ...request.service_data.event};
     return {response: {pending_id: "one", event}};
@@ -158,6 +159,11 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   const saving = panel.saveEdit(event, activeForm);
   assert.equal(activeForm.elements.namedItem("description").disabled, true);
   assert.equal(panel._refreshButton.disabled, true);
+  const siblingEdit = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "sibling");
+  assert.equal(siblingEdit.disabled, true);
+  siblingEdit.click();
+  assert.equal(panel._editingId, "event");
   release();
   await saving;
   assert.equal(panel._editingId, null);
