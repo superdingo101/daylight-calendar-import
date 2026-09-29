@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
@@ -69,11 +70,30 @@ def _validator(name: str, schemas: dict[str, dict], registry: Registry) -> Draft
     return Draft202012Validator(schemas[name], registry=registry, format_checker=FormatChecker())
 
 
+def _validate_parse_request(
+    instance: dict, schemas: dict[str, dict], registry: Registry
+) -> None:
+    _validator("parse-request.schema.json", schemas, registry).validate(instance)
+
+    try:
+        ZoneInfo(instance["time_zone"])
+    except ZoneInfoNotFoundError as err:
+        raise ValueError("time_zone must be an IANA time-zone identifier") from err
+
+    attachment_ids = [attachment["id"] for attachment in instance["source"]["attachments"]]
+    if len(attachment_ids) != len(set(attachment_ids)):
+        raise ValueError("attachment IDs must be unique within a source")
+
+
 @pytest.mark.parametrize(("schema_name", "fixture_name"), VALID_FIXTURES)
 def test_valid_hosted_v1_fixtures(
     schema_name: str, fixture_name: str, schemas: dict[str, dict], registry: Registry
 ) -> None:
-    _validator(schema_name, schemas, registry).validate(_load(FIXTURE_DIR / "valid" / fixture_name))
+    instance = _load(FIXTURE_DIR / "valid" / fixture_name)
+    if schema_name == "parse-request.schema.json":
+        _validate_parse_request(instance, schemas, registry)
+    else:
+        _validator(schema_name, schemas, registry).validate(instance)
 
 
 @pytest.mark.parametrize(("schema_name", "fixture_name"), INVALID_FIXTURES)
@@ -103,3 +123,24 @@ def test_long_description_fixture_is_meaningfully_long(
     instance = _load(FIXTURE_DIR / "valid" / "parse-response-long-description.json")
     _validator("parse-response.schema.json", schemas, registry).validate(instance)
     assert len(instance["events"][0]["draft"]["description"]) > 1000
+
+
+@pytest.mark.parametrize("time_zone", ("CET", "GMT", "EST5EDT"))
+def test_parse_request_accepts_valid_slashless_iana_time_zones(
+    time_zone: str, schemas: dict[str, dict], registry: Registry
+) -> None:
+    instance = _load(FIXTURE_DIR / "valid" / "parse-request-text.json")
+    instance["time_zone"] = time_zone
+    _validate_parse_request(instance, schemas, registry)
+
+
+def test_parse_request_rejects_duplicate_attachment_ids(
+    schemas: dict[str, dict], registry: Registry
+) -> None:
+    instance = _load(FIXTURE_DIR / "valid" / "parse-request-image.json")
+    duplicate = dict(instance["source"]["attachments"][0])
+    duplicate["filename"] = "different-name.png"
+    instance["source"]["attachments"].append(duplicate)
+
+    with pytest.raises(ValueError, match="attachment IDs must be unique"):
+        _validate_parse_request(instance, schemas, registry)
