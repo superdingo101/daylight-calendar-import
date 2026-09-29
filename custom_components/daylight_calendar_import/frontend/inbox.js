@@ -42,6 +42,22 @@ export async function saveEvent(hass, pendingId, original, draft) {
   return result.response.event;
 }
 
+export async function decideEvent(hass, pendingId, event, action) {
+  if (action !== "approve" && action !== "reject") throw new Error("Invalid review action");
+  const result = await hass.callWS({
+    type: "call_service", domain: "daylight_calendar_import",
+    service: `${action}_pending_event`,
+    service_data: {pending_id: pendingId, event_id: event.id, expected_event: event},
+    return_response: true,
+  });
+  const response = result?.response;
+  if (response?.pending_id !== pendingId || response?.event_id !== event.id ||
+      response?.[action === "approve" ? "approved" : "rejected"] !== true) {
+    throw new Error("The review action returned an unexpected response. Refresh before trying again.");
+  }
+  return response;
+}
+
 export function summarizeImport(item, locale) {
   const date = new Date(item.created_at);
   return {
