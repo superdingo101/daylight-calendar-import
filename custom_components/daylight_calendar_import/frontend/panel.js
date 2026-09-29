@@ -55,6 +55,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._saving = false;
     this._decision = null;
     this._decisionError = null;
+    this._batchAction = null;
+    this._batchResults = [];
     const style = element("style", css);
     const main = document.createElement("main");
     const header = document.createElement("header");
@@ -63,7 +65,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton = refresh;
     refresh.type = "button";
     refresh.addEventListener("click", () => {
-      if (!this._saving && !this._editingId) void (this._selectedId ? this.showImport(this._selectedId) : this.refresh());
+      if (!this._saving && !this._editingId && !this._batchAction) void (this._selectedId ? this.showImport(this._selectedId) : this.refresh());
     });
     header.append(refresh);
     this._content = document.createElement("div");
@@ -82,7 +84,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async refresh() {
-    if (this._saving || this._editingId) return;
+    if (this._saving || this._editingId || this._batchAction) return;
     const generation = ++this._generation;
     this._status = "loading";
     this.render();
@@ -105,7 +107,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async showImport(id) {
-    if (this._saving || this._editingId) return;
+    if (this._saving || this._editingId || this._batchAction) return;
     const generation = ++this._generation;
     this._selectedId = id;
     this._detail = null;
@@ -113,6 +115,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._editError = null;
     this._decision = null;
     this._decisionError = null;
+    this._batchAction = null;
+    this._batchResults = [];
     this._status = "loading";
     this.render();
     this._content.querySelector("button")?.focus();
@@ -130,12 +134,49 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   showInbox() {
-    if (this._saving || this._editingId || this._decision) return;
+    if (this._saving || this._editingId || this._decision || this._batchAction) return;
     this._returnFocusId = this._selectedId;
     ++this._generation;
     this._selectedId = null;
     this._detail = null;
     void this.refresh();
+  }
+
+  async runBatch(action) {
+    if (this._saving || this._batchAction !== action) return;
+    const pendingId = this._selectedId;
+    const events = this._detail.events.filter(event => event.status === "pending");
+    this._saving = true;
+    this._refreshButton.disabled = true;
+    for (const button of this._content.querySelectorAll("button")) button.disabled = true;
+    const results = [];
+    for (const event of events) {
+      try {
+        await decideEvent(this._hass, pendingId, event, action);
+        results.push({title: event.title, outcome: "success"});
+      } catch (error) {
+        results.push({title: event.title, outcome: typeof error?.message === "string" ?
+          error.message : "Review action failed; check the calendar before retrying."});
+      }
+    }
+    this._batchResults = results;
+    this._batchAction = null;
+    this._saving = false;
+    try {
+      this._items = await loadInbox(this._hass);
+      if (this._items.some(item => item.id === pendingId)) {
+        this._detail = await loadImport(this._hass, pendingId);
+      } else {
+        this._selectedId = null;
+        this._detail = null;
+      }
+      this._status = "ready";
+    } catch (error) {
+      this._detail = null;
+      this._status = typeof error?.message === "string" ? error.message : "Could not reload imports after bulk review.";
+    }
+    this.render();
+    this._content.querySelector(".batch-results")?.focus();
   }
 
   async runDecision(event, action) {
@@ -280,12 +321,22 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   render() {
-    this._refreshButton.disabled = this._saving || Boolean(this._editingId || this._decision);
+    this._refreshButton.disabled = this._saving || Boolean(this._editingId || this._decision || this._batchAction);
     const content = document.createDocumentFragment();
+    if (this._batchResults.length) {
+      const summary = element("section", "", "batch-results");
+      summary.tabIndex = -1;
+      summary.setAttribute("role", "status");
+      summary.append(element("h2", "Bulk review results"));
+      for (const result of this._batchResults) {
+        summary.append(element("p", `${result.title}: ${result.outcome === "success" ? "Done" : result.outcome}`));
+      }
+      content.append(summary);
+    }
     if (this._selectedId && !this._detail) {
       const back = element("button", "Back to inbox");
       back.type = "button";
-      back.disabled = Boolean(this._editingId || this._decision);
+      back.disabled = Boolean(this._editingId || this._decision || this._batchAction);
       back.addEventListener("click", () => this.showInbox());
       content.append(back);
     }
@@ -299,7 +350,7 @@ export class DaylightImportPanel extends HTMLElement {
       const detail = this._detail;
       const back = element("button", "Back to inbox");
       back.type = "button";
-      back.disabled = Boolean(this._editingId || this._decision);
+      back.disabled = Boolean(this._editingId || this._decision || this._batchAction);
       back.addEventListener("click", () => this.showInbox());
       const heading = element("h2", detail.source_title || "Import detail");
       heading.tabIndex = -1;
@@ -319,6 +370,41 @@ export class DaylightImportPanel extends HTMLElement {
       source.setAttribute("aria-label", "Source text");
       content.append(source);
       content.append(element("h2", "Events"));
+      const ready = detail.events.filter(event => event.status === "pending");
+      if (ready.length > 1 && !this._editingId && !this._decision) {
+        const bulk = element("div", "", "actions");
+        if (this._batchAction) {
+          bulk.append(element("p", `${this._batchAction === "approve" ? "Approve" : "Reject"} all ${ready.length} pending events? Each result will be shown separately.`));
+          const confirm = element("button", `Confirm ${this._batchAction} all`);
+          confirm.type = "button";
+          confirm.addEventListener("click", () => void this.runBatch(this._batchAction));
+          const cancel = element("button", "Cancel bulk review");
+          cancel.type = "button";
+          cancel.addEventListener("click", () => { if (this._saving) return;
+            const action = this._batchAction;
+            this._batchAction = null;
+            this.render();
+            Array.from(this._content.querySelectorAll("button"))
+              .find(button => button.dataset.batchAction === action)?.focus();
+          });
+          bulk.append(confirm, cancel);
+        } else {
+          for (const action of ["approve", "reject"]) {
+            const button = element("button", `${action === "approve" ? "Approve" : "Reject"} all ${ready.length}`);
+            button.type = "button";
+            button.dataset.batchAction = action;
+            button.addEventListener("click", () => {
+              if (this._saving) return;
+              this._batchResults = [];
+              this._batchAction = action;
+              this.render();
+              this._content.querySelector(".actions button")?.focus();
+            });
+            bulk.append(button);
+          }
+        }
+        content.append(bulk);
+      }
       for (const event of detail.events) {
         const card = element("section", "", "detail-event");
         if (this._editingId === event.id) {
@@ -334,7 +420,7 @@ export class DaylightImportPanel extends HTMLElement {
         }
         if (event.location) card.append(element("p", `Location: ${event.location}`));
         if (event.description) card.append(element("p", event.description));
-        if (event.status === "pending" && !this._editingId && !this._decision) {
+        if (event.status === "pending" && !this._editingId && !this._decision && !this._batchAction) {
           const edit = element("button", `Edit ${event.title}`);
           edit.type = "button";
           edit.dataset.eventId = event.id;
