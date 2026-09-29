@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/rejected-candidate.schema.json",
+  "title": "Daylight Hosted API v1 RejectedCandidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["index", "reason_code", "message", "raw_summary"],
+  "properties": {
+    "index": {"type": ["integer", "null"], "minimum": 0},
+    "reason_code": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z][a-z0-9_]*$"},
+    "message": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "raw_summary": {"type": ["string", "null"], "minLength": 1, "maxLength": 4096}
+  }
+}
