@@ -288,7 +288,7 @@ class PendingImportStore:
         record = {
             "id": pending.id, "created_at": pending.created_at,
             "source_kind": pending.source_kind, "source_title": pending.source_title,
-            "title": pending.events[0].draft.title,
+            "title": (remaining[0] if remaining else pending.events[0]).draft.title,
             "created_count": created, "rejected_count": rejected,
             "status": (("calendar_write_uncertain" if any(event.status == "write_uncertain" for event in remaining)
                         else "review_ready") if remaining else
@@ -296,7 +296,19 @@ class PendingImportStore:
                        "mixed" if created and rejected else kind),
             "transitions": transitions[-ACTIVITY_TRANSITIONS_PER_IMPORT:],
         }
-        return (tuple(item for item in self._activity if item["id"] != pending.id) + (record,))[-ACTIVITY_LIMIT:]
+        history = list(item for item in self._activity if item["id"] != pending.id) + [record]
+        active_ids = set(self._items)
+        if remaining == ():
+            active_ids.discard(pending.id)
+        elif kind == "review_ready" or remaining:
+            active_ids.add(pending.id)
+        while len(history) > ACTIVITY_LIMIT:
+            oldest_completed = next((index for index, item in enumerate(history)
+                                     if item["id"] not in active_ids), None)
+            if oldest_completed is None:
+                break
+            history.pop(oldest_completed)
+        return tuple(history)
 
     async def async_edit_event(
         self, pending_id: str, event_id: str, draft: EventDraft,
@@ -717,7 +729,7 @@ class PendingImportStore:
             data[_STORAGE_SEEN_EVENTS] = list(seen_events)
         history = self._activity if activity is None else activity
         if history:
-            data[_STORAGE_ACTIVITY] = list(history[-ACTIVITY_LIMIT:])
+            data[_STORAGE_ACTIVITY] = list(history)
         await self._store.async_save(data)
 
 
