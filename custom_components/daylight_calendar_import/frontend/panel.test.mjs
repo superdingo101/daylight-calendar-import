@@ -147,9 +147,10 @@ test("activity includes completed items, bounded transitions and useful empty/er
     if (request.service === "list_activity") {
       if (fail) throw new Error("Activity unavailable");
       return {response: {activity: [{id: "old", source_title: "School.pdf",
-        created_at: "2026-10-01T12:00:00Z", status: "calendar_created"}]}};
+        created_at: "2026-10-01T12:00:00Z", status: "mixed", created_count: 3, rejected_count: 2}]}};
     }
-    return {response: {activity: {id: "old", source_title: "School.pdf", status: "calendar_created",
+    return {response: {activity: {id: "old", source_title: "School.pdf", status: "mixed",
+      created_count: 3, rejected_count: 2,
       transitions: [{type: "review_ready", at: "2026-10-01T12:00:00Z", event_id: null},
         {type: "calendar_created", at: "2026-10-01T12:10:00Z", event_id: "event"}]}}};
   }};
@@ -157,10 +158,11 @@ test("activity includes completed items, bounded transitions and useful empty/er
   panel._content.querySelectorAll("button").find(button => button.textContent === "Recent activity").click();
   await flush();
   assert.equal(find(panel._content, "h2").textContent, "Recent activity");
-  assert.match(find(find(panel._content, "li"), "p").textContent, /Calendar created/);
+  assert.match(find(find(panel._content, "li"), "p").textContent, /Calendar created: 3 · Rejected: 2/);
   assert.equal(panel._content.querySelector("button").disabled, false);
   panel._content.querySelectorAll("button").find(button => button.dataset.activityId === "old").click();
   await flush();
+  assert.match(panel._content.querySelectorAll("p")[1].textContent, /Calendar created: 3 · Rejected: 2/);
   assert.match(panel._content.querySelectorAll("li")[1].textContent, /Event ID event/);
   assert.equal(globalThis.focusedNode.textContent, "School.pdf");
   panel._refreshButton.click();
@@ -177,23 +179,26 @@ test("activity includes completed items, bounded transitions and useful empty/er
   assert.match(find(panel._content, "p").textContent, /No imports awaiting review/);
 });
 
-test("view navigation exposes the current page and remains keyboard reachable", async () => {
+test("stale activity detail cannot overwrite a newer list", async () => {
   const panel = new DaylightImportPanel();
-  panel.hass = {callWS: async request => request.service === "list_pending" ?
-    {response: {imports: []}} : {response: {activity: []}}};
+  let releaseDetail;
+  panel.hass = {callWS: request => {
+    if (request.service === "list_pending") return Promise.resolve({response: {imports: []}});
+    if (request.service === "list_activity") return Promise.resolve({response: {activity: [{id: "one", title: "New",
+      status: "review_ready", created_at: "2026-10-01T12:00:00Z"}]}});
+    return new Promise(resolve => {releaseDetail = () => resolve({response: {activity: {
+      id: "one", title: "Old", status: "failed", transitions: [],
+    }}});});
+  }};
   await flush();
-  const navigation = find(panel._content, "nav");
-  assert.equal(navigation.attributes["aria-label"], "Daylight views");
-  assert.equal(navigation.querySelectorAll("button")[0].attributes["aria-current"], "page");
-  assert.equal(navigation.querySelectorAll("button")[1].disabled, false);
-  navigation.querySelectorAll("button")[1].click();
-  await flush();
-  assert.equal(find(panel._content, "nav").querySelectorAll("button")[1].attributes["aria-current"], "page");
-  assert.equal(globalThis.focusedNode.textContent, "Review inbox");
-  find(panel._content, "nav").querySelectorAll("button")[0].click();
-  await flush();
-  assert.equal(find(panel._content, "nav").querySelectorAll("button")[0].attributes["aria-current"], "page");
-  assert.equal(globalThis.focusedNode.textContent, "Recent activity");
+  await panel.showActivity();
+  const stale = panel.showActivity("one");
+  const current = panel.showActivity();
+  releaseDetail();
+  await Promise.all([stale, current]);
+  assert.equal(panel._activityDetail, null);
+  assert.equal(panel._activityId, null);
+  assert.equal(find(panel._content, "h2").textContent, "Recent activity");
 });
 
 test("refresh keeps its button and announces loading and errors", async () => {
@@ -505,4 +510,41 @@ test("bulk confirmation can be canceled without calling a review action", async 
   assert.equal(panel._batchAction, null);
   assert.equal(globalThis.focusedNode.dataset.batchAction, "reject");
   assert.deepEqual(calls, ["list_pending", "get_pending"]);
+});
+
+test("view navigation exposes the current page and remains keyboard reachable", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => request.service === "list_pending" ?
+    {response: {imports: []}} : {response: {activity: []}}};
+  await flush();
+  const navigation = find(panel._content, "nav");
+  assert.equal(navigation.attributes["aria-label"], "Daylight views");
+  assert.equal(navigation.querySelectorAll("button")[0].attributes["aria-current"], "page");
+  assert.equal(navigation.querySelectorAll("button")[1].disabled, false);
+  navigation.querySelectorAll("button")[1].click();
+  await flush();
+  assert.equal(find(panel._content, "nav").querySelectorAll("button")[1].attributes["aria-current"], "page");
+  assert.equal(globalThis.focusedNode.textContent, "Review inbox");
+  find(panel._content, "nav").querySelectorAll("button")[0].click();
+  await flush();
+  assert.equal(find(panel._content, "nav").querySelectorAll("button")[0].attributes["aria-current"], "page");
+  assert.equal(globalThis.focusedNode.textContent, "Refresh");
+});
+
+test("mobile buttons include padding in their full width and return focus stays put", async () => {
+  const panel = new DaylightImportPanel();
+  assert.match(find(panel.shadowRoot, "style").textContent, /button \{ box-sizing: border-box;/);
+  panel.hass = {callWS: async request => request.service === "list_pending" ?
+    {response: {imports: []}} : {response: {activity: []}}};
+  await flush();
+  await panel.showActivity();
+  let release;
+  panel.hass = {callWS: () => new Promise(resolve => {release = resolve;})};
+  const returning = panel.showReview();
+  assert.equal(globalThis.focusedNode, panel._refreshButton);
+  const other = find(panel._content, "button");
+  other.focus();
+  release({response: {imports: []}});
+  await returning;
+  assert.equal(globalThis.focusedNode, other);
 });
