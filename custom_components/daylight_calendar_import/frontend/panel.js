@@ -5,7 +5,7 @@ const css = `
   main { box-sizing: border-box; width: 100%; max-width: 820px; min-width: 0; margin: 0 auto; padding: 20px; }
   header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
   h1 { min-width: 0; font-size: 1.65rem; line-height: 1.25; overflow-wrap: anywhere; }
-  button { min-height: 44px; max-width: 100%; overflow-wrap: anywhere; cursor: pointer; border: 1px solid var(--divider-color); border-radius: 8px; background: var(--card-background-color); color: inherit; padding: 10px 14px; font: inherit; }
+  button { box-sizing: border-box; min-height: 44px; max-width: 100%; overflow-wrap: anywhere; cursor: pointer; border: 1px solid var(--divider-color); border-radius: 8px; background: var(--card-background-color); color: inherit; padding: 10px 14px; font: inherit; }
   button:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 2px; }
   ul { list-style: none; padding: 0; display: grid; gap: 12px; }
   li { min-width: 0; border: 1px solid var(--divider-color); border-radius: 12px; padding: 16px; background: var(--card-background-color); overflow-wrap: anywhere; }
@@ -143,9 +143,10 @@ export class DaylightImportPanel extends HTMLElement {
     this._status = "loading";
     this.render();
     try {
-      if (id) this._activityDetail = await loadActivityDetail(this._hass, id);
-      else this._activity = await loadActivity(this._hass);
+      const result = id ? await loadActivityDetail(this._hass, id) : await loadActivity(this._hass);
       if (generation !== this._generation) return;
+      if (id) this._activityDetail = result;
+      else this._activity = result;
       this._status = "ready";
     } catch (error) {
       if (generation !== this._generation) return;
@@ -162,9 +163,9 @@ export class DaylightImportPanel extends HTMLElement {
     this._detail = null;
     this._activityId = null;
     this._activityDetail = null;
-    await this.refresh();
-    Array.from(this._content.querySelectorAll("button"))
-      .find(button => button.textContent === "Recent activity")?.focus();
+    const refresh = this.refresh();
+    this._refreshButton.focus();
+    await refresh;
   }
 
   async showImport(id) {
@@ -490,7 +491,8 @@ export class DaylightImportPanel extends HTMLElement {
         const item = this._activityDetail;
         const heading = element("h2", item.source_title || item.title || "Import activity");
         heading.tabIndex = -1;
-        content.append(heading, element("p", `Current status: ${activityLabel(item.status)}`));
+        content.append(heading, element("p", `Current status: ${activityLabel(item.status)}`),
+          element("p", `Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
         const list = document.createElement("ul");
         for (const transition of item.transitions) {
           const row = element("li", `${activityTime(transition.at, this._hass?.locale?.language)} · ${activityLabel(transition.type)}${transition.event_id ? ` · Event ID ${transition.event_id}` : ""}`);
@@ -509,7 +511,7 @@ export class DaylightImportPanel extends HTMLElement {
           open.type = "button";
           open.dataset.activityId = item.id;
           open.addEventListener("click", () => void this.showActivity(item.id));
-          row.append(open, element("p", `${activityTime(item.created_at, this._hass?.locale?.language)} · ${activityLabel(item.status)}`));
+          row.append(open, element("p", `${activityTime(item.created_at, this._hass?.locale?.language)} · ${activityLabel(item.status)} · Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
           list.append(row);
         }
         content.append(list);
