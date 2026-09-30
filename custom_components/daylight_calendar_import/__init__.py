@@ -31,6 +31,8 @@ from .const import (
     SERVICE_GET_PENDING_EVENT,
     SERVICE_IMPORT_TEXT,
     SERVICE_LIST_PENDING,
+    SERVICE_LIST_ACTIVITY,
+    SERVICE_GET_ACTIVITY,
     SERVICE_PARSE_TEXT,
     SERVICE_REJECT_PENDING,
     SERVICE_REJECT_PENDING_EVENT,
@@ -348,6 +350,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         result["default_calendar"] = entry.data[CONF_CALENDAR_ENTITY]
         return {"pending": result}
 
+    async def handle_list_activity(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        return {"activity": [
+            {key: value for key, value in record.items() if key != "transitions"}
+            for record in pending_store.list_activity()
+        ]}
+
+    async def handle_get_activity(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        record = pending_store.get_activity(pending_id)
+        if record is None:
+            raise ServiceValidationError(f"Activity not found: {pending_id}")
+        return {"activity": record}
+
     async def handle_get_pending_event(call: ServiceCall) -> ServiceResponse:
         await check_read_permission(call)
         pending_id = call.data[ATTR_PENDING_ID]
@@ -528,6 +545,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
+        DOMAIN, SERVICE_LIST_ACTIVITY, handle_list_activity,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_GET_ACTIVITY, handle_get_activity,
+        schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
         DOMAIN, SERVICE_GET_PENDING, handle_get_pending,
         schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
     )
@@ -565,6 +590,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, SERVICE_APPROVE_PENDING)
     hass.services.async_remove(DOMAIN, SERVICE_REJECT_PENDING)
     hass.services.async_remove(DOMAIN, SERVICE_LIST_PENDING)
+    hass.services.async_remove(DOMAIN, SERVICE_LIST_ACTIVITY)
+    hass.services.async_remove(DOMAIN, SERVICE_GET_ACTIVITY)
     hass.services.async_remove(DOMAIN, SERVICE_GET_PENDING)
     hass.services.async_remove(DOMAIN, SERVICE_GET_PENDING_EVENT)
     hass.services.async_remove(DOMAIN, SERVICE_EDIT_PENDING_EVENT)

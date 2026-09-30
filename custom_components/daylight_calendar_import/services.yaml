@@ -112,6 +112,20 @@ list_pending:
   name: List pending imports
   description: Return a summary of pending imports without their source text. Requires control of the configured AI Task and calendar entities.
 
+list_activity:
+  name: List recent activity
+  description: Return bounded recent import lifecycle summaries without source text. Requires control of the configured AI Task and calendar entities.
+
+get_activity:
+  name: Get import activity
+  description: Return an import's bounded lifecycle transitions, including after review completes. Requires control of the configured AI Task and calendar entities.
+  fields:
+    pending_id:
+      name: Import ID
+      required: true
+      selector:
+        text:
+
 get_pending:
   name: Get pending import
   description: Return the source text and event drafts for a pending import. Requires control of the configured AI Task and calendar entities.

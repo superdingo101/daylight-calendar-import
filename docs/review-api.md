@@ -36,3 +36,23 @@ Existing stored imports without source metadata load as `manual_text` with no
 source title, warnings, or skipped duplicate count. Upload bytes, temporary
 media paths, upstream source IDs, and source fingerprints are not exposed by
 the read actions.
+
+`list_activity` returns the most recent 500 import summaries, newest first,
+without source text or transition detail. `get_activity` accepts `pending_id`
+and returns the same summary with its latest 32 transitions. These reads share
+the authenticated control check used by pending reads. Each transition has a
+type, timestamp, and optional event ID. Review ready, reject, write checkpoint,
+calendar creation, uncertain write, and explicit uncertainty resolutions are
+stored with the corresponding pending or deduplication update. A write-started
+checkpoint reports an uncertain current status until creation commits. Completed
+imports remain in activity after leaving the pending queue; older entries and
+transitions are pruned independently of deduplication history. Existing storage
+without activity loads with an empty history.
+Summaries include created and rejected event counts. When both outcomes occur,
+the completed import has `mixed` status regardless of decision order. Reads
+return copies so callers cannot mutate the stored ledger.
+Active import history is retained even when completed records are pruned; the
+500-record bound applies to completed history while active imports occupy
+additional slots as needed. Active titles track the next pending event.
+Editing the leading pending draft refreshes that title in the same storage
+transaction without adding a new lifecycle transition.

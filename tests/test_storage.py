@@ -156,6 +156,9 @@ async def test_review_metadata_survives_edit_reject_checkpoint_and_restart(monke
     metadata = (item.source_kind, item.source_title, item.warnings, item.duplicate_events)
 
     await store.async_edit_event(item.id, first.id, replace(draft(), title="Updated"))
+    assert store.get_activity(item.id)["title"] == "Updated"
+    assert backend.saved[-1]["activity"][-1]["title"] == "Updated"
+    assert [row["type"] for row in store.get_activity(item.id)["transitions"]] == ["review_ready"]
     assert (store.get(item.id).source_kind, store.get(item.id).source_title,
             store.get(item.id).warnings, store.get(item.id).duplicate_events) == metadata
     async def failed(_event):
@@ -171,6 +174,229 @@ async def test_review_metadata_survives_edit_reject_checkpoint_and_restart(monke
     assert await restarted.async_reject_event(item.id, second.id)
     assert (restarted.get(item.id).source_kind, restarted.get(item.id).source_title,
             restarted.get(item.id).warnings) == metadata[:3]
+
+
+async def test_activity_survives_completion_failure_and_restart(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(source_text="private source", events=[draft()],
+                                  source_kind="pdf", source_title="schedule.pdf")).pending
+    assert item is not None
+    assert store.list_activity()[0] == {
+        "id": item.id, "created_at": item.created_at, "source_kind": "pdf",
+        "source_title": "schedule.pdf", "title": "Practice", "status": "review_ready",
+        "created_count": 0, "rejected_count": 0,
+        "transitions": [{"type": "review_ready", "at": store.list_activity()[0]["transitions"][0]["at"],
+                         "event_id": None}],
+    }
+    assert datetime.fromisoformat(store.list_activity()[0]["transitions"][0]["at"]).utcoffset().total_seconds() == 0
+    assert backend.saved[-1]["activity"] == list(store.list_activity())
+    store.get_activity(item.id)["transitions"].clear()
+    store.list_activity()[0]["status"] = "tampered"
+    assert store.get_activity(item.id)["status"] == "review_ready"
+    assert len(store.get_activity(item.id)["transitions"]) == 1
+    assert "private source" not in str(store.list_activity())
+
+    async def failed(_event):
+        raise RuntimeError("unconfirmed")
+
+    with pytest.raises(RuntimeError, match="unconfirmed"):
+        await store.async_approve_event(item.id, item.events[0].id, failed)
+    assert [row["type"] for row in store.get_activity(item.id)["transitions"]] == [
+        "review_ready", "calendar_write_started", "calendar_write_uncertain",
+    ]
+    assert backend.saved[-2]["activity"][0]["status"] == "calendar_write_uncertain"
+    assert backend.saved[-2]["activity"][0]["transitions"][-1]["event_id"] == item.events[0].id
+    assert backend.saved[-1]["activity"] == list(reversed(store.list_activity()))
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_activity(item.id)["status"] == "calendar_write_uncertain"
+    assert await restarted.async_resolve_uncertain(item.id, item.events[0].id, "created")
+    assert restarted.get(item.id) is None
+    assert restarted.get_activity(item.id)["status"] == "calendar_created"
+    assert backend.saved[-1]["activity"] == list(reversed(restarted.list_activity()))
+
+
+async def test_failed_uncertainty_logging_preserves_calendar_exception(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(source_text="source", events=[draft()])).pending
+    assert item is not None
+    async def processor(_event):
+        backend.save_error = RuntimeError("activity disk failed")
+        raise ConnectionError("calendar response lost")
+    with pytest.raises(ConnectionError, match="calendar response lost"):
+        await store.async_approve_event(item.id, item.events[0].id, processor)
+    assert store.get_event(item.id, item.events[0].id).status == "write_uncertain"
+    assert store.get_activity(item.id)["status"] == "calendar_write_uncertain"
+    assert store.get_activity(item.id)["transitions"][-1]["type"] == "calendar_write_started"
+
+
+async def test_activity_is_bounded_and_storage_failure_keeps_previous_state(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    first = (await store.async_add(source_text="first", events=[draft()])).pending
+    assert first is not None
+    backend.save_error = RuntimeError("disk full")
+    with pytest.raises(RuntimeError, match="disk full"):
+        await store.async_reject_event(first.id, first.events[0].id)
+    assert store.get_activity(first.id)["status"] == "review_ready"
+    backend.save_error = None
+    assert await store.async_reject_event(first.id, first.events[0].id)
+    assert store.get_activity(first.id)["status"] == "event_rejected"
+    assert backend.saved[-1]["activity"] == list(reversed(store.list_activity()))
+    assert store.list() == ()
+    assert len(store._transition(first, "review_ready")) == 1
+    monkeypatch.setattr(storage_module, "ACTIVITY_LIMIT", 1)
+    second = (await store.async_add(source_text="second", events=[second_draft()])).pending
+    assert second is not None
+    assert [row["id"] for row in store.list_activity()] == [second.id, first.id]
+    assert await store.async_reject_event(second.id, second.events[0].id)
+    assert [row["id"] for row in store.list_activity()] == [second.id]
+    assert store.get_activity(first.id) is None
+    monkeypatch.setattr(storage_module, "ACTIVITY_TRANSITIONS_PER_IMPORT", 1)
+    assert len(store._transition(second, "event_rejected")[0]["transitions"]) == 1
+    third = (await store.async_add(source_text="third", events=[
+        replace(draft(), title="New A"), replace(second_draft(), title="New B")])).pending
+    assert third is not None
+    assert len(store.list_activity()) == 2  # One completed plus one active.
+    assert await store.async_remove(third.id)
+    assert [row["id"] for row in store.list_activity()] == [third.id]
+    assert store.get_activity(third.id)["rejected_count"] == 2
+    assert backend.saved[-1]["activity"] == [store.get_activity(third.id)]
+
+
+async def test_editing_activity_title_is_atomic_and_only_follows_leading_event(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(source_text="school", events=[draft(), second_draft()])).pending
+    assert item is not None
+    first, second = item.events
+    await store.async_edit_event(item.id, second.id, replace(second_draft(), title="Other photo"))
+    assert store.get_activity(item.id)["title"] == first.draft.title
+    backend.save_error = RuntimeError("disk full")
+    with pytest.raises(RuntimeError, match="disk full"):
+        await store.async_edit_event(item.id, first.id, replace(draft(), title="Changed"))
+    assert store.get_activity(item.id)["title"] == first.draft.title
+    backend.save_error = None
+    await store.async_edit_event(item.id, first.id, replace(draft(), title="Changed"))
+    assert store.get_activity(item.id)["title"] == "Changed"
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_activity(item.id)["title"] == "Changed"
+
+
+async def test_active_activity_survives_completed_history_pruning(monkeypatch):
+    monkeypatch.setattr(storage_module, "ACTIVITY_LIMIT", 1)
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    active = (await store.async_add(source_text="active", events=[draft(), second_draft()])).pending
+    assert active is not None
+    first, second = active.events
+    async def created(_event):
+        pass
+    await store.async_approve_event(active.id, first.id, created)
+    assert store.get_activity(active.id)["title"] == second.draft.title
+    assert store.get_activity(active.id)["created_count"] == 1
+    # Keep an active record even when all slots are occupied by active imports.
+    another = (await store.async_add(source_text="other", events=[
+        replace(draft(), title="Different")])).pending
+    assert another is not None
+    assert {row["id"] for row in store.list_activity()} == {active.id, another.id}
+    await store.async_reject_event(another.id, another.events[0].id)
+    assert store.get_activity(active.id) is not None
+    await store.async_reject_event(active.id, second.id)
+    assert store.get_activity(active.id)["status"] == "mixed"
+    assert (store.get_activity(active.id)["created_count"],
+            store.get_activity(active.id)["rejected_count"]) == (1, 1)
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_activity(active.id)["status"] == "mixed"
+
+
+async def test_legacy_activity_counters_and_uncertain_sibling_status(monkeypatch):
+    item = PendingImport.create(source_text="school", events=[draft(), second_draft()])
+    raw = item.as_dict()
+    raw["events"][0]["status"] = "write_uncertain"
+    old_activity = {"id": item.id, "created_at": item.created_at,
+                    "source_kind": "manual_text", "source_title": None,
+                    "title": "Practice", "status": "review_ready", "transitions": []}
+    backend = FakeStoreBackend(load_result={"items": [raw], "activity": [old_activity]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    assert await store.async_reject_event(item.id, item.events[1].id)
+    record = store.get_activity(item.id)
+    assert record["status"] == "calendar_write_uncertain"
+    assert record["created_count"] == 0
+    assert record["rejected_count"] == 1
+    assert record["transitions"][-1]["event_id"] == item.events[1].id
+    assert backend.saved[-1]["activity"][-1] == record
+    assert await store.async_resolve_uncertain(item.id, item.events[0].id, "created")
+    assert store.get_activity(item.id)["status"] == "mixed"
+    assert store.get_activity(item.id)["created_count"] == 1
+    first_only = PendingImport.create(source_text="single", events=[draft()])
+    first_raw = first_only.as_dict()
+    first_raw["events"][0]["status"] = "write_uncertain"
+    legacy = {**old_activity, "id": first_only.id, "created_at": first_only.created_at}
+    restored = make_store(monkeypatch, FakeStoreBackend(load_result={
+        "items": [first_raw], "activity": [legacy],
+    }))
+    await restored.async_load()
+    assert await restored.async_resolve_uncertain(first_only.id, first_only.events[0].id, "created")
+    assert (restored.get_activity(first_only.id)["created_count"],
+            restored.get_activity(first_only.id)["rejected_count"]) == (1, 0)
+
+
+async def test_mixed_event_activity_retains_review_status_and_atomic_checkpoints(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(source_text="school", events=[draft(), second_draft()])).pending
+    assert item is not None
+    first, second = item.events
+
+    async def created(_event):
+        assert backend.saved[-1]["activity"][-1]["transitions"][-1]["type"] == "calendar_write_started"
+        assert backend.saved[-1]["activity"][-1]["status"] == "calendar_write_uncertain"
+
+    assert await store.async_approve_event(item.id, first.id, created) == first
+    record = store.get_activity(item.id)
+    assert record["status"] == "review_ready"
+    assert record["transitions"][-1] == {
+        "type": "calendar_created", "at": record["transitions"][-1]["at"], "event_id": first.id,
+    }
+    assert backend.saved[-1]["activity"][-1] == record
+    assert await store.async_reject_event(item.id, second.id)
+    assert store.get_activity(item.id)["status"] == "mixed"
+    assert (store.get_activity(item.id)["created_count"],
+            store.get_activity(item.id)["rejected_count"]) == (1, 1)
+    assert store.get_activity(item.id)["transitions"][-1]["event_id"] == second.id
+    assert backend.saved[-1]["activity"][-1] == store.get_activity(item.id)
+
+    other = (await store.async_add(source_text="new", events=[draft(), second_draft()])).pending
+    # Previously handled fingerprints prevent the same drafts from being requeued.
+    assert other is None
+
+    reverse = make_store(monkeypatch, FakeStoreBackend())
+    await reverse.async_load()
+    item = (await reverse.async_add(source_text="reverse", events=[draft(), second_draft()])).pending
+    assert item is not None
+    assert await reverse.async_reject_event(item.id, item.events[0].id)
+    assert reverse.get_activity(item.id)["status"] == "review_ready"
+    async def noop(_event):
+        pass
+    assert await reverse.async_approve_event(item.id, item.events[1].id, noop) == item.events[1]
+    assert reverse.get_activity(item.id)["status"] == "mixed"
+    assert (reverse.get_activity(item.id)["created_count"],
+            reverse.get_activity(item.id)["rejected_count"]) == (1, 1)
 
 
 async def test_duplicate_count_is_persisted_with_review_metadata(monkeypatch):
@@ -456,7 +682,7 @@ async def test_reject_last_event_without_source_fingerprint(monkeypatch):
     item = (await store.async_add(source_text="manual", events=[draft()])).pending
     assert item is not None
     assert await store.async_reject_event(item.id, item.events[0].id)
-    assert backend.saved[-1] == {
+    assert {key: value for key, value in backend.saved[-1].items() if key != "activity"} == {
         "items": [], "seen_event_fingerprints": [event_fingerprint(draft())],
     }
 
@@ -647,7 +873,7 @@ async def test_resolve_discard_is_handled_and_reject_all_requires_resolution(mon
         await store.async_remove(item.id)
     assert await store.async_resolve_uncertain(item.id, event.id, "discard")
     assert store.get(item.id) is None
-    assert backend.saved[-1] == {
+    assert {key: value for key, value in backend.saved[-1].items() if key != "activity"} == {
         "items": [], "seen_event_fingerprints": [event_fingerprint(draft())],
     }
     duplicate = await store.async_add(source_text="same", events=[draft()])
@@ -696,7 +922,7 @@ async def test_store_adds_rejects_and_remembers_source_and_event(monkeypatch):
     assert pending.source_fingerprint == source_fingerprint("message-1")
     assert store.get(pending.id) == pending
     assert store.is_source_duplicate("message-1") is True
-    assert backend.saved == [{"items": [pending.as_dict()]}]
+    assert [{key: value for key, value in row.items() if key != "activity"} for row in backend.saved] == [{"items": [pending.as_dict()]}]
 
     save_count = len(backend.saved)
     assert await store.async_remove("missing") is False
@@ -705,7 +931,7 @@ async def test_store_adds_rejects_and_remembers_source_and_event(monkeypatch):
     assert await store.async_remove(pending.id) is True
     assert store.get(pending.id) is None
     assert store.list() == ()
-    assert backend.saved[-1] == {
+    assert {key: value for key, value in backend.saved[-1].items() if key != "activity"} == {
         "items": [],
         "seen_source_fingerprints": [source_fingerprint("message-1")],
         "seen_event_fingerprints": [event_fingerprint(draft())],
@@ -758,7 +984,7 @@ async def test_store_marks_source_seen_when_no_new_events(monkeypatch):
     assert empty.pending is None
     assert empty.duplicate_source is False
     assert empty.duplicate_events == 0
-    assert backend.saved[-1] == {
+    assert {key: value for key, value in backend.saved[-1].items() if key != "activity"} == {
         "items": [],
         "seen_source_fingerprints": [source_fingerprint("empty-source")],
     }
@@ -872,7 +1098,7 @@ async def test_store_processes_events_and_remembers_deduplication(monkeypatch):
     assert result == existing
     assert processed == list(existing.events)
     assert store.list() == ()
-    assert backend.saved == [
+    assert [{key: value for key, value in row.items() if key != "activity"} for row in backend.saved] == [
         {"items": [first_in_flight.as_dict()]},
         {
             "items": [remaining.as_dict()],

@@ -45,6 +45,8 @@ from custom_components.daylight_calendar_import.const import (
     SERVICE_GET_PENDING_EVENT,
     SERVICE_IMPORT_TEXT,
     SERVICE_LIST_PENDING,
+    SERVICE_LIST_ACTIVITY,
+    SERVICE_GET_ACTIVITY,
     SERVICE_PARSE_TEXT,
     SERVICE_REJECT_PENDING,
     SERVICE_REJECT_PENDING_EVENT,
@@ -336,6 +338,35 @@ async def test_pending_read_actions_return_summaries_details_and_stable_event(mo
     ]
     await async_unload_entry(hass, entry())
     assert hass.services.handlers == {}
+
+
+async def test_activity_reads_are_scoped_and_omit_transition_detail_from_list(monkeypatch):
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    item = pending()
+    record = {"id": item.id, "status": "calendar_created",
+              "transitions": [{"type": "review_ready"}, {"type": "calendar_created"}]}
+    store = SimpleNamespace(async_load=AsyncMock(), list_activity=Mock(return_value=(record,)),
+                            get_activity=Mock(side_effect=lambda key: record if key == item.id else None))
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    await async_setup_entry(hass, entry())
+    context = Context(user_id="reviewer")
+    list_handler, options = hass.services.handlers[(DOMAIN, SERVICE_LIST_ACTIVITY)]
+    assert options["supports_response"] is SupportsResponse.ONLY
+    assert await list_handler(SimpleNamespace(data={}, context=context)) == {
+        "activity": [{"id": item.id, "status": "calendar_created"}],
+    }
+    detail, options = hass.services.handlers[(DOMAIN, SERVICE_GET_ACTIVITY)]
+    assert options["schema"] is PENDING_SCHEMA
+    assert await detail(SimpleNamespace(data={ATTR_PENDING_ID: item.id}, context=context)) == {
+        "activity": record,
+    }
+    with pytest.raises(ServiceValidationError, match="Activity not found"):
+        await detail(SimpleNamespace(data={ATTR_PENDING_ID: "absent"}, context=context))
+    with pytest.raises(Unauthorized):
+        await list_handler(SimpleNamespace(data={}, context=None))
+    store.list_activity.assert_called_once_with()
 
 
 @pytest.mark.parametrize("missing", [SERVICE_GET_PENDING, SERVICE_GET_PENDING_EVENT])
