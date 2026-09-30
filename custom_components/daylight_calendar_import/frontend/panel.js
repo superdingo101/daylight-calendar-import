@@ -2,13 +2,13 @@ import {decideEvent, loadActivity, loadActivityDetail, loadInbox, loadImport, re
 
 const css = `
   :host { display: block; color: var(--primary-text-color); font-family: var(--paper-font-body1_-_font-family, sans-serif); }
-  main { max-width: 820px; margin: 0 auto; padding: 20px; }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  h1 { font-size: 1.65rem; line-height: 1.25; }
-  button { cursor: pointer; border: 1px solid var(--divider-color); border-radius: 8px; background: var(--card-background-color); color: inherit; padding: 10px 14px; font: inherit; }
+  main { box-sizing: border-box; width: 100%; max-width: 820px; min-width: 0; margin: 0 auto; padding: 20px; }
+  header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  h1 { min-width: 0; font-size: 1.65rem; line-height: 1.25; overflow-wrap: anywhere; }
+  button { min-height: 44px; max-width: 100%; overflow-wrap: anywhere; cursor: pointer; border: 1px solid var(--divider-color); border-radius: 8px; background: var(--card-background-color); color: inherit; padding: 10px 14px; font: inherit; }
   button:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 2px; }
   ul { list-style: none; padding: 0; display: grid; gap: 12px; }
-  li { border: 1px solid var(--divider-color); border-radius: 12px; padding: 16px; background: var(--card-background-color); }
+  li { min-width: 0; border: 1px solid var(--divider-color); border-radius: 12px; padding: 16px; background: var(--card-background-color); overflow-wrap: anywhere; }
   h2 { font-size: 1.15rem; margin: 0 0 8px; overflow-wrap: anywhere; }
   p { margin: 6px 0; overflow-wrap: anywhere; }
   .error { color: var(--error-color); }
@@ -20,7 +20,12 @@ const css = `
   input[type=checkbox] { width: auto; }
   textarea { min-height: 10rem; resize: vertical; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-  @media (max-width: 480px) { main { padding: 12px; } h1 { font-size: 1.35rem; } li { padding: 12px; } }
+  @media (max-width: 480px) {
+    main { padding: 12px; }
+    h1 { font-size: 1.35rem; }
+    li { padding: 12px; }
+    .actions button, .detail-event > button { flex: 1 1 100%; width: 100%; }
+  }
 `;
 
 function element(tag, text, className) {
@@ -138,10 +143,9 @@ export class DaylightImportPanel extends HTMLElement {
     this._status = "loading";
     this.render();
     try {
-      const result = id ? await loadActivityDetail(this._hass, id) : await loadActivity(this._hass);
+      if (id) this._activityDetail = await loadActivityDetail(this._hass, id);
+      else this._activity = await loadActivity(this._hass);
       if (generation !== this._generation) return;
-      if (id) this._activityDetail = result;
-      else this._activity = result;
       this._status = "ready";
     } catch (error) {
       if (generation !== this._generation) return;
@@ -151,14 +155,16 @@ export class DaylightImportPanel extends HTMLElement {
     (this._content.querySelector("h2") || this._content.querySelector("button") || this._refreshButton)?.focus();
   }
 
-  showReview() {
+  async showReview() {
     if (this._saving) return;
     this._view = "inbox";
     this._selectedId = null;
     this._detail = null;
     this._activityId = null;
     this._activityDetail = null;
-    void this.refresh();
+    await this.refresh();
+    Array.from(this._content.querySelectorAll("button"))
+      .find(button => button.textContent === "Recent activity")?.focus();
   }
 
   async showImport(id) {
@@ -457,14 +463,17 @@ export class DaylightImportPanel extends HTMLElement {
   render() {
     this._refreshButton.disabled = this._saving || Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     const content = document.createDocumentFragment();
-    const navigation = element("div", "", "actions");
+    const navigation = element("nav", "", "actions");
+    navigation.setAttribute("aria-label", "Daylight views");
     const review = element("button", "Review inbox");
     review.type = "button";
     review.disabled = this._view === "inbox" || this._saving;
-    review.addEventListener("click", () => this.showReview());
+    if (this._view === "inbox") review.setAttribute("aria-current", "page");
+    review.addEventListener("click", () => void this.showReview());
     const activity = element("button", "Recent activity");
     activity.type = "button";
     activity.disabled = this._view === "activity" || this._saving || Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
+    if (this._view === "activity") activity.setAttribute("aria-current", "page");
     activity.addEventListener("click", () => void this.showActivity());
     navigation.append(review, activity);
     if (this._view === "activity") {
@@ -481,8 +490,7 @@ export class DaylightImportPanel extends HTMLElement {
         const item = this._activityDetail;
         const heading = element("h2", item.source_title || item.title || "Import activity");
         heading.tabIndex = -1;
-        content.append(heading, element("p", `Current status: ${activityLabel(item.status)}`),
-          element("p", `Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
+        content.append(heading, element("p", `Current status: ${activityLabel(item.status)}`));
         const list = document.createElement("ul");
         for (const transition of item.transitions) {
           const row = element("li", `${activityTime(transition.at, this._hass?.locale?.language)} · ${activityLabel(transition.type)}${transition.event_id ? ` · Event ID ${transition.event_id}` : ""}`);
@@ -501,7 +509,7 @@ export class DaylightImportPanel extends HTMLElement {
           open.type = "button";
           open.dataset.activityId = item.id;
           open.addEventListener("click", () => void this.showActivity(item.id));
-          row.append(open, element("p", `${activityTime(item.created_at, this._hass?.locale?.language)} · ${activityLabel(item.status)} · Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
+          row.append(open, element("p", `${activityTime(item.created_at, this._hass?.locale?.language)} · ${activityLabel(item.status)}`));
           list.append(row);
         }
         content.append(list);
