@@ -1,4 +1,4 @@
-import {decideEvent, loadInbox, loadImport, saveEvent, summarizeImport} from "./inbox.js";
+import {decideEvent, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 
 const css = `
   :host { display: block; color: var(--primary-text-color); font-family: var(--paper-font-body1_-_font-family, sans-serif); }
@@ -55,6 +55,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._saving = false;
     this._decision = null;
     this._decisionError = null;
+    this._resolution = null;
     this._batchAction = null;
     this._batchResults = [];
     this._batchContext = null;
@@ -66,7 +67,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton = refresh;
     refresh.type = "button";
     refresh.addEventListener("click", () => {
-      if (!this._saving && !this._editingId && !this._batchAction) void (this._selectedId ? this.showImport(this._selectedId) : this.refresh());
+      if (!this._saving && !this._editingId && !this._batchAction && !this._resolution) void (this._selectedId ? this.showImport(this._selectedId) : this.refresh());
     });
     header.append(refresh);
     this._content = document.createElement("div");
@@ -85,7 +86,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async refresh() {
-    if (this._saving || this._editingId || this._batchAction) return;
+    if (this._saving || this._editingId || this._batchAction || this._resolution) return;
     this._batchResults = [];
     this._batchContext = null;
     const generation = ++this._generation;
@@ -110,7 +111,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async showImport(id) {
-    if (this._saving || this._editingId || this._batchAction) return;
+    if (this._saving || this._editingId || this._batchAction || this._resolution) return;
     const generation = ++this._generation;
     this._selectedId = id;
     this._detail = null;
@@ -118,6 +119,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._editError = null;
     this._decision = null;
     this._decisionError = null;
+    this._resolution = null;
     this._batchAction = null;
     this._batchResults = [];
     this._batchContext = null;
@@ -138,7 +140,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   showInbox() {
-    if (this._saving || this._editingId || this._decision || this._batchAction) return;
+    if (this._saving || this._editingId || this._decision || this._batchAction || this._resolution) return;
     this._batchResults = [];
     this._batchContext = null;
     this._returnFocusId = this._selectedId;
@@ -226,6 +228,78 @@ export class DaylightImportPanel extends HTMLElement {
     } finally {
       this._saving = false;
       this._refreshButton.disabled = Boolean(this._editingId || this._decision);
+    }
+  }
+
+  async runResolution(event, resolution) {
+    if (this._saving || this._resolution?.id !== event.id || this._resolution.choice !== resolution) return;
+    const pendingId = this._selectedId;
+    const generation = this._generation;
+    this._saving = true;
+    this._refreshButton.disabled = true;
+    for (const button of this._content.querySelectorAll("button")) button.disabled = true;
+    let saved = false;
+    try {
+      await resolveEvent(this._hass, pendingId, event, resolution);
+      saved = true;
+      if (generation !== this._generation) return;
+      this._resolution = null;
+      this._saving = false;
+      this._items = await loadInbox(this._hass);
+      if (this._items.some(item => item.id === pendingId)) {
+        this._detail = await loadImport(this._hass, pendingId);
+      } else {
+        this._selectedId = null;
+        this._detail = null;
+      }
+      if (generation !== this._generation) return;
+      this._status = "ready";
+      this._batchResults = [];
+      this._batchContext = null;
+      this.render();
+      this._announcement.replaceChildren(element("span", "Recovery choice saved"));
+      (Array.from(this._content.querySelectorAll("button"))
+        .find(button => button.dataset.eventId === event.id) ||
+        Array.from(this._content.querySelectorAll("button")).find(button => button.dataset.pendingId) ||
+        this._refreshButton).focus();
+    } catch (error) {
+      if (generation !== this._generation) return;
+      const reason = typeof error?.message === "string" ? error.message : "Could not save recovery choice.";
+      if (saved) {
+        this._resolution = null;
+        this._detail = null;
+        this._selectedId = null;
+        this._batchResults = [];
+        this._batchContext = null;
+        this._status = `Recovery choice saved, but the view could not reload: ${reason}. Refresh to see the current state.`;
+        this.render();
+        this._refreshButton.focus();
+        return;
+      }
+      this._decisionError = `Recovery outcome unknown; check the current event before retrying. ${reason}`;
+      try {
+        this._items = await loadInbox(this._hass);
+        if (this._items.some(item => item.id === pendingId)) {
+          this._detail = await loadImport(this._hass, pendingId);
+        } else {
+          this._selectedId = null;
+          this._detail = null;
+          this._status = this._decisionError;
+        }
+      } catch {
+        this._selectedId = null;
+        this._detail = null;
+        this._status = `Could not reload imports after recovery: ${this._decisionError}`;
+      }
+      if (generation !== this._generation) return;
+      this._resolution = null;
+      this.render();
+      const alert = this._content.querySelector(".error");
+      if (alert) { alert.tabIndex = -1; alert.focus(); }
+      else this._refreshButton.focus();
+    } finally {
+      this._saving = false;
+      this._refreshButton.disabled = false;
     }
   }
 
@@ -330,7 +404,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   render() {
-    this._refreshButton.disabled = this._saving || Boolean(this._editingId || this._decision || this._batchAction);
+    this._refreshButton.disabled = this._saving || Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     const content = document.createDocumentFragment();
     if (this._batchResults.length) {
       const summary = element("section", "", "batch-results");
@@ -354,7 +428,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._selectedId && !this._detail) {
       const back = element("button", "Back to inbox");
       back.type = "button";
-      back.disabled = Boolean(this._editingId || this._decision || this._batchAction);
+      back.disabled = Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
       back.addEventListener("click", () => this.showInbox());
       content.append(back);
     }
@@ -368,7 +442,7 @@ export class DaylightImportPanel extends HTMLElement {
       const detail = this._detail;
       const back = element("button", "Back to inbox");
       back.type = "button";
-      back.disabled = Boolean(this._editingId || this._decision || this._batchAction);
+      back.disabled = Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
       back.addEventListener("click", () => this.showInbox());
       const heading = element("h2", detail.source_title || "Import detail");
       heading.tabIndex = -1;
@@ -389,7 +463,7 @@ export class DaylightImportPanel extends HTMLElement {
       content.append(source);
       content.append(element("h2", "Events"));
       const ready = detail.events.filter(event => event.status === "pending");
-      if (ready.length > 1 && !this._editingId && !this._decision) {
+      if (ready.length > 1 && !this._editingId && !this._decision && !this._resolution) {
         const bulk = element("div", "", "actions");
         if (this._batchAction) {
           bulk.append(element("p", `${this._batchAction === "approve" ? "Approve" : "Reject"} all ${ready.length} pending events? Each result will be shown separately.`));
@@ -440,7 +514,48 @@ export class DaylightImportPanel extends HTMLElement {
         }
         if (event.location) card.append(element("p", `Location: ${event.location}`));
         if (event.description) card.append(element("p", event.description));
-        if (event.status === "pending" && !this._editingId && !this._decision && !this._batchAction) {
+        if (event.status === "write_uncertain") {
+          card.append(element("p", "Calendar write could not be confirmed. Check the destination calendar before choosing an outcome. Retrying without checking may create a duplicate."));
+          if (this._resolution?.id === event.id) {
+            const actions = element("div", "", "actions");
+            const labels = {created: "It was created", not_created: "It was not created — return to review",
+              discard: "Discard without a calendar event"};
+            card.append(element("p", `Confirm: ${labels[this._resolution.choice]}?`));
+            const confirm = element("button", "Confirm recovery choice");
+            confirm.type = "button";
+            confirm.addEventListener("click", () => void this.runResolution(event, this._resolution.choice));
+            const cancel = element("button", "Cancel recovery");
+            cancel.type = "button";
+            cancel.addEventListener("click", () => {
+              if (this._saving) return;
+              const choice = this._resolution.choice;
+              this._resolution = null;
+              this.render();
+              Array.from(this._content.querySelectorAll("button"))
+                .find(button => button.dataset.eventId === event.id && button.dataset.resolution === choice)?.focus();
+            });
+            actions.append(confirm, cancel);
+            card.append(actions);
+          } else if (!this._editingId && !this._decision && !this._batchAction && !this._resolution) {
+            const choices = [{value: "created", label: "It was created"},
+              {value: "not_created", label: "It was not created — return to review"},
+              {value: "discard", label: "Discard without a calendar event"}];
+            for (const choice of choices) {
+              const button = element("button", choice.label);
+              button.type = "button";
+              button.dataset.eventId = event.id;
+              button.dataset.resolution = choice.value;
+              button.addEventListener("click", () => {
+                this._decisionError = null;
+                this._resolution = {id: event.id, choice: choice.value};
+                this.render();
+                this._content.querySelector(".actions button")?.focus();
+              });
+              card.append(button);
+            }
+          }
+        }
+        if (event.status === "pending" && !this._editingId && !this._decision && !this._batchAction && !this._resolution) {
           const edit = element("button", `Edit ${event.title}`);
           edit.type = "button";
           edit.dataset.eventId = event.id;
