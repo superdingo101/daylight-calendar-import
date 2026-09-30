@@ -59,6 +59,7 @@ from custom_components.daylight_calendar_import.models import EventDraft
 from custom_components.daylight_calendar_import.parser import ParseOutcome
 from custom_components.daylight_calendar_import.sources import SourceAttachment, SourceDocument, SourceKind, TextSourceAdapter
 from custom_components.daylight_calendar_import.storage import (
+    PendingEvent,
     PendingEventEditError,
     PendingEventResolutionError,
     PendingImport,
@@ -655,6 +656,23 @@ async def test_resolve_uncertain_action_enforces_permissions_and_state(monkeypat
         "pending_id": item.id, "event_id": event_id, "resolution": "created",
     }
     store.async_resolve_uncertain.assert_awaited_once_with(item.id, event_id, "created")
+    uncertain = PendingEvent(event_id, item.events[0].draft, "write_uncertain",
+                             item.events[0].calendar_entity, "attempt-a")
+    call.data["expected_event"] = uncertain.as_service_dict()
+    assert await handler(call) == {"pending_id": item.id, "event_id": event_id,
+                                   "resolution": "created"}
+    store.async_resolve_uncertain.assert_awaited_with(
+        item.id, event_id, "created", expected_event=uncertain,
+    )
+    for snapshot in ({**uncertain.as_service_dict(), "id": "other"},
+                     {**uncertain.as_service_dict(), "status": "pending"}):
+        call.data["expected_event"] = snapshot
+        with pytest.raises(ServiceValidationError, match="Event changed"):
+            await handler(call)
+    call.data["expected_event"] = {**uncertain.as_service_dict(), "title": ""}
+    with pytest.raises(ServiceValidationError):
+        await handler(call)
+    call.data.pop("expected_event")
     with pytest.raises(vol.Invalid):
         RESOLVE_EVENT_SCHEMA({**call.data, "resolution": "retry"})
 

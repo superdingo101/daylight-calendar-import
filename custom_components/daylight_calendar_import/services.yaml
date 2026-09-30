@@ -249,3 +249,8 @@ resolve_pending_event:
             - created
             - not_created
             - discard
+    expected_event:
+      name: Previously loaded uncertain event
+      description: Optional event snapshot; reject the resolution if the uncertain write changed since review.
+      selector:
+        object:

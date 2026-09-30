@@ -37,6 +37,104 @@ const {DaylightImportPanel} = await import("./panel.js");
 const find = (node, tag) => node.tag === tag ? node : node.children.map(child => find(child, tag)).find(Boolean);
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
+test("uncertain recovery requires confirmation, retains errors, and restores review", async () => {
+  const panel = new DaylightImportPanel();
+  const uncertain = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "write_uncertain"};
+  let current = uncertain;
+  let fail = true;
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "list_pending") return {response: {imports: [{id: "import"}]}};
+    if (request.service === "get_pending") return {response: {pending: {id: "import", events: [current]}}};
+    if (request.service === "resolve_pending_event") {
+      if (fail) throw new Error("Could not persist resolution");
+      current = {...uncertain, status: "pending"};
+      return {response: request.service_data};
+    }
+  }};
+  await flush();
+  await panel.showImport("import");
+  assert.equal(panel._content.querySelectorAll("p")
+    .some(node => /Calendar write could not be confirmed/.test(node.textContent)), true);
+  const choice = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.resolution === "not_created");
+  choice.click();
+  assert.equal(calls.filter(call => call.service === "resolve_pending_event").length, 0);
+  panel._content.querySelectorAll("button")
+    .find(button => button.textContent === "Cancel recovery").click();
+  assert.equal(globalThis.focusedNode.dataset.resolution, "not_created");
+  choice.click();
+  assert.equal(panel._refreshButton.disabled, true);
+  await panel.runResolution(uncertain, "not_created");
+  assert.match(panel._decisionError, /Could not persist resolution/);
+  assert.equal(globalThis.focusedNode.attributes.role, "alert");
+  assert.equal(panel._detail.events[0].status, "write_uncertain");
+  fail = false;
+  panel._batchResults = [{id: "event", title: "Picnic", outcome: "Approval outcome unknown"}];
+  panel._batchContext = {pendingId: "import", title: "Import", action: "approve"};
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.resolution === "not_created").click();
+  await panel.runResolution(uncertain, "not_created");
+  assert.equal(panel._detail.events[0].status, "pending");
+  assert.equal(panel._decisionError, null);
+  assert.deepEqual(panel._batchResults, []);
+  assert.deepEqual(calls.filter(call => call.service === "resolve_pending_event")
+    .map(call => call.service_data.resolution), ["not_created", "not_created"]);
+});
+
+test("confirmed recovery that cannot reload reports its saved outcome", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "write_uncertain"};
+  let saved = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") {
+      if (saved) throw new Error("Disconnected");
+      return {response: {imports: [{id: "import"}]}};
+    }
+    if (request.service === "get_pending") return {response: {pending: {id: "import", events: [event]}}};
+    saved = true;
+    return {response: request.service_data};
+  }};
+  await flush();
+  await panel.showImport("import");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.resolution === "created").click();
+  await panel.runResolution(event, "created");
+  assert.equal(saved, true);
+  assert.match(panel._status, /Recovery choice saved, but the view could not reload/);
+  assert.equal(panel._resolution, null);
+  assert.equal(panel._selectedId, null);
+  assert.equal(globalThis.focusedNode, panel._refreshButton);
+});
+
+test("lost recovery response reconciles a completed import with the inbox", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "write_uncertain", write_attempt: "attempt-a"};
+  let removed = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") {
+      return {response: {imports: removed ? [] : [{id: "import"}]}};
+    }
+    if (request.service === "get_pending") return {response: {pending: {id: "import", events: [event]}}};
+    assert.deepEqual(request.service_data.expected_event, event);
+    removed = true;
+    throw new Error("Disconnected");
+  }};
+  await flush();
+  await panel.showImport("import");
+  panel._content.querySelectorAll("button").find(button => button.dataset.resolution === "created").click();
+  await panel.runResolution(event, "created");
+  assert.equal(panel._selectedId, null);
+  assert.match(panel._status, /Recovery outcome unknown/);
+  await panel.refresh();
+  assert.equal(panel._status, "ready");
+  assert.equal(panel._selectedId, null);
+});
+
 test("refresh keeps its button and announces loading and errors", async () => {
   const panel = new DaylightImportPanel();
   const button = find(panel.shadowRoot, "button");

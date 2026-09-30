@@ -1,6 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {decideEvent, loadInbox, loadImport, saveEvent, summarizeImport} from "./inbox.js";
+import {decideEvent, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+
+test("uncertain recovery sends a scoped explicit resolution and validates the response", async () => {
+  const requests = [];
+  const event = {id: "event", title: "Picnic", status: "write_uncertain"};
+  const hass = {callWS: async request => {
+    requests.push(request);
+    return {response: request.service_data};
+  }};
+  for (const choice of ["created", "not_created", "discard"]) {
+    assert.deepEqual(await resolveEvent(hass, "import", event, choice),
+      {pending_id: "import", event_id: "event", resolution: choice, expected_event: event});
+  }
+  assert.deepEqual(requests.map(request => request.service_data), [
+    {pending_id: "import", event_id: "event", resolution: "created", expected_event: event},
+    {pending_id: "import", event_id: "event", resolution: "not_created", expected_event: event},
+    {pending_id: "import", event_id: "event", resolution: "discard", expected_event: event},
+  ]);
+  await assert.rejects(resolveEvent(hass, "import", event, "retry"), /Invalid recovery choice/);
+  await assert.rejects(resolveEvent({callWS: async () => ({response: {resolution: "created"}})},
+    "import", event, "created"), /unexpected response/);
+});
 
 test("decisions carry the loaded snapshot and validate the service response", async () => {
   const event = {id: "e", title: "Meeting", status: "pending"};
