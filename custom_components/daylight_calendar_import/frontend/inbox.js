@@ -27,6 +27,29 @@ export async function loadImport(hass, pendingId) {
   return pending;
 }
 
+export async function loadActivity(hass) {
+  const result = await hass.callWS({
+    type: "call_service", domain: "daylight_calendar_import",
+    service: "list_activity", return_response: true,
+  });
+  if (!Array.isArray(result?.response?.activity)) {
+    throw new Error("Recent activity returned an unexpected response. Try again.");
+  }
+  return result.response.activity;
+}
+
+export async function loadActivityDetail(hass, id) {
+  const result = await hass.callWS({
+    type: "call_service", domain: "daylight_calendar_import",
+    service: "get_activity", service_data: {pending_id: id}, return_response: true,
+  });
+  const activity = result?.response?.activity;
+  if (activity?.id !== id || !Array.isArray(activity.transitions)) {
+    throw new Error("Activity detail returned an unexpected response. Try again.");
+  }
+  return activity;
+}
+
 export async function saveEvent(hass, pendingId, original, draft) {
   const result = await hass.callWS({
     type: "call_service", domain: "daylight_calendar_import",
