@@ -51,6 +51,7 @@ class PendingEvent:
     draft: EventDraft
     status: str = "pending"
     calendar_entity: str | None = None
+    write_attempt: str | None = None
 
     @classmethod
     def create(cls, draft: EventDraft, calendar_entity: str | None = None) -> PendingEvent:
@@ -60,16 +61,23 @@ class PendingEvent:
     def from_dict(cls, raw: dict[str, Any]) -> PendingEvent:
         if raw["status"] not in ("pending", "write_uncertain"):
             raise ValueError("invalid pending event status")
-        return cls(raw["id"], EventDraft.from_mapping(raw["draft"]), raw["status"], raw.get("calendar_entity"))
+        return cls(raw["id"], EventDraft.from_mapping(raw["draft"]), raw["status"],
+                   raw.get("calendar_entity"), raw.get("write_attempt"))
 
     def as_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "draft": self.draft.as_dict(), "status": self.status,
-                "calendar_entity": self.calendar_entity}
+        result = {"id": self.id, "draft": self.draft.as_dict(), "status": self.status,
+                  "calendar_entity": self.calendar_entity}
+        if self.write_attempt is not None:
+            result["write_attempt"] = self.write_attempt
+        return result
 
     def as_service_dict(self) -> dict[str, Any]:
         """Expose the stable ID alongside the existing flat draft fields."""
-        return {**self.draft.as_dict(), "id": self.id, "status": self.status,
-                "calendar_entity": self.calendar_entity}
+        result = {**self.draft.as_dict(), "id": self.id, "status": self.status,
+                  "calendar_entity": self.calendar_entity}
+        if self.write_attempt is not None:
+            result["write_attempt"] = self.write_attempt
+        return result
 
 
 def _migrate_v1(data: dict[str, Any]) -> dict[str, Any]:
@@ -531,7 +539,8 @@ class PendingImportStore:
             return True
 
     async def async_resolve_uncertain(
-        self, pending_id: str, event_id: str, resolution: str
+        self, pending_id: str, event_id: str, resolution: str,
+        expected_event: PendingEvent | None = None,
     ) -> bool:
         """Apply an explicit user-confirmed outcome to one uncertain write."""
         if resolution not in ("created", "not_created", "discard"):
@@ -543,6 +552,8 @@ class PendingImportStore:
             event = next((item for item in pending.events if item.id == event_id), None)
             if event is None:
                 return False
+            if expected_event is not None and event != expected_event:
+                raise PendingEventResolutionError("Event changed since it was loaded; refresh before resolving")
             if event.status != "write_uncertain":
                 raise PendingEventResolutionError("Event has no uncertain calendar write")
 
@@ -629,7 +640,8 @@ class PendingImportStore:
     ) -> PendingImport | None:
         """Checkpoint the selected event around its external calendar write."""
         in_flight = replace(pending, events=tuple(
-                PendingEvent(item.id, item.draft, "write_uncertain", item.calendar_entity)
+                PendingEvent(item.id, item.draft, "write_uncertain", item.calendar_entity,
+                             str(uuid4()))
                 if item.id == event.id else item
                 for item in pending.events
             ))
