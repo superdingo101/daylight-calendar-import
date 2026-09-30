@@ -67,6 +67,8 @@ test("uncertain recovery requires confirmation, retains errors, and restores rev
   assert.equal(globalThis.focusedNode.dataset.resolution, "not_created");
   choice.click();
   assert.equal(panel._refreshButton.disabled, true);
+  assert.equal(panel._content.querySelectorAll("button")
+    .find(button => button.textContent === "Recent activity").disabled, true);
   await panel.runResolution(uncertain, "not_created");
   assert.match(panel._decisionError, /Could not persist resolution/);
   assert.equal(globalThis.focusedNode.attributes.role, "alert");
@@ -133,6 +135,70 @@ test("lost recovery response reconciles a completed import with the inbox", asyn
   await panel.refresh();
   assert.equal(panel._status, "ready");
   assert.equal(panel._selectedId, null);
+});
+
+test("activity includes completed items, bounded transitions and useful empty/error views", async () => {
+  const panel = new DaylightImportPanel();
+  const requests = [];
+  let fail = false;
+  panel.hass = {callWS: async request => {
+    requests.push(request.service);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "list_activity") {
+      if (fail) throw new Error("Activity unavailable");
+      return {response: {activity: [{id: "old", source_title: "School.pdf",
+        created_at: "2026-10-01T12:00:00Z", status: "mixed", created_count: 3, rejected_count: 2}]}};
+    }
+    return {response: {activity: {id: "old", source_title: "School.pdf", status: "mixed",
+      created_count: 3, rejected_count: 2,
+      transitions: [{type: "review_ready", at: "2026-10-01T12:00:00Z", event_id: null},
+        {type: "calendar_created", at: "2026-10-01T12:10:00Z", event_id: "event"}]}}};
+  }};
+  await flush();
+  panel._content.querySelectorAll("button").find(button => button.textContent === "Recent activity").click();
+  await flush();
+  assert.equal(find(panel._content, "h2").textContent, "Recent activity");
+  assert.match(find(find(panel._content, "li"), "p").textContent, /Calendar created: 3 · Rejected: 2/);
+  assert.equal(panel._content.querySelector("button").disabled, false);
+  panel._content.querySelectorAll("button").find(button => button.dataset.activityId === "old").click();
+  await flush();
+  assert.match(panel._content.querySelectorAll("p")[1].textContent, /Calendar created: 3 · Rejected: 2/);
+  assert.match(panel._content.querySelectorAll("li")[1].textContent, /Event ID event/);
+  assert.equal(globalThis.focusedNode.textContent, "School.pdf");
+  panel._refreshButton.click();
+  await flush();
+  assert.equal(requests.at(-1), "get_activity");
+  panel._content.querySelectorAll("button").find(button => button.textContent === "Back to recent activity").click();
+  await flush();
+  fail = true;
+  await panel.showActivity();
+  assert.match(find(panel._content, "p").textContent, /Activity unavailable/);
+  fail = false;
+  panel.showReview();
+  await flush();
+  assert.match(find(panel._content, "p").textContent, /No imports awaiting review/);
+});
+
+test("stale activity detail cannot overwrite a newer list", async () => {
+  const panel = new DaylightImportPanel();
+  let releaseDetail;
+  panel.hass = {callWS: request => {
+    if (request.service === "list_pending") return Promise.resolve({response: {imports: []}});
+    if (request.service === "list_activity") return Promise.resolve({response: {activity: [{id: "one", title: "New",
+      status: "review_ready", created_at: "2026-10-01T12:00:00Z"}]}});
+    return new Promise(resolve => {releaseDetail = () => resolve({response: {activity: {
+      id: "one", title: "Old", status: "failed", transitions: [],
+    }}});});
+  }};
+  await flush();
+  await panel.showActivity();
+  const stale = panel.showActivity("one");
+  const current = panel.showActivity();
+  releaseDetail();
+  await Promise.all([stale, current]);
+  assert.equal(panel._activityDetail, null);
+  assert.equal(panel._activityId, null);
+  assert.equal(find(panel._content, "h2").textContent, "Recent activity");
 });
 
 test("refresh keeps its button and announces loading and errors", async () => {

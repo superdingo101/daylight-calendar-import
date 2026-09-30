@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {decideEvent, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {decideEvent, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 
 test("uncertain recovery sends a scoped explicit resolution and validates the response", async () => {
   const requests = [];
@@ -21,6 +21,22 @@ test("uncertain recovery sends a scoped explicit resolution and validates the re
   await assert.rejects(resolveEvent(hass, "import", event, "retry"), /Invalid recovery choice/);
   await assert.rejects(resolveEvent({callWS: async () => ({response: {resolution: "created"}})},
     "import", event, "created"), /unexpected response/);
+});
+
+
+test("loads authenticated activity summaries and scoped transitions", async () => {
+  const requests = [];
+  const hass = {callWS: async request => {
+    requests.push(request);
+    return request.service === "list_activity" ? {response: {activity: [{id: "one"}]}} :
+      {response: {activity: {id: "one", transitions: []}}};
+  }};
+  assert.deepEqual(await loadActivity(hass), [{id: "one"}]);
+  assert.deepEqual(await loadActivityDetail(hass, "one"), {id: "one", transitions: []});
+  assert.deepEqual(requests.map(request => request.service), ["list_activity", "get_activity"]);
+  assert.deepEqual(requests[1].service_data, {pending_id: "one"});
+  await assert.rejects(loadActivity({callWS: async () => ({response: {}})}), /unexpected response/);
+  await assert.rejects(loadActivityDetail(hass, "other"), /unexpected response/);
 });
 
 test("decisions carry the loaded snapshot and validate the service response", async () => {

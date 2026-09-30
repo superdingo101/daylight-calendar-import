@@ -1,4 +1,4 @@
-import {decideEvent, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {decideEvent, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 
 const css = `
   :host { display: block; color: var(--primary-text-color); font-family: var(--paper-font-body1_-_font-family, sans-serif); }
@@ -39,6 +39,19 @@ function eventRange(event) {
   return event.start === lastDay ? event.start : `${event.start} – ${lastDay}`;
 }
 
+function activityTime(value, locale) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Unknown time" :
+    new Intl.DateTimeFormat(locale, {dateStyle: "medium", timeStyle: "short"}).format(date);
+}
+
+function activityLabel(type) {
+  return ({review_ready: "Awaiting review", event_rejected: "Rejected",
+    calendar_write_started: "Calendar write started", calendar_created: "Calendar created",
+    calendar_write_uncertain: "Calendar write needs confirmation",
+    mixed: "Mixed event outcomes"})[type] || type.replaceAll("_", " ");
+}
+
 export class DaylightImportPanel extends HTMLElement {
   constructor() {
     super();
@@ -59,6 +72,10 @@ export class DaylightImportPanel extends HTMLElement {
     this._batchAction = null;
     this._batchResults = [];
     this._batchContext = null;
+    this._view = "inbox";
+    this._activity = [];
+    this._activityId = null;
+    this._activityDetail = null;
     const style = element("style", css);
     const main = document.createElement("main");
     const header = document.createElement("header");
@@ -67,7 +84,9 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton = refresh;
     refresh.type = "button";
     refresh.addEventListener("click", () => {
-      if (!this._saving && !this._editingId && !this._batchAction && !this._resolution) void (this._selectedId ? this.showImport(this._selectedId) : this.refresh());
+      if (!this._saving && !this._editingId && !this._batchAction && !this._resolution) void (
+        this._view === "activity" ? this.showActivity(this._activityId) :
+          this._selectedId ? this.showImport(this._selectedId) : this.refresh());
     });
     header.append(refresh);
     this._content = document.createElement("div");
@@ -108,6 +127,38 @@ export class DaylightImportPanel extends HTMLElement {
       (button || this._refreshButton).focus();
       this._returnFocusId = null;
     }
+  }
+
+  async showActivity(id = null) {
+    if (this._saving || this._editingId || this._decision || this._batchAction || this._resolution) return;
+    const generation = ++this._generation;
+    this._view = "activity";
+    this._activityId = id;
+    this._activityDetail = null;
+    this._status = "loading";
+    this.render();
+    try {
+      const result = id ? await loadActivityDetail(this._hass, id) : await loadActivity(this._hass);
+      if (generation !== this._generation) return;
+      if (id) this._activityDetail = result;
+      else this._activity = result;
+      this._status = "ready";
+    } catch (error) {
+      if (generation !== this._generation) return;
+      this._status = error instanceof Error ? error.message : "Could not load activity. Try again.";
+    }
+    this.render();
+    (this._content.querySelector("h2") || this._content.querySelector("button") || this._refreshButton)?.focus();
+  }
+
+  showReview() {
+    if (this._saving) return;
+    this._view = "inbox";
+    this._selectedId = null;
+    this._detail = null;
+    this._activityId = null;
+    this._activityDetail = null;
+    void this.refresh();
   }
 
   async showImport(id) {
@@ -208,7 +259,7 @@ export class DaylightImportPanel extends HTMLElement {
       if (this._status === "ready") {
         this._announcement.replaceChildren(element("span", `Event ${action === "approve" ? "approved" : "rejected"}`));
       }
-      (this._content.querySelector("button") || this._refreshButton).focus();
+      (Array.from(this._content.querySelectorAll("button")).find(button => button.dataset.pendingId) || this._refreshButton).focus();
     } catch (error) {
       if (generation !== this._generation) return;
       this._decisionError = typeof error?.message === "string" ? error.message : "Could not complete review action.";
@@ -406,6 +457,60 @@ export class DaylightImportPanel extends HTMLElement {
   render() {
     this._refreshButton.disabled = this._saving || Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     const content = document.createDocumentFragment();
+    const navigation = element("div", "", "actions");
+    const review = element("button", "Review inbox");
+    review.type = "button";
+    review.disabled = this._view === "inbox" || this._saving;
+    review.addEventListener("click", () => this.showReview());
+    const activity = element("button", "Recent activity");
+    activity.type = "button";
+    activity.disabled = this._view === "activity" || this._saving || Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
+    activity.addEventListener("click", () => void this.showActivity());
+    navigation.append(review, activity);
+    if (this._view === "activity") {
+      content.append(navigation);
+      if (this._activityId) {
+        const back = element("button", "Back to recent activity");
+        back.type = "button";
+        back.addEventListener("click", () => void this.showActivity());
+        content.append(back);
+      }
+      if (this._status === "loading") content.append(element("p", "Loading activity…", "status"));
+      else if (this._status !== "ready") content.append(element("p", this._status, "error"));
+      else if (this._activityDetail) {
+        const item = this._activityDetail;
+        const heading = element("h2", item.source_title || item.title || "Import activity");
+        heading.tabIndex = -1;
+        content.append(heading, element("p", `Current status: ${activityLabel(item.status)}`),
+          element("p", `Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
+        const list = document.createElement("ul");
+        for (const transition of item.transitions) {
+          const row = element("li", `${activityTime(transition.at, this._hass?.locale?.language)} · ${activityLabel(transition.type)}${transition.event_id ? ` · Event ID ${transition.event_id}` : ""}`);
+          list.append(row);
+        }
+        content.append(list);
+      } else if (this._activity.length === 0) content.append(element("p", "No recent activity.", "status"));
+      else {
+        const heading = element("h2", "Recent activity");
+        heading.tabIndex = -1;
+        content.append(heading);
+        const list = document.createElement("ul");
+        for (const item of this._activity) {
+          const row = document.createElement("li");
+          const open = element("button", item.source_title || item.title || "Import");
+          open.type = "button";
+          open.dataset.activityId = item.id;
+          open.addEventListener("click", () => void this.showActivity(item.id));
+          row.append(open, element("p", `${activityTime(item.created_at, this._hass?.locale?.language)} · ${activityLabel(item.status)} · Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
+          list.append(row);
+        }
+        content.append(list);
+      }
+      this._content.replaceChildren(content);
+      this._announcement.replaceChildren(element("span", this._status === "loading" ? "Loading activity…" :
+        this._status === "ready" ? "Activity loaded" : this._status));
+      return;
+    }
     if (this._batchResults.length) {
       const summary = element("section", "", "batch-results");
       summary.tabIndex = -1;
@@ -625,6 +730,7 @@ export class DaylightImportPanel extends HTMLElement {
       }
       content.append(list);
     }
+    content.append(navigation);
     this._content.replaceChildren(content);
     this._announcement.replaceChildren();
     if (this._status === "loading") this._announcement.append(element("span", "Loading imports…"));
