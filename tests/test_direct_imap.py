@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import ssl
-from typing import Any
+import sys
+from typing import Any, NamedTuple
+from types import ModuleType
 
-from aioimaplib import AUTH, NONAUTH, Response
 import pytest
 
 from custom_components.daylight_calendar_import.direct_imap import (
@@ -29,12 +30,17 @@ from custom_components.daylight_calendar_import.email_source import (
 IMAP_MAX = 4_294_967_295
 
 
-def _ok(*lines: bytes | bytearray) -> Response:
-    return Response("OK", list(lines))
+class FakeResponse(NamedTuple):
+    result: str
+    lines: list[object]
 
 
-def _no(*lines: bytes) -> Response:
-    return Response("NO", list(lines))
+def _ok(*lines: object) -> FakeResponse:
+    return FakeResponse("OK", list(lines))
+
+
+def _no(*lines: object) -> FakeResponse:
+    return FakeResponse("NO", list(lines))
 
 
 class FakeImapClient:
@@ -43,11 +49,11 @@ class FakeImapClient:
     def __init__(
         self,
         *,
-        state: str = NONAUTH,
-        login_response: Response | None = None,
-        select_response: Response | None = None,
-        search_response: Response | None = None,
-        fetch_responses: dict[str, Response | BaseException] | None = None,
+        state: str = "NONAUTH",
+        login_response: FakeResponse | None = None,
+        select_response: FakeResponse | None = None,
+        search_response: FakeResponse | None = None,
+        fetch_responses: dict[str, FakeResponse | BaseException] | None = None,
         hello_error: BaseException | None = None,
         search_error: BaseException | None = None,
         logout_error: BaseException | None = None,
@@ -77,25 +83,25 @@ class FakeImapClient:
         if self.hello_error:
             raise self.hello_error
 
-    async def login(self, user: str, password: str) -> Response:
+    async def login(self, user: str, password: str) -> FakeResponse:
         self.login_calls.append((user, password))
         if self.login_response.result == "OK":
-            self.state = AUTH
+            self.state = "AUTH"
         return self.login_response
 
-    async def select(self, mailbox: str = "INBOX") -> Response:
+    async def select(self, mailbox: str = "INBOX") -> FakeResponse:
         self.select_calls.append(mailbox)
         return self.select_response
 
     async def uid_search(
         self, *criteria: str, charset: str | None = "utf-8"
-    ) -> Response:
+    ) -> FakeResponse:
         self.search_calls.append((criteria, charset))
         if self.search_error:
             raise self.search_error
         return self.search_response
 
-    async def uid(self, command: str, *criteria: str) -> Response:
+    async def uid(self, command: str, *criteria: str) -> FakeResponse:
         self.uid_calls.append((command, criteria))
         uid = criteria[0]
         response = self.fetch_responses[uid]
@@ -103,7 +109,7 @@ class FakeImapClient:
             raise response
         return response
 
-    async def logout(self) -> Response:
+    async def logout(self) -> FakeResponse:
         self.logout_calls += 1
         if self.logout_error:
             raise self.logout_error
@@ -149,7 +155,7 @@ def _source(
     return source, actual_factory
 
 
-def _fetch(uid: int, body: bytes) -> Response:
+def _fetch(uid: int, body: bytes) -> FakeResponse:
     return _ok(
         f"1 FETCH (UID {uid} BODY.PEEK[] {{{len(body)}}}".encode(),
         bytearray(body),
@@ -221,7 +227,31 @@ async def test_validate_connects_authenticates_selects_and_logs_out() -> None:
     context = factory.calls[0]["ssl_context"]
     assert isinstance(context, ssl.SSLContext)
     assert context.check_hostname is True
-    assert context.verify_mode is ssl.CERT_REQUIRED
+    assert context.verify_mode == ssl.CERT_REQUIRED
+
+
+async def test_default_factory_loads_runtime_client_lazily(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeImapClient()
+    calls: list[dict[str, Any]] = []
+
+    def constructor(**kwargs: Any) -> FakeImapClient:
+        calls.append(kwargs)
+        return client
+
+    module = ModuleType("aioimaplib")
+    module.IMAP4_SSL = constructor  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "aioimaplib", module)
+
+    source = DirectImapSource(
+        _settings(),
+        clock=lambda: datetime(2026, 10, 1, 15, 0, tzinfo=UTC),
+    )
+    await source.async_validate()
+
+    assert calls[0]["host"] == "imap.example.test"
+    assert client.logout_calls == 1
 
 
 async def test_validate_supports_explicit_unverified_tls() -> None:
@@ -232,11 +262,11 @@ async def test_validate_supports_explicit_unverified_tls() -> None:
 
     context = factory.calls[0]["ssl_context"]
     assert context.check_hostname is False
-    assert context.verify_mode is ssl.CERT_NONE
+    assert context.verify_mode == ssl.CERT_NONE
 
 
 async def test_validate_skips_login_for_preauthenticated_session() -> None:
-    client = FakeImapClient(state=AUTH)
+    client = FakeImapClient(state="AUTH")
     source, _ = _source(client)
 
     await source.async_validate()
@@ -268,7 +298,10 @@ async def test_collect_enumerates_every_matching_uid_with_uid_fetch() -> None:
         DirectImapReference(mailbox="INBOX", uid_validity=1234, uid=9),
         DirectImapReference(mailbox="INBOX", uid_validity=1234, uid=12),
     ]
-    assert all(item.received_at == datetime(2026, 10, 1, 15, 0, tzinfo=UTC) for item in envelopes)
+    assert all(
+        item.received_at == datetime(2026, 10, 1, 15, 0, tzinfo=UTC)
+        for item in envelopes
+    )
     assert all(item.upstream_source_id is None for item in envelopes)
     assert client.search_calls == [(("UnSeen UnDeleted",), "utf-8")]
     assert client.uid_calls == [
@@ -284,10 +317,12 @@ async def test_collect_enumerates_every_matching_uid_with_uid_fetch() -> None:
     (
         _ok(b"", b"Search completed"),
         _ok(b"Search completed"),
-        Response("OK", []),
+        FakeResponse("OK", []),
     ),
 )
-async def test_collect_handles_empty_search_variants(search_response: Response) -> None:
+async def test_collect_handles_empty_search_variants(
+    search_response: FakeResponse,
+) -> None:
     client = FakeImapClient(search_response=search_response)
     source, _ = _source(client)
 
@@ -339,6 +374,10 @@ async def test_collect_closes_connection_when_generator_is_closed() -> None:
                     b"Select completed",
                 )
             ),
+            DirectImapProtocolError,
+        ),
+        (
+            FakeImapClient(select_response=_ok(object(), b"Select completed")),
             DirectImapProtocolError,
         ),
     ),
@@ -393,11 +432,13 @@ async def test_validate_wraps_connection_failures(
     (
         _no(b"Search rejected"),
         _ok(b"1 nope", b"Search completed"),
+        _ok(b"1 nope"),
         _ok(b"4294967296", b"Search completed"),
+        _ok(object(), b"Search completed"),
     ),
 )
 async def test_collect_rejects_unsuccessful_or_malformed_search(
-    search_response: Response,
+    search_response: FakeResponse,
 ) -> None:
     client = FakeImapClient(search_response=search_response)
     source, _ = _source(client)
@@ -425,13 +466,13 @@ async def test_collect_wraps_search_transport_failure() -> None:
         _ok(b"Fetch completed"),
         _ok(b"1 FETCH (BODY.PEEK[] {3}", b"abc", b")", b"Fetch completed"),
         _ok(b"1 FETCH (UID 2 BODY.PEEK[] {3}", b"abc", b")", b"Fetch completed"),
-        Response(
-            "OK",
-            [b"1 FETCH (UID 1 BODY.PEEK[] {3}", "not-bytes", b")"],
-        ),
+        _ok(object(), b"abc", b")", b"Fetch completed"),
+        _ok(b"1 FETCH (UID 1 BODY.PEEK[] {3}", "not-bytes", b")"),
     ),
 )
-async def test_collect_rejects_invalid_fetch_responses(fetch_response: Response) -> None:
+async def test_collect_rejects_invalid_fetch_responses(
+    fetch_response: FakeResponse,
+) -> None:
     client = FakeImapClient(
         search_response=_ok(b"1", b"Search completed"),
         fetch_responses={"1": fetch_response},

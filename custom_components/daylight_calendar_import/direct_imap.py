@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import math
 import re
 import ssl
 from typing import Protocol
-
-from aioimaplib import AUTH, NONAUTH, AioImapException, IMAP4_SSL, Response
 
 from .email_source import (
     DirectImapReference,
@@ -25,6 +23,9 @@ DEFAULT_IMAP_PORT = 993
 DEFAULT_IMAP_SEARCH = "UnSeen UnDeleted"
 DEFAULT_IMAP_CHARSET = "utf-8"
 DEFAULT_IMAP_TIMEOUT = 10.0
+
+_STATE_AUTH = "AUTH"
+_STATE_NONAUTH = "NONAUTH"
 
 _UIDVALIDITY_RE = re.compile(rb"\[UIDVALIDITY\s+([0-9]+)\]", re.IGNORECASE)
 _FETCH_UID_RE = re.compile(rb"\bUID\s+([0-9]+)\b", re.IGNORECASE)
@@ -96,6 +97,13 @@ class DirectImapSettings:
             raise ValueError("timeout must be a finite positive number")
 
 
+class _Response(Protocol):
+    """Response shape returned by aioimaplib."""
+
+    result: str
+    lines: Sequence[object]
+
+
 class _ImapClient(Protocol):
     """Subset of aioimaplib used by the adapter."""
 
@@ -107,31 +115,38 @@ class _ImapClient(Protocol):
         """Wait for the server greeting."""
         ...
 
-    async def login(self, user: str, password: str) -> Response:
+    async def login(self, user: str, password: str) -> _Response:
         """Authenticate."""
         ...
 
-    async def select(self, mailbox: str = "INBOX") -> Response:
+    async def select(self, mailbox: str = "INBOX") -> _Response:
         """Select a mailbox."""
         ...
 
     async def uid_search(
         self, *criteria: str, charset: str | None = "utf-8"
-    ) -> Response:
+    ) -> _Response:
         """Search by UID."""
         ...
 
-    async def uid(self, command: str, *criteria: str) -> Response:
+    async def uid(self, command: str, *criteria: str) -> _Response:
         """Execute a UID command."""
         ...
 
-    async def logout(self) -> Response:
+    async def logout(self) -> _Response:
         """End the IMAP session."""
         ...
 
 
 type _ClientFactory = Callable[..., _ImapClient]
 type _Clock = Callable[[], datetime]
+
+
+def _default_client_factory(**kwargs: object) -> _ImapClient:
+    """Create the runtime client without importing optional requirements in tests."""
+    from aioimaplib import IMAP4_SSL
+
+    return IMAP4_SSL(**kwargs)
 
 
 def _utcnow() -> datetime:
@@ -147,7 +162,7 @@ def _ssl_context(*, verify_ssl: bool) -> ssl.SSLContext:
 
 
 def _require_ok(
-    response: Response,
+    response: _Response,
     message: str,
     error_type: type[DirectImapError] = DirectImapProtocolError,
 ) -> None:
@@ -155,10 +170,20 @@ def _require_ok(
         raise error_type(message)
 
 
-def _parse_uidvalidity(response: Response, mailbox: str) -> int:
+def _line_bytes(value: object, message: str) -> bytes:
+    if not isinstance(value, (bytes, bytearray, memoryview)):
+        raise DirectImapProtocolError(message)
+    return bytes(value)
+
+
+def _parse_uidvalidity(response: _Response, mailbox: str) -> int:
     _require_ok(response, "IMAP mailbox selection failed", DirectImapMailboxError)
     for raw_line in response.lines:
-        if match := _UIDVALIDITY_RE.search(bytes(raw_line)):
+        line = _line_bytes(
+            raw_line,
+            "IMAP mailbox selection returned malformed response data",
+        )
+        if match := _UIDVALIDITY_RE.search(line):
             try:
                 value = int(match.group(1))
                 return DirectImapReference(
@@ -174,7 +199,7 @@ def _parse_uidvalidity(response: Response, mailbox: str) -> int:
 
 
 def _parse_search_uids(
-    response: Response,
+    response: _Response,
     *,
     mailbox: str,
     uid_validity: int,
@@ -183,13 +208,16 @@ def _parse_search_uids(
     if not response.lines:
         return ()
 
-    first_line = bytes(response.lines[0]).strip()
+    first_line = _line_bytes(
+        response.lines[0],
+        "IMAP UID search returned malformed response data",
+    ).strip()
     if not first_line:
         return ()
 
     tokens = first_line.split()
     if not all(token.isdigit() for token in tokens):
-        if len(response.lines) == 1:
+        if len(response.lines) == 1 and not any(token.isdigit() for token in tokens):
             return ()
         raise DirectImapProtocolError("IMAP UID search returned malformed identifiers")
 
@@ -209,20 +237,23 @@ def _parse_search_uids(
     return tuple(uids)
 
 
-def _extract_fetch_body(response: Response, *, expected_uid: int) -> bytes:
+def _extract_fetch_body(response: _Response, *, expected_uid: int) -> bytes:
     _require_ok(response, "IMAP UID fetch failed")
     if len(response.lines) < 2:
         raise DirectImapProtocolError("IMAP UID fetch did not return a message body")
 
-    header = bytes(response.lines[0])
+    header = _line_bytes(
+        response.lines[0],
+        "IMAP UID fetch returned malformed response data",
+    )
     match = _FETCH_UID_RE.search(header)
     if match is None or int(match.group(1)) != expected_uid:
         raise DirectImapProtocolError("IMAP UID fetch returned the wrong message")
 
-    body = response.lines[1]
-    if not isinstance(body, (bytes, bytearray, memoryview)):
-        raise DirectImapProtocolError("IMAP UID fetch returned an invalid message body")
-    return bytes(body)
+    return _line_bytes(
+        response.lines[1],
+        "IMAP UID fetch returned an invalid message body",
+    )
 
 
 class DirectImapSource:
@@ -232,7 +263,7 @@ class DirectImapSource:
         self,
         settings: DirectImapSettings,
         *,
-        client_factory: _ClientFactory = IMAP4_SSL,
+        client_factory: _ClientFactory = _default_client_factory,
         clock: _Clock = _utcnow,
     ) -> None:
         self._settings = settings
@@ -262,8 +293,8 @@ class DirectImapSource:
                     self._settings.search,
                     charset=self._settings.charset,
                 )
-            except (TimeoutError, AioImapException, OSError) as exc:
-                raise DirectImapConnectionError("IMAP UID search failed") from exc
+            except Exception:
+                raise DirectImapConnectionError("IMAP UID search failed") from None
 
             uids = _parse_search_uids(
                 search_response,
@@ -277,8 +308,8 @@ class DirectImapSource:
                         str(uid),
                         "(UID BODY.PEEK[])",
                     )
-                except (TimeoutError, AioImapException, OSError) as exc:
-                    raise DirectImapConnectionError("IMAP UID fetch failed") from exc
+                except Exception:
+                    raise DirectImapConnectionError("IMAP UID fetch failed") from None
 
                 raw_message = _extract_fetch_body(
                     fetch_response,
@@ -331,13 +362,13 @@ class DirectImapSource:
                 timeout=float(self._settings.timeout),
                 ssl_context=_ssl_context(verify_ssl=self._settings.verify_ssl),
             )
-        except (TimeoutError, AioImapException, OSError) as exc:
+        except (TimeoutError, OSError) as exc:
             raise DirectImapConnectionError("Unable to create IMAP connection") from exc
 
         try:
             await client.wait_hello_from_server()
             state = client.get_state()
-            if state == NONAUTH:
+            if state == _STATE_NONAUTH:
                 login_response = await client.login(
                     self._settings.username,
                     self._settings.password,
@@ -348,7 +379,7 @@ class DirectImapSource:
                     DirectImapAuthenticationError,
                 )
                 state = client.get_state()
-            if state != AUTH:
+            if state != _STATE_AUTH:
                 raise DirectImapAuthenticationError(
                     "IMAP server did not enter authenticated state"
                 )
@@ -359,13 +390,13 @@ class DirectImapSource:
         except DirectImapError:
             await self._async_logout(client)
             raise
-        except (TimeoutError, AioImapException, OSError) as exc:
+        except Exception:
             await self._async_logout(client)
-            raise DirectImapConnectionError("IMAP connection failed") from exc
+            raise DirectImapConnectionError("IMAP connection failed") from None
 
     @staticmethod
     async def _async_logout(client: _ImapClient) -> None:
         try:
             await client.logout()
-        except (TimeoutError, AioImapException, OSError):
+        except Exception:
             pass
