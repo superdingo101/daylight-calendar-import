@@ -1762,3 +1762,110 @@ def test_malformed_quoted_printable_wire_disambiguates_identity() -> None:
     assert normalize_email(_envelope(malformed)).text == "A"
     assert normalize_email(_envelope(plain)).text == "A"
     assert stable_email_identity(malformed) != stable_email_identity(plain)
+
+
+def test_raw_encoded_word_detection_rejects_unmatched_marker_before_match() -> None:
+    assert email_normalize._raw_encoded_words_are_defective(
+        b"=?broken =?utf-8?q?A?="
+    )
+
+
+def test_raw_encoded_word_detection_rejects_unmatched_marker_after_match() -> None:
+    assert email_normalize._raw_encoded_words_are_defective(
+        b"=?utf-8?q?A?= trailing =?broken"
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    (
+        ("filename*", (0, -1, 1, "filename*")),
+        ("filename*2*", (1, 2, 1, "filename*2*")),
+        ("filename*2", (1, 2, 0, "filename*2")),
+        ("filename*weird", (2, 0, 0, "filename*weird")),
+    ),
+)
+def test_mime_parameter_sort_key_forms(
+    key: str,
+    expected: tuple[object, ...],
+) -> None:
+    assert email_normalize._mime_parameter_sort_key(
+        key,
+        "filename",
+    ) == expected
+
+
+def test_semantic_content_type_parameters_canonicalize_start() -> None:
+    part = email_normalize._parse_message(
+        b"Content-Type: multipart/related; boundary=rel; "
+        b"start=\"(note) <root@id>\"\r\n\r\n"
+        b"--rel--\r\n"
+    )
+
+    assert ["start", "<root@id>"] in (
+        email_normalize._semantic_content_type_parameters(part)
+    )
+
+
+def test_semantic_fingerprint_records_empty_lossy_filename_raw_parameters() -> None:
+    class LossyFilenamePart:
+        def get_filename(self) -> str:
+            return "file�.txt"
+
+        def get_all(self, name: str, default: object = None) -> list[object]:
+            return []
+
+        def get_content_type(self) -> str:
+            return "application/octet-stream"
+
+        def get_content_disposition(self) -> str:
+            return "attachment"
+
+        def raw_items(self) -> list[tuple[str, str]]:
+            return []
+
+        def is_multipart(self) -> bool:
+            return False
+
+        def get_payload(self, decode: bool = False) -> bytes:
+            return b"abc"
+
+        def get(self, name: str, default: str = "") -> str:
+            return default
+
+        def get_params(
+            self,
+            failobj: object = None,
+            header: str = "content-type",
+            unquote: bool = True,
+        ) -> list[tuple[str, str]]:
+            return [("application/octet-stream", "")]
+
+        def as_bytes(self, policy: object = None) -> bytes:
+            return b"Content-Type: application/octet-stream\n\nabc"
+
+    fingerprint = email_normalize._semantic_part_fingerprint(
+        LossyFilenamePart()  # type: ignore[arg-type]
+    )
+
+    assert fingerprint["filename_raw_parameters"] == []
+
+
+def test_serialized_part_payload_without_separator_is_empty() -> None:
+    class FakePart:
+        def as_bytes(self, policy: object = None) -> bytes:
+            return b"header-without-separator"
+
+    assert email_normalize._serialized_part_payload_bytes(
+        FakePart()  # type: ignore[arg-type]
+    ) == b""
+
+
+def test_quoted_printable_soft_line_break_is_valid() -> None:
+    assert not email_normalize._quoted_printable_wire_is_defective(
+        b"A=\nB"
+    )
+
+
+def test_quoted_printable_short_hex_escape_is_defective() -> None:
+    assert email_normalize._quoted_printable_wire_is_defective(b"A=F")
