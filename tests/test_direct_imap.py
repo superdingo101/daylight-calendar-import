@@ -59,6 +59,7 @@ class FakeImapClient:
         select_error: BaseException | None = None,
         search_error: BaseException | None = None,
         logout_error: BaseException | None = None,
+        abort_error: BaseException | None = None,
     ) -> None:
         self.state = state
         self.login_response = login_response or _ok(b"Logged in")
@@ -74,6 +75,7 @@ class FakeImapClient:
         self.select_error = select_error
         self.search_error = search_error
         self.logout_error = logout_error
+        self.abort_error = abort_error
         self.login_calls: list[tuple[str, str]] = []
         self.select_calls: list[str] = []
         self.search_calls: list[tuple[tuple[str, ...], str | None]] = []
@@ -128,6 +130,8 @@ class FakeImapClient:
 
     def abort(self) -> None:
         self.abort_calls += 1
+        if self.abort_error:
+            raise self.abort_error
 
 
 class FakeFactory:
@@ -889,6 +893,33 @@ async def test_logout_failure_does_not_mask_success() -> None:
     assert client.abort_calls == 1
 
 
+async def test_logout_and_abort_failures_do_not_mask_success() -> None:
+    client = FakeImapClient(
+        logout_error=OSError("socket already closed"),
+        abort_error=RuntimeError("transport close failed"),
+    )
+    source, _ = _source(client)
+
+    await source.async_validate()
+
+    assert client.logout_calls == 1
+    assert client.abort_calls == 1
+
+
+async def test_abort_failure_does_not_mask_pre_greeting_cancellation() -> None:
+    client = FakeImapClient(
+        hello_error=asyncio.CancelledError(),
+        abort_error=RuntimeError("transport close failed"),
+    )
+    source, _ = _source(client)
+
+    with pytest.raises(asyncio.CancelledError):
+        await source.async_validate()
+
+    assert client.logout_calls == 0
+    assert client.abort_calls == 1
+
+
 async def test_terminal_logout_finishes_before_cancellation_propagates() -> None:
     logout_started = asyncio.Event()
     logout_release = asyncio.Event()
@@ -995,7 +1026,7 @@ def test_line_bytes_preserves_supplied_error_message() -> None:
 @pytest.mark.parametrize("value", (1, IMAP_MAX))
 def test_parse_uidvalidity_accepts_identifier_boundaries(value: int) -> None:
     response = _ok(f"OK [UIDVALIDITY {value}] UIDs valid".encode())
-    assert direct_imap_module._parse_uidvalidity(response, "INBOX") == value
+    assert direct_imap_module._parse_uidvalidity(response) == value
 
 
 @pytest.mark.parametrize("value", (0, IMAP_MAX + 1))
@@ -1019,11 +1050,7 @@ def test_parse_uidvalidity_rejects_oversized_decimal_identifier() -> None:
 
 def test_parse_search_uids_accepts_identifier_boundaries() -> None:
     response = _ok(f"1 {IMAP_MAX}".encode(), b"Search completed")
-    assert direct_imap_module._parse_search_uids(
-        response,
-        mailbox="INBOX",
-        uid_validity=1234,
-    ) == (1, IMAP_MAX)
+    assert direct_imap_module._parse_search_uids(response) == (1, IMAP_MAX)
 
 
 @pytest.mark.parametrize("value", (0, IMAP_MAX + 1))
@@ -1033,11 +1060,7 @@ def test_parse_search_uids_rejects_out_of_range_values(value: int) -> None:
         DirectImapProtocolError,
         match="^IMAP UID search returned an invalid identifier$",
     ):
-        direct_imap_module._parse_search_uids(
-            response,
-            mailbox="INBOX",
-            uid_validity=1234,
-        )
+        direct_imap_module._parse_search_uids(response)
 
 
 def test_parse_search_uids_rejects_oversized_decimal_identifier() -> None:

@@ -261,7 +261,7 @@ def _line_bytes(value: object, message: str) -> bytes:
     return bytes(value)
 
 
-def _parse_uidvalidity(response: _Response, mailbox: str) -> int:
+def _parse_uidvalidity(response: _Response) -> int:
     _require_ok(response, _ERR_MAILBOX, DirectImapMailboxError)
     for raw_line in response.lines:
         line = _line_bytes(
@@ -279,12 +279,7 @@ def _parse_uidvalidity(response: _Response, mailbox: str) -> int:
     raise DirectImapProtocolError(_ERR_UIDVALIDITY_MISSING)
 
 
-def _parse_search_uids(
-    response: _Response,
-    *,
-    mailbox: str,
-    uid_validity: int,
-) -> tuple[int, ...]:
+def _parse_search_uids(response: _Response) -> tuple[int, ...]:
     _require_ok(response, _ERR_SEARCH)
     if not response.lines:
         return ()
@@ -435,11 +430,7 @@ class DirectImapSource:
             except Exception:
                 raise DirectImapConnectionError(_ERR_SEARCH_TRANSPORT) from None
 
-            uids = _parse_search_uids(
-                search_response,
-                mailbox=self._settings.mailbox,
-                uid_validity=uid_validity,
-            )
+            uids = _parse_search_uids(search_response)
             for uid in uids:
                 try:
                     fetch_response = await client.uid(
@@ -528,7 +519,7 @@ class DirectImapSource:
                 )
 
             select_response = await client.select(mailbox)
-            uid_validity = _parse_uidvalidity(select_response, mailbox)
+            uid_validity = _parse_uidvalidity(select_response)
             return client, uid_validity
         except asyncio.CancelledError:
             await self._async_cleanup_failed_open(client, greeted=greeted)
@@ -547,14 +538,22 @@ class DirectImapSource:
         if greeted:
             await self._async_logout_cancellation_safe(client)
         else:
-            client.abort()
+            self._abort_quietly(client)
 
     @staticmethod
-    async def _async_logout(client: _ImapClient) -> None:
+    def _abort_quietly(client: _ImapClient) -> None:
+        """Best-effort transport abort that never masks the original outcome."""
+        try:
+            client.abort()
+        except Exception:
+            pass
+
+    @classmethod
+    async def _async_logout(cls, client: _ImapClient) -> None:
         try:
             await client.logout()
         except Exception:
-            client.abort()
+            cls._abort_quietly(client)
 
     @classmethod
     async def _async_logout_cancellation_safe(cls, client: _ImapClient) -> None:
