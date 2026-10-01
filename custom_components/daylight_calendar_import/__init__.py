@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from typing import Any
 
@@ -132,9 +133,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Daylight Calendar Import from a config entry."""
     pending_store = PendingImportStore(hass)
     await pending_store.async_load()
+    pending_store.active_submissions = set()
     await async_register_review_panel(hass)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
     allowed_calendars = entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]])
+
+    async def parse_submission(source: SourceDocument, activity_id: str) -> Any:
+        """Finish a stopped parser without obscuring its original error."""
+        try:
+            return await _async_parse_source(hass, entry, source)
+        except (asyncio.CancelledError, Exception):
+            try:
+                await pending_store.async_record_parse_failure(activity_id)
+            except Exception:
+                pass
+            raise
 
     def event_calendar(event: PendingEvent) -> str:
         calendar_entity = event.calendar_entity or entry.data[CONF_CALENDAR_ENTITY]
@@ -186,14 +199,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             }
 
         source = TextSourceAdapter().create(call.data[ATTR_TEXT], source_id=source_id)
-        outcome = await _async_parse_source(hass, entry, source)
-        result = await pending_store.async_add(
-            source_text=source.text,
-            events=outcome.events,
-            source_id=source.upstream_source_id,
-            calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
-            warnings=outcome.warnings,
+        activity_id = await pending_store.async_begin_submission(
+            source_kind=source.kind.value, source_title=source.title, received_at=source.received_at
         )
+        task = asyncio.current_task()
+        pending_store.active_submissions.add(task)
+        try:
+            outcome = await parse_submission(source, activity_id)
+            result = await pending_store.async_add(
+                source_text=source.text,
+                events=outcome.events,
+                source_id=source.upstream_source_id,
+                calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
+                warnings=outcome.warnings,
+                activity_id=activity_id,
+            )
+        finally:
+            pending_store.active_submissions.discard(task)
         return {
             "pending": (
                 result.pending.as_service_dict()
@@ -213,18 +235,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if source.upstream_source_id is not None and pending_store.is_source_duplicate(source.upstream_source_id):
             return {"pending": None, "duplicate": True, "duplicate_source": True,
                     "duplicate_events": 0, "warnings": []}
-        outcome = await _async_parse_source(hass, entry, source)
-        label = "PDF" if source.kind is SourceKind.PDF else "Image"
-        attachment_note = f"{label} attachment (SHA-256: {source.attachments[0].sha256})" if source.attachments else ""
-        result = await pending_store.async_add(
-            source_text="\n\n".join(part for part in (source.text, attachment_note) if part),
-            events=outcome.events,
-            source_id=source.upstream_source_id,
-            calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
-            source_kind=source.kind.value,
-            source_title=source.title,
-            warnings=outcome.warnings,
+        activity_id = await pending_store.async_begin_submission(
+            source_kind=source.kind.value, source_title=source.title, received_at=source.received_at
         )
+        task = asyncio.current_task()
+        pending_store.active_submissions.add(task)
+        try:
+            outcome = await parse_submission(source, activity_id)
+            label = "PDF" if source.kind is SourceKind.PDF else "Image"
+            attachment_note = f"{label} attachment (SHA-256: {source.attachments[0].sha256})" if source.attachments else ""
+            result = await pending_store.async_add(
+                source_text="\n\n".join(part for part in (source.text, attachment_note) if part),
+                events=outcome.events,
+                source_id=source.upstream_source_id,
+                calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
+                source_kind=source.kind.value,
+                source_title=source.title,
+                warnings=outcome.warnings,
+                activity_id=activity_id,
+            )
+        finally:
+            pending_store.active_submissions.discard(task)
         return {"pending": result.pending.as_service_dict() if result.pending else None,
                 "duplicate": result.duplicate_source or result.duplicate_events > 0,
                 "duplicate_source": result.duplicate_source,
@@ -610,6 +641,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, SERVICE_REJECT_PENDING_EVENT)
     hass.services.async_remove(DOMAIN, SERVICE_APPROVE_PENDING_EVENT)
     hass.services.async_remove(DOMAIN, SERVICE_RESOLVE_PENDING_EVENT)
+    store = hass.data[DOMAIN][entry.entry_id]
+    if store.active_submissions:
+        await asyncio.gather(*tuple(store.active_submissions), return_exceptions=True)
     hass.data[DOMAIN].pop(entry.entry_id, None)
     return True
 

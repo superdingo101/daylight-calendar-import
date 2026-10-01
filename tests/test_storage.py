@@ -322,6 +322,124 @@ async def test_activity_is_bounded_and_storage_failure_keeps_previous_state(monk
     assert backend.saved[-1]["activity"] == [store.get_activity(third.id)]
 
 
+async def test_parse_failure_history_is_private_bounded_and_atomic(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    received = datetime.now(storage_module.UTC)
+    backend.save_error = RuntimeError("disk full")
+    with pytest.raises(RuntimeError, match="disk full"):
+        await store.async_begin_submission(source_kind="pdf", source_title="Schedule", received_at=received)
+    assert store.list_activity() == ()
+    backend.save_error = None
+    failed_id = await store.async_begin_submission(source_kind="pdf", source_title="Schedule", received_at=received)
+    processing = store.get_activity(failed_id)
+    assert processing["status"] == "processing"
+    assert [step["type"] for step in processing["transitions"]] == ["received", "processing"]
+    assert processing["created_at"] == received.isoformat()
+    assert datetime.fromisoformat(processing["transitions"][1]["at"]).utcoffset().total_seconds() == 0
+    backend.save_error = RuntimeError("disk full")
+    with pytest.raises(RuntimeError, match="disk full"):
+        await store.async_record_parse_failure(failed_id)
+    assert store.get_activity(failed_id) == processing
+    assert store._finish_submission("missing", "failed") == store._activity
+    backend.save_error = None
+    await store.async_record_parse_failure(failed_id)
+    record = store.get_activity(failed_id)
+    assert set(record) == {"id", "created_at", "source_kind", "source_title", "title",
+                           "created_count", "rejected_count", "status", "guidance", "transitions"}
+    assert record["created_at"] == record["transitions"][0]["at"]
+    assert datetime.fromisoformat(record["created_at"]).utcoffset().total_seconds() == 0
+    assert record["source_kind"] == "pdf" and record["source_title"] == "Schedule"
+    assert record["created_count"] == record["rejected_count"] == 0
+    assert record["status"] == "failed" and record["title"] == "Schedule"
+    assert record["guidance"] == "Parsing failed. Check the configured AI Task and submit the source again."
+    assert [step["type"] for step in record["transitions"]] == ["received", "processing", "failed"]
+    assert datetime.fromisoformat(record["transitions"][-1]["at"]).utcoffset().total_seconds() == 0
+    assert all(set(step) == {"type", "at", "event_id"} and step["event_id"] is None
+               for step in record["transitions"])
+    assert "source_text" not in str(record)
+    assert backend.saved[-1]["activity"] == [record]
+    monkeypatch.setattr(storage_module, "ACTIVITY_LIMIT", 0)
+    processing_id = await store.async_begin_submission(source_kind="pdf", source_title=None,
+                                                       received_at=datetime.now(storage_module.UTC))
+    assert store.get_activity(failed_id) is None
+    assert store.get_activity(processing_id)["status"] == "processing"
+    await store.async_record_parse_failure(processing_id)
+    assert store.get_activity(processing_id) is None
+    monkeypatch.setattr(storage_module, "ACTIVITY_LIMIT", 1)
+    next_id = await store.async_begin_submission(source_kind="manual_text", source_title=None,
+                                                 received_at=datetime.now(storage_module.UTC))
+    await store.async_record_parse_failure(next_id)
+    assert store.get_activity(next_id)["title"] == "Submission"
+    active_received = datetime.now(storage_module.UTC)
+    active_id = await store.async_begin_submission(source_kind="manual_text", source_title=None,
+                                                   received_at=active_received)
+    active = (await store.async_add(source_text="source", events=[draft()], activity_id=active_id)).pending
+    assert active.id == active_id
+    assert active.created_at == active_received.isoformat()
+    assert active.created_at == store.get_activity(active.id)["created_at"]
+    assert [step["type"] for step in store.get_activity(active.id)["transitions"]] == [
+        "received", "processing", "review_ready",
+    ]
+    assert datetime.fromisoformat(store.get_activity(active.id)["transitions"][-1]["at"]).utcoffset().total_seconds() == 0
+    assert {row["id"] for row in store.list_activity()} == {next_id, active.id}
+
+
+async def test_interrupted_processing_is_failed_on_restart_and_empty_results_finish(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    received = datetime.now(storage_module.UTC)
+    interrupted = await store.async_begin_submission(source_kind="image", source_title="flyer", received_at=received)
+    assert backend.saved[-1]["activity"][-1]["status"] == "processing"
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_activity(interrupted)["status"] == "failed"
+    assert "interrupted" in restarted.get_activity(interrupted)["guidance"]
+    assert backend.saved[-1]["activity"][-1]["status"] == "failed"
+    empty = await restarted.async_begin_submission(source_kind="manual_text", source_title=None, received_at=received)
+    result = await restarted.async_add(source_text="no events", events=[], activity_id=empty)
+    assert result.pending is None
+    assert restarted.get_activity(empty)["status"] == "failed"
+    assert "No reviewable events" in restarted.get_activity(empty)["guidance"]
+    assert restarted.get_activity(empty)["guidance"] == "No reviewable events were found. Check the source and submit it again."
+    assert backend.saved[-1]["activity"][-1] == restarted.get_activity(empty)
+    existing = (await restarted.async_add(source_text="first", events=[draft()])).pending
+    duplicate = await restarted.async_begin_submission(source_kind="manual_text", source_title=None, received_at=received)
+    result = await restarted.async_add(source_text="same", events=[draft()], activity_id=duplicate)
+    assert result.duplicate_events == 1
+    assert restarted.get_activity(duplicate)["status"] == "duplicate"
+    assert "guidance" not in restarted.get_activity(duplicate)
+    from_source = await restarted.async_begin_submission(source_kind="manual_text", source_title=None, received_at=received)
+    result = await restarted.async_add(source_text="same source", events=[second_draft()], source_id="seen", activity_id=from_source)
+    assert result.pending is not None
+    raced = await restarted.async_begin_submission(source_kind="manual_text", source_title=None, received_at=received)
+    result = await restarted.async_add(source_text="same source", events=[second_draft()], source_id="seen", activity_id=raced)
+    assert result.duplicate_source
+    assert restarted.get_activity(raced)["status"] == "duplicate"
+    assert backend.saved[-1]["activity"][-1] == restarted.get_activity(raced)
+    assert restarted.get_activity(existing.id)["status"] == "review_ready"
+
+
+async def test_history_limit_never_prunes_another_live_parser(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    monkeypatch.setattr(storage_module, "ACTIVITY_LIMIT", 0)
+    received = datetime.now(storage_module.UTC)
+    first = await store.async_begin_submission(source_kind="manual_text", source_title=None, received_at=received)
+    second = await store.async_begin_submission(source_kind="manual_text", source_title=None, received_at=received)
+    assert {item["id"] for item in store.list_activity()} == {first, second}
+    pending = (await store.async_add(source_text="first", events=[draft()], activity_id=first)).pending
+    assert pending.id == first
+    assert store.get_activity(second)["status"] == "processing"
+    await store.async_record_parse_failure(second)
+    assert store.get_activity(second) is None
+    assert store.get_activity(first)["status"] == "review_ready"
+
+
 async def test_editing_activity_title_is_atomic_and_only_follows_leading_event(monkeypatch):
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
@@ -1023,7 +1141,7 @@ async def test_store_filters_active_and_within_submission_event_duplicates(monke
     assert len(store.list()) == 2
 
 
-async def test_store_marks_source_seen_when_no_new_events(monkeypatch):
+async def test_store_allows_retry_when_no_events_were_extracted(monkeypatch):
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
     await store.async_load()
@@ -1036,17 +1154,16 @@ async def test_store_marks_source_seen_when_no_new_events(monkeypatch):
     assert empty.pending is None
     assert empty.duplicate_source is False
     assert empty.duplicate_events == 0
-    assert {key: value for key, value in backend.saved[-1].items() if key != "activity"} == {
-        "items": [],
-        "seen_source_fingerprints": [source_fingerprint("empty-source")],
-    }
-    assert store.is_source_duplicate("empty-source") is True
+    assert backend.saved == []
+    assert store.is_source_duplicate("empty-source") is False
 
     save_count = len(backend.saved)
     no_source = await store.async_add(source_text="no events", events=[])
     assert no_source.pending is None
     assert no_source.duplicate_events == 0
     assert len(backend.saved) == save_count
+    retry = await store.async_add(source_text="corrected", events=[draft()], source_id="empty-source")
+    assert retry.pending is not None
 
 
 async def test_store_all_duplicate_events_marks_new_source_seen(monkeypatch):
