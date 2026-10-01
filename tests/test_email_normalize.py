@@ -98,7 +98,8 @@ def test_html_to_text_preserves_useful_links_and_skips_active_content() -> None:
         "Team & Family\n"
         "Join https://zoom.example.test/j/123 Zoom\n"
         "at 6 PM\n"
-        "Team logo Unsafe"
+        "Team logo\n"
+        "Unsafe"
     )
     assert "steal" not in text
     assert "display:none" not in text
@@ -147,6 +148,19 @@ def test_multipart_alternative_falls_back_to_html() -> None:
     source = normalize_email(_envelope(message.as_bytes(policy=policy.default)))
 
     assert source.text == "Doors open 7 PM"
+
+
+def test_multipart_alternative_without_text_normalizes_empty() -> None:
+    message = EmailMessage()
+    message["Message-ID"] = "<no-text-alternative@example.test>"
+    message.make_alternative()
+    binary_part = EmailMessage()
+    binary_part.set_content(b"{}", maintype="application", subtype="json")
+    message.attach(binary_part)
+
+    source = normalize_email(_envelope(message.as_bytes(policy=policy.default)))
+
+    assert source.text is None
 
 
 def test_multipart_mixed_combines_inline_text_and_skips_text_attachment() -> None:
@@ -321,6 +335,30 @@ def test_fallback_identity_wire_format_is_stable() -> None:
     )
 
 
+def test_decoded_part_bytes_handles_string_payload_fallback() -> None:
+    class StringPayloadPart:
+        def get_payload(self, decode: bool) -> object:
+            return None if decode else "raw payload"
+
+        def as_bytes(self, *, policy: object) -> bytes:
+            raise AssertionError("as_bytes should not be needed")
+
+    assert email_normalize._decoded_part_bytes(StringPayloadPart()) == b"raw payload"
+
+
+def test_decoded_part_bytes_handles_serialized_payload_fallback() -> None:
+    class SerializedPayloadPart:
+        def get_payload(self, decode: bool) -> object:
+            return None if decode else object()
+
+        def as_bytes(self, *, policy: object) -> bytes:
+            return b"serialized payload"
+
+    assert email_normalize._decoded_part_bytes(SerializedPayloadPart()) == (
+        b"serialized payload"
+    )
+
+
 def test_invalid_parser_failure_is_wrapped(monkeypatch: pytest.MonkeyPatch) -> None:
     def fail_parse(self, raw_message: bytes) -> object:
         raise RuntimeError("parser failed")
@@ -338,3 +376,11 @@ def test_html_to_text_handles_unmatched_skipped_end_tag() -> None:
     assert html_to_text("<p>Visible</p></script><p>Still visible</p>") == (
         "Visible\nStill visible"
     )
+
+
+def test_html_to_text_skips_nested_template_content_and_img_without_alt() -> None:
+    assert html_to_text(
+        "<template><div>Hidden</div></template>"
+        "<img src=\"https://tracker.example.test/pixel\">"
+        "<p>Visible</p>"
+    ) == "Visible"
