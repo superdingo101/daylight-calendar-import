@@ -94,6 +94,7 @@ jobs:
           "hassil==3.8.0"
           "home-assistant-intents==2026.6.24"
           "PyTurboJPEG==1.8.3"
+          "aioimaplib==2.0.1"
           "pypdf==6.14.2"
           "jsonschema>=4.23,<5"
           "referencing>=0.35,<1"
