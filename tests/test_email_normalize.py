@@ -426,12 +426,12 @@ def test_obsolete_but_valid_message_id_remains_authoritative() -> None:
         b'Message-ID: <"local"@example.test>\r\n\r\nBody two'
     )
 
-    assert first == '<"local"@example.test>'
+    assert first == "<local@example.test>"
     assert second == first
 
 
 def test_canonical_message_id_rejects_unparsed_plain_value() -> None:
-    assert email_normalize._canonical_message_id("not-an-id") is None
+    assert email_normalize._canonical_msg_id_text("not-an-id") is None
 
 
 def test_message_rfc822_attachment_changes_fallback_identity() -> None:
@@ -585,3 +585,225 @@ def test_alternative_can_fall_back_to_nested_related_representation() -> None:
     source = normalize_email(_envelope(message.as_bytes(policy=policy.default)))
 
     assert source.text == "Nested meeting Friday"
+
+
+def test_rejected_message_id_preserves_raw_disambiguating_suffix() -> None:
+    first = (
+        b"Message-ID: <same@id><unique1@id>\r\n"
+        b"Subject: Same\r\n\r\n"
+        b"Friday at 5"
+    )
+    second = (
+        b"Message-ID: <same@id><unique2@id>\r\n"
+        b"Subject: Same\r\n\r\n"
+        b"Friday at 5"
+    )
+
+    first_id = stable_email_identity(first)
+    second_id = stable_email_identity(second)
+
+    assert first_id.startswith(FALLBACK_IDENTITY_PREFIX)
+    assert second_id.startswith(FALLBACK_IDENTITY_PREFIX)
+    assert first_id != second_id
+
+
+def test_raw_message_id_extraction_preserves_non_ascii_octets() -> None:
+    raw = (
+        b"Message-ID: broken-\xff-id\r\n"
+        b"Subject: Same\r\n\r\n"
+        b"Friday at 5"
+    )
+
+    [value] = email_normalize._raw_header_values(raw, b"message-id")
+
+    assert value == b"broken-\xff-id"
+    assert stable_email_identity(raw).startswith(FALLBACK_IDENTITY_PREFIX)
+
+
+def test_raw_header_extraction_unfolds_only_for_authoritative_parsing() -> None:
+    raw = (
+        b"Message-ID: <folded@\r\n"
+        b" example.test>\r\n\r\n"
+        b"Body"
+    )
+
+    [raw_value] = email_normalize._raw_header_values(raw, b"message-id")
+
+    assert raw_value == b"<folded@\n example.test>"
+    assert email_normalize._unfold_header_value(raw_value) == (
+        b"<folded@ example.test>"
+    )
+
+
+def test_pathological_message_id_lazy_parse_does_not_escape_boundary() -> None:
+    raw = (
+        b"Message-ID: <foo@[ test ]>\r\n"
+        b"Subject: Broken structured header\r\n\r\n"
+        b"Friday at 5"
+    )
+
+    identity = stable_email_identity(raw)
+    source = normalize_email(_envelope(raw))
+
+    assert identity.startswith(FALLBACK_IDENTITY_PREFIX)
+    assert source.upstream_source_id == identity
+
+
+def test_public_normalization_wraps_lazy_header_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = email_normalize._first_header
+
+    def fail_header(message: object, name: str) -> str:
+        if name == "subject":
+            raise RuntimeError("lazy header exploded")
+        return original(message, name)  # pragma: no cover
+
+    monkeypatch.setattr(email_normalize, "_first_header", fail_header)
+
+    with pytest.raises(
+        EmailNormalizationError,
+        match="^Email message could not be normalized$",
+    ):
+        normalize_email(_envelope(_plain_message()))
+
+
+def test_message_id_cfws_comment_with_angle_brackets_is_not_an_identifier() -> None:
+    first = stable_email_identity(
+        b"Message-ID: (previous <x@y>) <real@id>\r\n\r\nBody one"
+    )
+    second = stable_email_identity(
+        b"Message-ID: <real@id>\r\n\r\nBody two"
+    )
+
+    assert first == "<real@id>"
+    assert second == first
+
+
+def test_obsolete_internal_cfws_is_removed_from_message_id_token() -> None:
+    first = stable_email_identity(
+        b"Message-ID: <foo. (comment) bar@example>\r\n\r\nBody one"
+    )
+    second = stable_email_identity(
+        b"Message-ID: <foo.bar@example>\r\n\r\nBody two"
+    )
+
+    assert first == "<foo. bar@example>"
+    assert second == "<foo.bar@example>"
+    assert first != second
+
+
+def test_unmarked_message_rfc822_is_excluded_and_hashed_atomically() -> None:
+    def build(forwarded_body: str) -> bytes:
+        forwarded = EmailMessage()
+        forwarded["Subject"] = "Forwarded"
+        forwarded.set_content(forwarded_body)
+
+        wrapper = EmailMessage()
+        wrapper.set_type("message/rfc822")
+        wrapper.set_payload([forwarded])
+
+        outer = EmailMessage()
+        outer["Subject"] = "Outer"
+        outer.set_content("Outer invitation")
+        outer.make_mixed()
+        outer.attach(wrapper)
+        return outer.as_bytes(policy=policy.default)
+
+    first = build("Forwarded room 101")
+    second = build("Forwarded room 202")
+
+    assert normalize_email(_envelope(first)).text == "Outer invitation"
+    assert stable_email_identity(first) != stable_email_identity(second)
+
+
+def test_alternative_prefers_plain_root_inside_related_over_direct_html() -> None:
+    message = EmailMessage()
+    message["Message-ID"] = "<alternative-related@example.test>"
+    message.make_alternative()
+
+    html = EmailMessage()
+    html.set_content("<p>HTML at 6 PM</p>", subtype="html")
+    message.attach(html)
+
+    related = EmailMessage()
+    related.make_related()
+    plain_root = EmailMessage()
+    plain_root["Content-ID"] = "<plain-root@example.test>"
+    plain_root.set_content("Plain at 5 PM")
+    related.attach(plain_root)
+    related.set_param(
+        "start",
+        "<plain-root@example.test>",
+        header="Content-Type",
+    )
+    message.attach(related)
+
+    source = normalize_email(_envelope(message.as_bytes(policy=policy.default)))
+
+    assert source.text == "Plain at 5 PM"
+
+
+def test_alternative_ranks_two_related_roots_by_effective_type() -> None:
+    message = EmailMessage()
+    message["Message-ID"] = "<two-related@example.test>"
+    message.make_alternative()
+
+    html_related = EmailMessage()
+    html_related.make_related()
+    html_root = EmailMessage()
+    html_root.set_content("<p>HTML representation</p>", subtype="html")
+    html_related.attach(html_root)
+
+    plain_related = EmailMessage()
+    plain_related.make_related()
+    plain_root = EmailMessage()
+    plain_root.set_content("Plain representation")
+    plain_related.attach(plain_root)
+
+    message.attach(html_related)
+    message.attach(plain_related)
+
+    source = normalize_email(_envelope(message.as_bytes(policy=policy.default)))
+
+    assert source.text == "Plain representation"
+
+
+def test_related_start_matches_content_id_with_cfws_comment() -> None:
+    raw = (
+        b"Message-ID: <related-cid@example.test>\r\n"
+        b"Content-Type: multipart/related; boundary=rel; start=\"<root@id>\"\r\n\r\n"
+        b"--rel\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-ID: <resource@id>\r\n\r\n"
+        b"Wrong resource text\r\n"
+        b"--rel\r\n"
+        b"Content-Type: text/html\r\n"
+        b"Content-ID: (note) <root@id>\r\n\r\n"
+        b"<p>Correct root text</p>\r\n"
+        b"--rel--\r\n"
+    )
+
+    source = normalize_email(_envelope(raw))
+
+    assert source.text == "Correct root text"
+
+
+def test_canonical_content_id_rejects_trailing_garbage() -> None:
+    assert email_normalize._canonical_msg_id_text("<root@id> garbage") is None
+
+
+def test_format_flowed_counts_quote_depth_before_space_unstuffing() -> None:
+    value = " >literal flowed \r\ncontinuation"
+
+    decoded = email_normalize._decode_format_flowed(value, delsp=False)
+
+    assert decoded == ">literal flowed continuation"
+
+
+def test_format_flowed_unstuffs_space_after_quote_markers() -> None:
+    value = "> quoted flowed \r\n> continuation"
+
+    decoded = email_normalize._decode_format_flowed(value, delsp=False)
+
+    assert decoded == ">quoted flowed continuation"
