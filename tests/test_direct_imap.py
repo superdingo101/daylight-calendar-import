@@ -272,6 +272,72 @@ async def test_default_factory_uses_pinned_runtime_dependency(
     assert client.logout_calls == 1
 
 
+async def test_default_factory_collects_through_runtime_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aioimaplib
+
+    body = b"Subject: Adapter\r\n\r\nEvent"
+    client = FakeImapClient(
+        search_response=_ok(b"7", b"Search completed"),
+        fetch_responses={"7": _fetch(7, body)},
+    )
+    monkeypatch.setattr(aioimaplib, "IMAP4_SSL", lambda **kwargs: client)
+
+    source = DirectImapSource(
+        _settings(),
+        clock=lambda: datetime(2026, 10, 1, 15, 0, tzinfo=UTC),
+    )
+    [envelope] = [item async for item in source.async_collect()]
+
+    assert envelope.raw_message == body
+    assert client.search_calls == [(("UnSeen UnDeleted",), "us-ascii")]
+    assert client.uid_calls == [("fetch", ("7", "(UID BODY.PEEK[])"))]
+    assert client.logout_calls == 1
+
+
+@pytest.mark.parametrize(("task_done", "has_transport"), ((False, True), (True, False)))
+async def test_default_factory_abort_closes_connect_resources(
+    monkeypatch: pytest.MonkeyPatch,
+    task_done: bool,
+    has_transport: bool,
+) -> None:
+    import aioimaplib
+
+    class ConnectTask:
+        def __init__(self) -> None:
+            self.cancel_calls = 0
+
+        def done(self) -> bool:
+            return task_done
+
+        def cancel(self) -> None:
+            self.cancel_calls += 1
+
+    class Transport:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    client = FakeImapClient(hello_error=asyncio.CancelledError())
+    connect_task = ConnectTask()
+    transport = Transport() if has_transport else None
+    client._client_task = connect_task  # type: ignore[attr-defined]
+    client.protocol = type("Protocol", (), {"transport": transport})()  # type: ignore[attr-defined]
+    monkeypatch.setattr(aioimaplib, "IMAP4_SSL", lambda **kwargs: client)
+
+    source = DirectImapSource(_settings())
+    with pytest.raises(asyncio.CancelledError):
+        await source.async_validate()
+
+    assert connect_task.cancel_calls == (0 if task_done else 1)
+    if transport is not None:
+        assert transport.close_calls == 1
+    assert client.logout_calls == 0
+
+
 async def test_validate_supports_explicit_unverified_tls() -> None:
     client = FakeImapClient()
     source, factory = _source(client, settings=_settings(verify_ssl=False))

@@ -516,23 +516,23 @@ class DirectImapSource:
             uid_validity = _parse_uidvalidity(select_response, mailbox)
             return client, uid_validity
         except asyncio.CancelledError:
-            if greeted:
-                await self._async_logout_cancellation_safe(client)
-            else:
-                client.abort()
+            await self._async_cleanup_failed_open(client, greeted=greeted)
             raise
         except DirectImapError:
-            if greeted:
-                await self._async_logout_cancellation_safe(client)
-            else:
-                client.abort()
+            await self._async_cleanup_failed_open(client, greeted=greeted)
             raise
         except Exception:
-            if greeted:
-                await self._async_logout_cancellation_safe(client)
-            else:
-                client.abort()
+            await self._async_cleanup_failed_open(client, greeted=greeted)
             raise DirectImapConnectionError("IMAP connection failed") from None
+
+    async def _async_cleanup_failed_open(
+        self, client: _ImapClient, *, greeted: bool
+    ) -> None:
+        """Close a failed connection using only commands valid for its state."""
+        if greeted:
+            await self._async_logout_cancellation_safe(client)
+        else:
+            client.abort()
 
     @staticmethod
     async def _async_logout(client: _ImapClient) -> None:
