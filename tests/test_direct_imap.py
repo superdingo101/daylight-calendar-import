@@ -507,6 +507,7 @@ async def test_collect_wraps_search_transport_failure() -> None:
         _no(b"Fetch rejected"),
         _ok(b"1 FETCH (BODY.PEEK[] {3}", b"abc", b")", b"Fetch completed"),
         _ok(b"1 FETCH (UID 2 BODY.PEEK[] {3}", b"abc", b")", b"Fetch completed"),
+        _ok(b"1 FETCH (UID 1 BODY.PEEK[] {3}"),
         _ok(object(), b"abc", b")", b"Fetch completed"),
         _ok(b"1 FETCH (UID 1 BODY.PEEK[] {3}", "not-bytes", b")"),
     ),
