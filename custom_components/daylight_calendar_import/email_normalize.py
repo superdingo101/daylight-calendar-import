@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from email import policy
 from email._header_value_parser import get_msg_id
+from email.errors import ObsoleteHeaderDefect
 from email.message import Message
 from email.parser import BytesParser
 from hashlib import sha256
@@ -187,7 +188,7 @@ def _canonical_msg_id_bytes(value: bytes) -> str | None:
         token, remainder = get_msg_id(text)
     except Exception:
         return None
-    if remainder.strip():
+    if remainder.strip() or not _msg_id_defects_are_acceptable(token):
         return None
     return _semantic_msg_id_token(token)
 
@@ -197,9 +198,16 @@ def _canonical_msg_id_text(value: object) -> str | None:
         token, remainder = get_msg_id(str(value))
     except Exception:
         return None
-    if remainder.strip():
+    if remainder.strip() or not _msg_id_defects_are_acceptable(token):
         return None
     return _semantic_msg_id_token(token)
+
+
+def _msg_id_defects_are_acceptable(token: object) -> bool:
+    return all(
+        isinstance(defect, ObsoleteHeaderDefect)
+        for defect in getattr(token, "all_defects", ())
+    )
 
 
 def _semantic_msg_id_token(token: object) -> str:
@@ -208,7 +216,7 @@ def _semantic_msg_id_token(token: object) -> str:
         token_type = getattr(node, "token_type", "")
         if token_type in {"cfws", "comment"}:
             return ""
-        if token_type == "quoted-string":
+        if token_type == "bare-quoted-string":
             return str(node)
         if isinstance(node, list):
             return "".join(render(child) for child in node)
@@ -218,8 +226,7 @@ def _semantic_msg_id_token(token: object) -> str:
 
 
 def _raw_header_values(raw_message: bytes, name: bytes) -> tuple[bytes, ...]:
-    """Return unfolded raw field values without structured-header coercion."""
-    normalized = raw_message.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    """Return raw field values while scanning only the RFC header block."""
     values: list[bytes] = []
     current_name: bytes | None = None
     current_value = bytearray()
@@ -231,7 +238,7 @@ def _raw_header_values(raw_message: bytes, name: bytes) -> tuple[bytes, ...]:
         current_name = None
         current_value = bytearray()
 
-    for line in normalized.split(b"\n"):
+    for line in _iter_header_lines(raw_message):
         if line == b"":
             flush()
             break
@@ -243,12 +250,31 @@ def _raw_header_values(raw_message: bytes, name: bytes) -> tuple[bytes, ...]:
         field_name, separator, field_value = line.partition(b":")
         if not separator:
             continue
-        current_name = field_name.strip().casefold()
+        current_name = field_name.strip().lower()
         current_value.extend(field_value.lstrip(b" \t"))
     else:
         flush()
 
     return tuple(values)
+
+
+def _iter_header_lines(raw_message: bytes) -> Iterable[bytes]:
+    """Yield header lines without allocating or scanning the message body."""
+    position = 0
+    length = len(raw_message)
+    while position < length:
+        lf = raw_message.find(b"\n", position)
+        cr = raw_message.find(b"\r", position)
+        endings = [index for index in (lf, cr) if index != -1]
+        if not endings:
+            yield raw_message[position:]
+            return
+        end = min(endings)
+        yield raw_message[position:end]
+        if raw_message[end:end + 2] == b"\r\n":
+            position = end + 2
+        else:
+            position = end + 1
 
 
 def _unfold_header_value(value: bytes) -> bytes:
@@ -331,13 +357,34 @@ def _collect_non_body_part_descriptors(
 def _part_descriptor(part: Message) -> dict[str, object]:
     payload = _descriptor_payload_bytes(part)
     return {
-        "content_id": _normalize_header_value(part.get("content-id", "")),
+        "content_id": _canonical_or_raw_msg_id_header(part, "content-id"),
         "content_type": part.get_content_type().casefold(),
         "disposition": (part.get_content_disposition() or "").casefold(),
         "filename": _normalize_header_value(part.get_filename() or ""),
         "sha256": sha256(payload).hexdigest(),
         "size": len(payload),
     }
+
+
+def _canonical_or_raw_msg_id_header(part: Message, name: str) -> str:
+    raw_values = [
+        value
+        for header_name, value in part.raw_items()
+        if header_name.casefold() == name.casefold()
+    ]
+    if len(raw_values) == 1:
+        canonical = _canonical_msg_id_text(raw_values[0])
+        if canonical is not None:
+            return canonical
+    if not raw_values:
+        return ""
+    encoded = [
+        base64.b64encode(
+            value.encode("utf-8", errors="surrogateescape")
+        ).decode("ascii")
+        for value in raw_values
+    ]
+    return "raw:" + ",".join(encoded)
 
 
 def _descriptor_payload_bytes(part: Message) -> bytes:
