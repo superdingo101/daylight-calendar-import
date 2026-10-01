@@ -1196,6 +1196,9 @@ def test_lossy_filename_raw_header_descriptor_handles_no_raw_headers() -> None:
         def raw_items(self) -> list[tuple[str, str]]:
             return []
 
+        def get(self, name: str, default: str = "") -> str:
+            return default
+
         def is_multipart(self) -> bool:
             return False
 
@@ -1476,6 +1479,12 @@ def test_transfer_descriptor_handles_non_string_raw_payload() -> None:
         def get(self, name: str, default: str = "") -> str:
             return "base64"
 
+        def as_bytes(self, policy: object = None) -> bytes:
+            return (
+                b"Content-Transfer-Encoding: base64\n\n"
+                b"cmF3"
+            )
+
     assert email_normalize._transfer_decode_descriptor(FakePart()) is None  # type: ignore[arg-type]
 
 
@@ -1491,6 +1500,12 @@ def test_transfer_descriptor_handles_non_base64_transfer_encoding() -> None:
 
         def get(self, name: str, default: str = "") -> str:
             return "quoted-printable"
+
+        def as_bytes(self, policy: object = None) -> bytes:
+            return (
+                b"Content-Transfer-Encoding: quoted-printable\n\n"
+                b"raw=ZZ"
+            )
 
     descriptor = email_normalize._transfer_decode_descriptor(FakePart())  # type: ignore[arg-type]
 
