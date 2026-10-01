@@ -1207,3 +1207,216 @@ def test_lossy_filename_raw_header_descriptor_handles_no_raw_headers() -> None:
 
     assert descriptor["filename"] == "file�.txt"
     assert "filename_raw_headers" not in descriptor
+
+
+def test_attachment_filename_preserves_significant_internal_whitespace() -> None:
+    def build(filename: str) -> bytes:
+        message = EmailMessage()
+        message["Subject"] = "Attachment"
+        message.set_content("Friday at 5")
+        message.add_attachment(
+            b"abc",
+            maintype="application",
+            subtype="octet-stream",
+            filename=filename,
+        )
+        return message.as_bytes(policy=policy.default)
+
+    assert stable_email_identity(build("file  one.txt")) != stable_email_identity(
+        build("file one.txt")
+    )
+
+
+def test_defective_encoded_word_filename_bytes_disambiguate_identity() -> None:
+    def build(encoded_filename: bytes) -> bytes:
+        return (
+            b"Subject: Attachment\r\n"
+            b"Content-Type: multipart/mixed; boundary=part\r\n\r\n"
+            b"--part\r\n"
+            b"Content-Type: text/plain\r\n\r\n"
+            b"Friday at 5\r\n"
+            b"--part\r\n"
+            b"Content-Type: application/octet-stream\r\n"
+            b"Content-Disposition: attachment; filename=\""
+            + encoded_filename
+            + b"\"\r\n"
+            b"Content-Transfer-Encoding: base64\r\n\r\n"
+            b"YWJj\r\n"
+            b"--part--\r\n"
+        )
+
+    first = build(b"=?utf-8?b?QQ=A?=")
+    second = build(b"=?utf-8?b?QQ=B?=")
+
+    assert stable_email_identity(first) != stable_email_identity(second)
+
+
+def test_lossy_filename_parameter_identity_ignores_header_folding_and_unrelated_params() -> None:
+    unfolded = (
+        b"Subject: Attachment\r\n"
+        b"Content-Type: multipart/mixed; boundary=part\r\n\r\n"
+        b"--part\r\n"
+        b"Content-Type: text/plain\r\n\r\n"
+        b"Friday at 5\r\n"
+        b"--part\r\n"
+        b"Content-Type: application/octet-stream\r\n"
+        b"Content-Disposition: attachment; filename=\"file\x80.txt\"\r\n"
+        b"Content-Transfer-Encoding: base64\r\n\r\n"
+        b"YWJj\r\n"
+        b"--part--\r\n"
+    )
+    folded = (
+        b"Subject: Attachment\r\n"
+        b"Content-Type: multipart/mixed; boundary=part\r\n\r\n"
+        b"--part\r\n"
+        b"Content-Type: application/octet-stream; x-extra=ignored\r\n"
+        b"Content-Disposition: attachment;\r\n"
+        b" filename = \"file\x80.txt\"\r\n"
+        b"Content-Transfer-Encoding: base64\r\n\r\n"
+        b"YWJj\r\n"
+        b"--part\r\n"
+        b"Content-Type: text/plain\r\n\r\n"
+        b"Friday at 5\r\n"
+        b"--part--\r\n"
+    )
+
+    assert stable_email_identity(unfolded) == stable_email_identity(folded)
+
+
+def test_defective_encoded_word_identity_headers_preserve_raw_values() -> None:
+    first = (
+        b"Subject: =?utf-8?b?QQ=A?=\r\n"
+        b"From: sender@example.test\r\n\r\n"
+        b"Friday at 5"
+    )
+    second = (
+        b"Subject: =?utf-8?b?QQ=B?=\r\n"
+        b"From: sender@example.test\r\n\r\n"
+        b"Friday at 5"
+    )
+
+    assert normalize_email(_envelope(first)).title == normalize_email(_envelope(second)).title
+    assert stable_email_identity(first) != stable_email_identity(second)
+
+
+def test_rejected_message_id_folding_does_not_change_fallback_identity() -> None:
+    unfolded = (
+        b"Message-ID: broken- id\r\n"
+        b"Subject: Same\r\n\r\n"
+        b"Friday at 5"
+    )
+    folded = (
+        b"Message-ID: broken-\r\n"
+        b" id\r\n"
+        b"Subject: Same\r\n\r\n"
+        b"Friday at 5"
+    )
+
+    assert stable_email_identity(unfolded) == stable_email_identity(folded)
+
+
+def test_related_root_rejects_ambiguous_content_id_child() -> None:
+    raw = (
+        b"Message-ID: <related-ambiguous@example.test>\r\n"
+        b"Content-Type: multipart/related; boundary=rel; start=\"<root@id>\"\r\n\r\n"
+        b"--rel\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-ID: <root@id>\r\n"
+        b"Content-ID: <other@id>\r\n\r\n"
+        b"Wrong ambiguous root\r\n"
+        b"--rel\r\n"
+        b"Content-Type: text/html\r\n"
+        b"Content-ID: <root@id>\r\n\r\n"
+        b"<p>Correct unique root</p>\r\n"
+        b"--rel--\r\n"
+    )
+
+    assert normalize_email(_envelope(raw)).text == "Correct unique root"
+
+
+def test_defective_base64_body_wire_bytes_disambiguate_identity() -> None:
+    def build(suffix: bytes) -> bytes:
+        return (
+            b"Subject: Defective transfer\r\n"
+            b"Content-Type: text/plain; charset=us-ascii\r\n"
+            b"Content-Transfer-Encoding: base64\r\n\r\n"
+            b"QQ=="
+            + suffix
+        )
+
+    first = build(b"\xff")
+    second = build(b"\xfe")
+
+    assert normalize_email(_envelope(first)).text == "A"
+    assert normalize_email(_envelope(second)).text == "A"
+    assert stable_email_identity(first) != stable_email_identity(second)
+
+
+def test_defective_base64_attachment_wire_bytes_disambiguate_identity() -> None:
+    def build(suffix: bytes) -> bytes:
+        return (
+            b"Subject: Attachment\r\n"
+            b"Content-Type: multipart/mixed; boundary=part\r\n\r\n"
+            b"--part\r\n"
+            b"Content-Type: text/plain\r\n\r\n"
+            b"Friday at 5\r\n"
+            b"--part\r\n"
+            b"Content-Type: application/octet-stream\r\n"
+            b"Content-Disposition: attachment; filename=\"file.bin\"\r\n"
+            b"Content-Transfer-Encoding: base64\r\n\r\n"
+            b"QQ=="
+            + suffix
+            + b"\r\n--part--\r\n"
+        )
+
+    assert stable_email_identity(build(b"\xff")) != stable_email_identity(build(b"\xfe"))
+
+
+def test_html_hidden_attribute_excludes_subtree() -> None:
+    assert html_to_text(
+        "<p>Visible Friday</p>"
+        "<div hidden>ignore the real event</div>"
+        "<p>Visible 5 PM</p>"
+    ) == "Visible Friday\nVisible 5 PM"
+
+
+def test_html_hidden_subtree_with_void_elements_remains_hidden() -> None:
+    assert html_to_text(
+        "<div hidden>hidden<img alt=\"secret\"><br>still hidden</div>"
+        "<p>Visible</p>"
+    ) == "Visible"
+
+
+def test_format_flowed_signature_separator_is_hard_join_boundary() -> None:
+    decoded = email_normalize._decode_format_flowed(
+        "hello \r\n-- \r\nsig",
+        delsp=False,
+    )
+
+    assert decoded == "hello \n-- \nsig"
+
+
+def test_encapsulated_multipart_boundary_does_not_change_identity() -> None:
+    def build(boundary: str) -> bytes:
+        return (
+            b"Subject: Outer\r\n"
+            b"Content-Type: multipart/mixed; boundary=outer\r\n\r\n"
+            b"--outer\r\n"
+            b"Content-Type: text/plain\r\n\r\n"
+            b"Outer invitation\r\n"
+            b"--outer\r\n"
+            b"Content-Type: message/rfc822\r\n\r\n"
+            b"Subject: Forwarded\r\n"
+            b"Content-Type: multipart/alternative; boundary="
+            + boundary.encode()
+            + b"\r\n\r\n--"
+            + boundary.encode()
+            + b"\r\nContent-Type: text/plain\r\n\r\nForwarded text\r\n--"
+            + boundary.encode()
+            + b"--\r\n"
+            b"--outer--\r\n"
+        )
+
+    assert stable_email_identity(build("inner-x")) == stable_email_identity(
+        build("inner-y")
+    )
