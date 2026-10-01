@@ -1036,7 +1036,7 @@ def test_parse_uidvalidity_rejects_out_of_range_values(value: int) -> None:
         DirectImapProtocolError,
         match="^IMAP server returned an invalid UIDVALIDITY$",
     ):
-        direct_imap_module._parse_uidvalidity(response, "INBOX")
+        direct_imap_module._parse_uidvalidity(response)
 
 
 def test_parse_uidvalidity_rejects_oversized_decimal_identifier() -> None:
@@ -1045,7 +1045,7 @@ def test_parse_uidvalidity_rejects_oversized_decimal_identifier() -> None:
         DirectImapProtocolError,
         match="^IMAP server returned an invalid UIDVALIDITY$",
     ):
-        direct_imap_module._parse_uidvalidity(response, "INBOX")
+        direct_imap_module._parse_uidvalidity(response)
 
 
 def test_parse_search_uids_accepts_identifier_boundaries() -> None:
@@ -1069,11 +1069,7 @@ def test_parse_search_uids_rejects_oversized_decimal_identifier() -> None:
         DirectImapProtocolError,
         match="^IMAP UID search returned an invalid identifier$",
     ):
-        direct_imap_module._parse_search_uids(
-            response,
-            mailbox="INBOX",
-            uid_validity=1234,
-        )
+        direct_imap_module._parse_search_uids(response)
 
 
 async def test_collect_default_clock_is_timezone_aware() -> None:
