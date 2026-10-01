@@ -419,14 +419,35 @@ def _collect_non_body_part_descriptors(
 
 def _part_descriptor(part: Message) -> dict[str, object]:
     payload = _descriptor_payload_bytes(part)
-    return {
+    filename = _normalize_header_value(part.get_filename() or "")
+    descriptor: dict[str, object] = {
         "content_id": _canonical_or_raw_msg_id_header(part, "content-id"),
         "content_type": part.get_content_type().casefold(),
         "disposition": (part.get_content_disposition() or "").casefold(),
-        "filename": _normalize_header_value(part.get_filename() or ""),
+        "filename": filename,
         "sha256": sha256(payload).hexdigest(),
         "size": len(payload),
     }
+    if "\ufffd" in filename:
+        raw_filename_headers = _raw_filename_header_descriptors(part)
+        if raw_filename_headers:
+            descriptor["filename_raw_headers"] = raw_filename_headers
+    return descriptor
+
+
+def _raw_filename_header_descriptors(part: Message) -> list[str]:
+    """Preserve raw filename-bearing MIME headers when decoding was lossy."""
+    values = [
+        value
+        for header_name, value in part.raw_items()
+        if header_name.casefold() in {"content-disposition", "content-type"}
+    ]
+    return [
+        base64.b64encode(
+            value.encode("utf-8", errors="surrogateescape")
+        ).decode("ascii")
+        for value in values
+    ]
 
 
 def _canonical_or_raw_msg_id_header(part: Message, name: str) -> str:
