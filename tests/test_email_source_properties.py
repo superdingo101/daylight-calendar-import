@@ -4,7 +4,8 @@ from datetime import UTC, datetime
 
 from hypothesis import given, settings, strategies as st
 
-from custom_components.daylight_calendar_import.email.source import (
+from custom_components.daylight_calendar_import.email_source import (
+    DirectImapReference,
     EmailDisposition,
     EmailEnvelope,
     EmailProvenance,
@@ -16,27 +17,31 @@ from custom_components.daylight_calendar_import.email.source import (
 PROPERTY_SETTINGS = settings(max_examples=100, deadline=None, derandomize=True)
 NONEMPTY_TEXT = st.text(min_size=1, max_size=80).filter(lambda value: bool(value.strip()))
 OPTIONAL_TEXT = st.one_of(st.none(), NONEMPTY_TEXT)
+POSITIVE_IMAP_ID = st.integers(min_value=1, max_value=2**32 - 1)
 
 
 @PROPERTY_SETTINGS
 @given(
     source_id=NONEMPTY_TEXT,
-    transport_reference=NONEMPTY_TEXT,
+    uid_validity=POSITIVE_IMAP_ID,
+    uid=POSITIVE_IMAP_ID,
     mailbox=OPTIONAL_TEXT,
     upstream_source_id=OPTIONAL_TEXT,
     raw_message=st.binary(max_size=512),
 )
 def test_email_envelope_contract_preserves_transport_neutral_values(
     source_id: str,
-    transport_reference: str,
+    uid_validity: int,
+    uid: int,
     mailbox: str | None,
     upstream_source_id: str | None,
     raw_message: bytes,
 ) -> None:
+    reference = DirectImapReference(uid_validity=uid_validity, uid=uid)
     provenance = EmailProvenance(
         source_id=source_id,
         source_type=EmailSourceType.DIRECT_IMAP,
-        transport_reference=transport_reference,
+        transport_reference=reference,
         mailbox=mailbox,
     )
     envelope = EmailEnvelope(
@@ -48,6 +53,7 @@ def test_email_envelope_contract_preserves_transport_neutral_values(
 
     assert envelope.raw_message == raw_message
     assert envelope.provenance == provenance
+    assert envelope.provenance.transport_reference == reference
     assert envelope.upstream_source_id == upstream_source_id
 
 

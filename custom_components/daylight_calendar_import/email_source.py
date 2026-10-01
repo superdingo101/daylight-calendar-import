@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
@@ -13,6 +13,24 @@ class EmailSourceType(StrEnum):
     """Configured transport used to collect inbound email."""
 
     DIRECT_IMAP = "direct_imap"
+
+
+@dataclass(frozen=True, slots=True)
+class DirectImapReference:
+    """Stable IMAP identity required for safe delayed acknowledgement."""
+
+    uid_validity: int
+    uid: int
+
+    def __post_init__(self) -> None:
+        """Reject identifiers that cannot be valid IMAP UID references."""
+        if self.uid_validity <= 0:
+            raise ValueError("uid_validity must be positive")
+        if self.uid <= 0:
+            raise ValueError("uid must be positive")
+
+
+type EmailTransportReference = DirectImapReference
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +48,7 @@ class EmailSourceConfig:
 
     source_id: str
     source_type: EmailSourceType = EmailSourceType.DIRECT_IMAP
-    disposition: EmailDisposition = EmailDisposition()
+    disposition: EmailDisposition = field(default_factory=EmailDisposition)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +57,7 @@ class EmailProvenance:
 
     source_id: str
     source_type: EmailSourceType
-    transport_reference: str
+    transport_reference: EmailTransportReference
     mailbox: str | None = None
 
 
@@ -48,7 +66,7 @@ class EmailEnvelope:
     """Fetched RFC message plus transport-neutral identity and provenance."""
 
     received_at: datetime
-    raw_message: bytes
+    raw_message: bytes = field(repr=False)
     provenance: EmailProvenance
     upstream_source_id: str | None = None
 
@@ -68,9 +86,9 @@ class EmailSource(Protocol):
 
     async def async_acknowledge(
         self,
-        envelope: EmailEnvelope,
+        provenance: EmailProvenance,
         *,
         disposition: EmailDisposition,
     ) -> None:
-        """Apply the requested upstream disposition after durable persistence."""
+        """Apply upstream disposition after provenance is durably persisted."""
         ...
