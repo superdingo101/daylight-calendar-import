@@ -962,15 +962,37 @@ def test_stable_identity_wraps_unexpected_normalization_failure(
         stable_email_identity(_plain_message())
 
 
-def test_raw_header_scan_skips_malformed_header_and_flushes_at_eof() -> None:
+def test_raw_header_scan_stops_at_malformed_header_boundary() -> None:
     raw = (
-        b"Malformed header without colon\n"
-        b"Message-ID: <eof@example.test>"
+        b"Subject: valid\r\n"
+        b"Malformed header without colon\r\n"
+        b"Message-ID: <body-fake@example.test>\r\n"
+        b"Body"
     )
 
-    assert email_normalize._raw_header_values(raw, b"message-id") == (
-        b"<eof@example.test>",
+    assert email_normalize._raw_header_values(raw, b"message-id") == ()
+    assert stable_email_identity(raw).startswith(FALLBACK_IDENTITY_PREFIX)
+
+
+def test_raw_header_scan_rejects_invalid_field_name_spacing() -> None:
+    raw = (
+        b"Message-ID : <fake@example.test>\r\n"
+        b"Message-ID: <later@example.test>\r\n"
+        b"Body"
     )
+
+    assert email_normalize._raw_header_values(raw, b"message-id") == ()
+    assert stable_email_identity(raw).startswith(FALLBACK_IDENTITY_PREFIX)
+
+
+def test_raw_header_scan_rejects_first_line_continuation() -> None:
+    raw = (
+        b" continued text\r\n"
+        b"Message-ID: <fake@example.test>\r\n"
+        b"Body"
+    )
+
+    assert email_normalize._raw_header_values(raw, b"message-id") == ()
 
 
 def test_iter_header_lines_handles_empty_input() -> None:
@@ -995,3 +1017,107 @@ def test_alternative_falls_back_to_nested_mixed_representation() -> None:
     source = normalize_email(_envelope(message.as_bytes(policy=policy.default)))
 
     assert source.text == "Plain portion\nHTML portion"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        b"Message-ID: <(comment)@example.test>\r\n\r\nBody one",
+        b"Message-ID: <local@(comment)>\r\n\r\nBody two",
+    ),
+)
+def test_semantically_empty_message_id_side_uses_fallback(raw: bytes) -> None:
+    identity = stable_email_identity(raw)
+
+    assert identity.startswith(FALLBACK_IDENTITY_PREFIX)
+
+
+def test_semantically_empty_message_id_side_keeps_body_in_identity() -> None:
+    first = b"Message-ID: <(one)@example.test>\r\n\r\nBody one"
+    second = b"Message-ID: <(two)@example.test>\r\n\r\nBody two"
+
+    assert stable_email_identity(first) != stable_email_identity(second)
+
+
+def test_lossy_identity_header_bytes_disambiguate_fallback() -> None:
+    first = (
+        b"Subject: Broken \x80 subject\r\n"
+        b"From: sender@example.test\r\n\r\n"
+        b"Friday at 5"
+    )
+    second = (
+        b"Subject: Broken \x81 subject\r\n"
+        b"From: sender@example.test\r\n\r\n"
+        b"Friday at 5"
+    )
+
+    first_source = normalize_email(_envelope(first))
+    second_source = normalize_email(_envelope(second))
+
+    assert first_source.title == second_source.title
+    assert stable_email_identity(first) != stable_email_identity(second)
+
+
+def test_lossy_identity_header_descriptor_is_omitted_for_clean_headers() -> None:
+    message = email_normalize._parse_message(
+        b"Subject: Clean subject\r\n\r\nBody"
+    )
+
+    assert email_normalize._lossy_identity_header_descriptors(
+        message,
+        b"Subject: Clean subject\r\n\r\nBody",
+    ) == {}
+
+
+def test_lossy_identity_header_descriptor_handles_missing_raw_header() -> None:
+    message = email_normalize._parse_message(
+        b"Subject: Broken \x80 subject\r\n\r\nBody"
+    )
+
+    assert email_normalize._lossy_identity_header_descriptors(
+        message,
+        b"From: sender@example.test\r\n\r\nBody",
+    ) == {}
+
+
+def test_header_line_iterator_stops_before_large_body() -> None:
+    body = b"x" * 100_000
+    raw = b"Subject: Test\nMessage-ID: <linear@example.test>\n\n" + body
+
+    assert list(email_normalize._iter_header_lines(raw)) == [
+        b"Subject: Test",
+        b"Message-ID: <linear@example.test>",
+        b"",
+    ]
+
+
+def test_header_line_iterator_yields_final_line_without_separator() -> None:
+    assert list(email_normalize._iter_header_lines(b"Subject: Test")) == [
+        b"Subject: Test"
+    ]
+
+
+@pytest.mark.parametrize("subtype", ("global", "news"))
+def test_unmarked_encapsulated_message_subtypes_are_atomic(
+    subtype: str,
+) -> None:
+    forwarded = EmailMessage()
+    forwarded["Subject"] = "Forwarded"
+    forwarded.set_content("Forwarded body must not reach parser text")
+
+    wrapper = EmailMessage()
+    wrapper.set_type(f"message/{subtype}")
+    wrapper.set_payload([forwarded])
+
+    outer = EmailMessage()
+    outer["Subject"] = "Outer"
+    outer.set_content("Outer invitation")
+    outer.make_mixed()
+    outer.attach(wrapper)
+
+    raw = outer.as_bytes(policy=policy.default)
+    source = normalize_email(_envelope(raw))
+
+    assert source.text == "Outer invitation"
+    assert "Forwarded body" not in source.text
+    assert stable_email_identity(raw).startswith(FALLBACK_IDENTITY_PREFIX)
