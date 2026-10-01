@@ -62,3 +62,17 @@ Active import history is retained even when completed records are pruned; the
 additional slots as needed. Active titles track the next pending event.
 Editing the leading pending draft refreshes that title in the same storage
 transaction without adding a new lifecycle transition.
+
+Submissions checkpoint a source summary with received and processing timestamps
+before invoking AI. Successful drafts transition to awaiting review in the
+same transaction as pending storage; empty or duplicate results receive a
+terminal status. A parser failure leaves a bounded `failed` activity record
+with generic retry guidance. Empty results with an upstream source ID remain
+retryable with that same ID. Canceled parsing records a failed status; an entry
+reload waits for live submissions to finish before replacing their store. If
+Home Assistant restarts during parsing, the unfinished processing record
+becomes failed with interruption guidance on load. In-flight parsing records
+are retained even when the completed-history limit is reached.
+No submitted text, attachment, or upstream source identifier is stored in
+these summaries. A submission that never reached parsing (for example, an
+invalid upload) still returns its action error directly.
