@@ -125,7 +125,13 @@ export class DaylightImportPanel extends HTMLElement {
       if (generation !== this._generation) return;
       this._status = error instanceof Error ? error.message : "Could not load imports. Try again.";
     }
+    const focusedNavigation = Array.from(this._content.querySelectorAll("nav button"))
+      .find(button => button === this.shadowRoot.activeElement)?.textContent;
     this.render();
+    if (focusedNavigation) {
+      Array.from(this._content.querySelectorAll("nav button"))
+        .find(button => button.textContent === focusedNavigation && !button.disabled)?.focus();
+    }
     if (this._returnFocusId) {
       const button = Array.from(this._content.querySelectorAll("button"))
         .find((candidate) => candidate.dataset.pendingId === this._returnFocusId);
