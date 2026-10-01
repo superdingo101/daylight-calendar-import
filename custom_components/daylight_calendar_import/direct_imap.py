@@ -565,16 +565,22 @@ class DirectImapSource:
     @classmethod
     async def _async_logout(cls, client: _ImapClient) -> None:
         try:
-            await client.logout()
+            response = await client.logout()
+            if response.result != "OK":
+                cls._abort_quietly(client)
         except Exception:
             cls._abort_quietly(client)
 
     @classmethod
     async def _async_logout_cancellation_safe(cls, client: _ImapClient) -> None:
-        """Finish LOGOUT even if the caller is cancelled, then propagate cancellation."""
+        """Finish LOGOUT despite repeated cancellation, then propagate cancellation."""
         logout_task = asyncio.create_task(cls._async_logout(client))
         try:
             await asyncio.shield(logout_task)
-        except asyncio.CancelledError:
-            await logout_task
-            raise
+        except asyncio.CancelledError as cancellation:
+            while not logout_task.done():
+                try:
+                    await asyncio.shield(logout_task)
+                except asyncio.CancelledError:
+                    continue
+            raise cancellation
