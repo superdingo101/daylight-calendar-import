@@ -499,6 +499,7 @@ export class DaylightImportPanel extends HTMLElement {
         heading.tabIndex = -1;
         content.append(heading, element("p", `Current status: ${activityLabel(item.status)}`),
           element("p", `Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
+        if (item.guidance) content.append(element("p", item.guidance));
         const list = document.createElement("ul");
         for (const transition of item.transitions) {
           const row = element("li", `${activityTime(transition.at, this._hass?.locale?.language)} · ${activityLabel(transition.type)}${transition.event_id ? ` · Event ID ${transition.event_id}` : ""}`);
