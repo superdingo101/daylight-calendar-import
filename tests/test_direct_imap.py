@@ -74,6 +74,8 @@ class FakeImapClient:
         self.search_calls: list[tuple[tuple[str, ...], str | None]] = []
         self.uid_calls: list[tuple[str, tuple[str, ...]]] = []
         self.logout_calls = 0
+        self.abort_calls = 0
+        self.hello_completed = False
 
     def get_state(self) -> str:
         return self.state
@@ -81,6 +83,7 @@ class FakeImapClient:
     async def wait_hello_from_server(self) -> None:
         if self.hello_error:
             raise self.hello_error
+        self.hello_completed = True
 
     async def login(self, user: str, password: str) -> FakeResponse:
         self.login_calls.append((user, password))
@@ -113,6 +116,9 @@ class FakeImapClient:
         if self.logout_error:
             raise self.logout_error
         return _ok(b"Logout completed")
+
+    def abort(self) -> None:
+        self.abort_calls += 1
 
 
 class FakeFactory:
@@ -179,7 +185,7 @@ def test_direct_imap_settings_and_source_config_hide_secret() -> None:
     assert settings.port == 993
     assert settings.mailbox == "INBOX"
     assert settings.search == "UnSeen UnDeleted"
-    assert settings.charset == "utf-8"
+    assert settings.charset == "us-ascii"
     assert settings.verify_ssl is True
     assert settings.timeout == 10.0
     assert "app-secret" not in repr(settings)
@@ -346,7 +352,7 @@ async def test_collect_enumerates_every_matching_uid_with_uid_fetch() -> None:
         for item in envelopes
     )
     assert all(item.upstream_source_id is None for item in envelopes)
-    assert client.search_calls == [(("UnSeen UnDeleted",), "utf-8")]
+    assert client.search_calls == [(("UnSeen UnDeleted",), "us-ascii")]
     assert client.uid_calls == [
         ("fetch", ("7", "(UID BODY.PEEK[])")),
         ("fetch", ("9", "(UID BODY.PEEK[])")),
@@ -425,41 +431,40 @@ async def test_collect_closes_connection_when_generator_is_closed() -> None:
 
 
 @pytest.mark.parametrize(
-    ("client", "error_type"),
+    ("client_kwargs", "error_type"),
     (
         (
-            FakeImapClient(login_response=_no(b"Invalid credentials")),
+            {"login_response": _no(b"Invalid credentials")},
             DirectImapAuthenticationError,
         ),
         (
-            FakeImapClient(select_response=_no(b"No such mailbox")),
+            {"select_response": _no(b"No such mailbox")},
             DirectImapMailboxError,
         ),
         (
-            FakeImapClient(
-                select_response=_ok(b"FLAGS (\\Seen)", b"Select completed")
-            ),
+            {"select_response": _ok(b"FLAGS (\\Seen)", b"Select completed")},
             DirectImapProtocolError,
         ),
         (
-            FakeImapClient(
-                select_response=_ok(
+            {
+                "select_response": _ok(
                     b"OK [UIDVALIDITY 4294967296] UIDs valid",
                     b"Select completed",
                 )
-            ),
+            },
             DirectImapProtocolError,
         ),
         (
-            FakeImapClient(select_response=_ok(object(), b"Select completed")),
+            {"select_response": _ok(object(), b"Select completed")},
             DirectImapProtocolError,
         ),
     ),
 )
 async def test_validate_rejects_auth_mailbox_and_uidvalidity_failures(
-    client: FakeImapClient,
+    client_kwargs: dict[str, object],
     error_type: type[Exception],
 ) -> None:
+    client = FakeImapClient(**client_kwargs)
     source, _ = _source(client)
 
     with pytest.raises(error_type):
@@ -468,14 +473,15 @@ async def test_validate_rejects_auth_mailbox_and_uidvalidity_failures(
     assert client.logout_calls == 1
 
 
-async def test_validate_cancellation_cleans_up_and_propagates() -> None:
+async def test_validate_cancellation_aborts_pre_greeting_transport() -> None:
     client = FakeImapClient(hello_error=asyncio.CancelledError())
     source, _ = _source(client)
 
     with pytest.raises(asyncio.CancelledError):
         await source.async_validate()
 
-    assert client.logout_calls == 1
+    assert client.abort_calls == 1
+    assert client.logout_calls == 0
 
 
 async def test_validate_rejects_unexpected_post_greeting_state() -> None:
@@ -508,7 +514,8 @@ async def test_validate_wraps_connection_failures(
     with pytest.raises(DirectImapConnectionError):
         await source.async_validate()
 
-    assert client.logout_calls == (0 if factory_error else 1)
+    assert client.logout_calls == 0
+    assert client.abort_calls == (0 if factory_error else 1)
 
 
 @pytest.mark.parametrize(
@@ -590,6 +597,30 @@ async def test_logout_failure_does_not_mask_success() -> None:
     source, _ = _source(client)
 
     await source.async_validate()
+    assert client.logout_calls == 1
+
+
+async def test_terminal_logout_finishes_before_cancellation_propagates() -> None:
+    logout_started = asyncio.Event()
+    logout_release = asyncio.Event()
+
+    class BlockingLogoutClient(FakeImapClient):
+        async def logout(self) -> FakeResponse:
+            self.logout_calls += 1
+            logout_started.set()
+            await logout_release.wait()
+            return _ok(b"Logout completed")
+
+    client = BlockingLogoutClient()
+    source, _ = _source(client)
+    task = asyncio.create_task(source.async_validate())
+
+    await logout_started.wait()
+    task.cancel()
+    logout_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
     assert client.logout_calls == 1
 
 

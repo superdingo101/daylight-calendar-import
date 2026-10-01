@@ -22,7 +22,7 @@ from .email_source import (
 
 DEFAULT_IMAP_PORT = 993
 DEFAULT_IMAP_SEARCH = "UnSeen UnDeleted"
-DEFAULT_IMAP_CHARSET = "utf-8"
+DEFAULT_IMAP_CHARSET = "us-ascii"
 DEFAULT_IMAP_TIMEOUT = 10.0
 
 _STATE_AUTH = "AUTH"
@@ -144,6 +144,54 @@ class _ImapClient(Protocol):
         """End the IMAP session."""
         ...
 
+    def abort(self) -> None:
+        """Close the transport without issuing an IMAP command."""
+        ...
+
+
+class _AioImapClientAdapter:
+    """Expose cancellation-safe transport abort for aioimaplib."""
+
+    def __init__(self, client: object) -> None:
+        self._client = client
+
+    def get_state(self) -> str:
+        return self._client.get_state()  # type: ignore[attr-defined,no-any-return]
+
+    async def wait_hello_from_server(self) -> None:
+        await self._client.wait_hello_from_server()  # type: ignore[attr-defined]
+
+    async def login(self, user: str, password: str) -> _Response:
+        return await self._client.login(user, password)  # type: ignore[attr-defined,no-any-return]
+
+    async def select(self, mailbox: str = "INBOX") -> _Response:
+        return await self._client.select(mailbox)  # type: ignore[attr-defined,no-any-return]
+
+    async def uid_search(
+        self, *criteria: str, charset: str | None = "utf-8"
+    ) -> _Response:
+        return await self._client.uid_search(  # type: ignore[attr-defined,no-any-return]
+            *criteria, charset=charset
+        )
+
+    async def uid(self, command: str, *criteria: str) -> _Response:
+        return await self._client.uid(  # type: ignore[attr-defined,no-any-return]
+            command, *criteria
+        )
+
+    async def logout(self) -> _Response:
+        return await self._client.logout()  # type: ignore[attr-defined,no-any-return]
+
+    def abort(self) -> None:
+        """Cancel an in-flight connect and close any established socket."""
+        client_task = getattr(self._client, "_client_task", None)
+        if client_task is not None and not client_task.done():
+            client_task.cancel()
+        protocol = getattr(self._client, "protocol", None)
+        transport = getattr(protocol, "transport", None)
+        if transport is not None:
+            transport.close()
+
 
 type _ClientFactory = Callable[..., _ImapClient]
 type _Clock = Callable[[], datetime]
@@ -153,7 +201,7 @@ def _default_client_factory(**kwargs: object) -> _ImapClient:
     """Create the runtime client without importing optional requirements in tests."""
     from aioimaplib import IMAP4_SSL
 
-    return IMAP4_SSL(**kwargs)
+    return _AioImapClientAdapter(IMAP4_SSL(**kwargs))
 
 
 def _utcnow() -> datetime:
@@ -311,11 +359,6 @@ def _extract_fetch_body(
             )
         marker_index, marker = body_markers[0]
         literal_index = marker_index + 1
-        if literal_index not in literal_indexes:
-            raise DirectImapProtocolError(
-                "IMAP UID fetch did not return a message body"
-            )
-
         literal = lines[literal_index]
         declared_size = int(marker.group(1))
         if len(literal) != declared_size:
@@ -363,7 +406,7 @@ class DirectImapSource:
     async def async_validate(self) -> None:
         """Validate connection, authentication, mailbox, and UID identity support."""
         client, _ = await self._async_open(self._settings.mailbox)
-        await self._async_logout(client)
+        await self._async_logout_cancellation_safe(client)
 
     async def async_collect(self) -> AsyncIterator[EmailEnvelope]:
         """Yield every message UID matching the configured IMAP search."""
@@ -412,7 +455,7 @@ class DirectImapSource:
                     ),
                 )
         finally:
-            await self._async_logout(client)
+            await self._async_logout_cancellation_safe(client)
 
     async def async_acknowledge(
         self,
@@ -448,8 +491,10 @@ class DirectImapSource:
         except (TimeoutError, OSError) as exc:
             raise DirectImapConnectionError("Unable to create IMAP connection") from exc
 
+        greeted = False
         try:
             await client.wait_hello_from_server()
+            greeted = True
             state = client.get_state()
             if state == _STATE_NONAUTH:
                 login_response = await client.login(
@@ -471,13 +516,22 @@ class DirectImapSource:
             uid_validity = _parse_uidvalidity(select_response, mailbox)
             return client, uid_validity
         except asyncio.CancelledError:
-            await asyncio.shield(self._async_logout(client))
+            if greeted:
+                await self._async_logout_cancellation_safe(client)
+            else:
+                client.abort()
             raise
         except DirectImapError:
-            await self._async_logout(client)
+            if greeted:
+                await self._async_logout_cancellation_safe(client)
+            else:
+                client.abort()
             raise
         except Exception:
-            await self._async_logout(client)
+            if greeted:
+                await self._async_logout_cancellation_safe(client)
+            else:
+                client.abort()
             raise DirectImapConnectionError("IMAP connection failed") from None
 
     @staticmethod
@@ -486,3 +540,13 @@ class DirectImapSource:
             await client.logout()
         except Exception:
             pass
+
+    @classmethod
+    async def _async_logout_cancellation_safe(cls, client: _ImapClient) -> None:
+        """Finish LOGOUT even if the caller is cancelled, then propagate cancellation."""
+        logout_task = asyncio.create_task(cls._async_logout(client))
+        try:
+            await asyncio.shield(logout_task)
+        except asyncio.CancelledError:
+            await logout_task
+            raise
