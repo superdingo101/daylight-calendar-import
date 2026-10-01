@@ -361,10 +361,6 @@ def _fallback_identity(
     if lossy_body_parts:
         payload["lossy_body_parts"] = lossy_body_parts
 
-    transfer_wire = _defective_transfer_wire_descriptor(message, raw_message)
-    if transfer_wire is not None:
-        payload["defective_transfer_wire"] = transfer_wire
-
     serialized = json.dumps(
         payload,
         ensure_ascii=False,
@@ -410,8 +406,12 @@ def _raw_encoded_words_are_defective(value: bytes) -> bool:
     if not matches:
         return True
 
-    marker_count = unfolded.count(b"=?")
-    if marker_count != len(matches):
+    cursor = 0
+    for match in matches:
+        if b"=?" in unfolded[cursor:match.start()]:
+            return True
+        cursor = match.end()
+    if b"=?" in unfolded[cursor:]:
         return True
 
     for match in matches:
@@ -504,8 +504,8 @@ def _filename_decoding_is_lossy(part: Message, filename: str) -> bool:
 
 
 def _raw_filename_parameter_descriptors(part: Message) -> list[str]:
-    """Return folding/spacing-insensitive raw filename parameter values."""
-    descriptors: list[str] = []
+    """Return canonical raw filename parameter values in semantic order."""
+    descriptors: list[tuple[tuple[object, ...], str]] = []
     for header_name, value in part.raw_items():
         lower_name = header_name.casefold()
         parameter_prefix = (
@@ -528,12 +528,33 @@ def _raw_filename_parameter_descriptors(part: Message) -> list[str]:
                 )
             ):
                 continue
-            descriptors.append(
-                canonical_key.decode("ascii", errors="replace")
+            key_text = canonical_key.decode("ascii", errors="replace")
+            descriptor = (
+                key_text
                 + ":"
                 + base64.b64encode(raw_value.strip(b" \t")).decode("ascii")
             )
-    return descriptors
+            descriptors.append(
+                (_mime_parameter_sort_key(key_text, parameter_prefix), descriptor)
+            )
+    return [descriptor for _, descriptor in sorted(descriptors)]
+
+
+def _mime_parameter_sort_key(
+    key: str,
+    parameter_prefix: str,
+) -> tuple[object, ...]:
+    if key == parameter_prefix:
+        return (0, -1, 0, key)
+    if key == parameter_prefix + "*":
+        return (0, -1, 1, key)
+    suffix = key[len(parameter_prefix) + 1 :]
+    extended = suffix.endswith("*")
+    if extended:
+        suffix = suffix[:-1]
+    if suffix.isdigit():
+        return (1, int(suffix), 1 if extended else 0, key)
+    return (2, 0, 0, key)
 
 
 def _split_mime_parameters(value: bytes) -> list[bytes]:
@@ -572,7 +593,9 @@ def _canonical_or_raw_msg_id_header(part: Message, name: str) -> str:
         return ""
     encoded = [
         base64.b64encode(
-            value.encode("utf-8", errors="surrogateescape")
+            _unfold_header_value(
+                value.encode("utf-8", errors="surrogateescape")
+            )
         ).decode("ascii")
         for value in raw_values
     ]
@@ -600,13 +623,22 @@ def _semantic_part_fingerprint(part: Message) -> dict[str, object]:
         for name in ("date", "from", "sender", "reply-to", "to", "cc", "subject")
         if part.get_all(name, [])
     }
+    filename = part.get_filename() or ""
     fingerprint: dict[str, object] = {
         "content_id": _canonical_or_raw_msg_id_header(part, "content-id"),
         "content_type": part.get_content_type().casefold(),
+        "content_type_parameters": _semantic_content_type_parameters(part),
         "disposition": (part.get_content_disposition() or "").casefold(),
-        "filename": part.get_filename() or "",
+        "filename": filename,
         "headers": headers,
     }
+    lossy_headers = _lossy_part_identity_header_descriptors(part)
+    if lossy_headers:
+        fingerprint["lossy_identity_headers"] = lossy_headers
+    if _filename_decoding_is_lossy(part, filename):
+        raw_filename_parameters = _raw_filename_parameter_descriptors(part)
+        if raw_filename_parameters:
+            fingerprint["filename_raw_parameters"] = raw_filename_parameters
     if part.is_multipart():
         children = cast(list[Message], part.get_payload())
         fingerprint["children"] = [
@@ -620,6 +652,57 @@ def _semantic_part_fingerprint(part: Message) -> dict[str, object]:
     if (transfer := _transfer_decode_descriptor(part)) is not None:
         fingerprint["transfer_wire"] = transfer
     return fingerprint
+
+
+def _lossy_part_identity_header_descriptors(
+    part: Message,
+) -> dict[str, list[str]]:
+    descriptors: dict[str, list[str]] = {}
+    raw_items = list(part.raw_items())
+    for name in _IDENTITY_HEADERS:
+        header_values = list(part.get_all(name, []))
+        if not header_values:
+            continue
+        raw_values = [
+            value.encode("utf-8", errors="surrogateescape")
+            for header_name, value in raw_items
+            if header_name.casefold() == name
+        ]
+        normalized_values = [
+            _normalize_header_value(str(value)) for value in header_values
+        ]
+        defective = any(
+            getattr(value, "defects", ()) or getattr(value, "all_defects", ())
+            for value in header_values
+        ) or any(_raw_encoded_words_are_defective(value) for value in raw_values)
+        if not defective and not any("\ufffd" in value for value in normalized_values):
+            continue
+        descriptors[name] = [
+            base64.b64encode(_unfold_header_value(value)).decode("ascii")
+            for value in raw_values
+        ]
+    return descriptors
+
+
+def _semantic_content_type_parameters(part: Message) -> list[list[str]]:
+    parameters: list[list[str]] = []
+    for name, value in part.get_params(
+        header="content-type",
+        failobj=[],
+        unquote=True,
+    )[1:]:
+        canonical_name = str(name).casefold()
+        if canonical_name == "boundary":
+            continue
+        canonical_value = str(value).strip()
+        if canonical_name in {"charset", "format", "delsp"}:
+            canonical_value = canonical_value.casefold()
+        elif canonical_name == "start":
+            canonical_value = (
+                _canonical_msg_id_text(canonical_value) or canonical_value
+            )
+        parameters.append([canonical_name, canonical_value])
+    return sorted(parameters)
 
 
 def _extract_part_text(part: Message) -> str:
@@ -647,10 +730,10 @@ def _extract_part_result(
     candidates = [_extract_part_result(child) for child in children]
     if subtype == "alternative":
         for preferred_type in ("text/plain", "text/html"):
-            for text, leaves, effective_type in candidates:
+            for text, leaves, effective_type in reversed(candidates):
                 if effective_type == preferred_type and text:
                     return text, leaves, effective_type
-        for text, leaves, effective_type in candidates:
+        for text, leaves, effective_type in reversed(candidates):
             if text:
                 return text, leaves, effective_type
         return "", (), ""
@@ -674,15 +757,43 @@ def _extract_part_result(
 def _related_root(part: Message, children: list[Message]) -> Message | None:
     if not children:
         return None
-    start = _canonical_msg_id_text(
-        part.get_param("start", header="content-type") or ""
-    )
-    if start:
-        for child in children:
-            content_id = _unique_canonical_msg_id_header(child, "content-id")
-            if content_id == start:
-                return child
+    start = _unique_content_type_parameter(part, "start")
+    canonical_start = _canonical_msg_id_text(start or "")
+    if canonical_start:
+        matches = [
+            child
+            for child in children
+            if _unique_canonical_msg_id_header(child, "content-id")
+            == canonical_start
+        ]
+        if len(matches) == 1:
+            return matches[0]
     return children[0]
+
+
+def _unique_content_type_parameter(
+    part: Message,
+    parameter_name: str,
+) -> str | None:
+    occurrences = 0
+    for header_name, raw_value in part.raw_items():
+        if header_name.casefold() != "content-type":
+            continue
+        raw = _unfold_header_value(
+            raw_value.encode("utf-8", errors="surrogateescape")
+        )
+        for parameter in _split_mime_parameters(raw)[1:]:
+            key, separator, _ = parameter.partition(b"=")
+            if (
+                separator
+                and key.strip().decode("ascii", errors="ignore").casefold()
+                == parameter_name.casefold()
+            ):
+                occurrences += 1
+    if occurrences != 1:
+        return None
+    value = part.get_param(parameter_name, header="content-type")
+    return str(value) if value is not None else None
 
 
 def _unique_canonical_msg_id_header(part: Message, name: str) -> str | None:
@@ -744,54 +855,65 @@ def _decode_text_payload(part: Message) -> tuple[str, bool, str, bytes]:
         return payload.decode(charset, errors="replace"), True, charset, payload
 
 
-def _defective_transfer_wire_descriptor(
-    message: Message,
-    raw_message: bytes,
-) -> dict[str, object] | None:
-    encodings = sorted(
-        {
-            _normalize_header_value(
-                part.get("content-transfer-encoding", "")
-            ).casefold()
-            for part in message.walk()
-            if any(
-                "base64" in type(defect).__name__.casefold()
-                or "quotedprintable" in type(defect).__name__.casefold()
-                for defect in getattr(part, "defects", ())
-            )
-        }
-    )
-    if not encodings:
-        return None
-    return {
-        "encodings": encodings,
-        "sha256": sha256(raw_message).hexdigest(),
-        "size": len(raw_message),
-    }
-
-
 def _transfer_decode_descriptor(part: Message) -> dict[str, object] | None:
-    defects = getattr(part, "defects", ())
-    if not any(
-        "base64" in type(defect).__name__.casefold()
-        or "quotedprintable" in type(defect).__name__.casefold()
-        for defect in defects
-    ):
-        return None
-    raw_payload = part.get_payload(decode=False)
-    if not isinstance(raw_payload, str):
-        return None
-    wire = raw_payload.encode("utf-8", errors="surrogateescape")
     cte = _normalize_header_value(
         part.get("content-transfer-encoding", "")
     ).casefold()
+    if cte not in {"base64", "quoted-printable"}:
+        return None
+
+    wire = _serialized_part_payload_bytes(part)
     if cte == "base64":
-        wire = bytes(byte for byte in wire if byte not in b" \t\r\n")
+        canonical_wire = bytes(
+            byte for byte in wire if byte not in b" \t\r\n"
+        )
+        try:
+            base64.b64decode(canonical_wire, validate=True)
+        except (binascii.Error, ValueError):
+            return {
+                "encoding": cte,
+                "sha256": sha256(canonical_wire).hexdigest(),
+                "size": len(canonical_wire),
+            }
+        return None
+
+    canonical_wire = wire.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    if not _quoted_printable_wire_is_defective(canonical_wire):
+        return None
     return {
         "encoding": cte,
-        "sha256": sha256(wire).hexdigest(),
-        "size": len(wire),
+        "sha256": sha256(canonical_wire).hexdigest(),
+        "size": len(canonical_wire),
     }
+
+
+def _serialized_part_payload_bytes(part: Message) -> bytes:
+    serialized = part.as_bytes(policy=policy.default)
+    separator = b"\n\n"
+    if separator not in serialized:
+        return b""
+    return serialized.split(separator, 1)[1]
+
+
+def _quoted_printable_wire_is_defective(wire: bytes) -> bool:
+    index = 0
+    while index < len(wire):
+        if wire[index:index + 1] != b"=":
+            index += 1
+            continue
+        if index + 1 >= len(wire):
+            return True
+        if wire[index + 1:index + 2] == b"\n":
+            index += 2
+            continue
+        if index + 2 >= len(wire):
+            return True
+        first = wire[index + 1:index + 2].lower()
+        second = wire[index + 2:index + 3].lower()
+        if first not in b"0123456789abcdef" or second not in b"0123456789abcdef":
+            return True
+        index += 3
+    return False
 
 
 def _lossy_body_part_descriptors(message: Message) -> list[dict[str, object]]:
