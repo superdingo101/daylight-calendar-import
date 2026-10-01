@@ -930,3 +930,68 @@ def test_raw_header_scan_stops_before_message_body() -> None:
 def test_raw_header_scan_supports_non_crlf_line_endings(raw: bytes) -> None:
     [value] = email_normalize._raw_header_values(raw, b"message-id")
     assert value.startswith(b"<")
+
+
+def test_normalize_email_re_raises_normalization_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_parse(raw_message: bytes) -> object:
+        raise EmailNormalizationError("sentinel normalization failure")
+
+    monkeypatch.setattr(email_normalize, "_parse_message", fail_parse)
+
+    with pytest.raises(
+        EmailNormalizationError,
+        match="^sentinel normalization failure$",
+    ):
+        normalize_email(_envelope(_plain_message()))
+
+
+def test_stable_identity_wraps_unexpected_normalization_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_identity(message: object, raw_message: bytes) -> str:
+        raise RuntimeError("unexpected identity failure")
+
+    monkeypatch.setattr(email_normalize, "_message_identity", fail_identity)
+
+    with pytest.raises(
+        EmailNormalizationError,
+        match="^Email message could not be normalized$",
+    ):
+        stable_email_identity(_plain_message())
+
+
+def test_raw_header_scan_skips_malformed_header_and_flushes_at_eof() -> None:
+    raw = (
+        b"Malformed header without colon\n"
+        b"Message-ID: <eof@example.test>"
+    )
+
+    assert email_normalize._raw_header_values(raw, b"message-id") == (
+        b"<eof@example.test>",
+    )
+
+
+def test_iter_header_lines_handles_empty_input() -> None:
+    assert list(email_normalize._iter_header_lines(b"")) == []
+
+
+def test_alternative_falls_back_to_nested_mixed_representation() -> None:
+    message = EmailMessage()
+    message["Message-ID"] = "<mixed-alternative@example.test>"
+    message.make_alternative()
+
+    mixed = EmailMessage()
+    mixed.make_mixed()
+    plain = EmailMessage()
+    plain.set_content("Plain portion")
+    html = EmailMessage()
+    html.set_content("<p>HTML portion</p>", subtype="html")
+    mixed.attach(plain)
+    mixed.attach(html)
+    message.attach(mixed)
+
+    source = normalize_email(_envelope(message.as_bytes(policy=policy.default)))
+
+    assert source.text == "Plain portion\nHTML portion"
