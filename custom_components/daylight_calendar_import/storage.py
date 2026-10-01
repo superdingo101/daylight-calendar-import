@@ -136,6 +136,8 @@ class PendingImport:
         source_title: str | None = None,
         warnings: Iterable[str] = (),
         duplicate_events: int = 0,
+        activity_id: str | None = None,
+        received_at: str | None = None,
     ) -> PendingImport:
         """Create a new pending import with stable persisted metadata."""
         source_text = source_text.strip()
@@ -147,8 +149,8 @@ class PendingImport:
             raise ValueError("pending import must contain at least one event")
 
         return cls(
-            id=str(uuid4()),
-            created_at=datetime.now(UTC).isoformat(),
+            id=activity_id or str(uuid4()),
+            created_at=received_at or datetime.now(UTC).isoformat(),
             source_text=source_text,
             events=event_tuple,
             source_fingerprint=source_fingerprint,
@@ -255,6 +257,13 @@ class PendingImportStore:
         self._seen_event_fingerprints = tuple(
             data.get(_STORAGE_SEEN_EVENTS, ())
         )
+        interrupted = [item["id"] for item in self._activity if item["status"] == "processing"]
+        for activity_id in interrupted:
+            self._activity = self._finish_submission(
+                activity_id, "failed", "Processing was interrupted. Check the source and submit it again."
+            )
+        if interrupted:
+            await self._async_save(self._items, activity=self._activity)
 
     def get(self, pending_id: str) -> PendingImport | None:
         """Return one pending import by ID."""
@@ -278,6 +287,65 @@ class PendingImportStore:
     def get_activity(self, pending_id: str) -> dict[str, Any] | None:
         """Return a durable activity record even after an import leaves review."""
         return next((deepcopy(item) for item in self._activity if item["id"] == pending_id), None)
+
+    def _protected_activity_ids(self) -> set[str]:
+        """Keep pending imports and live parser checkpoints outside the history cap."""
+        return set(self._items) | {item["id"] for item in self._activity if item["status"] == "processing"}
+
+    async def async_begin_submission(self, *, source_kind: str, source_title: str | None,
+                                     received_at: datetime) -> str:
+        """Checkpoint a private source summary before invoking the parser."""
+        async with self._lock:
+            identifier = str(uuid4())
+            received = received_at.isoformat()
+            processing = datetime.now(UTC).isoformat()
+            record = {
+                "id": identifier, "created_at": received, "source_kind": source_kind,
+                "source_title": source_title, "title": source_title or "Submission",
+                "created_count": 0, "rejected_count": 0, "status": "processing",
+                "transitions": [{"type": "received", "at": received, "event_id": None},
+                                {"type": "processing", "at": processing, "event_id": None}],
+            }
+            history = list(self._activity) + [record]
+            active_ids = self._protected_activity_ids()
+            active_ids.add(identifier)
+            while sum(item["id"] not in active_ids for item in history) > ACTIVITY_LIMIT:
+                history.pop(next(index for index, item in enumerate(history)
+                                 if item["id"] not in active_ids))
+            activity = tuple(history)
+            await self._async_save(self._items, activity=activity)
+            self._activity = activity
+            return identifier
+
+    async def async_record_parse_failure(self, activity_id: str) -> None:
+        """Finalize a failed parse while keeping the original source private."""
+        async with self._lock:
+            activity = self._finish_submission(
+                activity_id, "failed", "Parsing failed. Check the configured AI Task and submit the source again."
+            )
+            await self._async_save(self._items, activity=activity)
+            self._activity = activity
+
+    def _finish_submission(self, activity_id: str | None, status: str,
+                           guidance: str | None = None) -> tuple[dict[str, Any], ...]:
+        """Propose a terminal source status in the next storage transaction."""
+        if activity_id is None:
+            return self._activity
+        record = self.get_activity(activity_id)
+        if record is None:
+            return self._activity
+        record["status"] = status
+        if guidance is not None:
+            record["guidance"] = guidance
+        record["transitions"].append({"type": status, "at": datetime.now(UTC).isoformat(),
+                                      "event_id": None})
+        history = [item if item["id"] != activity_id else record for item in self._activity]
+        active_ids = self._protected_activity_ids()
+        active_ids.discard(activity_id)
+        while sum(item["id"] not in active_ids for item in history) > ACTIVITY_LIMIT:
+            history.pop(next(index for index, item in enumerate(history)
+                             if item["id"] not in active_ids))
+        return tuple(history)
 
     def _transition(
         self, pending: PendingImport, kind: str, *, event_id: str | None = None,
@@ -305,7 +373,7 @@ class PendingImportStore:
             "transitions": transitions[-ACTIVITY_TRANSITIONS_PER_IMPORT:],
         }
         history = list(item for item in self._activity if item["id"] != pending.id) + [record]
-        active_ids = set(self._items)
+        active_ids = self._protected_activity_ids()
         if remaining == ():
             active_ids.discard(pending.id)
         elif kind == "review_ready" or remaining:
@@ -381,6 +449,7 @@ class PendingImportStore:
         source_kind: str = "manual_text",
         source_title: str | None = None,
         warnings: Iterable[str] = (),
+        activity_id: str | None = None,
     ) -> PendingImportAddResult:
         """Persist only events not already pending or handled."""
         source_text = source_text.strip()
@@ -396,6 +465,10 @@ class PendingImportStore:
 
         async with self._lock:
             if source_fp is not None and self._source_fingerprint_exists(source_fp):
+                activity = self._finish_submission(activity_id, "duplicate")
+                if activity_id is not None:
+                    await self._async_save(self._items, activity=activity)
+                    self._activity = activity
                 return PendingImportAddResult(
                     pending=None,
                     duplicate_source=True,
@@ -420,7 +493,10 @@ class PendingImportStore:
                 accepted_fingerprints.add(fingerprint)
 
             if not accepted_events:
-                if source_fp is not None:
+                status = "duplicate" if duplicate_events else "failed"
+                activity = self._finish_submission(activity_id, status,
+                    None if duplicate_events else "No reviewable events were found. Check the source and submit it again.")
+                if source_fp is not None and duplicate_events:
                     seen_sources = _remember_fingerprints(
                         self._seen_source_fingerprints,
                         (source_fp,),
@@ -428,8 +504,12 @@ class PendingImportStore:
                     await self._async_save(
                         self._items,
                         seen_source_fingerprints=seen_sources,
+                        activity=activity,
                     )
                     self._seen_source_fingerprints = seen_sources
+                elif activity_id is not None:
+                    await self._async_save(self._items, activity=activity)
+                self._activity = activity
                 return PendingImportAddResult(
                     pending=None,
                     duplicate_source=False,
@@ -445,6 +525,8 @@ class PendingImportStore:
                 source_title=source_title,
                 warnings=warnings,
                 duplicate_events=duplicate_events,
+                activity_id=activity_id,
+                received_at=self.get_activity(activity_id)["created_at"] if activity_id else None,
             )
             items = dict(self._items)
             items[pending.id] = pending
