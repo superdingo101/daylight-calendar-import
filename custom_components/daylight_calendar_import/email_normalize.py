@@ -11,7 +11,9 @@ from email.parser import BytesParser
 from hashlib import sha256
 from html.parser import HTMLParser
 import base64
+import binascii
 import json
+import re
 from typing import cast
 from uuid import uuid4
 
@@ -66,6 +68,9 @@ _VOID_HTML_TAGS = frozenset(
     {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 )
 _SAFE_LINK_PREFIXES = ("http://", "https://", "mailto:")
+_ENCODED_WORD_RE = re.compile(
+    rb"=\?([^?\s]+)\?([bBqQ])\?([^?]*)\?="
+)
 
 
 class EmailNormalizationError(ValueError):
@@ -356,6 +361,10 @@ def _fallback_identity(
     if lossy_body_parts:
         payload["lossy_body_parts"] = lossy_body_parts
 
+    transfer_wire = _defective_transfer_wire_descriptor(message, raw_message)
+    if transfer_wire is not None:
+        payload["defective_transfer_wire"] = transfer_wire
+
     serialized = json.dumps(
         payload,
         ensure_ascii=False,
@@ -377,19 +386,56 @@ def _lossy_identity_header_descriptors(
             _normalize_header_value(str(value))
             for value in header_values
         ]
+        raw_values = _raw_header_values(raw_message, name.encode("ascii"))
         defective = any(
             getattr(value, "defects", ()) or getattr(value, "all_defects", ())
             for value in header_values
-        )
+        ) or any(_raw_encoded_words_are_defective(value) for value in raw_values)
         if not defective and not any("\ufffd" in value for value in normalized_values):
             continue
-        raw_values = _raw_header_values(raw_message, name.encode("ascii"))
         if raw_values:
             descriptors[name] = [
                 base64.b64encode(_unfold_header_value(value)).decode("ascii")
                 for value in raw_values
             ]
     return descriptors
+
+
+def _raw_encoded_words_are_defective(value: bytes) -> bool:
+    unfolded = _unfold_header_value(value)
+    if b"=?" not in unfolded:
+        return False
+
+    matches = list(_ENCODED_WORD_RE.finditer(unfolded))
+    if not matches:
+        return True
+
+    marker_count = unfolded.count(b"=?")
+    if marker_count != len(matches):
+        return True
+
+    for match in matches:
+        encoding = match.group(2).lower()
+        payload = match.group(3)
+        if encoding == b"b":
+            try:
+                base64.b64decode(payload, validate=True)
+            except (binascii.Error, ValueError):
+                return True
+            continue
+        index = 0
+        while index < len(payload):
+            if payload[index:index + 1] != b"=":
+                index += 1
+                continue
+            if (
+                index + 2 >= len(payload)
+                or payload[index + 1:index + 2].lower() not in b"0123456789abcdef"
+                or payload[index + 2:index + 3].lower() not in b"0123456789abcdef"
+            ):
+                return True
+            index += 3
+    return False
 
 
 def _non_body_part_descriptors(message: Message) -> list[dict[str, object]]:
@@ -696,6 +742,32 @@ def _decode_text_payload(part: Message) -> tuple[str, bool, str, bytes]:
         return payload.decode("utf-8", errors="replace"), True, charset, payload
     except UnicodeDecodeError:
         return payload.decode(charset, errors="replace"), True, charset, payload
+
+
+def _defective_transfer_wire_descriptor(
+    message: Message,
+    raw_message: bytes,
+) -> dict[str, object] | None:
+    encodings = sorted(
+        {
+            _normalize_header_value(
+                part.get("content-transfer-encoding", "")
+            ).casefold()
+            for part in message.walk()
+            if any(
+                "base64" in type(defect).__name__.casefold()
+                or "quotedprintable" in type(defect).__name__.casefold()
+                for defect in getattr(part, "defects", ())
+            )
+        }
+    )
+    if not encodings:
+        return None
+    return {
+        "encodings": encodings,
+        "sha256": sha256(raw_message).hexdigest(),
+        "size": len(raw_message),
+    }
 
 
 def _transfer_decode_descriptor(part: Message) -> dict[str, object] | None:
