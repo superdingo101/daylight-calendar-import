@@ -511,3 +511,44 @@ test("bulk confirmation can be canceled without calling a review action", async 
   assert.equal(globalThis.focusedNode.dataset.batchAction, "reject");
   assert.deepEqual(calls, ["list_pending", "get_pending"]);
 });
+
+test("view navigation exposes the current page and remains keyboard reachable", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => request.service === "list_pending" ?
+    {response: {imports: []}} : {response: {activity: []}}};
+  await flush();
+  const navigation = find(panel._content, "nav");
+  assert.equal(navigation.attributes["aria-label"], "Daylight views");
+  assert.equal(navigation.querySelectorAll("button")[0].attributes["aria-current"], "page");
+  assert.equal(navigation.querySelectorAll("button")[1].disabled, false);
+  navigation.querySelectorAll("button")[1].click();
+  await flush();
+  assert.equal(find(panel._content, "nav").querySelectorAll("button")[1].attributes["aria-current"], "page");
+  assert.equal(globalThis.focusedNode.textContent, "Review inbox");
+  find(panel._content, "nav").querySelectorAll("button")[0].click();
+  await flush();
+  assert.equal(find(panel._content, "nav").querySelectorAll("button")[0].attributes["aria-current"], "page");
+  assert.equal(globalThis.focusedNode.textContent, "Refresh");
+});
+
+test("mobile buttons include padding in their full width and return focus stays put", async () => {
+  const panel = new DaylightImportPanel();
+  assert.match(find(panel.shadowRoot, "style").textContent, /button \{ box-sizing: border-box;/);
+  panel.hass = {callWS: async request => request.service === "list_pending" ?
+    {response: {imports: []}} : {response: {activity: []}}};
+  await flush();
+  await panel.showActivity();
+  let release;
+  panel.hass = {callWS: () => new Promise(resolve => {release = resolve;})};
+  const returning = panel.showReview();
+  assert.equal(globalThis.focusedNode, panel._refreshButton);
+  const other = find(panel._content, "nav").querySelectorAll("button")[1];
+  assert.equal(other.disabled, false);
+  other.focus();
+  panel.shadowRoot.activeElement = other;
+  release({response: {imports: []}});
+  await returning;
+  assert.equal(globalThis.focusedNode.textContent, "Recent activity");
+  assert.notEqual(globalThis.focusedNode, other);
+  assert.equal(find(panel._content, "nav").querySelectorAll("button")[1], globalThis.focusedNode);
+});
