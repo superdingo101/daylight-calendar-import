@@ -1,0 +1,77 @@
+name: Final mutation gate
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    # Skipped jobs report success on GitHub, so skipped/non-eligible events must
+    # use a different check name. Only a real mutation run can publish the
+    # required "Mutation score" context.
+    name: ${{ (github.event.pull_request.head.repo.full_name == github.repository && ((github.event.action == 'labeled' && github.event.label.name == 'mutation-ready') || ((github.event.action == 'synchronize' || github.event.action == 'reopened') && contains(github.event.pull_request.labels.*.name, 'mutation-ready')))) && 'Mutation score' || 'Mutation gate not requested' }}
+    if: >
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        (github.event.action == 'labeled' && github.event.label.name == 'mutation-ready') ||
+        (
+          (github.event.action == 'synchronize' || github.event.action == 'reopened') &&
+          contains(github.event.pull_request.labels.*.name, 'mutation-ready')
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements_test.txt
+
+      - name: Start with clean mutation state
+        run: rm -rf mutants
+
+      - name: Run mutation tests
+        run: mutmut run
+
+      - name: Export and enforce mutation statistics
+        run: |
+          mutmut export-cicd-stats
+          python scripts/check_mutation_score.py
+
+      - name: Export surviving mutants
+        if: always()
+        run: |
+          mutmut results > mutation-survivors.txt || true
+          sed -n 's/^    \(.*\): survived$/\1/p' mutation-survivors.txt > mutation-survivor-names.txt
+          : > mutation-survivor-report.txt
+          while IFS= read -r mutant; do
+            {
+              echo "===== $mutant ====="
+              mutmut show "$mutant"
+              echo
+            } >> mutation-survivor-report.txt
+          done < mutation-survivor-names.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-results
+          path: |
+            mutants/mutmut-cicd-stats.json
+            mutation-survivors.txt
+            mutation-survivor-names.txt
+            mutation-survivor-report.txt
