@@ -169,6 +169,26 @@ def test_multipart_mixed_combines_inline_text_and_skips_text_attachment() -> Non
     assert "Internal notes" not in source.text
 
 
+def test_inline_text_part_with_filename_is_not_body_text() -> None:
+    message = EmailMessage()
+    message["Message-ID"] = "<inline-file@example.test>"
+    message.set_content("Main invitation")
+    attachment = EmailMessage()
+    attachment.set_content("Inline file contents")
+    attachment.add_header(
+        "Content-Disposition",
+        "inline",
+        filename="details.txt",
+    )
+    message.make_mixed()
+    message.attach(attachment)
+
+    source = normalize_email(_envelope(message.as_bytes(policy=policy.default)))
+
+    assert source.text == "Main invitation"
+    assert "Inline file contents" not in source.text
+
+
 def test_empty_text_email_normalizes_without_inventing_content() -> None:
     message = EmailMessage()
     message["Subject"] = "Attachment only"
@@ -271,6 +291,16 @@ def test_duplicate_message_id_headers_use_fallback_identity() -> None:
     )
 
     identity = stable_email_identity(raw)
+
+    assert identity.startswith(FALLBACK_IDENTITY_PREFIX)
+
+
+def test_defective_single_message_id_uses_fallback_identity() -> None:
+    identity = stable_email_identity(
+        b"Message-ID: not-a-valid-message-id\r\n"
+        b"Subject: Defective ID\r\n\r\n"
+        b"Friday at 5"
+    )
 
     assert identity.startswith(FALLBACK_IDENTITY_PREFIX)
 
