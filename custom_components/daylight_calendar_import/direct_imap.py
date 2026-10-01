@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -237,18 +238,28 @@ def _parse_search_uids(
     return tuple(uids)
 
 
-def _extract_fetch_body(response: _Response, *, expected_uid: int) -> bytes:
+def _extract_fetch_body(
+    response: _Response,
+    *,
+    expected_uid: int,
+) -> bytes | None:
     _require_ok(response, "IMAP UID fetch failed")
-    if len(response.lines) < 2:
-        raise DirectImapProtocolError("IMAP UID fetch did not return a message body")
+    if not response.lines:
+        return None
 
     header = _line_bytes(
         response.lines[0],
         "IMAP UID fetch returned malformed response data",
     )
     match = _FETCH_UID_RE.search(header)
-    if match is None or int(match.group(1)) != expected_uid:
+    if match is None:
+        if len(response.lines) == 1:
+            return None
+        raise DirectImapProtocolError("IMAP UID fetch did not identify a message")
+    if int(match.group(1)) != expected_uid:
         raise DirectImapProtocolError("IMAP UID fetch returned the wrong message")
+    if len(response.lines) < 2:
+        raise DirectImapProtocolError("IMAP UID fetch did not return a message body")
 
     return _line_bytes(
         response.lines[1],
@@ -315,6 +326,8 @@ class DirectImapSource:
                     fetch_response,
                     expected_uid=uid,
                 )
+                if raw_message is None:
+                    continue
                 yield EmailEnvelope(
                     received_at=self._clock(),
                     raw_message=raw_message,
@@ -387,6 +400,9 @@ class DirectImapSource:
             select_response = await client.select(mailbox)
             uid_validity = _parse_uidvalidity(select_response, mailbox)
             return client, uid_validity
+        except asyncio.CancelledError:
+            await asyncio.shield(self._async_logout(client))
+            raise
         except DirectImapError:
             await self._async_logout(client)
             raise
