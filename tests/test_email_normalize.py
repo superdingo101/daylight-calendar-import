@@ -1121,3 +1121,89 @@ def test_unmarked_encapsulated_message_subtypes_are_atomic(
     assert source.text == "Outer invitation"
     assert "Forwarded body" not in source.text
     assert stable_email_identity(raw).startswith(FALLBACK_IDENTITY_PREFIX)
+
+
+def test_semantic_msg_id_token_rejects_missing_top_level_at_symbol() -> None:
+    assert email_normalize._semantic_msg_id_token(["local-only"]) is None
+
+
+def test_raw_header_values_flushes_valid_final_header_without_separator() -> None:
+    assert email_normalize._raw_header_values(
+        b"Message-ID: <eof@example.test>",
+        b"message-id",
+    ) == (b"<eof@example.test>",)
+
+
+def test_lossy_attachment_filename_bytes_disambiguate_fallback_identity() -> None:
+    def build(filename_octet: bytes) -> bytes:
+        return (
+            b"Subject: Attachment\r\n"
+            b"Content-Type: multipart/mixed; boundary=part\r\n\r\n"
+            b"--part\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+            b"Friday at 5\r\n"
+            b"--part\r\n"
+            b"Content-Type: application/octet-stream\r\n"
+            b"Content-Disposition: attachment; filename=\"file"
+            + filename_octet
+            + b".txt\"\r\n"
+            b"Content-Transfer-Encoding: base64\r\n\r\n"
+            b"YWJj\r\n"
+            b"--part--\r\n"
+        )
+
+    first = build(b"\x80")
+    second = build(b"\x81")
+
+    first_source = normalize_email(_envelope(first))
+    second_source = normalize_email(_envelope(second))
+
+    assert first_source.text == second_source.text == "Friday at 5"
+    assert stable_email_identity(first) != stable_email_identity(second)
+
+
+def test_lossy_filename_raw_header_descriptor_omitted_for_clean_filename() -> None:
+    message = EmailMessage()
+    message.set_content("Body")
+    message.add_attachment(
+        b"abc",
+        maintype="application",
+        subtype="octet-stream",
+        filename="clean.txt",
+    )
+    attachment = list(message.iter_attachments())[0]
+
+    descriptor = email_normalize._part_descriptor(attachment)
+
+    assert descriptor["filename"] == "clean.txt"
+    assert "filename_raw_headers" not in descriptor
+
+
+def test_lossy_filename_raw_header_descriptor_handles_no_raw_headers() -> None:
+    class LossyFilenamePart:
+        def get_filename(self) -> str:
+            return "file�.txt"
+
+        def get_content_id(self) -> None:
+            return None
+
+        def get_content_type(self) -> str:
+            return "application/octet-stream"
+
+        def get_content_disposition(self) -> str:
+            return "attachment"
+
+        def raw_items(self) -> list[tuple[str, str]]:
+            return []
+
+        def is_multipart(self) -> bool:
+            return False
+
+        def get_payload(self, decode: bool = False) -> bytes:
+            return b"abc"
+
+    part = LossyFilenamePart()
+    descriptor = email_normalize._part_descriptor(part)  # type: ignore[arg-type]
+
+    assert descriptor["filename"] == "file�.txt"
+    assert "filename_raw_headers" not in descriptor
