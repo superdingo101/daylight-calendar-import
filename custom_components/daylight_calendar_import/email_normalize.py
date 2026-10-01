@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from email import policy
 from email.message import Message
 from email.parser import BytesParser
@@ -156,13 +156,13 @@ def _parse_message(raw_message: bytes) -> Message:
 
 
 def _message_identity(message: Message) -> str:
-    message_ids = [
-        normalized
-        for value in message.get_all("message-id", [])
-        if (normalized := _normalize_header_value(str(value)))
-    ]
-    if len(message_ids) == 1:
-        return message_ids[0]
+    headers = message.get_all("message-id", [])
+    if len(headers) == 1:
+        header = headers[0]
+        normalized = _normalize_header_value(str(header))
+        defects = getattr(header, "defects", ())
+        if normalized and not defects:
+            return normalized
     return _fallback_identity(message)
 
 
@@ -196,7 +196,7 @@ def _non_body_part_descriptors(message: Message) -> list[dict[str, object]]:
             continue
         content_type = part.get_content_type().casefold()
         disposition = (part.get_content_disposition() or "").casefold()
-        if content_type in _BODY_CONTENT_TYPES and disposition != "attachment":
+        if _is_body_text_part(part):
             continue
         payload = _decoded_part_bytes(part)
         descriptors.append(
@@ -213,6 +213,8 @@ def _non_body_part_descriptors(message: Message) -> list[dict[str, object]]:
 
 
 def _extract_part_text(part: Message) -> str:
+    if not part.is_multipart() and not _is_body_text_part(part):
+        return ""
     if (part.get_content_disposition() or "").casefold() == "attachment":
         return ""
     if part.is_multipart():
@@ -237,6 +239,14 @@ def _extract_part_text(part: Message) -> str:
     if content_type == "text/html":
         return html_to_text(_decode_text_part(part))
     return ""
+
+
+def _is_body_text_part(part: Message) -> bool:
+    return (
+        part.get_content_type().casefold() in _BODY_CONTENT_TYPES
+        and (part.get_content_disposition() or "").casefold() != "attachment"
+        and part.get_filename() is None
+    )
 
 
 def _decode_text_part(part: Message) -> str:
@@ -285,5 +295,5 @@ def _normalize_body_text(value: str) -> str:
     ).strip()
 
 
-def _join_text(values: object) -> str:
-    return "\n".join(str(value) for value in values if str(value)).strip()
+def _join_text(values: Iterable[str]) -> str:
+    return "\n".join(value for value in values if value).strip()
