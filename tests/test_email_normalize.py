@@ -1420,3 +1420,79 @@ def test_encapsulated_multipart_boundary_does_not_change_identity() -> None:
     assert stable_email_identity(build("inner-x")) == stable_email_identity(
         build("inner-y")
     )
+
+
+def test_hidden_void_element_is_skipped_without_opening_subtree() -> None:
+    assert html_to_text(
+        "<input hidden value=\"secret\"><p>Visible</p>"
+    ) == "Visible"
+
+
+def test_raw_encoded_word_detection_rejects_unparseable_marker() -> None:
+    assert email_normalize._raw_encoded_words_are_defective(
+        b"broken =?utf-8?b?not-closed"
+    )
+
+
+def test_raw_encoded_word_detection_rejects_invalid_q_escape() -> None:
+    assert email_normalize._raw_encoded_words_are_defective(
+        b"=?utf-8?q?bad=GZ?="
+    )
+
+
+def test_split_mime_parameters_handles_quoted_escape_and_semicolon() -> None:
+    value = b'attachment; filename="a\\\";b.txt"; x=1'
+
+    assert email_normalize._split_mime_parameters(value) == [
+        b"attachment",
+        b' filename="a\\\";b.txt"',
+        b" x=1",
+    ]
+
+
+def test_semantic_fingerprint_includes_defective_transfer_wire() -> None:
+    part = email_normalize._parse_message(
+        b"Content-Type: application/octet-stream\r\n"
+        b"Content-Transfer-Encoding: base64\r\n\r\n"
+        b"QQ==\xff"
+    )
+    part.get_payload(decode=True)
+
+    fingerprint = email_normalize._semantic_part_fingerprint(part)
+
+    assert "transfer_wire" in fingerprint
+
+
+def test_transfer_descriptor_handles_non_string_raw_payload() -> None:
+    class InvalidBase64TestDefect(Exception):
+        pass
+
+    class FakePart:
+        defects = [InvalidBase64TestDefect()]
+
+        def get_payload(self, decode: bool = False) -> bytes:
+            return b"raw"
+
+        def get(self, name: str, default: str = "") -> str:
+            return "base64"
+
+    assert email_normalize._transfer_decode_descriptor(FakePart()) is None  # type: ignore[arg-type]
+
+
+def test_transfer_descriptor_handles_non_base64_transfer_encoding() -> None:
+    class InvalidQuotedPrintableTestDefect(Exception):
+        pass
+
+    class FakePart:
+        defects = [InvalidQuotedPrintableTestDefect()]
+
+        def get_payload(self, decode: bool = False) -> str:
+            return "raw=ZZ"
+
+        def get(self, name: str, default: str = "") -> str:
+            return "quoted-printable"
+
+    descriptor = email_normalize._transfer_decode_descriptor(FakePart())  # type: ignore[arg-type]
+
+    assert descriptor is not None
+    assert descriptor["encoding"] == "quoted-printable"
