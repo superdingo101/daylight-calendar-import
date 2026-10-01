@@ -1,141 +1,56 @@
 name: Final mutation gate
 
 on:
-  pull_request_target:
+  pull_request:
     types: [labeled, synchronize, reopened]
 
 permissions:
   contents: read
-  pull-requests: read
+
+concurrency:
+  group: mutation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   mutation:
-    # Required-check safety: skipped jobs report success on GitHub. Give skipped
-    # events a different check name so only a real mutation run can satisfy the
+    # Skipped jobs report success on GitHub, so skipped/non-eligible events must
+    # use a different check name. Only a real mutation run can publish the
     # required "Mutation score" context.
-    name: ${{ ((github.event.action == 'labeled' && github.event.label.name == 'mutation-ready') || ((github.event.action == 'synchronize' || github.event.action == 'reopened') && contains(github.event.pull_request.labels.*.name, 'mutation-ready'))) && 'Mutation score' || 'Mutation gate not requested' }}
+    name: ${{ (github.event.pull_request.head.repo.full_name == github.repository && ((github.event.action == 'labeled' && github.event.label.name == 'mutation-ready') || ((github.event.action == 'synchronize' || github.event.action == 'reopened') && contains(github.event.pull_request.labels.*.name, 'mutation-ready')))) && 'Mutation score' || 'Mutation gate not requested' }}
     if: >
-      (github.event.action == 'labeled' && github.event.label.name == 'mutation-ready') ||
-      ((github.event.action == 'synchronize' || github.event.action == 'reopened') &&
-       contains(github.event.pull_request.labels.*.name, 'mutation-ready'))
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        (github.event.action == 'labeled' && github.event.label.name == 'mutation-ready') ||
+        (
+          (github.event.action == 'synchronize' || github.event.action == 'reopened') &&
+          contains(github.event.pull_request.labels.*.name, 'mutation-ready')
+        )
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
-      - name: Reject workflow changes from untrusted PR authors
-        if: github.event.pull_request.user.login != github.repository_owner
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          changed_files="$(
-            gh api --paginate               "repos/$REPOSITORY/pulls/$PR_NUMBER/files"               --jq '.[].filename'
-          )"
-          if grep -Eq '^\.github/workflows/' <<<"$changed_files"; then
-            echo "::error::External pull requests may not change GitHub Actions workflows."
-            exit 1
-          fi
-
-      - name: Check out pull request head
-        uses: actions/checkout@v5
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
-
-      - name: Verify mutation configuration
-        run: |
-          python -I -S - <<'PY'
-          import pathlib
-          import sys
-          import tomllib
-
-          config = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
-          mutation = config.get("tool", {}).get("mutmut", {})
-          expected = {
-              "source_paths": ["custom_components/daylight_calendar_import/"],
-              "pytest_add_cli_args_test_selection": ["tests/"],
-          }
-          if mutation != expected:
-              print(
-                  "ERROR: [tool.mutmut] must exactly match the trusted mutation "
-                  f"configuration: {expected!r}; got {mutation!r}",
-                  file=sys.stderr,
-              )
-              raise SystemExit(1)
-          PY
+          cache: pip
+          cache-dependency-path: requirements_test.txt
 
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements_test.txt
-      - name: Pin mutation runner
-        run: pip install --upgrade --force-reinstall "mutmut==3.8.0"
+
+      - name: Start with clean mutation state
+        run: rm -rf mutants
 
       - name: Run mutation tests
         run: mutmut run
 
-      - name: Export mutation statistics
-        run: mutmut export-cicd-stats
-
-      - name: Enforce trusted mutation policy
+      - name: Export and enforce mutation statistics
         run: |
-          python -I -S - <<'PY'
-          import json
-          import pathlib
-          import sys
-
-          minimum = 95.22
-          stats = json.loads(
-              pathlib.Path("mutants/mutmut-cicd-stats.json").read_text()
-          )
-
-          tested = stats["total"] - stats["skipped"]
-          score = (
-              0.0
-              if tested <= 0
-              else (stats["killed"] + stats["timeout"]) / tested * 100
-          )
-
-          summary = (
-              "## Mutation testing\n\n"
-              f"- Score: **{score:.2f}%** (minimum {minimum:.2f}%)\n"
-              f"- Killed: {stats['killed']}\n"
-              f"- Survived: {stats['survived']}\n"
-              f"- No tests: {stats['no_tests']}\n"
-              f"- Timeout: {stats['timeout']}\n"
-              f"- Suspicious: {stats['suspicious']}\n"
-              f"- Segfault: {stats['segfault']}\n"
-              f"- Skipped: {stats['skipped']}\n"
-              f"- Total: {stats['total']}\n"
-          )
-          print(summary)
-
-          failures = []
-          if score + 1e-9 < minimum:
-              failures.append(
-                  f"mutation score {score:.2f}% is below the "
-                  f"{minimum:.2f}% baseline"
-              )
-
-          for key in ("no_tests", "suspicious", "segfault"):
-              if stats.get(key, 0):
-                  failures.append(
-                      f"{key} must remain zero (got {stats[key]})"
-                  )
-
-          if stats.get("check_was_interrupted_by_user", False):
-              failures.append("mutation run was interrupted")
-
-          if failures:
-              for failure in failures:
-                  print(f"ERROR: {failure}", file=sys.stderr)
-              raise SystemExit(1)
-          PY
+          mutmut export-cicd-stats
+          python scripts/check_mutation_score.py
 
       - name: Export surviving mutants
         if: always()
