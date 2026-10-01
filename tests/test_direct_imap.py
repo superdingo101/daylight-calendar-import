@@ -544,19 +544,22 @@ async def test_collect_closes_connection_when_generator_is_closed() -> None:
 
 
 @pytest.mark.parametrize(
-    ("client_kwargs", "error_type"),
+    ("client_kwargs", "error_type", "message"),
     (
         (
             {"login_response": _no(b"Invalid credentials")},
             DirectImapAuthenticationError,
+            "IMAP authentication failed",
         ),
         (
             {"select_response": _no(b"No such mailbox")},
             DirectImapMailboxError,
+            "IMAP mailbox selection failed",
         ),
         (
             {"select_response": _ok(b"FLAGS (\\Seen)", b"Select completed")},
             DirectImapProtocolError,
+            "IMAP server did not provide UIDVALIDITY",
         ),
         (
             {
@@ -566,24 +569,28 @@ async def test_collect_closes_connection_when_generator_is_closed() -> None:
                 )
             },
             DirectImapProtocolError,
+            "IMAP server returned an invalid UIDVALIDITY",
         ),
         (
             {"select_response": _ok(object(), b"Select completed")},
             DirectImapProtocolError,
+            "IMAP mailbox selection returned malformed response data",
         ),
     ),
 )
 async def test_validate_rejects_auth_mailbox_and_uidvalidity_failures(
     client_kwargs: dict[str, object],
     error_type: type[Exception],
+    message: str,
 ) -> None:
     client = FakeImapClient(**client_kwargs)
     source, _ = _source(client)
 
-    with pytest.raises(error_type):
+    with pytest.raises(error_type, match=f"^{message}$"):
         await source.async_validate()
 
     assert client.logout_calls == 1
+    assert client.abort_calls == 0
 
 
 async def test_validate_cancellation_aborts_pre_greeting_transport() -> None:
@@ -662,22 +669,32 @@ async def test_validate_wraps_connection_failures(
 
 
 @pytest.mark.parametrize(
-    "search_response",
+    ("search_response", "message"),
     (
-        _no(b"Search rejected"),
-        _ok(b"1 nope", b"Search completed"),
-        _ok(b"1 nope"),
-        _ok(b"4294967296", b"Search completed"),
-        _ok(object(), b"Search completed"),
+        (_no(b"Search rejected"), "IMAP UID search failed"),
+        (
+            _ok(b"1 nope", b"Search completed"),
+            "IMAP UID search returned malformed identifiers",
+        ),
+        (_ok(b"1 nope"), "IMAP UID search returned malformed identifiers"),
+        (
+            _ok(b"4294967296", b"Search completed"),
+            "IMAP UID search returned an invalid identifier",
+        ),
+        (
+            _ok(object(), b"Search completed"),
+            "IMAP UID search returned malformed response data",
+        ),
     ),
 )
 async def test_collect_rejects_unsuccessful_or_malformed_search(
     search_response: FakeResponse,
+    message: str,
 ) -> None:
     client = FakeImapClient(search_response=search_response)
     source, _ = _source(client)
 
-    with pytest.raises(DirectImapProtocolError):
+    with pytest.raises(DirectImapProtocolError, match=f"^{message}$"):
         _ = [item async for item in source.async_collect()]
 
     assert client.logout_calls == 1
@@ -691,6 +708,45 @@ async def test_collect_wraps_search_transport_failure() -> None:
         _ = [item async for item in source.async_collect()]
 
     assert client.logout_calls == 1
+
+
+async def test_collect_literal_without_closing_metadata_is_unterminated() -> None:
+    client = FakeImapClient(
+        search_response=_ok(b"1", b"Search completed"),
+        fetch_responses={
+            "1": _ok(
+                b"1 FETCH (UID 1 BODY[] {3}",
+                b"abc",
+            )
+        },
+    )
+    source, _ = _source(client)
+
+    with pytest.raises(
+        DirectImapProtocolError,
+        match="^IMAP UID fetch returned an unterminated FETCH response$",
+    ):
+        _ = [item async for item in source.async_collect()]
+
+
+async def test_collect_ignores_non_literal_metadata_before_fetch_frame() -> None:
+    body = b"abc"
+    client = FakeImapClient(
+        search_response=_ok(b"1", b"Search completed"),
+        fetch_responses={
+            "1": _ok(
+                b"* 1 EXISTS",
+                b"1 FETCH (UID 1 BODY[] {3}",
+                body,
+                b")",
+                b"Fetch completed",
+            )
+        },
+    )
+    source, _ = _source(client)
+
+    [envelope] = [item async for item in source.async_collect()]
+    assert envelope.raw_message == body
 
 
 async def test_collect_rejects_unterminated_outer_fetch_with_nested_flags() -> None:
@@ -762,20 +818,42 @@ async def test_collect_rejects_multiple_body_literals_for_requested_uid() -> Non
 
 
 @pytest.mark.parametrize(
-    "fetch_response",
+    ("fetch_response", "message"),
     (
-        _no(b"Fetch rejected"),
-        _ok(b"1 FETCH (BODY.PEEK[] {3}", b"abc", b")", b"Fetch completed"),
-        _ok(b"1 FETCH (UID 1 BODY[] {3}"),
-        _ok(b"1 FETCH (UID 1 FLAGS (\\Seen))", b"Fetch completed"),
-        _ok(b"1 FETCH (UID 1 BODY[] {4}", b"abc", b")", b"Fetch completed"),
-        _ok(b"1 FETCH (UID 1 BODY[] {3}", b"abc", b"Fetch completed"),
-        _ok(object(), b"abc", b")", b"Fetch completed"),
-        _ok(b"1 FETCH (UID 1 BODY[] {3}", "not-bytes", b")"),
+        (_no(b"Fetch rejected"), "IMAP UID fetch failed"),
+        (
+            _ok(b"1 FETCH (BODY.PEEK[] {3}", b"abc", b")", b"Fetch completed"),
+            "IMAP UID fetch did not identify a message",
+        ),
+        (
+            _ok(b"1 FETCH (UID 1 BODY[] {3}"),
+            "IMAP UID fetch did not return literal data",
+        ),
+        (
+            _ok(b"1 FETCH (UID 1 FLAGS (\\Seen))", b"Fetch completed"),
+            "IMAP UID fetch did not return exactly one BODY literal",
+        ),
+        (
+            _ok(b"1 FETCH (UID 1 BODY[] {4}", b"abc", b")", b"Fetch completed"),
+            "IMAP UID fetch returned a BODY literal with the wrong length",
+        ),
+        (
+            _ok(b"1 FETCH (UID 1 BODY[] {3}", b"abc", b"Fetch completed"),
+            "IMAP UID fetch returned an unterminated FETCH response",
+        ),
+        (
+            _ok(object(), b"abc", b")", b"Fetch completed"),
+            "IMAP UID fetch returned malformed response data",
+        ),
+        (
+            _ok(b"1 FETCH (UID 1 BODY[] {3}", "not-bytes", b")"),
+            "IMAP UID fetch returned malformed response data",
+        ),
     ),
 )
 async def test_collect_rejects_invalid_fetch_responses(
     fetch_response: FakeResponse,
+    message: str,
 ) -> None:
     client = FakeImapClient(
         search_response=_ok(b"1", b"Search completed"),
@@ -783,7 +861,7 @@ async def test_collect_rejects_invalid_fetch_responses(
     )
     source, _ = _source(client)
 
-    with pytest.raises(DirectImapProtocolError):
+    with pytest.raises(DirectImapProtocolError, match=f"^{message}$"):
         _ = [item async for item in source.async_collect()]
 
     assert client.logout_calls == 1
@@ -902,6 +980,16 @@ async def test_acknowledge_rejects_foreign_or_malformed_provenance(
 
     with pytest.raises(DirectImapProtocolError, match=f"^{message}$"):
         await source.async_acknowledge(provenance, disposition=EmailDisposition())
+
+
+def test_require_ok_preserves_supplied_error_message() -> None:
+    with pytest.raises(DirectImapProtocolError, match="^sentinel$"):
+        direct_imap_module._require_ok(_no(b"no"), "sentinel")
+
+
+def test_line_bytes_preserves_supplied_error_message() -> None:
+    with pytest.raises(DirectImapProtocolError, match="^sentinel$"):
+        direct_imap_module._line_bytes(object(), "sentinel")
 
 
 @pytest.mark.parametrize("value", (1, IMAP_MAX))
