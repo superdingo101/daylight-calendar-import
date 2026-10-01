@@ -352,11 +352,21 @@ def _extract_fetch_body(
             if frame_number + 1 < len(fetch_starts)
             else len(lines)
         )
-        frame_metadata = [
+        frame_candidates = [
             index
             for index in metadata_indexes
             if frame_start <= index < frame_end
         ]
+        frame_metadata: list[int] = []
+        depth = 0
+        for index in frame_candidates:
+            frame_metadata.append(index)
+            depth += lines[index].count(b"(") - lines[index].count(b")")
+            if depth == 0:
+                break
+        if depth != 0:
+            raise DirectImapProtocolError(_ERR_FETCH_UNTERMINATED)
+
         body_markers = [
             (index, match)
             for index in frame_metadata
@@ -392,16 +402,6 @@ def _extract_fetch_body(
             raise DirectImapProtocolError(
                 _ERR_FETCH_LENGTH
             )
-
-        depth = 0
-        frame_closed = False
-        for index in frame_metadata:
-            depth += lines[index].count(b"(") - lines[index].count(b")")
-            if depth == 0:
-                frame_closed = True
-                break
-        if not frame_closed:
-            raise DirectImapProtocolError(_ERR_FETCH_UNTERMINATED)
         return literal
 
     return None

@@ -797,6 +797,21 @@ async def test_collect_ignores_parentheses_after_outer_fetch_close() -> None:
     assert envelope.raw_message == body
 
 
+async def test_collect_does_not_parse_tagged_completion_as_fetch_metadata() -> None:
+    client = FakeImapClient(
+        search_response=_ok(b"7", b"Search completed"),
+        fetch_responses={
+            "7": _ok(
+                b"2 FETCH (UID 99 FLAGS (Seen))",
+                b"OK UID 7 FETCH completed",
+            )
+        },
+    )
+    source, _ = _source(client)
+
+    assert [item async for item in source.async_collect()] == []
+
+
 async def test_collect_handles_unrelated_frame_before_requested_frame() -> None:
     body = b"target"
     client = FakeImapClient(
