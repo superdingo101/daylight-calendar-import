@@ -178,7 +178,11 @@ def _message_identity(message: Message, raw_message: bytes) -> str:
         canonical = _canonical_msg_id_bytes(raw_message_ids[0])
         if canonical is not None:
             return canonical
-    return _fallback_identity(message, raw_message_ids=raw_message_ids)
+    return _fallback_identity(
+        message,
+        raw_message=raw_message,
+        raw_message_ids=raw_message_ids,
+    )
 
 
 def _canonical_msg_id_bytes(value: bytes) -> str | None:
@@ -210,11 +214,11 @@ def _msg_id_defects_are_acceptable(token: object) -> bool:
     )
 
 
-def _semantic_msg_id_token(token: object) -> str:
-    """Render a parsed msg-id without surrounding/internal CFWS comments."""
+def _semantic_msg_id_token(token: object) -> str | None:
+    """Render a parsed msg-id and require nonempty semantic id-left/id-right."""
     def render(node: object) -> str:
         token_type = getattr(node, "token_type", "")
-        if token_type in {"cfws", "comment"}:
+        if token_type in {"cfws", "comment", "msg-id-start", "msg-id-end"}:
             return ""
         if token_type == "bare-quoted-string":
             return str(node)
@@ -222,7 +226,20 @@ def _semantic_msg_id_token(token: object) -> str:
             return "".join(render(child) for child in node)
         return str(node)
 
-    return render(token)
+    children = list(token) if isinstance(token, list) else []
+    at_indexes = [
+        index
+        for index, child in enumerate(children)
+        if getattr(child, "token_type", "") == "address-at-symbol"
+    ]
+    if len(at_indexes) != 1:
+        return None
+    at_index = at_indexes[0]
+    left = "".join(render(child) for child in children[:at_index])
+    right = "".join(render(child) for child in children[at_index + 1 :])
+    if not left or not right:
+        return None
+    return f"<{left}@{right}>"
 
 
 def _raw_header_values(raw_message: bytes, name: bytes) -> tuple[bytes, ...]:
@@ -242,15 +259,18 @@ def _raw_header_values(raw_message: bytes, name: bytes) -> tuple[bytes, ...]:
         if line == b"":
             flush()
             break
-        if line[:1] in (b" ", b"\t") and current_name is not None:
+        if line[:1] in (b" ", b"\t"):
+            if current_name is None:
+                flush()
+                break
             current_value.extend(b"\n")
             current_value.extend(line)
             continue
         flush()
         field_name, separator, field_value = line.partition(b":")
-        if not separator:
-            continue
-        current_name = field_name.strip().lower()
+        if not separator or not _is_valid_field_name(field_name):
+            break
+        current_name = field_name.lower()
         current_value.extend(field_value.lstrip(b" \t"))
     else:
         flush()
@@ -258,23 +278,37 @@ def _raw_header_values(raw_message: bytes, name: bytes) -> tuple[bytes, ...]:
     return tuple(values)
 
 
+def _is_valid_field_name(value: bytes) -> bool:
+    return bool(value) and all(
+        33 <= byte <= 126 and byte != ord(":")
+        for byte in value
+    )
+
+
 def _iter_header_lines(raw_message: bytes) -> Iterable[bytes]:
-    """Yield header lines without allocating or scanning the message body."""
+    """Yield header lines in one linear pass and stop at the blank separator."""
+    line_start = 0
     position = 0
     length = len(raw_message)
     while position < length:
-        lf = raw_message.find(b"\n", position)
-        cr = raw_message.find(b"\r", position)
-        endings = [index for index in (lf, cr) if index != -1]
-        if not endings:
-            yield raw_message[position:]
+        byte = raw_message[position]
+        if byte not in (10, 13):
+            position += 1
+            continue
+
+        line = raw_message[line_start:position]
+        yield line
+        if not line:
             return
-        end = min(endings)
-        yield raw_message[position:end]
-        if raw_message[end:end + 2] == b"\r\n":
-            position = end + 2
+
+        if byte == 13 and position + 1 < length and raw_message[position + 1] == 10:
+            position += 2
         else:
-            position = end + 1
+            position += 1
+        line_start = position
+
+    if line_start < length:
+        yield raw_message[line_start:]
 
 
 def _unfold_header_value(value: bytes) -> bytes:
@@ -285,6 +319,7 @@ def _unfold_header_value(value: bytes) -> bytes:
 def _fallback_identity(
     message: Message,
     *,
+    raw_message: bytes,
     raw_message_ids: tuple[bytes, ...] = (),
 ) -> str:
     payload: dict[str, object] = {
@@ -305,6 +340,13 @@ def _fallback_identity(
             base64.b64encode(value).decode("ascii") for value in raw_message_ids
         ]
 
+    lossy_identity_headers = _lossy_identity_header_descriptors(
+        message,
+        raw_message,
+    )
+    if lossy_identity_headers:
+        payload["lossy_identity_headers"] = lossy_identity_headers
+
     lossy_body_parts = _lossy_body_part_descriptors(message)
     if lossy_body_parts:
         payload["lossy_body_parts"] = lossy_body_parts
@@ -317,6 +359,27 @@ def _fallback_identity(
     )
     digest = sha256(serialized.encode("utf-8")).hexdigest()
     return f"{FALLBACK_IDENTITY_PREFIX}{digest}"
+
+
+def _lossy_identity_header_descriptors(
+    message: Message,
+    raw_message: bytes,
+) -> dict[str, list[str]]:
+    descriptors: dict[str, list[str]] = {}
+    for name in _IDENTITY_HEADERS:
+        normalized_values = [
+            _normalize_header_value(str(value))
+            for value in message.get_all(name, [])
+        ]
+        if not any("\ufffd" in value for value in normalized_values):
+            continue
+        raw_values = _raw_header_values(raw_message, name.encode("ascii"))
+        if raw_values:
+            descriptors[name] = [
+                base64.b64encode(value).decode("ascii")
+                for value in raw_values
+            ]
+    return descriptors
 
 
 def _non_body_part_descriptors(message: Message) -> list[dict[str, object]]:
@@ -478,7 +541,7 @@ def _is_attachment_like(part: Message) -> bool:
 
 
 def _is_encapsulated_message(part: Message) -> bool:
-    return part.get_content_type().casefold() == "message/rfc822"
+    return part.get_content_maintype().casefold() == "message"
 
 
 def _is_body_text_part(part: Message) -> bool:
