@@ -62,6 +62,9 @@ _BLOCK_TAGS = frozenset(
     }
 )
 _SKIPPED_HTML_TAGS = frozenset({"script", "style", "template"})
+_VOID_HTML_TAGS = frozenset(
+    {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+)
 _SAFE_LINK_PREFIXES = ("http://", "https://", "mailto:")
 
 
@@ -81,16 +84,17 @@ class _HTMLTextExtractor(HTMLParser):
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
         tag = tag.casefold()
+        attributes = {name.casefold(): value for name, value in attrs}
         if self._skip_stack:
-            if tag in _SKIPPED_HTML_TAGS:
+            if tag not in _VOID_HTML_TAGS:
                 self._skip_stack.append(tag)
             return
-        if tag in _SKIPPED_HTML_TAGS:
-            self._skip_stack.append(tag)
+        if tag in _SKIPPED_HTML_TAGS or "hidden" in attributes:
+            if tag not in _VOID_HTML_TAGS:
+                self._skip_stack.append(tag)
             return
         if tag == "br" or tag in _BLOCK_TAGS:
             self._parts.append("\n")
-        attributes = {name.casefold(): value for name, value in attrs}
         if tag == "a":
             href = (attributes.get("href") or "").strip()
             if href.casefold().startswith(_SAFE_LINK_PREFIXES):
@@ -337,7 +341,8 @@ def _fallback_identity(
 
     if raw_message_ids:
         payload["message_id_headers"] = [
-            base64.b64encode(value).decode("ascii") for value in raw_message_ids
+            base64.b64encode(_unfold_header_value(value)).decode("ascii")
+            for value in raw_message_ids
         ]
 
     lossy_identity_headers = _lossy_identity_header_descriptors(
@@ -367,16 +372,21 @@ def _lossy_identity_header_descriptors(
 ) -> dict[str, list[str]]:
     descriptors: dict[str, list[str]] = {}
     for name in _IDENTITY_HEADERS:
+        header_values = list(message.get_all(name, []))
         normalized_values = [
             _normalize_header_value(str(value))
-            for value in message.get_all(name, [])
+            for value in header_values
         ]
-        if not any("\ufffd" in value for value in normalized_values):
+        defective = any(
+            getattr(value, "defects", ()) or getattr(value, "all_defects", ())
+            for value in header_values
+        )
+        if not defective and not any("\ufffd" in value for value in normalized_values):
             continue
         raw_values = _raw_header_values(raw_message, name.encode("ascii"))
         if raw_values:
             descriptors[name] = [
-                base64.b64encode(value).decode("ascii")
+                base64.b64encode(_unfold_header_value(value)).decode("ascii")
                 for value in raw_values
             ]
     return descriptors
@@ -419,7 +429,7 @@ def _collect_non_body_part_descriptors(
 
 def _part_descriptor(part: Message) -> dict[str, object]:
     payload = _descriptor_payload_bytes(part)
-    filename = _normalize_header_value(part.get_filename() or "")
+    filename = part.get_filename() or ""
     descriptor: dict[str, object] = {
         "content_id": _canonical_or_raw_msg_id_header(part, "content-id"),
         "content_type": part.get_content_type().casefold(),
@@ -428,26 +438,78 @@ def _part_descriptor(part: Message) -> dict[str, object]:
         "sha256": sha256(payload).hexdigest(),
         "size": len(payload),
     }
-    if "\ufffd" in filename:
-        raw_filename_headers = _raw_filename_header_descriptors(part)
-        if raw_filename_headers:
-            descriptor["filename_raw_headers"] = raw_filename_headers
+    if _filename_decoding_is_lossy(part, filename):
+        raw_filename_parameters = _raw_filename_parameter_descriptors(part)
+        if raw_filename_parameters:
+            descriptor["filename_raw_parameters"] = raw_filename_parameters
+    if (transfer := _transfer_decode_descriptor(part)) is not None:
+        descriptor["transfer_wire"] = transfer
     return descriptor
 
 
-def _raw_filename_header_descriptors(part: Message) -> list[str]:
-    """Preserve raw filename-bearing MIME headers when decoding was lossy."""
-    values = [
-        value
-        for header_name, value in part.raw_items()
-        if header_name.casefold() in {"content-disposition", "content-type"}
-    ]
-    return [
-        base64.b64encode(
+def _filename_decoding_is_lossy(part: Message, filename: str) -> bool:
+    if "\ufffd" in filename:
+        return True
+    for name in ("content-disposition", "content-type"):
+        for header in part.get_all(name, []):
+            if getattr(header, "defects", ()) or getattr(header, "all_defects", ()):
+                return True
+    return False
+
+
+def _raw_filename_parameter_descriptors(part: Message) -> list[str]:
+    """Return folding/spacing-insensitive raw filename parameter values."""
+    descriptors: list[str] = []
+    for header_name, value in part.raw_items():
+        lower_name = header_name.casefold()
+        parameter_prefix = (
+            "filename" if lower_name == "content-disposition"
+            else "name" if lower_name == "content-type"
+            else None
+        )
+        if parameter_prefix is None:
+            continue
+        raw = _unfold_header_value(
             value.encode("utf-8", errors="surrogateescape")
-        ).decode("ascii")
-        for value in values
-    ]
+        )
+        for parameter in _split_mime_parameters(raw)[1:]:
+            key, separator, raw_value = parameter.partition(b"=")
+            canonical_key = key.strip().lower()
+            if not separator or not (
+                canonical_key == parameter_prefix.encode("ascii")
+                or canonical_key.startswith(
+                    parameter_prefix.encode("ascii") + b"*"
+                )
+            ):
+                continue
+            descriptors.append(
+                canonical_key.decode("ascii", errors="replace")
+                + ":"
+                + base64.b64encode(raw_value.strip(b" \t")).decode("ascii")
+            )
+    return descriptors
+
+
+def _split_mime_parameters(value: bytes) -> list[bytes]:
+    parts: list[bytes] = []
+    start = 0
+    quoted = False
+    escaped = False
+    for index, byte in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if quoted and byte == 92:
+            escaped = True
+            continue
+        if byte == 34:
+            quoted = not quoted
+            continue
+        if byte == 59 and not quoted:
+            parts.append(value[start:index])
+            start = index + 1
+    parts.append(value[start:])
+    return parts
 
 
 def _canonical_or_raw_msg_id_header(part: Message, name: str) -> str:
@@ -473,8 +535,45 @@ def _canonical_or_raw_msg_id_header(part: Message, name: str) -> str:
 
 def _descriptor_payload_bytes(part: Message) -> bytes:
     if part.is_multipart():
-        return part.as_bytes(policy=policy.default)
+        semantic = _semantic_part_fingerprint(part)
+        return json.dumps(
+            semantic,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
     return _decoded_part_bytes(part)
+
+
+def _semantic_part_fingerprint(part: Message) -> dict[str, object]:
+    headers = {
+        name.casefold(): [
+            _normalize_header_value(str(value))
+            for value in part.get_all(name, [])
+        ]
+        for name in ("date", "from", "sender", "reply-to", "to", "cc", "subject")
+        if part.get_all(name, [])
+    }
+    fingerprint: dict[str, object] = {
+        "content_id": _canonical_or_raw_msg_id_header(part, "content-id"),
+        "content_type": part.get_content_type().casefold(),
+        "disposition": (part.get_content_disposition() or "").casefold(),
+        "filename": part.get_filename() or "",
+        "headers": headers,
+    }
+    if part.is_multipart():
+        children = cast(list[Message], part.get_payload())
+        fingerprint["children"] = [
+            _semantic_part_fingerprint(child) for child in children
+        ]
+        return fingerprint
+
+    payload = _decoded_part_bytes(part)
+    fingerprint["sha256"] = sha256(payload).hexdigest()
+    fingerprint["size"] = len(payload)
+    if (transfer := _transfer_decode_descriptor(part)) is not None:
+        fingerprint["transfer_wire"] = transfer
+    return fingerprint
 
 
 def _extract_part_text(part: Message) -> str:
@@ -534,10 +633,21 @@ def _related_root(part: Message, children: list[Message]) -> Message | None:
     )
     if start:
         for child in children:
-            content_id = _canonical_msg_id_text(child.get("content-id", ""))
+            content_id = _unique_canonical_msg_id_header(child, "content-id")
             if content_id == start:
                 return child
     return children[0]
+
+
+def _unique_canonical_msg_id_header(part: Message, name: str) -> str | None:
+    raw_values = [
+        value
+        for header_name, value in part.raw_items()
+        if header_name.casefold() == name.casefold()
+    ]
+    if len(raw_values) != 1:
+        return None
+    return _canonical_msg_id_text(raw_values[0])
 
 
 def _render_text_part(part: Message) -> str:
@@ -588,20 +698,46 @@ def _decode_text_payload(part: Message) -> tuple[str, bool, str, bytes]:
         return payload.decode(charset, errors="replace"), True, charset, payload
 
 
+def _transfer_decode_descriptor(part: Message) -> dict[str, object] | None:
+    defects = getattr(part, "defects", ())
+    if not any(
+        "base64" in type(defect).__name__.casefold()
+        or "quotedprintable" in type(defect).__name__.casefold()
+        for defect in defects
+    ):
+        return None
+    raw_payload = part.get_payload(decode=False)
+    if not isinstance(raw_payload, str):
+        return None
+    wire = raw_payload.encode("utf-8", errors="surrogateescape")
+    cte = _normalize_header_value(
+        part.get("content-transfer-encoding", "")
+    ).casefold()
+    if cte == "base64":
+        wire = bytes(byte for byte in wire if byte not in b" \t\r\n")
+    return {
+        "encoding": cte,
+        "sha256": sha256(wire).hexdigest(),
+        "size": len(wire),
+    }
+
+
 def _lossy_body_part_descriptors(message: Message) -> list[dict[str, object]]:
     _, leaves, _ = _extract_part_result(message)
     descriptors: list[dict[str, object]] = []
     for part in leaves:
         _, lossy, charset, payload = _decode_text_payload(part)
-        if lossy:
-            descriptors.append(
-                {
-                    "charset": charset,
-                    "content_type": part.get_content_type().casefold(),
-                    "sha256": sha256(payload).hexdigest(),
-                    "size": len(payload),
-                }
-            )
+        transfer = _transfer_decode_descriptor(part)
+        if lossy or transfer is not None:
+            descriptor: dict[str, object] = {
+                "charset": charset,
+                "content_type": part.get_content_type().casefold(),
+                "sha256": sha256(payload).hexdigest(),
+                "size": len(payload),
+            }
+            if transfer is not None:
+                descriptor["transfer_wire"] = transfer
+            descriptors.append(descriptor)
     return descriptors
 
 
@@ -618,7 +754,8 @@ def _decode_format_flowed(value: str, *, delsp: bool) -> str:
         content = raw_line[quote_depth:]
         if content.startswith(" "):
             content = content[1:]
-        flowed = content.endswith(" ") and content != "-- "
+        signature_separator = content == "-- "
+        flowed = content.endswith(" ") and not signature_separator
         piece = content[:-1] if flowed and delsp else content
 
         if pending_depth is None:
@@ -627,7 +764,11 @@ def _decode_format_flowed(value: str, *, delsp: bool) -> str:
             pending_flowed = flowed
             continue
 
-        if pending_flowed and pending_depth == quote_depth:
+        if (
+            not signature_separator
+            and pending_flowed
+            and pending_depth == quote_depth
+        ):
             pending_text += piece
             pending_flowed = flowed
             continue
