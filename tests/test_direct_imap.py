@@ -58,6 +58,7 @@ class FakeImapClient:
         login_error: BaseException | None = None,
         select_error: BaseException | None = None,
         search_error: BaseException | None = None,
+        logout_response: FakeResponse | None = None,
         logout_error: BaseException | None = None,
         abort_error: BaseException | None = None,
     ) -> None:
@@ -74,6 +75,7 @@ class FakeImapClient:
         self.login_error = login_error
         self.select_error = select_error
         self.search_error = search_error
+        self.logout_response = logout_response or _ok(b"Logout completed")
         self.logout_error = logout_error
         self.abort_error = abort_error
         self.login_calls: list[tuple[str, str]] = []
@@ -126,7 +128,7 @@ class FakeImapClient:
         self.logout_calls += 1
         if self.logout_error:
             raise self.logout_error
-        return _ok(b"Logout completed")
+        return self.logout_response
 
     def abort(self) -> None:
         self.abort_calls += 1
@@ -959,6 +961,21 @@ async def test_logout_failure_does_not_mask_success() -> None:
     assert client.abort_calls == 1
 
 
+@pytest.mark.parametrize("result", ("NO", "BAD"))
+async def test_logout_non_ok_response_aborts_without_masking_success(
+    result: str,
+) -> None:
+    client = FakeImapClient(
+        logout_response=FakeResponse(result, [b"Logout rejected"]),
+    )
+    source, _ = _source(client)
+
+    await source.async_validate()
+
+    assert client.logout_calls == 1
+    assert client.abort_calls == 1
+
+
 async def test_logout_and_abort_failures_do_not_mask_success() -> None:
     client = FakeImapClient(
         logout_error=OSError("socket already closed"),
@@ -986,7 +1003,7 @@ async def test_abort_failure_does_not_mask_pre_greeting_cancellation() -> None:
     assert client.abort_calls == 1
 
 
-async def test_terminal_logout_finishes_before_cancellation_propagates() -> None:
+async def test_terminal_logout_survives_repeated_cancellation() -> None:
     logout_started = asyncio.Event()
     logout_release = asyncio.Event()
 
@@ -1003,11 +1020,18 @@ async def test_terminal_logout_finishes_before_cancellation_propagates() -> None
 
     await logout_started.wait()
     task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert client.logout_calls == 1
+
     logout_release.set()
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
     assert client.logout_calls == 1
+    assert client.abort_calls == 0
 
 
 def _provenance(
