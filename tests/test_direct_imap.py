@@ -777,6 +777,26 @@ async def test_collect_rejects_unterminated_outer_fetch_with_nested_flags() -> N
     assert client.logout_calls == 1
 
 
+async def test_collect_ignores_parentheses_after_outer_fetch_close() -> None:
+    body = b"target"
+    client = FakeImapClient(
+        search_response=_ok(b"7", b"Search completed"),
+        fetch_responses={
+            "7": _ok(
+                f"1 FETCH (UID 7 BODY[] {{{len(body)}}}".encode(),
+                body,
+                b")",
+                b"Fetch completed (ok)",
+            )
+        },
+    )
+    source, _ = _source(client)
+
+    [envelope] = [item async for item in source.async_collect()]
+
+    assert envelope.raw_message == body
+
+
 async def test_collect_handles_unrelated_frame_before_requested_frame() -> None:
     body = b"target"
     client = FakeImapClient(
@@ -840,6 +860,37 @@ async def test_collect_rejects_multiple_body_literals_for_requested_uid() -> Non
         (
             _ok(b"1 FETCH (UID 1 BODY[] {4}", b"abc", b")", b"Fetch completed"),
             "IMAP UID fetch returned a BODY literal with the wrong length",
+        ),
+        (
+            _ok(b"1 FETCH (UID 0 BODY[] {3}", b"abc", b")", b"Fetch completed"),
+            "IMAP UID fetch returned an invalid identifier",
+        ),
+        (
+            _ok(
+                f"1 FETCH (UID {IMAP_MAX + 1} BODY[] {{3}}".encode(),
+                b"abc",
+                b")",
+                b"Fetch completed",
+            ),
+            "IMAP UID fetch returned an invalid identifier",
+        ),
+        (
+            _ok(
+                b"1 FETCH (UID " + b"9" * 5000 + b" BODY[] {3}",
+                b"abc",
+                b")",
+                b"Fetch completed",
+            ),
+            "IMAP UID fetch returned an invalid identifier",
+        ),
+        (
+            _ok(
+                b"1 FETCH (UID 1 BODY[] {" + b"9" * 5000 + b"}",
+                b"abc",
+                b")",
+                b"Fetch completed",
+            ),
+            "IMAP UID fetch returned an invalid BODY literal length",
         ),
         (
             _ok(b"1 FETCH (UID 1 BODY[] {3}", b"abc", b"Fetch completed"),

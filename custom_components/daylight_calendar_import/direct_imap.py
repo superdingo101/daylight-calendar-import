@@ -57,7 +57,9 @@ _ERR_FETCH_DATA = "IMAP UID fetch returned malformed response data"  # pragma: n
 _ERR_FETCH_LITERAL = "IMAP UID fetch did not return literal data"  # pragma: no mutate
 _ERR_FETCH_BODY_COUNT = "IMAP UID fetch did not return exactly one BODY literal"  # pragma: no mutate
 _ERR_FETCH_NO_UID = "IMAP UID fetch did not identify a message"  # pragma: no mutate
+_ERR_FETCH_UID = "IMAP UID fetch returned an invalid identifier"  # pragma: no mutate
 _ERR_FETCH_LENGTH = "IMAP UID fetch returned a BODY literal with the wrong length"  # pragma: no mutate
+_ERR_FETCH_LITERAL_SIZE = "IMAP UID fetch returned an invalid BODY literal length"  # pragma: no mutate
 _ERR_FETCH_UNTERMINATED = "IMAP UID fetch returned an unterminated FETCH response"  # pragma: no mutate
 _ERR_SEARCH_TRANSPORT = "IMAP UID search failed"  # pragma: no mutate
 _ERR_FETCH_TRANSPORT = "IMAP UID fetch failed"  # pragma: no mutate
@@ -360,11 +362,16 @@ def _extract_fetch_body(
             for index in frame_metadata
             if (match := _BODY_LITERAL_RE.search(lines[index])) is not None
         ]
-        uid_values = [
-            int(match.group(1))
-            for index in frame_metadata
-            for match in _FETCH_UID_RE.finditer(lines[index])
-        ]
+        uid_values: list[int] = []
+        for index in frame_metadata:
+            for match in _FETCH_UID_RE.finditer(lines[index]):
+                try:
+                    uid_value = int(match.group(1))
+                except ValueError as exc:
+                    raise DirectImapProtocolError(_ERR_FETCH_UID) from exc
+                if not 1 <= uid_value <= MAX_IMAP_IDENTIFIER:
+                    raise DirectImapProtocolError(_ERR_FETCH_UID)
+                uid_values.append(uid_value)
         if expected_uid not in uid_values:
             if body_markers and not uid_values:
                 raise DirectImapProtocolError(_ERR_FETCH_NO_UID)
@@ -377,16 +384,23 @@ def _extract_fetch_body(
         marker_index, marker = body_markers[0]
         literal_index = marker_index + 1
         literal = lines[literal_index]
-        declared_size = int(marker.group(1))
+        try:
+            declared_size = int(marker.group(1))
+        except ValueError as exc:
+            raise DirectImapProtocolError(_ERR_FETCH_LITERAL_SIZE) from exc
         if len(literal) != declared_size:
             raise DirectImapProtocolError(
                 _ERR_FETCH_LENGTH
             )
-        depth = sum(
-            lines[index].count(b"(") - lines[index].count(b")")
-            for index in frame_metadata
-        )
-        if depth != 0:
+
+        depth = 0
+        frame_closed = False
+        for index in frame_metadata:
+            depth += lines[index].count(b"(") - lines[index].count(b")")
+            if depth == 0:
+                frame_closed = True
+                break
+        if not frame_closed:
             raise DirectImapProtocolError(_ERR_FETCH_UNTERMINATED)
         return literal
 
