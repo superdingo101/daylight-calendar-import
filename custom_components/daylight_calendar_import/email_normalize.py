@@ -189,7 +189,7 @@ def _canonical_msg_id_bytes(value: bytes) -> str | None:
         return None
     if remainder.strip():
         return None
-    return _normalize_header_value(token.value)
+    return _semantic_msg_id_token(token)
 
 
 def _canonical_msg_id_text(value: object) -> str | None:
@@ -199,7 +199,22 @@ def _canonical_msg_id_text(value: object) -> str | None:
         return None
     if remainder.strip():
         return None
-    return _normalize_header_value(token.value)
+    return _semantic_msg_id_token(token)
+
+
+def _semantic_msg_id_token(token: object) -> str:
+    """Render a parsed msg-id without surrounding/internal CFWS comments."""
+    def render(node: object) -> str:
+        token_type = getattr(node, "token_type", "")
+        if token_type in {"cfws", "comment"}:
+            return ""
+        if token_type == "quoted-string":
+            return str(node)
+        if isinstance(node, list):
+            return "".join(render(child) for child in node)
+        return str(node)
+
+    return render(token)
 
 
 def _raw_header_values(raw_message: bytes, name: bytes) -> tuple[bytes, ...]:
