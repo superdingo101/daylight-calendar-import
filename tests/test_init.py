@@ -1,6 +1,8 @@
 """Tests for Home Assistant service wiring."""
 
+import asyncio
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, Mock
 
@@ -170,7 +172,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
         return approval
 
     pending_store = SimpleNamespace(
-        async_load=AsyncMock(),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
         is_source_duplicate=is_source_duplicate,
         async_add=AsyncMock(
             return_value=PendingImportAddResult(
@@ -233,6 +235,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
         source_id="message-1",
         calendar_entity="calendar.family",
         warnings=[],
+        activity_id="activity-id",
     )
 
     approve_handler, approve_kwargs = hass.services.handlers[
@@ -291,7 +294,7 @@ async def test_pending_read_actions_return_summaries_details_and_stable_event(mo
         source_fingerprint="stored-source-hash",
     )
     store = SimpleNamespace(
-        async_load=AsyncMock(), list=Mock(return_value=(item,)),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), list=Mock(return_value=(item,)),
         get=Mock(return_value=item),
         get_event=Mock(return_value=item.events[1]),
     )
@@ -346,7 +349,7 @@ async def test_activity_reads_are_scoped_and_omit_transition_detail_from_list(mo
     item = pending()
     record = {"id": item.id, "status": "calendar_created",
               "transitions": [{"type": "review_ready"}, {"type": "calendar_created"}]}
-    store = SimpleNamespace(async_load=AsyncMock(), list_activity=Mock(return_value=(record,)),
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), list_activity=Mock(return_value=(record,)),
                             get_activity=Mock(side_effect=lambda key: record if key == item.id else None))
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
@@ -374,7 +377,7 @@ async def test_activity_reads_are_scoped_and_omit_transition_detail_from_list(mo
 async def test_pending_read_actions_report_missing_id(monkeypatch, missing):
     hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
     store = SimpleNamespace(
-        async_load=AsyncMock(), get=Mock(return_value=None),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), get=Mock(return_value=None),
         get_event=Mock(return_value=None),
     )
     monkeypatch.setattr(
@@ -391,7 +394,7 @@ async def test_pending_read_actions_report_missing_id(monkeypatch, missing):
 
 @pytest.mark.parametrize("context", [None, Context(user_id=None)])
 async def test_pending_reads_reject_anonymous_calls_before_store_access(monkeypatch, context):
-    store = SimpleNamespace(async_load=AsyncMock(), list=Mock())
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), list=Mock())
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
     )
@@ -408,7 +411,7 @@ async def test_pending_reads_reject_anonymous_calls_before_store_access(monkeypa
     {"ai_task.test": True, "calendar.family": False},
 ])
 async def test_pending_reads_require_control_of_both_entities(monkeypatch, allowed):
-    store = SimpleNamespace(async_load=AsyncMock(), list=Mock())
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), list=Mock())
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
     )
@@ -421,7 +424,7 @@ async def test_pending_reads_require_control_of_both_entities(monkeypatch, allow
 
 
 async def test_pending_reads_reject_unknown_user(monkeypatch):
-    store = SimpleNamespace(async_load=AsyncMock(), list=Mock())
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), list=Mock())
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
     )
@@ -439,7 +442,7 @@ async def test_edit_pending_event_validates_and_checks_permissions(monkeypatch):
     replacement = draft(True)
     edited = type(original)(original.id, replacement)
     store = SimpleNamespace(
-        async_load=AsyncMock(), async_edit_event=AsyncMock(return_value=edited),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), async_edit_event=AsyncMock(return_value=edited),
     )
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
@@ -501,7 +504,7 @@ async def test_reject_pending_event_action_checks_permissions_and_uncertainty(mo
     item = pending()
     event_id = item.events[0].id
     store = SimpleNamespace(
-        async_load=AsyncMock(), async_reject_event=AsyncMock(return_value=True),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), async_reject_event=AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
@@ -544,7 +547,7 @@ async def test_approve_pending_event_action_writes_only_selected_event(monkeypat
         return selected
 
     store = SimpleNamespace(
-        async_load=AsyncMock(), async_approve_event=AsyncMock(side_effect=approve), get_event=Mock(return_value=selected),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), async_approve_event=AsyncMock(side_effect=approve), get_event=Mock(return_value=selected),
     )
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
@@ -586,7 +589,7 @@ async def test_event_decisions_validate_and_forward_optional_snapshot(monkeypatc
     item = pending()
     selected = item.events[0]
     store = SimpleNamespace(
-        async_load=AsyncMock(),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
         async_reject_event=AsyncMock(return_value=True),
         async_approve_event=AsyncMock(return_value=selected),
         get_event=Mock(return_value=selected),
@@ -638,7 +641,7 @@ async def test_resolve_uncertain_action_enforces_permissions_and_state(monkeypat
     item = pending()
     event_id = item.events[0].id
     store = SimpleNamespace(
-        async_load=AsyncMock(), async_resolve_uncertain=AsyncMock(return_value=True),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), async_resolve_uncertain=AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
@@ -693,7 +696,7 @@ async def test_resolve_uncertain_action_enforces_permissions_and_state(monkeypat
 async def test_reject_all_requires_resolution_of_uncertain_write(monkeypatch):
     item = pending()
     store = SimpleNamespace(
-        async_load=AsyncMock(),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
         async_remove=AsyncMock(side_effect=PendingImportApprovalUncertainError(item.id)),
     )
     monkeypatch.setattr(
@@ -712,7 +715,7 @@ async def test_submit_text_without_events_records_source_handling(monkeypatch):
     hass = FakeHass()
     parse = AsyncMock(return_value=ParseOutcome([], []))
     pending_store = SimpleNamespace(
-        async_load=AsyncMock(),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
         is_source_duplicate=Mock(return_value=False),
         async_add=AsyncMock(
             return_value=PendingImportAddResult(
@@ -752,14 +755,117 @@ async def test_submit_text_without_events_records_source_handling(monkeypatch):
         source_id=None,
         calendar_entity="calendar.family",
         warnings=[],
+        activity_id="activity-id",
     )
+
+
+async def test_submit_text_parse_failure_records_activity_and_reraises(monkeypatch):
+    hass = FakeHass()
+    parse = AsyncMock(side_effect=ServiceValidationError("parser unavailable"))
+    pending_store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
+                                    async_record_parse_failure=AsyncMock(return_value="failed-id"))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore",
+                        lambda _hass: pending_store)
+    await async_setup_entry(hass, entry())
+    submit = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
+    with pytest.raises(ServiceValidationError, match="parser unavailable"):
+        await submit(SimpleNamespace(data={ATTR_TEXT: "private details"}, context=Context(user_id=None)))
+    pending_store.async_record_parse_failure.assert_awaited_once_with("activity-id")
+    assert pending_store.async_begin_submission.await_args.kwargs["source_kind"] == "manual_text"
+    pending_store.async_record_parse_failure.side_effect = RuntimeError("disk full")
+    with pytest.raises(ServiceValidationError, match="parser unavailable"):
+        await submit(SimpleNamespace(data={ATTR_TEXT: "private details"}, context=Context(user_id=None)))
+
+
+async def test_canceled_submission_finalizes_activity(monkeypatch):
+    hass = FakeHass()
+    started = asyncio.Event()
+
+    async def parse(_hass, _entry, _source):
+        started.set()
+        await asyncio.Future()
+
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
+                            async_record_parse_failure=AsyncMock(), is_source_duplicate=Mock(return_value=False))
+    monkeypatch.setattr("custom_components.daylight_calendar_import._async_parse_source", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    await async_setup_entry(hass, entry())
+    submit = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
+    task = asyncio.create_task(submit(SimpleNamespace(data={ATTR_TEXT: "private details"}, context=Context(user_id=None))))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    store.async_record_parse_failure.assert_awaited_once_with("activity-id")
+    assert store.active_submissions == set()
+
+
+async def test_entry_unload_waits_for_live_submission(monkeypatch):
+    hass = FakeHass()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def parse(_hass, _entry, _source):
+        started.set()
+        await release.wait()
+        return ParseOutcome([draft()], [])
+
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
+                            async_add=AsyncMock(return_value=PendingImportAddResult(pending=pending(),
+                                duplicate_source=False, duplicate_events=0)),
+                            is_source_duplicate=Mock(return_value=False))
+    monkeypatch.setattr("custom_components.daylight_calendar_import._async_parse_source", parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    config_entry = entry()
+    await async_setup_entry(hass, config_entry)
+    submit = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
+    submitted = asyncio.create_task(submit(SimpleNamespace(data={ATTR_TEXT: "source"}, context=Context(user_id=None))))
+    await started.wait()
+    unloading = asyncio.create_task(async_unload_entry(hass, config_entry))
+    await asyncio.sleep(0)
+    assert not unloading.done()
+    release.set()
+    assert (await submitted)["pending"] is not None
+    assert await unloading is True
+    assert store.active_submissions == set()
+
+
+async def test_submit_attachment_parse_failure_records_activity(monkeypatch):
+    hass = FakeHass()
+    source = SourceDocument(id="submission", kind=SourceKind.IMAGE,
+                            received_at=datetime.now(UTC), text="private details",
+                            title="flyer.png", attachments=())
+    @asynccontextmanager
+    async def image_source(_hass, _file_id):
+        yield source
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
+                            async_record_parse_failure=AsyncMock(return_value="failed-id"))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_image_source", image_source)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider",
+                        AsyncMock(side_effect=ServiceValidationError("parser unavailable")))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore",
+                        lambda _hass: store)
+    await async_setup_entry(hass, entry())
+    submit = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_IMAGE)][0]
+    with pytest.raises(ServiceValidationError, match="parser unavailable"):
+        await submit(SimpleNamespace(data={ATTR_FILE_ID: "a" * 32, ATTR_TEXT: "private details"},
+                                     context=Context(user_id=None)))
+    store.async_record_parse_failure.assert_awaited_once_with("activity-id")
+    assert store.async_begin_submission.await_args.kwargs == {
+        "source_kind": "image", "source_title": "flyer.png", "received_at": source.received_at,
+    }
+    store.async_record_parse_failure.side_effect = RuntimeError("disk full")
+    with pytest.raises(ServiceValidationError, match="parser unavailable"):
+        await submit(SimpleNamespace(data={ATTR_FILE_ID: "a" * 32, ATTR_TEXT: "private details"},
+                                     context=Context(user_id=None)))
 
 
 async def test_submit_text_skips_ai_for_known_source(monkeypatch):
     hass = FakeHass()
     parse = AsyncMock()
     pending_store = SimpleNamespace(
-        async_load=AsyncMock(),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
         is_source_duplicate=Mock(return_value=True),
         async_add=AsyncMock(),
     )
@@ -795,7 +901,7 @@ async def test_submit_text_authorizes_before_source_lookup(monkeypatch):
     parse = AsyncMock()
     is_source_duplicate = Mock()
     pending_store = SimpleNamespace(
-        async_load=AsyncMock(),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
         is_source_duplicate=is_source_duplicate,
         async_add=AsyncMock(),
     )
@@ -851,7 +957,7 @@ async def test_submit_text_reports_deduplication_races(
     hass = FakeHass()
     parse = AsyncMock(return_value=ParseOutcome([draft()], []))
     pending_store = SimpleNamespace(
-        async_load=AsyncMock(),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
         is_source_duplicate=Mock(return_value=False),
         async_add=AsyncMock(return_value=add_result),
     )
@@ -884,7 +990,7 @@ async def test_approve_and_reject_missing_pending_raise(monkeypatch):
     permissions = FakePermissions(allowed=True)
     hass = FakeHass(user=SimpleNamespace(permissions=permissions))
     pending_store = SimpleNamespace(
-        async_load=AsyncMock(),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
         async_process_events=AsyncMock(return_value=None), get=Mock(return_value=None),
         async_remove=AsyncMock(return_value=False),
     )
@@ -919,7 +1025,7 @@ async def test_approve_uncertain_pending_raises_validation_error(monkeypatch):
     permissions = FakePermissions(allowed=True)
     hass = FakeHass(user=SimpleNamespace(permissions=permissions))
     pending_store = SimpleNamespace(
-        async_load=AsyncMock(),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
         get=Mock(return_value=None), async_process_events=AsyncMock(
             side_effect=PendingImportApprovalUncertainError("pending-1")
         ),
@@ -1144,7 +1250,7 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
     parse_text = AsyncMock(return_value=ParseOutcome([event], []))
     create_calendar_event = AsyncMock()
     pending_store = SimpleNamespace(
-        async_load=AsyncMock(),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
         is_source_duplicate=Mock(return_value=False),
         async_add=AsyncMock(
             return_value=PendingImportAddResult(
@@ -1212,6 +1318,7 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
         source_id="message-42",
         calendar_entity="calendar.family",
         warnings=[],
+        activity_id="activity-id",
     )
 
 
@@ -1246,7 +1353,7 @@ async def test_pending_summary_and_lookup_preserve_identity(monkeypatch):
         events=[first, second],
     )
     store = SimpleNamespace(
-        async_load=AsyncMock(),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
         list=Mock(return_value=(item,)),
         get=Mock(return_value=item),
         get_event=Mock(return_value=item.events[0]),
@@ -1307,7 +1414,7 @@ async def test_event_calendar_edit_and_approvals_route_to_selected_destination(m
         return item
 
     store = SimpleNamespace(
-        async_load=AsyncMock(), get=Mock(return_value=item),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), get=Mock(return_value=item),
         get_event=Mock(return_value=selected),
         async_edit_event=AsyncMock(return_value=selected),
         async_approve_event=AsyncMock(side_effect=approve_one),
@@ -1356,7 +1463,7 @@ async def test_other_calendar_requires_control_before_batch_write(monkeypatch):
     selected = PendingEvent(item.events[0].id, item.events[0].draft,
                             calendar_entity="calendar.work")
     item = PendingImport(item.id, item.created_at, item.source_text, (selected,))
-    store = SimpleNamespace(async_load=AsyncMock(), get=Mock(return_value=item),
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), get=Mock(return_value=item),
                             async_process_events=AsyncMock())
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
@@ -1386,7 +1493,7 @@ async def test_routed_batch_does_not_require_unused_default_calendar(monkeypatch
         await processor(selected)
         return item
 
-    store = SimpleNamespace(async_load=AsyncMock(), get=Mock(return_value=item),
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), get=Mock(return_value=item),
                             async_process_events=AsyncMock(side_effect=approve))
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
@@ -1418,7 +1525,7 @@ async def test_approval_rechecks_destination_changed_after_preflight(monkeypatch
         return changed
 
     store = SimpleNamespace(
-        async_load=AsyncMock(), get=Mock(return_value=item),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), get=Mock(return_value=item),
         get_event=Mock(return_value=original),
         async_process_events=AsyncMock(side_effect=process),
         async_approve_event=AsyncMock(side_effect=process),
@@ -1452,7 +1559,7 @@ async def test_unlisted_persisted_destination_blocks_calendar_write(monkeypatch)
     selected = PendingEvent(item.events[0].id, item.events[0].draft,
                             calendar_entity="calendar.unlisted")
     item = PendingImport(item.id, item.created_at, item.source_text, (selected,))
-    store = SimpleNamespace(async_load=AsyncMock(), get=Mock(return_value=item),
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), get=Mock(return_value=item),
                             async_process_events=AsyncMock())
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
@@ -1470,7 +1577,7 @@ async def test_partial_parser_warnings_reach_parse_import_and_submit(monkeypatch
     warning = "event 1 is invalid: start must be a non-empty string"
     parse = AsyncMock(return_value=ParseOutcome([draft()], [warning]))
     store = SimpleNamespace(
-        async_load=AsyncMock(),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
         async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)),
     )
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
@@ -1506,7 +1613,7 @@ async def test_all_invalid_events_do_not_write_calendar(monkeypatch):
     parse = AsyncMock(return_value=ParseOutcome([], ["event 0 must be an object"]))
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     hass = FakeHass()
-    store = SimpleNamespace(async_load=AsyncMock(), is_source_duplicate=Mock(return_value=False),
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), is_source_duplicate=Mock(return_value=False),
                             async_add=AsyncMock(
         return_value=PendingImportAddResult(None, False, 0)
     ))
@@ -1534,7 +1641,7 @@ async def test_all_invalid_events_do_not_write_calendar(monkeypatch):
 async def test_text_services_normalize_before_parser_and_storage(monkeypatch):
     parse = AsyncMock(return_value=ParseOutcome([draft()], []))
     store = SimpleNamespace(
-        async_load=AsyncMock(),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
         is_source_duplicate=Mock(return_value=False),
         async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)),
     )
@@ -1579,7 +1686,7 @@ async def test_submit_image_routes_attachment_and_text_into_review(monkeypatch):
 
     parse = AsyncMock(return_value=ParseOutcome([draft()], []))
     store = SimpleNamespace(
-        async_load=AsyncMock(), is_source_duplicate=Mock(return_value=False),
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), is_source_duplicate=Mock(return_value=False),
         async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)),
     )
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_image_source", image_source)
@@ -1615,7 +1722,7 @@ async def test_submit_image_checks_control_permission_and_event_duplicate(monkey
     @asynccontextmanager
     async def image_source(_hass, _file_id):
         yield image
-    store = SimpleNamespace(async_load=AsyncMock(), is_source_duplicate=Mock(return_value=False),
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), is_source_duplicate=Mock(return_value=False),
                             async_add=AsyncMock(return_value=PendingImportAddResult(None, False, 1)))
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_image_source", image_source)
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", AsyncMock(return_value=ParseOutcome([draft()], [])))
@@ -1635,7 +1742,7 @@ async def test_submit_image_only_persists_digest_not_bytes(monkeypatch):
     @asynccontextmanager
     async def image_source(_hass, _file_id):
         yield image
-    store = SimpleNamespace(async_load=AsyncMock(), async_add=AsyncMock(return_value=PendingImportAddResult(None, False, 0)))
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), async_add=AsyncMock(return_value=PendingImportAddResult(None, False, 0)))
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_image_source", image_source)
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", AsyncMock(return_value=ParseOutcome([], ["no events"])))
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
@@ -1658,7 +1765,7 @@ async def test_submit_pdf_text_layer_uses_review_pipeline(monkeypatch):
         yield pdf
 
     parse = AsyncMock(return_value=ParseOutcome([draft()], []))
-    store = SimpleNamespace(async_load=AsyncMock(), is_source_duplicate=Mock(return_value=False),
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), is_source_duplicate=Mock(return_value=False),
                             async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)))
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_pdf_source", pdf_source)
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
@@ -1684,7 +1791,7 @@ async def test_submit_scanned_pdf_persists_digest_only(monkeypatch):
     async def pdf_source(_hass, _file_id, context):
         assert context == ""
         yield pdf
-    store = SimpleNamespace(async_load=AsyncMock(), async_add=AsyncMock(return_value=PendingImportAddResult(None, False, 0)))
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), async_add=AsyncMock(return_value=PendingImportAddResult(None, False, 0)))
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_pdf_source", pdf_source)
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", AsyncMock(return_value=ParseOutcome([], [])))
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
@@ -1706,7 +1813,7 @@ async def test_submit_mixed_pdf_preserves_text_and_digest_without_media_referenc
     @asynccontextmanager
     async def pdf_source(_hass, _file_id, _context):
         yield pdf
-    store = SimpleNamespace(async_load=AsyncMock(), async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)),
+    store = SimpleNamespace(async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"), async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)),
                             is_source_duplicate=Mock(return_value=False))
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_pdf_source", pdf_source)
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider",
