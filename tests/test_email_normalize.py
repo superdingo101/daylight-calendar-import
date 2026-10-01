@@ -806,3 +806,127 @@ def test_format_flowed_unstuffs_space_after_quote_markers() -> None:
     decoded = email_normalize._decode_format_flowed(value, delsp=False)
 
     assert decoded == ">quoted flowed continuation"
+
+
+def test_raw_header_lookup_is_case_insensitive_for_bytes_names() -> None:
+    raw = b"MESSAGE-ID: <case@example.test>\r\n\r\nBody"
+
+    assert email_normalize._raw_header_values(raw, b"message-id") == (
+        b"<case@example.test>",
+    )
+    assert stable_email_identity(raw) == "<case@example.test>"
+
+
+def test_invalid_message_id_defect_uses_fallback_identity() -> None:
+    invalid = (
+        b"Message-ID: <a@b\r\n"
+        b"Subject: Same\r\n\r\n"
+        b"Body one"
+    )
+    valid = (
+        b"Message-ID: <a@b>\r\n"
+        b"Subject: Same\r\n\r\n"
+        b"Body two"
+    )
+
+    invalid_id = stable_email_identity(invalid)
+
+    assert invalid_id.startswith(FALLBACK_IDENTITY_PREFIX)
+    assert invalid_id != "<a@b>"
+    assert stable_email_identity(valid) == "<a@b>"
+
+
+def test_invalid_message_id_defect_does_not_ignore_body_changes() -> None:
+    first = b"Message-ID: <a@b\r\n\r\nBody one"
+    second = b"Message-ID: <a@b\r\n\r\nBody two"
+
+    assert stable_email_identity(first) != stable_email_identity(second)
+
+
+def test_obsolete_quoted_local_part_strips_surrounding_cfws() -> None:
+    commented = stable_email_identity(
+        b'Message-ID: <(note)"local"@example>\r\n\r\nBody one'
+    )
+    plain = stable_email_identity(
+        b'Message-ID: <"local"@example>\r\n\r\nBody two'
+    )
+
+    assert commented == '<"local"@example>'
+    assert plain == commented
+
+
+def test_part_descriptor_canonicalizes_equivalent_content_ids() -> None:
+    def build(content_id: str) -> bytes:
+        raw = (
+            b"Subject: Related descriptor\r\n"
+            b"Content-Type: multipart/related; boundary=rel; "
+            b"start=\"<root@id>\"\r\n\r\n"
+            b"--rel\r\n"
+            b"Content-Type: text/html\r\n"
+            b"Content-ID: <root@id>\r\n\r\n"
+            b"<p>Root</p>\r\n"
+            b"--rel\r\n"
+            b"Content-Type: image/png\r\n"
+            b"Content-ID: "
+            + content_id.encode()
+            + b"\r\n"
+            b"Content-Transfer-Encoding: base64\r\n\r\n"
+            b"YWJj\r\n"
+            b"--rel--\r\n"
+        )
+        return raw
+
+    plain = build("<res@id>")
+    commented = build("(note) <res@id>")
+
+    assert stable_email_identity(plain) == stable_email_identity(commented)
+
+
+def test_part_descriptor_preserves_malformed_content_id_losslessly() -> None:
+    def build(content_id: bytes) -> bytes:
+        return (
+            b"Subject: Related descriptor\r\n"
+            b"Content-Type: multipart/related; boundary=rel; "
+            b"start=\"<root@id>\"\r\n\r\n"
+            b"--rel\r\n"
+            b"Content-Type: text/html\r\n"
+            b"Content-ID: <root@id>\r\n\r\n"
+            b"<p>Root</p>\r\n"
+            b"--rel\r\n"
+            b"Content-Type: image/png\r\n"
+            b"Content-ID: "
+            + content_id
+            + b"\r\n"
+            b"Content-Transfer-Encoding: base64\r\n\r\n"
+            b"YWJj\r\n"
+            b"--rel--\r\n"
+        )
+
+    first = build(b"broken-one")
+    second = build(b"broken-two")
+
+    assert stable_email_identity(first) != stable_email_identity(second)
+
+
+def test_raw_header_scan_stops_before_message_body() -> None:
+    raw = (
+        b"Subject: No ID header\r\n"
+        b"X-Test: value\r\n\r\n"
+        b"Message-ID: <body-only@example.test>\r\n"
+        b"Body contents"
+    )
+
+    assert email_normalize._raw_header_values(raw, b"message-id") == ()
+    assert stable_email_identity(raw).startswith(FALLBACK_IDENTITY_PREFIX)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        b"Message-ID: <lf@example.test>\n\nBody",
+        b"Message-ID: <cr@example.test>\r\rBody",
+    ),
+)
+def test_raw_header_scan_supports_non_crlf_line_endings(raw: bytes) -> None:
+    [value] = email_normalize._raw_header_values(raw, b"message-id")
+    assert value.startswith(b"<")
