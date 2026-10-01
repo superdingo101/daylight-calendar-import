@@ -552,3 +552,18 @@ test("mobile buttons include padding in their full width and return focus stays 
   assert.notEqual(globalThis.focusedNode, other);
   assert.equal(find(panel._content, "nav").querySelectorAll("button")[1], globalThis.focusedNode);
 });
+
+test("failed source activity shows actionable retry guidance", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => request.service === "list_pending" ?
+    {response: {imports: []}} : request.service === "list_activity" ?
+      {response: {activity: [{id: "failed", status: "failed", title: "Submission",
+        created_at: "2026-10-01T12:00:00Z"}]}} :
+      {response: {activity: {id: "failed", status: "failed", title: "Submission",
+        guidance: "Check the configured AI Task and submit the source again.", transitions: []}}}};
+  await flush();
+  await panel.showActivity();
+  await panel.showActivity("failed");
+  assert.equal(panel._content.querySelectorAll("p").some(node =>
+    node.textContent.includes("submit the source again")), true);
+});
