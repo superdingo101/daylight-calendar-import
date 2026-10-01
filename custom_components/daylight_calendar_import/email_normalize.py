@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from email import policy
-from email.errors import ObsoleteHeaderDefect
+from email._header_value_parser import get_msg_id
 from email.message import Message
 from email.parser import BytesParser
 from hashlib import sha256
 from html.parser import HTMLParser
+import base64
 import json
-import re
 from typing import cast
 from uuid import uuid4
 
@@ -62,9 +62,6 @@ _BLOCK_TAGS = frozenset(
 )
 _SKIPPED_HTML_TAGS = frozenset({"script", "style", "template"})
 _SAFE_LINK_PREFIXES = ("http://", "https://", "mailto:")
-_MESSAGE_ID_TOKEN_RE = re.compile(
-    r'<(?:[^<>"\r\n]|"(?:\\.|[^"\\\r\n])*")+>'
-)
 
 
 class EmailNormalizationError(ValueError):
@@ -128,10 +125,16 @@ def normalize_email(
     document_id_factory: Callable[[], str] | None = None,
 ) -> SourceDocument:
     """Normalize one raw email envelope without exposing transport state downstream."""
-    message = _parse_message(envelope.raw_message)
-    identity = _message_identity(message)
-    text = _extract_part_text(message)
-    title = _first_header(message, "subject")
+    try:
+        message = _parse_message(envelope.raw_message)
+        identity = _message_identity(message, envelope.raw_message)
+        text = _extract_part_text(message)
+        title = _first_header(message, "subject")
+    except EmailNormalizationError:
+        raise
+    except Exception as exc:
+        raise EmailNormalizationError("Email message could not be normalized") from exc
+
     make_id = document_id_factory or (lambda: str(uuid4()))
     return SourceDocument(
         id=make_id(),
@@ -145,7 +148,12 @@ def normalize_email(
 
 def stable_email_identity(raw_message: bytes) -> str:
     """Return the semantic source identity used for pre-AI deduplication."""
-    return _message_identity(_parse_message(raw_message))
+    try:
+        return _message_identity(_parse_message(raw_message), raw_message)
+    except EmailNormalizationError:
+        raise
+    except Exception as exc:
+        raise EmailNormalizationError("Email message could not be normalized") from exc
 
 
 def html_to_text(value: str) -> str:
@@ -163,25 +171,81 @@ def _parse_message(raw_message: bytes) -> Message:
         raise EmailNormalizationError("Email message could not be parsed") from exc
 
 
-def _message_identity(message: Message) -> str:
-    headers = message.get_all("message-id", [])
-    if len(headers) == 1 and (canonical := _canonical_message_id(headers[0])):
-        return canonical
-    return _fallback_identity(message)
+def _message_identity(message: Message, raw_message: bytes) -> str:
+    raw_message_ids = _raw_header_values(raw_message, b"message-id")
+    if len(raw_message_ids) == 1:
+        canonical = _canonical_msg_id_bytes(raw_message_ids[0])
+        if canonical is not None:
+            return canonical
+    return _fallback_identity(message, raw_message_ids=raw_message_ids)
 
 
-def _canonical_message_id(header: object) -> str | None:
-    """Return only the semantic msg-id token from a usable Message-ID field."""
-    defects = getattr(header, "defects", ())
-    if any(not isinstance(defect, ObsoleteHeaderDefect) for defect in defects):
+def _canonical_msg_id_bytes(value: bytes) -> str | None:
+    """Parse one raw msg-id field value and return its semantic token."""
+    try:
+        text = _unfold_header_value(value).decode("ascii", errors="surrogateescape")
+        token, remainder = get_msg_id(text)
+    except Exception:
         return None
-    matches = _MESSAGE_ID_TOKEN_RE.findall(str(header))
-    if len(matches) != 1:
+    if remainder.strip():
         return None
-    return _normalize_header_value(matches[0])
+    return _normalize_header_value(token.value)
 
 
-def _fallback_identity(message: Message) -> str:
+def _canonical_msg_id_text(value: object) -> str | None:
+    try:
+        token, remainder = get_msg_id(str(value))
+    except Exception:
+        return None
+    if remainder.strip():
+        return None
+    return _normalize_header_value(token.value)
+
+
+def _raw_header_values(raw_message: bytes, name: bytes) -> tuple[bytes, ...]:
+    """Return unfolded raw field values without structured-header coercion."""
+    normalized = raw_message.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    values: list[bytes] = []
+    current_name: bytes | None = None
+    current_value = bytearray()
+
+    def flush() -> None:
+        nonlocal current_name, current_value
+        if current_name == name:
+            values.append(bytes(current_value))
+        current_name = None
+        current_value = bytearray()
+
+    for line in normalized.split(b"\n"):
+        if line == b"":
+            flush()
+            break
+        if line[:1] in (b" ", b"\t") and current_name is not None:
+            current_value.extend(b"\n")
+            current_value.extend(line)
+            continue
+        flush()
+        field_name, separator, field_value = line.partition(b":")
+        if not separator:
+            continue
+        current_name = field_name.strip().casefold()
+        current_value.extend(field_value.lstrip(b" \t"))
+    else:
+        flush()
+
+    return tuple(values)
+
+
+def _unfold_header_value(value: bytes) -> bytes:
+    lines = value.split(b"\n")
+    return b" ".join(line.lstrip(b" \t") for line in lines)
+
+
+def _fallback_identity(
+    message: Message,
+    *,
+    raw_message_ids: tuple[bytes, ...] = (),
+) -> str:
     payload: dict[str, object] = {
         "headers": {
             name: [
@@ -195,13 +259,10 @@ def _fallback_identity(message: Message) -> str:
         "non_body_parts": _non_body_part_descriptors(message),
     }
 
-    rejected_message_ids = [
-        normalized
-        for value in message.get_all("message-id", [])
-        if (normalized := _normalize_header_value(str(value)))
-    ]
-    if rejected_message_ids:
-        payload["message_id_headers"] = rejected_message_ids
+    if raw_message_ids:
+        payload["message_id_headers"] = [
+            base64.b64encode(value).decode("ascii") for value in raw_message_ids
+        ]
 
     lossy_body_parts = _lossy_body_part_descriptors(message)
     if lossy_body_parts:
@@ -229,7 +290,7 @@ def _collect_non_body_part_descriptors(
     *,
     force_descriptor: bool = False,
 ) -> None:
-    if force_descriptor or _is_attachment_like(part):
+    if force_descriptor or _is_attachment_like(part) or _is_encapsulated_message(part):
         descriptors.append(_part_descriptor(part))
         return
 
@@ -271,57 +332,64 @@ def _descriptor_payload_bytes(part: Message) -> bytes:
 
 
 def _extract_part_text(part: Message) -> str:
-    text, _ = _extract_part_result(part)
+    text, _, _ = _extract_part_result(part)
     return text
 
 
-def _extract_part_result(part: Message) -> tuple[str, tuple[Message, ...]]:
-    if _is_attachment_like(part):
-        return "", ()
+def _extract_part_result(
+    part: Message,
+) -> tuple[str, tuple[Message, ...], str]:
+    if _is_attachment_like(part) or _is_encapsulated_message(part):
+        return "", (), ""
     if not part.is_multipart():
         if not _is_body_text_part(part):
-            return "", ()
-        return _render_text_part(part), (part,)
+            return "", (), ""
+        content_type = part.get_content_type().casefold()
+        return _render_text_part(part), (part,), content_type
 
     children = cast(list[Message], part.get_payload())
     subtype = part.get_content_subtype().casefold()
     if subtype == "related":
         root = _related_root(part, children)
-        return _extract_part_result(root) if root is not None else ("", ())
+        return _extract_part_result(root) if root is not None else ("", (), "")
 
-    candidates = [
-        (child.get_content_type().casefold(), *_extract_part_result(child))
-        for child in children
-    ]
+    candidates = [_extract_part_result(child) for child in children]
     if subtype == "alternative":
         for preferred_type in ("text/plain", "text/html"):
-            for content_type, text, leaves in candidates:
-                if content_type == preferred_type and text:
-                    return text, leaves
-        for _, text, leaves in candidates:
+            for text, leaves, effective_type in candidates:
+                if effective_type == preferred_type and text:
+                    return text, leaves, effective_type
+        for text, leaves, effective_type in candidates:
             if text:
-                return text, leaves
-        return "", ()
+                return text, leaves, effective_type
+        return "", (), ""
 
-    texts = [text for _, text, _ in candidates if text]
+    texts = [text for text, _, _ in candidates if text]
     leaves = tuple(
         leaf
-        for _, text, candidate_leaves in candidates
+        for text, candidate_leaves, _ in candidates
         if text
         for leaf in candidate_leaves
     )
-    return _join_text(texts), leaves
+    effective_types = {
+        effective_type
+        for text, _, effective_type in candidates
+        if text and effective_type
+    }
+    effective_type = next(iter(effective_types)) if len(effective_types) == 1 else ""
+    return _join_text(texts), leaves, effective_type
 
 
 def _related_root(part: Message, children: list[Message]) -> Message | None:
     if not children:
         return None
-    start = _normalize_header_value(
+    start = _canonical_msg_id_text(
         part.get_param("start", header="content-type") or ""
     )
     if start:
         for child in children:
-            if _normalize_header_value(child.get("content-id", "")) == start:
+            content_id = _canonical_msg_id_text(child.get("content-id", ""))
+            if content_id == start:
                 return child
     return children[0]
 
@@ -345,6 +413,10 @@ def _is_attachment_like(part: Message) -> bool:
         (part.get_content_disposition() or "").casefold() == "attachment"
         or part.get_filename() is not None
     )
+
+
+def _is_encapsulated_message(part: Message) -> bool:
+    return part.get_content_type().casefold() == "message/rfc822"
 
 
 def _is_body_text_part(part: Message) -> bool:
@@ -371,7 +443,7 @@ def _decode_text_payload(part: Message) -> tuple[str, bool, str, bytes]:
 
 
 def _lossy_body_part_descriptors(message: Message) -> list[dict[str, object]]:
-    _, leaves = _extract_part_result(message)
+    _, leaves, _ = _extract_part_result(message)
     descriptors: list[dict[str, object]] = []
     for part in leaves:
         _, lossy, charset, payload = _decode_text_payload(part)
@@ -396,10 +468,10 @@ def _decode_format_flowed(value: str, *, delsp: bool) -> str:
     pending_flowed = False
 
     for raw_line in lines:
-        if raw_line.startswith(" "):
-            raw_line = raw_line[1:]
         quote_depth = len(raw_line) - len(raw_line.lstrip(">"))
         content = raw_line[quote_depth:]
+        if content.startswith(" "):
+            content = content[1:]
         flowed = content.endswith(" ") and content != "-- "
         piece = content[:-1] if flowed and delsp else content
 
