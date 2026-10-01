@@ -321,7 +321,8 @@ def _iter_header_lines(raw_message: bytes) -> Iterable[bytes]:
 
 
 def _unfold_header_value(value: bytes) -> bytes:
-    lines = value.split(b"\n")
+    normalized = value.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    lines = normalized.split(b"\n")
     return b" ".join(line.lstrip(b" \t") for line in lines)
 
 
