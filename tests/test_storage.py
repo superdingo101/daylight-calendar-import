@@ -372,10 +372,12 @@ async def test_parse_failure_history_is_private_bounded_and_atomic(monkeypatch):
                                                  received_at=datetime.now(storage_module.UTC))
     await store.async_record_parse_failure(next_id)
     assert store.get_activity(next_id)["title"] == "Submission"
+    active_received = datetime.now(storage_module.UTC)
     active_id = await store.async_begin_submission(source_kind="manual_text", source_title=None,
-                                                   received_at=datetime.now(storage_module.UTC))
+                                                   received_at=active_received)
     active = (await store.async_add(source_text="source", events=[draft()], activity_id=active_id)).pending
     assert active.id == active_id
+    assert active.created_at == active_received.isoformat()
     assert active.created_at == store.get_activity(active.id)["created_at"]
     assert [step["type"] for step in store.get_activity(active.id)["transitions"]] == [
         "received", "processing", "review_ready",
