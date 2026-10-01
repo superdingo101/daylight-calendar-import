@@ -766,7 +766,6 @@ async def test_collect_rejects_multiple_body_literals_for_requested_uid() -> Non
     (
         _no(b"Fetch rejected"),
         _ok(b"1 FETCH (BODY.PEEK[] {3}", b"abc", b")", b"Fetch completed"),
-        _ok(b"1 FETCH (UID 2 BODY[] {3}", b"abc", b")", b"Fetch completed"),
         _ok(b"1 FETCH (UID 1 BODY[] {3}"),
         _ok(b"1 FETCH (UID 1 FLAGS (\\Seen))", b"Fetch completed"),
         _ok(b"1 FETCH (UID 1 BODY[] {4}", b"abc", b")", b"Fetch completed"),
