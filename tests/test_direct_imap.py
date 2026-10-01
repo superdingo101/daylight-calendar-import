@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 import ssl
 import sys
@@ -331,6 +332,37 @@ async def test_collect_handles_empty_search_variants(
     assert client.logout_calls == 1
 
 
+@pytest.mark.parametrize(
+    "vanished_response",
+    (
+        FakeResponse("OK", []),
+        _ok(b"Fetch completed"),
+    ),
+)
+async def test_collect_skips_uid_deleted_before_fetch(
+    vanished_response: FakeResponse,
+) -> None:
+    client = FakeImapClient(
+        search_response=_ok(b"1 2 3", b"Search completed"),
+        fetch_responses={
+            "1": _fetch(1, b"one"),
+            "2": vanished_response,
+            "3": _fetch(3, b"three"),
+        },
+    )
+    source, _ = _source(client)
+
+    envelopes = [item async for item in source.async_collect()]
+
+    assert [item.raw_message for item in envelopes] == [b"one", b"three"]
+    assert client.uid_calls == [
+        ("fetch", ("1", "(UID BODY.PEEK[])")),
+        ("fetch", ("2", "(UID BODY.PEEK[])")),
+        ("fetch", ("3", "(UID BODY.PEEK[])")),
+    ]
+    assert client.logout_calls == 1
+
+
 async def test_collect_closes_connection_when_generator_is_closed() -> None:
     client = FakeImapClient(
         search_response=_ok(b"1 2", b"Search completed"),
@@ -389,6 +421,16 @@ async def test_validate_rejects_auth_mailbox_and_uidvalidity_failures(
     source, _ = _source(client)
 
     with pytest.raises(error_type):
+        await source.async_validate()
+
+    assert client.logout_calls == 1
+
+
+async def test_validate_cancellation_cleans_up_and_propagates() -> None:
+    client = FakeImapClient(hello_error=asyncio.CancelledError())
+    source, _ = _source(client)
+
+    with pytest.raises(asyncio.CancelledError):
         await source.async_validate()
 
     assert client.logout_calls == 1
@@ -463,7 +505,6 @@ async def test_collect_wraps_search_transport_failure() -> None:
     "fetch_response",
     (
         _no(b"Fetch rejected"),
-        _ok(b"Fetch completed"),
         _ok(b"1 FETCH (BODY.PEEK[] {3}", b"abc", b")", b"Fetch completed"),
         _ok(b"1 FETCH (UID 2 BODY.PEEK[] {3}", b"abc", b")", b"Fetch completed"),
         _ok(object(), b"abc", b")", b"Fetch completed"),
