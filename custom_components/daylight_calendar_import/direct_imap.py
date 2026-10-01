@@ -56,6 +56,7 @@ _ERR_FETCH = "IMAP UID fetch failed"  # pragma: no mutate
 _ERR_FETCH_DATA = "IMAP UID fetch returned malformed response data"  # pragma: no mutate
 _ERR_FETCH_LITERAL = "IMAP UID fetch did not return literal data"  # pragma: no mutate
 _ERR_FETCH_BODY_COUNT = "IMAP UID fetch did not return exactly one BODY literal"  # pragma: no mutate
+_ERR_FETCH_NO_UID = "IMAP UID fetch did not identify a message"  # pragma: no mutate
 _ERR_FETCH_LENGTH = "IMAP UID fetch returned a BODY literal with the wrong length"  # pragma: no mutate
 _ERR_FETCH_UNTERMINATED = "IMAP UID fetch returned an unterminated FETCH response"  # pragma: no mutate
 _ERR_SEARCH_TRANSPORT = "IMAP UID search failed"  # pragma: no mutate
@@ -370,6 +371,8 @@ def _extract_fetch_body(
             for match in _FETCH_UID_RE.finditer(lines[index])
         ]
         if expected_uid not in uid_values:
+            if body_markers and not uid_values:
+                raise DirectImapProtocolError(_ERR_FETCH_NO_UID)
             continue
 
         if len(body_markers) != 1:
