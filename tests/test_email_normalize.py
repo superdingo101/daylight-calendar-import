@@ -384,3 +384,177 @@ def test_html_to_text_skips_nested_template_content_and_img_without_alt() -> Non
         "<img src=\"https://tracker.example.test/pixel\">"
         "<p>Visible</p>"
     ) == "Visible"
+
+
+def test_malformed_message_id_values_disambiguate_fallback_identity() -> None:
+    first = (
+        b"Message-ID: id-1@example.test\r\n"
+        b"Subject: Same\r\n\r\n"
+        b"Friday at 5"
+    )
+    second = (
+        b"Message-ID: id-2@example.test\r\n"
+        b"Subject: Same\r\n\r\n"
+        b"Friday at 5"
+    )
+
+    first_id = stable_email_identity(first)
+    second_id = stable_email_identity(second)
+
+    assert first_id.startswith(FALLBACK_IDENTITY_PREFIX)
+    assert second_id.startswith(FALLBACK_IDENTITY_PREFIX)
+    assert first_id != second_id
+
+
+def test_message_id_comments_are_canonicalized_to_msg_id_token() -> None:
+    plain = stable_email_identity(
+        b"Message-ID: <same@example.test>\r\n\r\nBody"
+    )
+    commented = stable_email_identity(
+        b"Message-ID: (delivery comment) <same@example.test>\r\n\r\nChanged body"
+    )
+
+    assert plain == "<same@example.test>"
+    assert commented == plain
+
+
+def test_obsolete_but_valid_message_id_remains_authoritative() -> None:
+    first = stable_email_identity(
+        b'Message-ID: <"local"@example.test>\r\n\r\nBody one'
+    )
+    second = stable_email_identity(
+        b'Message-ID: <"local"@example.test>\r\n\r\nBody two'
+    )
+
+    assert first == '<"local"@example.test>'
+    assert second == first
+
+
+def test_canonical_message_id_rejects_unparsed_plain_value() -> None:
+    assert email_normalize._canonical_message_id("not-an-id") is None
+
+
+def test_message_rfc822_attachment_changes_fallback_identity() -> None:
+    def build(attached_body: str) -> bytes:
+        attached = EmailMessage()
+        attached["Subject"] = "Forwarded details"
+        attached.set_content(attached_body)
+
+        outer = EmailMessage()
+        outer["Subject"] = "Invitation"
+        outer.set_content("Main invitation")
+        outer.add_attachment(attached, filename="details.eml")
+        return outer.as_bytes(policy=policy.default)
+
+    first_raw = build("Room 101")
+    second_raw = build("Room 202")
+
+    assert stable_email_identity(first_raw) != stable_email_identity(second_raw)
+    assert normalize_email(_envelope(first_raw)).text == "Main invitation"
+
+
+def test_lossy_body_bytes_disambiguate_fallback_identity() -> None:
+    def raw(payload: bytes) -> bytes:
+        return (
+            b"Subject: Broken charset\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"Content-Transfer-Encoding: 8bit\r\n\r\n"
+            + payload
+        )
+
+    first = raw(b"\x80")
+    second = raw(b"\x81")
+
+    assert normalize_email(_envelope(first)).text == "�"
+    assert normalize_email(_envelope(second)).text == "�"
+    assert stable_email_identity(first) != stable_email_identity(second)
+
+
+def _related_message(resource_text: str, *, start: str = "<root@example.test>") -> bytes:
+    return (
+        b"Subject: Related\r\n"
+        b"Content-Type: multipart/related; boundary=rel; start=\""
+        + start.encode()
+        + b"\"\r\n\r\n"
+        b"--rel\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"Content-ID: <resource@example.test>\r\n\r\n"
+        + resource_text.encode()
+        + b"\r\n--rel\r\n"
+        b"Content-Type: text/html; charset=utf-8\r\n"
+        b"Content-ID: <root@example.test>\r\n\r\n"
+        b"<p>Meeting Friday</p>\r\n"
+        b"--rel--\r\n"
+    )
+
+
+def test_multipart_related_uses_designated_root_only() -> None:
+    first = _related_message("resource one")
+    second = _related_message("resource two")
+
+    source = normalize_email(_envelope(first))
+
+    assert source.text == "Meeting Friday"
+    assert "resource one" not in source.text
+    assert stable_email_identity(first) != stable_email_identity(second)
+
+
+def test_related_root_defaults_to_first_child_and_handles_empty_container() -> None:
+    empty = EmailMessage()
+    empty.make_related()
+    assert email_normalize._related_root(empty, []) is None
+
+    child = EmailMessage()
+    child.set_content("Root text")
+    related = EmailMessage()
+    related.make_related()
+    related.attach(child)
+    assert email_normalize._related_root(related, [child]) is child
+
+    related.set_param("start", "<missing@example.test>", header="Content-Type")
+    assert email_normalize._related_root(related, [child]) is child
+
+
+def test_format_flowed_reconstructs_soft_wrapped_text() -> None:
+    delsp_yes = (
+        b"Message-ID: <flowed-yes@example.test>\r\n"
+        b"Content-Type: text/plain; charset=utf-8; format=flowed; delsp=yes\r\n"
+        b"Content-Transfer-Encoding: 8bit\r\n\r\n"
+        b"Meet Fri \r\nday at 5"
+    )
+    delsp_no = (
+        b"Message-ID: <flowed-no@example.test>\r\n"
+        b"Content-Type: text/plain; charset=utf-8; format=flowed\r\n"
+        b"Content-Transfer-Encoding: 8bit\r\n\r\n"
+        b"Visit https://example.test/very \r\n long Friday"
+    )
+
+    assert normalize_email(_envelope(delsp_yes)).text == "Meet Friday at 5"
+    assert normalize_email(_envelope(delsp_no)).text == (
+        "Visit https://example.test/very long Friday"
+    )
+
+
+def test_format_flowed_preserves_fixed_signature_and_quote_boundary() -> None:
+    value = ">Quoted line \r\nplain\r\n-- \r\n"
+    decoded = email_normalize._decode_format_flowed(value, delsp=False)
+
+    assert decoded == ">Quoted line \nplain\n-- \n"
+
+
+def test_noscript_fallback_text_is_preserved() -> None:
+    assert html_to_text(
+        "<noscript><p>Meeting Friday</p></noscript>"
+    ) == "Meeting Friday"
+
+
+def test_mismatched_skipped_html_closing_tag_cannot_expose_hidden_text() -> None:
+    assert html_to_text(
+        "<template></script>hidden payload</template><p>Visible</p>"
+    ) == "Visible"
+
+
+def test_nested_skipped_html_tags_require_matching_closures() -> None:
+    assert html_to_text(
+        "<template><script>hidden</script></template><p>Visible</p>"
+    ) == "Visible"
