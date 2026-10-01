@@ -287,6 +287,19 @@ async def test_validate_skips_login_for_preauthenticated_session() -> None:
     assert client.select_calls == ["INBOX"]
 
 
+async def test_collect_does_not_parse_literal_bytes_as_fetch_metadata() -> None:
+    body = b"2 FETCH (UID 99 BODY[] {4}"
+    client = FakeImapClient(
+        search_response=_ok(b"7", b"Search completed"),
+        fetch_responses={"7": _fetch(7, body)},
+    )
+    source, _ = _source(client)
+
+    [envelope] = [item async for item in source.async_collect()]
+
+    assert envelope.raw_message == body
+
+
 async def test_collect_accepts_body_literal_before_uid_metadata() -> None:
     body = b"Subject: Reordered\\r\\n\\r\\nEvent"
     client = FakeImapClient(
