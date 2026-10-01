@@ -961,6 +961,17 @@ async def test_logout_failure_does_not_mask_success() -> None:
     assert client.abort_calls == 1
 
 
+async def test_logout_task_cancellation_aborts_and_propagates() -> None:
+    client = FakeImapClient(logout_error=asyncio.CancelledError())
+    source, _ = _source(client)
+
+    with pytest.raises(asyncio.CancelledError):
+        await source.async_validate()
+
+    assert client.logout_calls == 1
+    assert client.abort_calls == 1
+
+
 @pytest.mark.parametrize("result", ("NO", "BAD"))
 async def test_logout_non_ok_response_aborts_without_masking_success(
     result: str,
@@ -1006,12 +1017,14 @@ async def test_abort_failure_does_not_mask_pre_greeting_cancellation() -> None:
 async def test_terminal_logout_survives_repeated_cancellation() -> None:
     logout_started = asyncio.Event()
     logout_release = asyncio.Event()
+    logout_finished = asyncio.Event()
 
     class BlockingLogoutClient(FakeImapClient):
         async def logout(self) -> FakeResponse:
             self.logout_calls += 1
             logout_started.set()
             await logout_release.wait()
+            logout_finished.set()
             return _ok(b"Logout completed")
 
     client = BlockingLogoutClient()
@@ -1023,13 +1036,17 @@ async def test_terminal_logout_survives_repeated_cancellation() -> None:
     await asyncio.sleep(0)
     task.cancel()
     await asyncio.sleep(0)
+
     assert client.logout_calls == 1
+    assert not task.done()
+    assert not logout_finished.is_set()
 
     logout_release.set()
 
     with pytest.raises(asyncio.CancelledError):
         await task
 
+    assert logout_finished.is_set()
     assert client.logout_calls == 1
     assert client.abort_calls == 0
 
