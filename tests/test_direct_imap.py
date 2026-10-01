@@ -9,6 +9,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
+from custom_components.daylight_calendar_import import direct_imap as direct_imap_module
 from custom_components.daylight_calendar_import.direct_imap import (
     DirectImapAuthenticationError,
     DirectImapConnectionError,
@@ -54,6 +55,8 @@ class FakeImapClient:
         search_response: FakeResponse | None = None,
         fetch_responses: dict[str, FakeResponse | BaseException] | None = None,
         hello_error: BaseException | None = None,
+        login_error: BaseException | None = None,
+        select_error: BaseException | None = None,
         search_error: BaseException | None = None,
         logout_error: BaseException | None = None,
     ) -> None:
@@ -67,6 +70,8 @@ class FakeImapClient:
         self.search_response = search_response or _ok(b"", b"Search completed")
         self.fetch_responses = fetch_responses or {}
         self.hello_error = hello_error
+        self.login_error = login_error
+        self.select_error = select_error
         self.search_error = search_error
         self.logout_error = logout_error
         self.login_calls: list[tuple[str, str]] = []
@@ -87,12 +92,16 @@ class FakeImapClient:
 
     async def login(self, user: str, password: str) -> FakeResponse:
         self.login_calls.append((user, password))
+        if self.login_error:
+            raise self.login_error
         if self.login_response.result == "OK":
             self.state = "AUTH"
         return self.login_response
 
     async def select(self, mailbox: str = "INBOX") -> FakeResponse:
         self.select_calls.append(mailbox)
+        if self.select_error:
+            raise self.select_error
         return self.select_response
 
     async def uid_search(
@@ -226,6 +235,15 @@ def test_direct_imap_settings_reject_invalid_timeout(timeout: object) -> None:
         _settings(timeout=timeout)
 
 
+@pytest.mark.parametrize("port", (1, 65535))
+def test_direct_imap_settings_accept_port_boundaries(port: int) -> None:
+    assert _settings(port=port).port == port
+
+
+def test_direct_imap_settings_accept_fractional_positive_timeout() -> None:
+    assert _settings(timeout=0.5).timeout == 0.5
+
+
 async def test_validate_connects_authenticates_selects_and_logs_out() -> None:
     client = FakeImapClient()
     source, factory = _source(client)
@@ -269,6 +287,8 @@ async def test_default_factory_uses_pinned_runtime_dependency(
     await source.async_validate()
 
     assert calls[0]["host"] == "imap.example.test"
+    assert client.login_calls == [("calendar@example.test", "app-secret")]
+    assert client.select_calls == ["INBOX"]
     assert client.logout_calls == 1
 
 
@@ -336,6 +356,11 @@ async def test_default_factory_abort_closes_connect_resources(
     if transport is not None:
         assert transport.close_calls == 1
     assert client.logout_calls == 0
+
+
+def test_runtime_adapter_abort_tolerates_missing_connect_internals() -> None:
+    adapter = direct_imap_module._AioImapClientAdapter(object())
+    adapter.abort()
 
 
 async def test_validate_supports_explicit_unverified_tls() -> None:
@@ -418,6 +443,11 @@ async def test_collect_enumerates_every_matching_uid_with_uid_fetch() -> None:
         for item in envelopes
     )
     assert all(item.upstream_source_id is None for item in envelopes)
+    assert all(item.provenance.source_id == "mailbox-1" for item in envelopes)
+    assert all(
+        item.provenance.source_type is EmailSourceType.DIRECT_IMAP
+        for item in envelopes
+    )
     assert client.search_calls == [(("UnSeen UnDeleted",), "us-ascii")]
     assert client.uid_calls == [
         ("fetch", ("7", "(UID BODY.PEEK[])")),
@@ -474,6 +504,23 @@ async def test_collect_skips_uid_deleted_before_fetch(
         ("fetch", ("2", "(UID BODY.PEEK[])")),
         ("fetch", ("3", "(UID BODY.PEEK[])")),
     ]
+    assert client.logout_calls == 1
+
+
+async def test_collect_skips_vanished_uid_with_unsolicited_fetch_frame() -> None:
+    client = FakeImapClient(
+        search_response=_ok(b"1 2 3", b"Search completed"),
+        fetch_responses={
+            "1": _fetch(1, b"one"),
+            "2": _fetch(99, b"unsolicited"),
+            "3": _fetch(3, b"three"),
+        },
+    )
+    source, _ = _source(client)
+
+    envelopes = [item async for item in source.async_collect()]
+
+    assert [item.raw_message for item in envelopes] == [b"one", b"three"]
     assert client.logout_calls == 1
 
 
@@ -550,6 +597,28 @@ async def test_validate_cancellation_aborts_pre_greeting_transport() -> None:
     assert client.logout_calls == 0
 
 
+async def test_validate_cancellation_after_greeting_logs_out() -> None:
+    client = FakeImapClient(login_error=asyncio.CancelledError())
+    source, _ = _source(client)
+
+    with pytest.raises(asyncio.CancelledError):
+        await source.async_validate()
+
+    assert client.logout_calls == 1
+    assert client.abort_calls == 0
+
+
+async def test_validate_unexpected_error_after_greeting_logs_out() -> None:
+    client = FakeImapClient(select_error=RuntimeError("select exploded"))
+    source, _ = _source(client)
+
+    with pytest.raises(DirectImapConnectionError, match="^IMAP connection failed$"):
+        await source.async_validate()
+
+    assert client.logout_calls == 1
+    assert client.abort_calls == 0
+
+
 async def test_validate_rejects_unexpected_post_greeting_state() -> None:
     client = FakeImapClient(state="LOGOUT")
     source, _ = _source(client)
@@ -577,7 +646,15 @@ async def test_validate_wraps_connection_failures(
     factory = FakeFactory(client, error=factory_error)
     source, _ = _source(client, factory=factory)
 
-    with pytest.raises(DirectImapConnectionError):
+    expected_message = (
+        "Unable to create IMAP connection"
+        if factory_error
+        else "IMAP connection failed"
+    )
+    with pytest.raises(
+        DirectImapConnectionError,
+        match=f"^{expected_message}$",
+    ):
         await source.async_validate()
 
     assert client.logout_calls == 0
@@ -614,6 +691,74 @@ async def test_collect_wraps_search_transport_failure() -> None:
         _ = [item async for item in source.async_collect()]
 
     assert client.logout_calls == 1
+
+
+async def test_collect_rejects_unterminated_outer_fetch_with_nested_flags() -> None:
+    body = b"abc"
+    client = FakeImapClient(
+        search_response=_ok(b"1", b"Search completed"),
+        fetch_responses={
+            "1": _ok(
+                b"1 FETCH (BODY[] {3}",
+                body,
+                b" UID 1 FLAGS (Seen)",
+                b"Fetch completed",
+            )
+        },
+    )
+    source, _ = _source(client)
+
+    with pytest.raises(
+        DirectImapProtocolError,
+        match="^IMAP UID fetch returned an unterminated FETCH response$",
+    ):
+        _ = [item async for item in source.async_collect()]
+
+    assert client.logout_calls == 1
+
+
+async def test_collect_handles_unrelated_frame_before_requested_frame() -> None:
+    body = b"target"
+    client = FakeImapClient(
+        search_response=_ok(b"7", b"Search completed"),
+        fetch_responses={
+            "7": _ok(
+                b"2 FETCH (UID 99 FLAGS (Seen))",
+                f"1 FETCH (UID 7 BODY[] {{{len(body)}}}".encode(),
+                body,
+                b")",
+                b"Fetch completed",
+            )
+        },
+    )
+    source, _ = _source(client)
+
+    [envelope] = [item async for item in source.async_collect()]
+
+    assert envelope.raw_message == body
+
+
+async def test_collect_rejects_multiple_body_literals_for_requested_uid() -> None:
+    client = FakeImapClient(
+        search_response=_ok(b"1", b"Search completed"),
+        fetch_responses={
+            "1": _ok(
+                b"1 FETCH (UID 1 BODY[] {1}",
+                b"a",
+                b" BODY.PEEK[] {1}",
+                b"b",
+                b")",
+                b"Fetch completed",
+            )
+        },
+    )
+    source, _ = _source(client)
+
+    with pytest.raises(
+        DirectImapProtocolError,
+        match="^IMAP UID fetch did not return exactly one BODY literal$",
+    ):
+        _ = [item async for item in source.async_collect()]
 
 
 @pytest.mark.parametrize(
@@ -664,6 +809,7 @@ async def test_logout_failure_does_not_mask_success() -> None:
 
     await source.async_validate()
     assert client.logout_calls == 1
+    assert client.abort_calls == 1
 
 
 async def test_terminal_logout_finishes_before_cancellation_propagates() -> None:
@@ -728,25 +874,74 @@ async def test_acknowledge_rejects_upstream_mutation_until_later_pr(
 ) -> None:
     source, _ = _source(FakeImapClient())
 
-    with pytest.raises(DirectImapUnsupportedDispositionError):
+    with pytest.raises(
+        DirectImapUnsupportedDispositionError,
+        match="^Upstream IMAP disposition is not implemented yet$",
+    ):
         await source.async_acknowledge(_provenance(), disposition=disposition)
 
 
 @pytest.mark.parametrize(
-    "provenance",
+    ("provenance", "message"),
     (
-        _provenance(source_id="other"),
-        _provenance(source_type="other"),  # type: ignore[arg-type]
-        _provenance(reference="uid:1"),
+        (_provenance(source_id="other"), "Email provenance belongs to another source"),
+        (
+            _provenance(source_type="other"),  # type: ignore[arg-type]
+            "Email provenance has the wrong source type",
+        ),
+        (
+            _provenance(reference="uid:1"),
+            "Email provenance has the wrong transport reference",
+        ),
     ),
 )
 async def test_acknowledge_rejects_foreign_or_malformed_provenance(
     provenance: EmailProvenance,
+    message: str,
 ) -> None:
     source, _ = _source(FakeImapClient())
 
-    with pytest.raises(DirectImapProtocolError):
+    with pytest.raises(DirectImapProtocolError, match=f"^{message}$"):
         await source.async_acknowledge(provenance, disposition=EmailDisposition())
+
+
+@pytest.mark.parametrize("value", (1, IMAP_MAX))
+def test_parse_uidvalidity_accepts_identifier_boundaries(value: int) -> None:
+    response = _ok(f"OK [UIDVALIDITY {value}] UIDs valid".encode())
+    assert direct_imap_module._parse_uidvalidity(response, "INBOX") == value
+
+
+@pytest.mark.parametrize("value", (0, IMAP_MAX + 1))
+def test_parse_uidvalidity_rejects_out_of_range_values(value: int) -> None:
+    response = _ok(f"OK [UIDVALIDITY {value}] UIDs valid".encode())
+    with pytest.raises(
+        DirectImapProtocolError,
+        match="^IMAP server returned an invalid UIDVALIDITY$",
+    ):
+        direct_imap_module._parse_uidvalidity(response, "INBOX")
+
+
+def test_parse_search_uids_accepts_identifier_boundaries() -> None:
+    response = _ok(f"1 {IMAP_MAX}".encode(), b"Search completed")
+    assert direct_imap_module._parse_search_uids(
+        response,
+        mailbox="INBOX",
+        uid_validity=1234,
+    ) == (1, IMAP_MAX)
+
+
+@pytest.mark.parametrize("value", (0, IMAP_MAX + 1))
+def test_parse_search_uids_rejects_out_of_range_values(value: int) -> None:
+    response = _ok(str(value).encode(), b"Search completed")
+    with pytest.raises(
+        DirectImapProtocolError,
+        match="^IMAP UID search returned an invalid identifier$",
+    ):
+        direct_imap_module._parse_search_uids(
+            response,
+            mailbox="INBOX",
+            uid_validity=1234,
+        )
 
 
 async def test_collect_default_clock_is_timezone_aware() -> None:

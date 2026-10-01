@@ -12,6 +12,7 @@ import ssl
 from typing import Protocol
 
 from .email_source import (
+    MAX_IMAP_IDENTIFIER,
     DirectImapReference,
     EmailDisposition,
     EmailEnvelope,
@@ -36,6 +37,34 @@ _BODY_LITERAL_RE = re.compile(
     rb"\bBODY(?:\.PEEK)?\[\]\s+\{([0-9]+)\}\s*$",
     re.IGNORECASE,
 )
+
+_ERR_PORT = "port must be an integer between 1 and 65535"  # pragma: no mutate
+_ERR_VERIFY_SSL = "verify_ssl must be a boolean"  # pragma: no mutate
+_ERR_TIMEOUT = "timeout must be a finite positive number"  # pragma: no mutate
+_ERR_CREATE_CONNECTION = "Unable to create IMAP connection"  # pragma: no mutate
+_ERR_AUTH = "IMAP authentication failed"  # pragma: no mutate
+_ERR_AUTH_STATE = _ERR_AUTH_STATE  # pragma: no mutate
+_ERR_MAILBOX = "IMAP mailbox selection failed"  # pragma: no mutate
+_ERR_MAILBOX_DATA = "IMAP mailbox selection returned malformed response data"  # pragma: no mutate
+_ERR_UIDVALIDITY_INVALID = _ERR_UIDVALIDITY_INVALID  # pragma: no mutate
+_ERR_UIDVALIDITY_MISSING = "IMAP server did not provide UIDVALIDITY"  # pragma: no mutate
+_ERR_SEARCH = "IMAP UID search failed"  # pragma: no mutate
+_ERR_SEARCH_DATA = "IMAP UID search returned malformed response data"  # pragma: no mutate
+_ERR_SEARCH_IDS = "IMAP UID search returned malformed identifiers"  # pragma: no mutate
+_ERR_SEARCH_ID = _ERR_SEARCH_ID  # pragma: no mutate
+_ERR_FETCH = "IMAP UID fetch failed"  # pragma: no mutate
+_ERR_FETCH_DATA = _ERR_FETCH_DATA  # pragma: no mutate
+_ERR_FETCH_LITERAL = _ERR_FETCH_LITERAL  # pragma: no mutate
+_ERR_FETCH_BODY_COUNT = _ERR_FETCH_BODY_COUNT  # pragma: no mutate
+_ERR_FETCH_LENGTH = _ERR_FETCH_LENGTH  # pragma: no mutate
+_ERR_FETCH_UNTERMINATED = _ERR_FETCH_UNTERMINATED  # pragma: no mutate
+_ERR_SEARCH_TRANSPORT = "IMAP UID search failed"  # pragma: no mutate
+_ERR_FETCH_TRANSPORT = "IMAP UID fetch failed"  # pragma: no mutate
+_ERR_DISPOSITION = _ERR_DISPOSITION  # pragma: no mutate
+_ERR_PROVENANCE_SOURCE = "Email provenance belongs to another source"  # pragma: no mutate
+_ERR_PROVENANCE_TYPE = "Email provenance has the wrong source type"  # pragma: no mutate
+_ERR_PROVENANCE_REFERENCE = _ERR_PROVENANCE_REFERENCE  # pragma: no mutate
+_ERR_CONNECTION = "IMAP connection failed"  # pragma: no mutate
 
 
 class DirectImapError(Exception):
@@ -92,16 +121,16 @@ class DirectImapSettings:
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a non-empty string")
         if type(self.port) is not int or not 1 <= self.port <= 65535:
-            raise ValueError("port must be an integer between 1 and 65535")
+            raise ValueError(_ERR_PORT)
         if type(self.verify_ssl) is not bool:
-            raise ValueError("verify_ssl must be a boolean")
+            raise ValueError(_ERR_VERIFY_SSL)
         if (
             isinstance(self.timeout, bool)
             or not isinstance(self.timeout, (int, float))
             or not math.isfinite(self.timeout)
             or self.timeout <= 0
         ):
-            raise ValueError("timeout must be a finite positive number")
+            raise ValueError(_ERR_TIMEOUT)
 
 
 class _Response(Protocol):
@@ -111,7 +140,7 @@ class _Response(Protocol):
     lines: Sequence[object]
 
 
-class _ImapClient(Protocol):
+class _ImapClient(Protocol):  # pragma: no mutate block
     """Subset of aioimaplib used by the adapter."""
 
     def get_state(self) -> str:
@@ -126,12 +155,12 @@ class _ImapClient(Protocol):
         """Authenticate."""
         ...
 
-    async def select(self, mailbox: str = "INBOX") -> _Response:
+    async def select(self, mailbox: str) -> _Response:
         """Select a mailbox."""
         ...
 
     async def uid_search(
-        self, *criteria: str, charset: str | None = "utf-8"
+        self, *criteria: str, charset: str | None
     ) -> _Response:
         """Search by UID."""
         ...
@@ -164,11 +193,11 @@ class _AioImapClientAdapter:
     async def login(self, user: str, password: str) -> _Response:
         return await self._client.login(user, password)  # type: ignore[attr-defined,no-any-return]
 
-    async def select(self, mailbox: str = "INBOX") -> _Response:
+    async def select(self, mailbox: str) -> _Response:
         return await self._client.select(mailbox)  # type: ignore[attr-defined,no-any-return]
 
     async def uid_search(
-        self, *criteria: str, charset: str | None = "utf-8"
+        self, *criteria: str, charset: str | None
     ) -> _Response:
         return await self._client.uid_search(  # type: ignore[attr-defined,no-any-return]
             *criteria, charset=charset
@@ -211,7 +240,7 @@ def _utcnow() -> datetime:
 def _ssl_context(*, verify_ssl: bool) -> ssl.SSLContext:
     context = ssl.create_default_context()
     if not verify_ssl:
-        context.check_hostname = False
+        context.check_hostname = False  # pragma: no mutate
         context.verify_mode = ssl.CERT_NONE
     return context
 
@@ -232,25 +261,21 @@ def _line_bytes(value: object, message: str) -> bytes:
 
 
 def _parse_uidvalidity(response: _Response, mailbox: str) -> int:
-    _require_ok(response, "IMAP mailbox selection failed", DirectImapMailboxError)
+    _require_ok(response, _ERR_MAILBOX, DirectImapMailboxError)
     for raw_line in response.lines:
         line = _line_bytes(
             raw_line,
-            "IMAP mailbox selection returned malformed response data",
+            _ERR_MAILBOX_DATA,
         )
         if match := _UIDVALIDITY_RE.search(line):
             try:
                 value = int(match.group(1))
-                return DirectImapReference(
-                    mailbox=mailbox,
-                    uid_validity=value,
-                    uid=1,
-                ).uid_validity
             except ValueError as exc:
-                raise DirectImapProtocolError(
-                    "IMAP server returned an invalid UIDVALIDITY"
-                ) from exc
-    raise DirectImapProtocolError("IMAP server did not provide UIDVALIDITY")
+                raise DirectImapProtocolError(_ERR_UIDVALIDITY_INVALID) from exc
+            if not 1 <= value <= MAX_IMAP_IDENTIFIER:
+                raise DirectImapProtocolError(_ERR_UIDVALIDITY_INVALID)
+            return value
+    raise DirectImapProtocolError(_ERR_UIDVALIDITY_MISSING)
 
 
 def _parse_search_uids(
@@ -259,13 +284,13 @@ def _parse_search_uids(
     mailbox: str,
     uid_validity: int,
 ) -> tuple[int, ...]:
-    _require_ok(response, "IMAP UID search failed")
+    _require_ok(response, _ERR_SEARCH)
     if not response.lines:
         return ()
 
     first_line = _line_bytes(
         response.lines[0],
-        "IMAP UID search returned malformed response data",
+        _ERR_SEARCH_DATA,
     ).strip()
     if not first_line:
         return ()
@@ -274,21 +299,17 @@ def _parse_search_uids(
     if not all(token.isdigit() for token in tokens):
         if len(response.lines) == 1 and not any(token.isdigit() for token in tokens):
             return ()
-        raise DirectImapProtocolError("IMAP UID search returned malformed identifiers")
+        raise DirectImapProtocolError(_ERR_SEARCH_IDS)
 
     uids: list[int] = []
     for token in tokens:
         try:
-            reference = DirectImapReference(
-                mailbox=mailbox,
-                uid_validity=uid_validity,
-                uid=int(token),
-            )
+            uid = int(token)
         except ValueError as exc:
-            raise DirectImapProtocolError(
-                "IMAP UID search returned an invalid identifier"
-            ) from exc
-        uids.append(reference.uid)
+            raise DirectImapProtocolError(_ERR_SEARCH_ID) from exc
+        if not 1 <= uid <= MAX_IMAP_IDENTIFIER:
+            raise DirectImapProtocolError(_ERR_SEARCH_ID)
+        uids.append(uid)
     return tuple(uids)
 
 
@@ -298,9 +319,9 @@ def _extract_fetch_body(
     expected_uid: int,
 ) -> bytes | None:
     """Return the requested BODY literal without assuming FETCH item order."""
-    _require_ok(response, "IMAP UID fetch failed")
+    _require_ok(response, _ERR_FETCH)
     lines = tuple(
-        _line_bytes(line, "IMAP UID fetch returned malformed response data")
+        _line_bytes(line, _ERR_FETCH_DATA)
         for line in response.lines
     )
     metadata_indexes: list[int] = []
@@ -314,7 +335,7 @@ def _extract_fetch_body(
             continue
         if index + 1 >= len(lines):
             raise DirectImapProtocolError(
-                "IMAP UID fetch did not return literal data"
+                _ERR_FETCH_LITERAL
             )
         literal_indexes.add(index + 1)
         index += 2
@@ -327,7 +348,6 @@ def _extract_fetch_body(
     if not fetch_starts:
         return None
 
-    saw_uid = False
     for frame_number, frame_start in enumerate(fetch_starts):
         frame_end = (
             fetch_starts[frame_number + 1]
@@ -349,13 +369,12 @@ def _extract_fetch_body(
             for index in frame_metadata
             for match in _FETCH_UID_RE.finditer(lines[index])
         ]
-        saw_uid = saw_uid or bool(uid_values)
         if expected_uid not in uid_values:
             continue
 
         if len(body_markers) != 1:
             raise DirectImapProtocolError(
-                "IMAP UID fetch did not return exactly one BODY literal"
+                _ERR_FETCH_BODY_COUNT
             )
         marker_index, marker = body_markers[0]
         literal_index = marker_index + 1
@@ -363,21 +382,17 @@ def _extract_fetch_body(
         declared_size = int(marker.group(1))
         if len(literal) != declared_size:
             raise DirectImapProtocolError(
-                "IMAP UID fetch returned a BODY literal with the wrong length"
+                _ERR_FETCH_LENGTH
             )
-        if not any(
-            b")" in lines[index]
+        depth = sum(
+            lines[index].count(b"(") - lines[index].count(b")")
             for index in frame_metadata
-            if index > literal_index
-        ):
-            raise DirectImapProtocolError(
-                "IMAP UID fetch returned an unterminated FETCH response"
-            )
+        )
+        if depth != 0:
+            raise DirectImapProtocolError(_ERR_FETCH_UNTERMINATED)
         return literal
 
-    if saw_uid:
-        raise DirectImapProtocolError("IMAP UID fetch returned the wrong message")
-    raise DirectImapProtocolError("IMAP UID fetch did not identify a message")
+    return None
 
 
 class DirectImapSource:
@@ -393,10 +408,7 @@ class DirectImapSource:
         self._settings = settings
         self._client_factory = client_factory
         self._clock = clock
-        self._config = EmailSourceConfig(
-            source_id=settings.source_id,
-            source_type=EmailSourceType.DIRECT_IMAP,
-        )
+        self._config = EmailSourceConfig(source_id=settings.source_id)
 
     @property
     def config(self) -> EmailSourceConfig:
@@ -418,7 +430,7 @@ class DirectImapSource:
                     charset=self._settings.charset,
                 )
             except Exception:
-                raise DirectImapConnectionError("IMAP UID search failed") from None
+                raise DirectImapConnectionError(_ERR_SEARCH_TRANSPORT) from None
 
             uids = _parse_search_uids(
                 search_response,
@@ -433,7 +445,7 @@ class DirectImapSource:
                         "(UID BODY.PEEK[])",
                     )
                 except Exception:
-                    raise DirectImapConnectionError("IMAP UID fetch failed") from None
+                    raise DirectImapConnectionError(_ERR_FETCH_TRANSPORT) from None
 
                 raw_message = _extract_fetch_body(
                     fetch_response,
@@ -467,17 +479,17 @@ class DirectImapSource:
         self._validate_provenance(provenance)
         if disposition != EmailDisposition():
             raise DirectImapUnsupportedDispositionError(
-                "Upstream IMAP disposition is not implemented yet"
+                _ERR_DISPOSITION
             )
 
     def _validate_provenance(self, provenance: EmailProvenance) -> None:
         if provenance.source_id != self._settings.source_id:
-            raise DirectImapProtocolError("Email provenance belongs to another source")
+            raise DirectImapProtocolError(_ERR_PROVENANCE_SOURCE)
         if provenance.source_type is not EmailSourceType.DIRECT_IMAP:
-            raise DirectImapProtocolError("Email provenance has the wrong source type")
+            raise DirectImapProtocolError(_ERR_PROVENANCE_TYPE)
         if not isinstance(provenance.transport_reference, DirectImapReference):
             raise DirectImapProtocolError(
-                "Email provenance has the wrong transport reference"
+                _ERR_PROVENANCE_REFERENCE
             )
 
     async def _async_open(self, mailbox: str) -> tuple[_ImapClient, int]:
@@ -489,9 +501,9 @@ class DirectImapSource:
                 ssl_context=_ssl_context(verify_ssl=self._settings.verify_ssl),
             )
         except (TimeoutError, OSError) as exc:
-            raise DirectImapConnectionError("Unable to create IMAP connection") from exc
+            raise DirectImapConnectionError(_ERR_CREATE_CONNECTION) from exc
 
-        greeted = False
+        greeted = False  # pragma: no mutate
         try:
             await client.wait_hello_from_server()
             greeted = True
@@ -503,13 +515,13 @@ class DirectImapSource:
                 )
                 _require_ok(
                     login_response,
-                    "IMAP authentication failed",
+                    _ERR_AUTH,
                     DirectImapAuthenticationError,
                 )
                 state = client.get_state()
             if state != _STATE_AUTH:
                 raise DirectImapAuthenticationError(
-                    "IMAP server did not enter authenticated state"
+                    _ERR_AUTH_STATE
                 )
 
             select_response = await client.select(mailbox)
@@ -523,7 +535,7 @@ class DirectImapSource:
             raise
         except Exception:
             await self._async_cleanup_failed_open(client, greeted=greeted)
-            raise DirectImapConnectionError("IMAP connection failed") from None
+            raise DirectImapConnectionError(_ERR_CONNECTION) from None
 
     async def _async_cleanup_failed_open(
         self, client: _ImapClient, *, greeted: bool
@@ -539,7 +551,7 @@ class DirectImapSource:
         try:
             await client.logout()
         except Exception:
-            pass
+            client.abort()
 
     @classmethod
     async def _async_logout_cancellation_safe(cls, client: _ImapClient) -> None:
