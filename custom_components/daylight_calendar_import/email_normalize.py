@@ -419,8 +419,7 @@ def _decode_format_flowed(value: str, *, delsp: bool) -> str:
         pending_text = piece
         pending_flowed = flowed
 
-    if pending_depth is not None:
-        logical.append(">" * pending_depth + pending_text)
+    logical.append(">" * (pending_depth or 0) + pending_text)
     return "\n".join(logical)
 
 
