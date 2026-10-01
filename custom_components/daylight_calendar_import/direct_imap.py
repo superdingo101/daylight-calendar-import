@@ -243,28 +243,70 @@ def _extract_fetch_body(
     *,
     expected_uid: int,
 ) -> bytes | None:
+    """Return the requested BODY literal without assuming FETCH item order."""
     _require_ok(response, "IMAP UID fetch failed")
-    if not response.lines:
+    lines = tuple(
+        _line_bytes(line, "IMAP UID fetch returned malformed response data")
+        for line in response.lines
+    )
+    fetch_starts = [
+        index for index, line in enumerate(lines) if _FETCH_START_RE.match(line)
+    ]
+    if not fetch_starts:
         return None
 
-    header = _line_bytes(
-        response.lines[0],
-        "IMAP UID fetch returned malformed response data",
-    )
-    match = _FETCH_UID_RE.search(header)
-    if match is None:
-        if len(response.lines) == 1:
-            return None
-        raise DirectImapProtocolError("IMAP UID fetch did not identify a message")
-    if int(match.group(1)) != expected_uid:
-        raise DirectImapProtocolError("IMAP UID fetch returned the wrong message")
-    if len(response.lines) < 2:
-        raise DirectImapProtocolError("IMAP UID fetch did not return a message body")
+    saw_uid = False
+    for frame_number, frame_start in enumerate(fetch_starts):
+        frame_end = (
+            fetch_starts[frame_number + 1]
+            if frame_number + 1 < len(fetch_starts)
+            else len(lines)
+        )
+        frame = lines[frame_start:frame_end]
+        body_markers = [
+            (index, match)
+            for index, line in enumerate(frame)
+            if (match := _BODY_LITERAL_RE.search(line)) is not None
+        ]
+        literal_indexes = {
+            index + 1 for index, _ in body_markers if index + 1 < len(frame)
+        }
+        uid_values = [
+            int(match.group(1))
+            for index, line in enumerate(frame)
+            if index not in literal_indexes
+            for match in _FETCH_UID_RE.finditer(line)
+        ]
+        saw_uid = saw_uid or bool(uid_values)
+        if expected_uid not in uid_values:
+            continue
 
-    return _line_bytes(
-        response.lines[1],
-        "IMAP UID fetch returned an invalid message body",
-    )
+        if len(body_markers) != 1:
+            raise DirectImapProtocolError(
+                "IMAP UID fetch did not return exactly one BODY literal"
+            )
+        marker_index, marker = body_markers[0]
+        literal_index = marker_index + 1
+        if literal_index >= len(frame):
+            raise DirectImapProtocolError(
+                "IMAP UID fetch did not return a message body"
+            )
+
+        literal = frame[literal_index]
+        declared_size = int(marker.group(1))
+        if len(literal) != declared_size:
+            raise DirectImapProtocolError(
+                "IMAP UID fetch returned a BODY literal with the wrong length"
+            )
+        if not any(b")" in line for line in frame[literal_index + 1 :]):
+            raise DirectImapProtocolError(
+                "IMAP UID fetch returned an unterminated FETCH response"
+            )
+        return literal
+
+    if saw_uid:
+        raise DirectImapProtocolError("IMAP UID fetch returned the wrong message")
+    raise DirectImapProtocolError("IMAP UID fetch did not identify a message")
 
 
 class DirectImapSource:

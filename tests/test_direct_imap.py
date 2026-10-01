@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 import ssl
-import sys
 from typing import Any, NamedTuple
-from types import ModuleType
 
 import pytest
 
@@ -158,9 +156,18 @@ def _source(
 
 def _fetch(uid: int, body: bytes) -> FakeResponse:
     return _ok(
-        f"1 FETCH (UID {uid} BODY.PEEK[] {{{len(body)}}}".encode(),
+        f"1 FETCH (UID {uid} BODY[] {{{len(body)}}}".encode(),
         bytearray(body),
         b")",
+        b"Fetch completed",
+    )
+
+
+def _fetch_body_before_uid(uid: int, body: bytes) -> FakeResponse:
+    return _ok(
+        f"1 FETCH (BODY[] {{{len(body)}}}".encode(),
+        bytearray(body),
+        f" UID {uid})".encode(),
         b"Fetch completed",
     )
 
@@ -231,9 +238,15 @@ async def test_validate_connects_authenticates_selects_and_logs_out() -> None:
     assert context.verify_mode == ssl.CERT_REQUIRED
 
 
-async def test_default_factory_loads_runtime_client_lazily(
+async def test_default_factory_uses_pinned_runtime_dependency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from importlib.metadata import version
+
+    import aioimaplib
+
+    assert version("aioimaplib") == "2.0.1"
+
     client = FakeImapClient()
     calls: list[dict[str, Any]] = []
 
@@ -241,9 +254,7 @@ async def test_default_factory_loads_runtime_client_lazily(
         calls.append(kwargs)
         return client
 
-    module = ModuleType("aioimaplib")
-    module.IMAP4_SSL = constructor  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "aioimaplib", module)
+    monkeypatch.setattr(aioimaplib, "IMAP4_SSL", constructor)
 
     source = DirectImapSource(
         _settings(),
@@ -274,6 +285,24 @@ async def test_validate_skips_login_for_preauthenticated_session() -> None:
 
     assert client.login_calls == []
     assert client.select_calls == ["INBOX"]
+
+
+async def test_collect_accepts_body_literal_before_uid_metadata() -> None:
+    body = b"Subject: Reordered\\r\\n\\r\\nEvent"
+    client = FakeImapClient(
+        search_response=_ok(b"7", b"Search completed"),
+        fetch_responses={"7": _fetch_body_before_uid(7, body)},
+    )
+    source, _ = _source(client)
+
+    [envelope] = [item async for item in source.async_collect()]
+
+    assert envelope.raw_message == body
+    assert envelope.provenance.transport_reference == DirectImapReference(
+        mailbox="INBOX",
+        uid_validity=1234,
+        uid=7,
+    )
 
 
 async def test_collect_enumerates_every_matching_uid_with_uid_fetch() -> None:
@@ -506,10 +535,13 @@ async def test_collect_wraps_search_transport_failure() -> None:
     (
         _no(b"Fetch rejected"),
         _ok(b"1 FETCH (BODY.PEEK[] {3}", b"abc", b")", b"Fetch completed"),
-        _ok(b"1 FETCH (UID 2 BODY.PEEK[] {3}", b"abc", b")", b"Fetch completed"),
-        _ok(b"1 FETCH (UID 1 BODY.PEEK[] {3}"),
+        _ok(b"1 FETCH (UID 2 BODY[] {3}", b"abc", b")", b"Fetch completed"),
+        _ok(b"1 FETCH (UID 1 BODY[] {3}"),
+        _ok(b"1 FETCH (UID 1 FLAGS (\\Seen))", b"Fetch completed"),
+        _ok(b"1 FETCH (UID 1 BODY[] {4}", b"abc", b")", b"Fetch completed"),
+        _ok(b"1 FETCH (UID 1 BODY[] {3}", b"abc", b"Fetch completed"),
         _ok(object(), b"abc", b")", b"Fetch completed"),
-        _ok(b"1 FETCH (UID 1 BODY.PEEK[] {3}", "not-bytes", b")"),
+        _ok(b"1 FETCH (UID 1 BODY[] {3}", "not-bytes", b")"),
     ),
 )
 async def test_collect_rejects_invalid_fetch_responses(
