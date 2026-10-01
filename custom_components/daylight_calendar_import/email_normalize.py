@@ -213,14 +213,12 @@ def _non_body_part_descriptors(message: Message) -> list[dict[str, object]]:
 
 
 def _extract_part_text(part: Message) -> str:
-    if not part.is_multipart() and not _is_body_text_part(part):
-        return ""
     if (part.get_content_disposition() or "").casefold() == "attachment":
+        return ""
+    if not part.is_multipart() and not _is_body_text_part(part):
         return ""
     if part.is_multipart():
         children = part.get_payload()
-        if not isinstance(children, list):
-            return ""
         candidates = [
             (child.get_content_type().casefold(), _extract_part_text(child))
             for child in children
@@ -236,9 +234,7 @@ def _extract_part_text(part: Message) -> str:
     content_type = part.get_content_type().casefold()
     if content_type == "text/plain":
         return _normalize_body_text(_decode_text_part(part))
-    if content_type == "text/html":
-        return html_to_text(_decode_text_part(part))
-    return ""
+    return html_to_text(_decode_text_part(part))
 
 
 def _is_body_text_part(part: Message) -> bool:
@@ -251,9 +247,7 @@ def _is_body_text_part(part: Message) -> bool:
 
 def _decode_text_part(part: Message) -> str:
     try:
-        content = part.get_content()
-        if isinstance(content, str):
-            return content
+        return part.get_content()
     except (LookupError, UnicodeError):
         pass
 
