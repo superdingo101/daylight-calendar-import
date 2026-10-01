@@ -18,6 +18,12 @@ class EmailSourceType(StrEnum):
     DIRECT_IMAP = "direct_imap"
 
 
+def _validate_imap_identifier(name: str, value: object) -> None:
+    """Reject values outside IMAP's nonzero unsigned 32-bit identifier range."""
+    if type(value) is not int or not 1 <= value <= MAX_IMAP_IDENTIFIER:
+        raise ValueError(f"{name} must be a nonzero unsigned 32-bit integer")
+
+
 @dataclass(frozen=True, slots=True)
 class DirectImapReference:
     """Stable IMAP identity required for safe delayed acknowledgement."""
@@ -27,13 +33,11 @@ class DirectImapReference:
     uid: int
 
     def __post_init__(self) -> None:
-        """Reject identifiers that cannot be valid IMAP UID references."""
-        if not self.mailbox.strip():
-            raise ValueError("mailbox must not be empty")
-        if not 1 <= self.uid_validity <= MAX_IMAP_IDENTIFIER:
-            raise ValueError("uid_validity must be a nonzero unsigned 32-bit integer")
-        if not 1 <= self.uid <= MAX_IMAP_IDENTIFIER:
-            raise ValueError("uid must be a nonzero unsigned 32-bit integer")
+        """Reject identifiers that cannot be valid IMAP message references."""
+        if not isinstance(self.mailbox, str) or not self.mailbox.strip():
+            raise ValueError("mailbox must be a non-empty string")
+        _validate_imap_identifier("uid_validity", self.uid_validity)
+        _validate_imap_identifier("uid", self.uid)
 
 
 type EmailTransportReference = DirectImapReference

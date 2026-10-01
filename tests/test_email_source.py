@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 import pytest
 
 from custom_components.daylight_calendar_import.email_source import (
-    MAX_IMAP_IDENTIFIER,
     DirectImapReference,
     EmailDisposition,
     EmailEnvelope,
@@ -15,6 +14,10 @@ from custom_components.daylight_calendar_import.email_source import (
     EmailSourceConfig,
     EmailSourceType,
 )
+
+
+IMAP_MAX = 4_294_967_295
+IMAP_OVER_MAX = 4_294_967_296
 
 
 class FakeEmailSource:
@@ -76,48 +79,61 @@ def test_email_source_config_defaults_to_direct_imap_and_non_destructive() -> No
 
 
 @pytest.mark.parametrize(
-    ("mailbox", "uid_validity", "uid", "message"),
+    ("mailbox", "message"),
     (
-        ("", 1234, 42, "mailbox must not be empty"),
-        ("   ", 1234, 42, "mailbox must not be empty"),
-        ("INBOX", 0, 42, "uid_validity must be a nonzero unsigned 32-bit integer"),
-        ("INBOX", -1, 42, "uid_validity must be a nonzero unsigned 32-bit integer"),
-        (
-            "INBOX",
-            MAX_IMAP_IDENTIFIER + 1,
-            42,
-            "uid_validity must be a nonzero unsigned 32-bit integer",
-        ),
-        ("INBOX", 1234, 0, "uid must be a nonzero unsigned 32-bit integer"),
-        ("INBOX", 1234, -1, "uid must be a nonzero unsigned 32-bit integer"),
-        (
-            "INBOX",
-            1234,
-            MAX_IMAP_IDENTIFIER + 1,
-            "uid must be a nonzero unsigned 32-bit integer",
-        ),
+        ("", "mailbox must be a non-empty string"),
+        ("   ", "mailbox must be a non-empty string"),
+        (None, "mailbox must be a non-empty string"),
+        (42, "mailbox must be a non-empty string"),
     ),
 )
-def test_direct_imap_reference_rejects_invalid_identity(
-    mailbox: str, uid_validity: int, uid: int, message: str
+def test_direct_imap_reference_rejects_invalid_mailbox(
+    mailbox: object, message: str
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        DirectImapReference(mailbox=mailbox, uid_validity=uid_validity, uid=uid)
+        DirectImapReference(  # type: ignore[arg-type]
+            mailbox=mailbox,
+            uid_validity=1234,
+            uid=42,
+        )
+
+
+@pytest.mark.parametrize(
+    ("uid_validity", "uid", "message"),
+    (
+        (0, 42, "uid_validity must be a nonzero unsigned 32-bit integer"),
+        (-1, 42, "uid_validity must be a nonzero unsigned 32-bit integer"),
+        (IMAP_OVER_MAX, 42, "uid_validity must be a nonzero unsigned 32-bit integer"),
+        (True, 42, "uid_validity must be a nonzero unsigned 32-bit integer"),
+        (1.5, 42, "uid_validity must be a nonzero unsigned 32-bit integer"),
+        (1234, 0, "uid must be a nonzero unsigned 32-bit integer"),
+        (1234, -1, "uid must be a nonzero unsigned 32-bit integer"),
+        (1234, IMAP_OVER_MAX, "uid must be a nonzero unsigned 32-bit integer"),
+        (1234, True, "uid must be a nonzero unsigned 32-bit integer"),
+        (1234, 1.5, "uid must be a nonzero unsigned 32-bit integer"),
+    ),
+)
+def test_direct_imap_reference_rejects_invalid_identifiers(
+    uid_validity: object, uid: object, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        DirectImapReference(  # type: ignore[arg-type]
+            mailbox="INBOX",
+            uid_validity=uid_validity,
+            uid=uid,
+        )
 
 
 def test_direct_imap_reference_accepts_identifier_boundaries() -> None:
     low = DirectImapReference(mailbox="INBOX", uid_validity=1, uid=1)
     high = DirectImapReference(
         mailbox="Archive",
-        uid_validity=MAX_IMAP_IDENTIFIER,
-        uid=MAX_IMAP_IDENTIFIER,
+        uid_validity=IMAP_MAX,
+        uid=IMAP_MAX,
     )
 
     assert (low.uid_validity, low.uid) == (1, 1)
-    assert (high.uid_validity, high.uid) == (
-        MAX_IMAP_IDENTIFIER,
-        MAX_IMAP_IDENTIFIER,
-    )
+    assert (high.uid_validity, high.uid) == (IMAP_MAX, IMAP_MAX)
     assert high.mailbox == "Archive"
 
 

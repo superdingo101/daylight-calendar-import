@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from hypothesis import given, settings, strategies as st
 
 from custom_components.daylight_calendar_import.email_source import (
-    MAX_IMAP_IDENTIFIER,
     DirectImapReference,
     EmailDisposition,
     EmailEnvelope,
@@ -18,7 +17,7 @@ from custom_components.daylight_calendar_import.email_source import (
 PROPERTY_SETTINGS = settings(max_examples=100, deadline=None, derandomize=True)
 NONEMPTY_TEXT = st.text(min_size=1, max_size=80).filter(lambda value: bool(value.strip()))
 OPTIONAL_TEXT = st.one_of(st.none(), NONEMPTY_TEXT)
-VALID_IMAP_ID = st.integers(min_value=1, max_value=MAX_IMAP_IDENTIFIER)
+VALID_IMAP_ID = st.integers(min_value=1, max_value=4_294_967_295)
 
 
 @PROPERTY_SETTINGS
