@@ -9,6 +9,9 @@ from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 
+MAX_IMAP_IDENTIFIER = 2**32 - 1
+
+
 class EmailSourceType(StrEnum):
     """Configured transport used to collect inbound email."""
 
@@ -19,15 +22,18 @@ class EmailSourceType(StrEnum):
 class DirectImapReference:
     """Stable IMAP identity required for safe delayed acknowledgement."""
 
+    mailbox: str
     uid_validity: int
     uid: int
 
     def __post_init__(self) -> None:
         """Reject identifiers that cannot be valid IMAP UID references."""
-        if self.uid_validity <= 0:
-            raise ValueError("uid_validity must be positive")
-        if self.uid <= 0:
-            raise ValueError("uid must be positive")
+        if not self.mailbox.strip():
+            raise ValueError("mailbox must not be empty")
+        if not 1 <= self.uid_validity <= MAX_IMAP_IDENTIFIER:
+            raise ValueError("uid_validity must be a nonzero unsigned 32-bit integer")
+        if not 1 <= self.uid <= MAX_IMAP_IDENTIFIER:
+            raise ValueError("uid must be a nonzero unsigned 32-bit integer")
 
 
 type EmailTransportReference = DirectImapReference
@@ -58,7 +64,6 @@ class EmailProvenance:
     source_id: str
     source_type: EmailSourceType
     transport_reference: EmailTransportReference
-    mailbox: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
