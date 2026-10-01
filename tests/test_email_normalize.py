@@ -426,7 +426,7 @@ def test_obsolete_but_valid_message_id_remains_authoritative() -> None:
         b'Message-ID: <"local"@example.test>\r\n\r\nBody two'
     )
 
-    assert first == "<local@example.test>"
+    assert first == '<"local"@example.test>'
     assert second == first
 
 
@@ -688,9 +688,8 @@ def test_obsolete_internal_cfws_is_removed_from_message_id_token() -> None:
         b"Message-ID: <foo.bar@example>\r\n\r\nBody two"
     )
 
-    assert first == "<foo. bar@example>"
-    assert second == "<foo.bar@example>"
-    assert first != second
+    assert first == "<foo.bar@example>"
+    assert second == first
 
 
 def test_unmarked_message_rfc822_is_excluded_and_hashed_atomically() -> None:
