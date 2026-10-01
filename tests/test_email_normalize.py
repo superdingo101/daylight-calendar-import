@@ -1496,3 +1496,254 @@ def test_transfer_descriptor_handles_non_base64_transfer_encoding() -> None:
 
     assert descriptor is not None
     assert descriptor["encoding"] == "quoted-printable"
+
+
+def test_valid_padded_base64_encoded_word_matches_q_encoding_identity() -> None:
+    base64_subject = (
+        b"Subject: =?utf-8?b?QQ==?=\r\n"
+        b"From: sender@example.test\r\n\r\n"
+        b"Friday at 5"
+    )
+    q_subject = (
+        b"Subject: =?utf-8?q?A?=\r\n"
+        b"From: sender@example.test\r\n\r\n"
+        b"Friday at 5"
+    )
+
+    assert stable_email_identity(base64_subject) == stable_email_identity(q_subject)
+
+
+def test_rfc2231_filename_continuation_order_is_canonical() -> None:
+    def build(parameters: bytes) -> bytes:
+        return (
+            b"Subject: Attachment\r\n"
+            b"Content-Type: multipart/mixed; boundary=part\r\n\r\n"
+            b"--part\r\n"
+            b"Content-Type: text/plain\r\n\r\n"
+            b"Friday at 5\r\n"
+            b"--part\r\n"
+            b"Content-Type: application/octet-stream\r\n"
+            b"Content-Disposition: attachment; "
+            + parameters
+            + b"\r\n"
+            b"Content-Transfer-Encoding: base64\r\n\r\n"
+            b"YWJj\r\n"
+            b"--part--\r\n"
+        )
+
+    ordered = build(
+        b"filename*0*=utf-8''foo%FF; filename*1*=bar.txt"
+    )
+    reversed_segments = build(
+        b"filename*1*=bar.txt; filename*0*=utf-8''foo%FF"
+    )
+
+    assert stable_email_identity(ordered) == stable_email_identity(
+        reversed_segments
+    )
+
+
+def test_rejected_content_id_folding_does_not_change_identity() -> None:
+    def build(content_id: bytes) -> bytes:
+        return (
+            b"Subject: Attachment\r\n"
+            b"Content-Type: multipart/mixed; boundary=part\r\n\r\n"
+            b"--part\r\n"
+            b"Content-Type: text/plain\r\n\r\n"
+            b"Friday at 5\r\n"
+            b"--part\r\n"
+            b"Content-Type: application/octet-stream\r\n"
+            b"Content-ID: "
+            + content_id
+            + b"\r\n"
+            b"Content-Disposition: attachment; filename=\"file.bin\"\r\n\r\n"
+            b"abc\r\n"
+            b"--part--\r\n"
+        )
+
+    unfolded = build(b"broken- id")
+    folded = build(b"broken-\r\n id")
+
+    assert stable_email_identity(unfolded) == stable_email_identity(folded)
+
+
+def test_encapsulated_defective_identity_headers_preserve_raw_values() -> None:
+    def build(subject: bytes) -> bytes:
+        return (
+            b"Subject: Outer\r\n"
+            b"Content-Type: multipart/mixed; boundary=outer\r\n\r\n"
+            b"--outer\r\n"
+            b"Content-Type: text/plain\r\n\r\n"
+            b"Outer invitation\r\n"
+            b"--outer\r\n"
+            b"Content-Type: message/rfc822\r\n\r\n"
+            b"Subject: "
+            + subject
+            + b"\r\n\r\n"
+            b"Forwarded body\r\n"
+            b"--outer--\r\n"
+        )
+
+    assert stable_email_identity(
+        build(b"=?utf-8?b?QQ=A?=")
+    ) != stable_email_identity(
+        build(b"=?utf-8?b?QQ=B?=")
+    )
+
+
+def test_encapsulated_content_type_charset_is_semantic() -> None:
+    def build(charset: bytes) -> bytes:
+        return (
+            b"Subject: Outer\r\n"
+            b"Content-Type: multipart/mixed; boundary=outer\r\n\r\n"
+            b"--outer\r\n"
+            b"Content-Type: text/plain\r\n\r\n"
+            b"Outer invitation\r\n"
+            b"--outer\r\n"
+            b"Content-Type: message/rfc822\r\n\r\n"
+            b"Subject: Forwarded\r\n"
+            b"Content-Type: text/plain; charset="
+            + charset
+            + b"\r\n\r\n"
+            b"caf\xe9\r\n"
+            b"--outer--\r\n"
+        )
+
+    assert stable_email_identity(
+        build(b"iso-8859-1")
+    ) != stable_email_identity(
+        build(b"utf-8")
+    )
+
+
+def test_encapsulated_defective_filename_parameters_are_preserved() -> None:
+    def build(filename: bytes) -> bytes:
+        return (
+            b"Subject: Outer\r\n"
+            b"Content-Type: multipart/mixed; boundary=outer\r\n\r\n"
+            b"--outer\r\n"
+            b"Content-Type: text/plain\r\n\r\n"
+            b"Outer invitation\r\n"
+            b"--outer\r\n"
+            b"Content-Type: message/rfc822\r\n\r\n"
+            b"Subject: Forwarded\r\n"
+            b"Content-Type: multipart/mixed; boundary=inner\r\n\r\n"
+            b"--inner\r\n"
+            b"Content-Type: application/octet-stream\r\n"
+            b"Content-Disposition: attachment; filename=\""
+            + filename
+            + b"\"\r\n\r\n"
+            b"abc\r\n"
+            b"--inner--\r\n"
+            b"--outer--\r\n"
+        )
+
+    assert stable_email_identity(
+        build(b"=?utf-8?b?QQ=A?=")
+    ) != stable_email_identity(
+        build(b"=?utf-8?b?QQ=B?=")
+    )
+
+
+def test_multipart_alternative_prefers_last_same_type_representation() -> None:
+    message = EmailMessage()
+    message.make_alternative()
+
+    first = EmailMessage()
+    first.set_content("Older plain representation")
+    second = EmailMessage()
+    second.set_content("Preferred plain representation")
+    message.attach(first)
+    message.attach(second)
+
+    source = normalize_email(_envelope(message.as_bytes(policy=policy.default)))
+
+    assert source.text == "Preferred plain representation"
+
+
+def test_related_duplicate_start_parameters_fall_back_to_first_child() -> None:
+    raw = (
+        b"Subject: Related\r\n"
+        b"Content-Type: multipart/related; boundary=rel; "
+        b"start=\"<root@id>\"; start=\"<other@id>\"\r\n\r\n"
+        b"--rel\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-ID: <fallback@id>\r\n\r\n"
+        b"Fallback first child\r\n"
+        b"--rel\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-ID: <root@id>\r\n\r\n"
+        b"Root child\r\n"
+        b"--rel--\r\n"
+    )
+
+    assert normalize_email(_envelope(raw)).text == "Fallback first child"
+
+
+def test_related_duplicate_matching_children_fall_back_to_first_child() -> None:
+    raw = (
+        b"Subject: Related\r\n"
+        b"Content-Type: multipart/related; boundary=rel; start=\"<root@id>\"\r\n\r\n"
+        b"--rel\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-ID: <fallback@id>\r\n\r\n"
+        b"Fallback first child\r\n"
+        b"--rel\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-ID: <root@id>\r\n\r\n"
+        b"First matching child\r\n"
+        b"--rel\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-ID: <root@id>\r\n\r\n"
+        b"Second matching child\r\n"
+        b"--rel--\r\n"
+    )
+
+    assert normalize_email(_envelope(raw)).text == "Fallback first child"
+
+
+def test_defective_transfer_identity_ignores_outer_transport_syntax() -> None:
+    def build(boundary: bytes, received: bytes) -> bytes:
+        return (
+            b"Received: "
+            + received
+            + b"\r\n"
+            b"Subject: Outer\r\n"
+            b"Content-Type: multipart/mixed; boundary="
+            + boundary
+            + b"\r\n\r\n--"
+            + boundary
+            + b"\r\nContent-Type: text/plain\r\n\r\n"
+            b"Friday at 5\r\n--"
+            + boundary
+            + b"\r\nContent-Type: application/octet-stream\r\n"
+            b"Content-Disposition: attachment; filename=\"file.bin\"\r\n"
+            b"Content-Transfer-Encoding: base64\r\n\r\n"
+            b"QQ==\xff\r\n--"
+            + boundary
+            + b"--\r\n"
+        )
+
+    first = build(b"one", b"mx-one")
+    second = build(b"two", b"mx-two")
+
+    assert stable_email_identity(first) == stable_email_identity(second)
+
+
+def test_malformed_quoted_printable_wire_disambiguates_identity() -> None:
+    malformed = (
+        b"Subject: QP\r\n"
+        b"Content-Type: text/plain; charset=us-ascii\r\n"
+        b"Content-Transfer-Encoding: quoted-printable\r\n\r\n"
+        b"A="
+    )
+    plain = (
+        b"Subject: QP\r\n"
+        b"Content-Type: text/plain; charset=us-ascii\r\n"
+        b"Content-Transfer-Encoding: quoted-printable\r\n\r\n"
+        b"A"
+    )
+
+    assert normalize_email(_envelope(malformed)).text == "A"
+    assert normalize_email(_envelope(plain)).text == "A"
+    assert stable_email_identity(malformed) != stable_email_identity(plain)
