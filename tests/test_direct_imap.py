@@ -1008,6 +1008,15 @@ def test_parse_uidvalidity_rejects_out_of_range_values(value: int) -> None:
         direct_imap_module._parse_uidvalidity(response, "INBOX")
 
 
+def test_parse_uidvalidity_rejects_oversized_decimal_identifier() -> None:
+    response = _ok(b"OK [UIDVALIDITY " + b"9" * 5000 + b"] UIDs valid")
+    with pytest.raises(
+        DirectImapProtocolError,
+        match="^IMAP server returned an invalid UIDVALIDITY$",
+    ):
+        direct_imap_module._parse_uidvalidity(response, "INBOX")
+
+
 def test_parse_search_uids_accepts_identifier_boundaries() -> None:
     response = _ok(f"1 {IMAP_MAX}".encode(), b"Search completed")
     assert direct_imap_module._parse_search_uids(
@@ -1020,6 +1029,19 @@ def test_parse_search_uids_accepts_identifier_boundaries() -> None:
 @pytest.mark.parametrize("value", (0, IMAP_MAX + 1))
 def test_parse_search_uids_rejects_out_of_range_values(value: int) -> None:
     response = _ok(str(value).encode(), b"Search completed")
+    with pytest.raises(
+        DirectImapProtocolError,
+        match="^IMAP UID search returned an invalid identifier$",
+    ):
+        direct_imap_module._parse_search_uids(
+            response,
+            mailbox="INBOX",
+            uid_validity=1234,
+        )
+
+
+def test_parse_search_uids_rejects_oversized_decimal_identifier() -> None:
+    response = _ok(b"9" * 5000, b"Search completed")
     with pytest.raises(
         DirectImapProtocolError,
         match="^IMAP UID search returned an invalid identifier$",
