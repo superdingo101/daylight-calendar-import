@@ -637,9 +637,9 @@ def _semantic_part_fingerprint(part: Message) -> dict[str, object]:
     if lossy_headers:
         fingerprint["lossy_identity_headers"] = lossy_headers
     if _filename_decoding_is_lossy(part, filename):
-        raw_filename_parameters = _raw_filename_parameter_descriptors(part)
-        if raw_filename_parameters:
-            fingerprint["filename_raw_parameters"] = raw_filename_parameters
+        fingerprint["filename_raw_parameters"] = (
+            _raw_filename_parameter_descriptors(part)
+        )
     if part.is_multipart():
         children = cast(list[Message], part.get_payload())
         fingerprint["children"] = [
