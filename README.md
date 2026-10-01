@@ -4,7 +4,7 @@ A Home Assistant custom integration that turns unstructured text into validated 
 
 This repository is intentionally separate from [Daylight Calendar Card](https://github.com/superdingo101/daylight-calendar-card). The import integration owns ingestion, parsing, and review; the card may later provide an optional shortcut.
 
-## v0.3.0 source ingestion
+## v0.4.0 review and lifecycle
 
 The integration supports:
 
@@ -24,6 +24,7 @@ The integration supports:
 - `daylight_calendar_import.reject_pending_event`: reject one draft while retaining other events in the import
 - `daylight_calendar_import.approve_pending_event`: create one draft on the configured calendar, retaining the others
 - `daylight_calendar_import.resolve_pending_event`: explicitly resolve a calendar write whose outcome is uncertain
+- `daylight_calendar_import.list_activity` and `get_activity`: inspect recent lifecycle state and bounded transition history
 - multiple events in one input
 - timed and all-day events
 - strict validation of AI output
@@ -50,7 +51,7 @@ The current minimum supported Home Assistant version is **2026.7.4**. CI tests t
 
 Existing installations migrate their configured calendar into the allowed list automatically when the integration next loads.
 
-The **Daylight imports** sidebar panel lists imports awaiting review, their source type and time, event count, parser warnings, duplicates skipped, and any uncertain calendar write. Select an import to inspect its source context, warnings, and individual event drafts. You can edit a pending event's title, ISO start/end, all-day flag, location, and description in the panel. Timed values need an explicit UTC offset; all-day end dates are exclusive. The panel keeps existing destinations and does not offer per-event calendar routing. Approve or reject individual events with a confirmation step; the panel refuses a decision if the event changed since review. For imports with multiple pending events, confirm Approve all or Reject all to process each event independently and see individual results. For an uncertain calendar write, check the destination calendar, then confirm whether it was created, return it to review if it was not created, or discard it.
+The **Daylight imports** sidebar panel lists imports awaiting review, their source type and time, event count, parser warnings, duplicates skipped, and any uncertain calendar write. Select an import to inspect its source context, warnings, and individual event drafts. You can edit a pending event's title, ISO start/end, all-day flag, location, and description in the panel. Timed values need an explicit UTC offset; all-day end dates are exclusive. The panel keeps existing destinations and does not offer per-event calendar routing. Approve or reject individual events with a confirmation step; the panel refuses a decision if the event changed since review. For imports with multiple pending events, confirm Approve all or Reject all to process each event independently and see individual results. For an uncertain calendar write, check the destination calendar, then confirm whether it was created, return it to review if it was not created, or discard it. The **Recent activity** view shows completed and failed submissions, outcome totals, and recent transitions. Parse failures include retry guidance. History retains the newest 500 completed records plus active imports and the latest 32 transitions per import; source text and upload bytes are excluded from activity summaries.
 
 Then test `daylight_calendar_import.parse_text` from **Developer Tools → Actions**.
 
@@ -88,7 +89,7 @@ Parser capabilities validate media type, attachment count, aggregate size, and t
 
 The canonical public client/server contract for the future managed parser is documented in [`docs/hosted-api.md`](docs/hosted-api.md), with executable JSON Schemas under [`schemas/hosted/v1/`](schemas/hosted/v1/). The private `daylight-cloud` service must implement and contract-test against these public schemas; review, deduplication, conflict detection, lifecycle state, notifications, and calendar writes remain local to Home Assistant.
 
-Email/SMS ingestion, the remaining review UI, and hosted relay services remain future work.
+Email/SMS ingestion and hosted relay services remain future work.
 
 ## Tests
 
