@@ -1869,3 +1869,13 @@ def test_quoted_printable_soft_line_break_is_valid() -> None:
 
 def test_quoted_printable_short_hex_escape_is_defective() -> None:
     assert email_normalize._quoted_printable_wire_is_defective(b"A=F")
+
+
+def test_semantic_content_type_parameters_preserve_generic_parameter_value() -> None:
+    part = email_normalize._parse_message(
+        b"Content-Type: text/plain; x-mode=PreserveCase\r\n\r\nBody"
+    )
+
+    assert ["x-mode", "PreserveCase"] in (
+        email_normalize._semantic_content_type_parameters(part)
+    )
