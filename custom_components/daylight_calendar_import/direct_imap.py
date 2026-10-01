@@ -568,6 +568,9 @@ class DirectImapSource:
             response = await client.logout()
             if response.result != "OK":
                 cls._abort_quietly(client)
+        except asyncio.CancelledError:
+            cls._abort_quietly(client)
+            raise
         except Exception:
             cls._abort_quietly(client)
 
