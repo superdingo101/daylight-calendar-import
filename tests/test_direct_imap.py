@@ -563,3 +563,15 @@ async def test_acknowledge_rejects_foreign_or_malformed_provenance(
 
     with pytest.raises(DirectImapProtocolError):
         await source.async_acknowledge(provenance, disposition=EmailDisposition())
+
+
+async def test_collect_default_clock_is_timezone_aware() -> None:
+    client = FakeImapClient(
+        search_response=_ok(b"1", b"Search completed"),
+        fetch_responses={"1": _fetch(1, b"Subject: Clock\r\n\r\nTest")},
+    )
+    source = DirectImapSource(_settings(), client_factory=FakeFactory(client))
+
+    [envelope] = [item async for item in source.async_collect()]
+
+    assert envelope.received_at.tzinfo is UTC
