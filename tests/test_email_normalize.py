@@ -558,3 +558,30 @@ def test_nested_skipped_html_tags_require_matching_closures() -> None:
     assert html_to_text(
         "<template><script>hidden</script></template><p>Visible</p>"
     ) == "Visible"
+
+
+def test_fallback_identity_describes_non_body_leaf_part() -> None:
+    message = EmailMessage()
+    message["Subject"] = "Binary only"
+    message.set_content(b"{\"event\":true}", maintype="application", subtype="json")
+
+    identity = stable_email_identity(message.as_bytes(policy=policy.default))
+
+    assert identity.startswith(FALLBACK_IDENTITY_PREFIX)
+
+
+def test_alternative_can_fall_back_to_nested_related_representation() -> None:
+    message = EmailMessage()
+    message["Message-ID"] = "<nested-alternative@example.test>"
+    message.make_alternative()
+
+    related = EmailMessage()
+    related.make_related()
+    html = EmailMessage()
+    html.set_content("<p>Nested meeting Friday</p>", subtype="html")
+    related.attach(html)
+    message.attach(related)
+
+    source = normalize_email(_envelope(message.as_bytes(policy=policy.default)))
+
+    assert source.text == "Nested meeting Friday"
