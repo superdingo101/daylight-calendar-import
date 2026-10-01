@@ -542,9 +542,13 @@ test("mobile buttons include padding in their full width and return focus stays 
   panel.hass = {callWS: () => new Promise(resolve => {release = resolve;})};
   const returning = panel.showReview();
   assert.equal(globalThis.focusedNode, panel._refreshButton);
-  const other = find(panel._content, "button");
+  const other = find(panel._content, "nav").querySelectorAll("button")[1];
+  assert.equal(other.disabled, false);
   other.focus();
+  panel.shadowRoot.activeElement = other;
   release({response: {imports: []}});
   await returning;
-  assert.equal(globalThis.focusedNode, other);
+  assert.equal(globalThis.focusedNode.textContent, "Recent activity");
+  assert.notEqual(globalThis.focusedNode, other);
+  assert.equal(find(panel._content, "nav").querySelectorAll("button")[1], globalThis.focusedNode);
 });
