@@ -1,5 +1,19 @@
 # AGENTS.md
 
+## Pull request completion workflow
+
+For same-repository pull requests, the full mutation suite is a **final pre-merge gate**, not an iterative-development check.
+
+- Do **not** apply the `mutation-ready` label while implementation, normal CI, or review work is still in progress.
+- First finish the implementation, get the normal fast CI checks green, and resolve all known review/Codex findings.
+- Only when the pull request is otherwise ready to merge, apply the `mutation-ready` label. This triggers the full `Mutation score` workflow.
+- If any commit is pushed after `mutation-ready` is applied, the label may remain in place; mutation testing automatically reruns against the new pull request head.
+- Never treat an older successful mutation run as sufficient after the pull request head changes.
+- Do **not** merge until `Mutation score` passes on the current pull request head.
+- Fork/external pull requests are intentionally not eligible for this label-driven final mutation gate; do not try to work around that restriction by using a privileged workflow.
+
+When acting as an implementation or review agent, do not apply `mutation-ready` merely to check progress. Apply it only at the final handoff to merge readiness.
+
 ## Code review instructions
 
 When reviewing a pull request or any proposed code change in this repository, perform a **complete, exhaustive review of the entire change set before returning your response**.

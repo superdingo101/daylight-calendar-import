@@ -101,6 +101,8 @@ mutmut export-cicd-stats
 python scripts/check_mutation_score.py
 ```
 
-CI requires 100% statement/branch coverage for the Python integration package and also enforces the mutation-testing baseline in `mutation-baseline.json`.
+CI requires 100% statement/branch coverage for the Python integration package. For same-repository pull requests, full mutation testing is a **final pre-merge gate** rather than a per-commit check: finish implementation and review work, get the normal CI checks green, then apply the `mutation-ready` label. That label triggers `Mutation score`; if another commit is pushed afterward, mutation testing reruns automatically against the new head. Do not merge until `Mutation score` passes on the current pull request head. Fork/external pull requests are intentionally not eligible for this label-driven final gate.
+
+The mutation gate enforces the baseline in `mutation-baseline.json` via `scripts/check_mutation_score.py`.
 
 The measured mutation score was raised on September 26, 2026 to **95.23%** after adding real Home Assistant lifecycle integration tests: 1,416 of 1,487 generated mutants were killed, 71 survived, and none were untested, suspicious, skipped, timed out, or interrupted. CI enforces a **95.22%** floor to avoid two-decimal rounding rejecting that exact result, and also requires zero untested, suspicious, or segfaulting mutants.
