@@ -84,6 +84,7 @@ async def async_poll_email_source(
             continue
 
         claimed += 1
+        processor_completed = False
         try:
             context = (
                 attachment_stager(envelope, document)
@@ -92,13 +93,17 @@ async def async_poll_email_source(
             )
             async with context as process_document:
                 await processor(process_document, activity_id)
+                processor_completed = True
         except asyncio.CancelledError:
-            try:
-                await store.async_record_parse_failure(activity_id)
-            except (asyncio.CancelledError, Exception):
-                pass
+            if not processor_completed:
+                try:
+                    await store.async_record_parse_failure(activity_id)
+                except (asyncio.CancelledError, Exception):
+                    pass
             raise
         except Exception:
+            if processor_completed:
+                raise
             await store.async_record_parse_failure(activity_id)
             processing_failures += 1
             continue
