@@ -156,8 +156,6 @@ def normalize_email(
         )
         _, text = _extract_body(message)
         title = _first_header(message, "subject")
-    except EmailNormalizationError:
-        raise
     except Exception as exc:
         raise EmailNormalizationError(
             "Email message could not be normalized"
