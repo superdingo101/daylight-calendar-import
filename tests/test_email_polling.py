@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 import pytest
@@ -24,7 +25,11 @@ from custom_components.daylight_calendar_import.email_source import (
     EmailSourceConfig,
     EmailSourceType,
 )
-from custom_components.daylight_calendar_import.sources import SourceDocument, SourceKind
+from custom_components.daylight_calendar_import.sources import (
+    SourceAttachment,
+    SourceDocument,
+    SourceKind,
+)
 
 
 _RECEIVED_AT = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
@@ -526,3 +531,112 @@ async def test_multiple_processing_failures_are_counted_individually() -> None:
     )
     assert processed == ["Bad one", "Bad two", "Good"]
     assert store.failures == ["activity-1", "activity-2"]
+
+
+async def test_attachment_stager_wraps_one_processor_call() -> None:
+    source = FakeSource([[_envelope("attachment@example.test", subject="With attachment")]])
+    store = FakeStore()
+    stages: list[tuple[EmailEnvelope, SourceDocument]] = []
+    lifecycle: list[str] = []
+    attachment = SourceAttachment(
+        id="attachment-1",
+        media_type="image/png",
+        size_bytes=12,
+        content_ref="media-source://media_source/local/staged.png",
+    )
+
+    @asynccontextmanager
+    async def stager(envelope, document):
+        stages.append((envelope, document))
+        lifecycle.append("stage")
+        yield SourceDocument(
+            id=document.id,
+            kind=document.kind,
+            received_at=document.received_at,
+            text=document.text,
+            title=document.title,
+            attachments=(attachment,),
+            metadata=document.metadata,
+            upstream_source_id=document.upstream_source_id,
+        )
+        lifecycle.append("cleanup")
+
+    async def processor(document, activity_id):
+        lifecycle.append("process")
+        assert activity_id == "activity-1"
+        assert document.attachments == (attachment,)
+
+    result = await async_poll_email_source(
+        source,
+        store,
+        processor,
+        attachment_stager=stager,
+    )
+
+    assert result.processed == 1
+    assert len(stages) == 1
+    assert stages[0][0].raw_message.startswith(b"Subject: With attachment")
+    assert stages[0][1].attachments == ()
+    assert lifecycle == ["stage", "process", "cleanup"]
+
+
+async def test_attachment_staging_failure_releases_claim_and_continues() -> None:
+    source = FakeSource(
+        [[
+            _envelope("bad-attachment@example.test", subject="Bad attachment"),
+            _envelope("good@example.test", subject="Good"),
+        ]]
+    )
+    store = FakeStore()
+    processed: list[str | None] = []
+
+    @asynccontextmanager
+    async def stager(envelope, document):
+        if document.title == "Bad attachment":
+            raise RuntimeError("staging failed")
+        yield document
+
+    async def processor(document, activity_id):
+        del activity_id
+        processed.append(document.title)
+
+    result = await async_poll_email_source(
+        source,
+        store,
+        processor,
+        attachment_stager=stager,
+    )
+
+    assert result == EmailPollResult(
+        discovered=2,
+        claimed=2,
+        processed=1,
+        duplicates=0,
+        normalization_failures=0,
+        processing_failures=1,
+    )
+    assert store.failures == ["activity-1"]
+    assert processed == ["Good"]
+
+
+async def test_attachment_staging_cancellation_releases_claim_and_reraises() -> None:
+    source = FakeSource([[_envelope("cancel-stage@example.test")]])
+    store = FakeStore()
+
+    @asynccontextmanager
+    async def stager(_envelope, _document):
+        raise asyncio.CancelledError
+        yield  # pragma: no cover
+
+    async def processor(document, activity_id):
+        raise AssertionError((document, activity_id))
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_poll_email_source(
+            source,
+            store,
+            processor,
+            attachment_stager=stager,
+        )
+
+    assert store.failures == ["activity-1"]
