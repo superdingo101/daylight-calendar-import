@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass
 
 from .email_normalize import EmailNormalizationError, normalize_email
-from .email_source import EmailSource
+from .email_source import EmailEnvelope, EmailSource
 from .sources import SourceDocument
 from .storage import PendingImportStore
 
 
 type EmailDocumentProcessor = Callable[[SourceDocument, str], Awaitable[None]]
+type EmailAttachmentStager = Callable[
+    [EmailEnvelope, SourceDocument],
+    AbstractAsyncContextManager[SourceDocument],
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +36,8 @@ async def async_poll_email_source(
     source: EmailSource,
     store: PendingImportStore,
     processor: EmailDocumentProcessor,
+    *,
+    attachment_stager: EmailAttachmentStager | None = None,
 ) -> EmailPollResult:
     """Collect and process every envelope yielded during one poll cycle.
 
@@ -41,9 +48,10 @@ async def async_poll_email_source(
     same successful collection from being considered.
 
     The processor receives the normalized document and its durable activity ID.
-    Before returning successfully, it must hand the claimed source into a durable
-    local outcome such as pending review. Upstream acknowledgement is deliberately
-    outside this v0.5 slice.
+    An optional attachment stager may add temporary media references around that
+    one processor call. Before returning successfully, the processor must hand the
+    claimed source into a durable local outcome such as pending review. Upstream
+    acknowledgement is deliberately outside this v0.5 slice.
     """
     discovered = 0
     claimed = 0
@@ -77,7 +85,13 @@ async def async_poll_email_source(
 
         claimed += 1
         try:
-            await processor(document, activity_id)
+            context = (
+                attachment_stager(envelope, document)
+                if attachment_stager is not None
+                else nullcontext(document)
+            )
+            async with context as process_document:
+                await processor(process_document, activity_id)
         except asyncio.CancelledError:
             try:
                 await store.async_record_parse_failure(activity_id)
