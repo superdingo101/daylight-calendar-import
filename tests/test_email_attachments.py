@@ -348,3 +348,184 @@ def test_attached_message_content_is_not_treated_as_parent_attachment(tmp_path) 
     assert attachments == ()
     assert paths == ()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_close_failure_removes_current_and_earlier_staged_files(monkeypatch, tmp_path) -> None:
+    raw = _raw_email()
+    real_named_temporary_file = email_attachments.tempfile.NamedTemporaryFile
+    calls = 0
+
+    class CloseFailingFile:
+        name = str(tmp_path / "close-failed.pdf")
+
+        def __enter__(self):
+            Path(self.name).write_bytes(b"partial")
+            return self
+
+        def __exit__(self, *_args):
+            raise OSError("close failed")
+
+        def write(self, data):
+            Path(self.name).write_bytes(data)
+
+    def named_temporary_file(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return CloseFailingFile()
+        return real_named_temporary_file(**kwargs)
+
+    monkeypatch.setattr(
+        email_attachments.tempfile,
+        "NamedTemporaryFile",
+        named_temporary_file,
+    )
+
+    with pytest.raises(OSError, match="close failed"):
+        email_attachments._stage_email_attachments(
+            raw,
+            {"local": str(tmp_path)},
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cleanup_paths_attempts_all_files_before_raising(monkeypatch, tmp_path) -> None:
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    third = tmp_path / "third.png"
+    for path in (first, second, third):
+        path.write_bytes(b"data")
+
+    original_unlink = Path.unlink
+    attempted: list[Path] = []
+
+    def unlink(path, missing_ok=False):
+        attempted.append(path)
+        if path == second:
+            raise OSError("cleanup failed")
+        return original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+    with pytest.raises(OSError, match="cleanup failed"):
+        email_attachments._cleanup_paths((first, second, third))
+
+    assert attempted == [first, second, third]
+    assert not first.exists()
+    assert second.exists()
+    assert not third.exists()
+
+
+async def test_cancellation_during_cleanup_finishes_entire_batch(tmp_path) -> None:
+    paths = tuple(tmp_path / f"{index}.png" for index in range(3))
+    for path in paths:
+        path.write_bytes(b"data")
+
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    attempted: list[Path] = []
+
+    class DelayedCleanupHass(AttachmentHass):
+        async def async_add_executor_job(self, func, *args):
+            if func is email_attachments._cleanup_paths:
+                cleanup_started.set()
+                await release_cleanup.wait()
+            return await asyncio.to_thread(func, *args)
+
+    task = asyncio.create_task(
+        email_attachments._async_cleanup_paths(
+            DelayedCleanupHass(tmp_path),
+            paths,
+        )
+    )
+    await cleanup_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    release_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert all(not path.exists() for path in paths)
+
+
+async def test_cancellation_during_cleanup_preserves_cancel_over_cleanup_error(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    paths = (tmp_path / "first.png", tmp_path / "second.png")
+    for path in paths:
+        path.write_bytes(b"data")
+
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    original_cleanup = email_attachments._cleanup_paths
+
+    def failing_cleanup(batch):
+        original_cleanup((batch[0],))
+        raise OSError("cleanup failed")
+
+    class DelayedCleanupHass(AttachmentHass):
+        async def async_add_executor_job(self, func, *args):
+            if func is email_attachments._cleanup_paths:
+                cleanup_started.set()
+                await release_cleanup.wait()
+                return await asyncio.to_thread(failing_cleanup, *args)
+            return await asyncio.to_thread(func, *args)
+
+    task = asyncio.create_task(
+        email_attachments._async_cleanup_paths(
+            DelayedCleanupHass(tmp_path),
+            paths,
+        )
+    )
+    await cleanup_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    release_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_late_cleanup_failure_does_not_replace_staging_cancellation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    media_dir = tmp_path / "media"
+    stage_started = asyncio.Event()
+    release_stage = asyncio.Event()
+
+    class DelayedHass(AttachmentHass):
+        async def async_add_executor_job(self, func, *args):
+            if func is email_attachments._stage_email_attachments:
+                stage_started.set()
+                await release_stage.wait()
+            return await asyncio.to_thread(func, *args)
+
+    real_cleanup = email_attachments._cleanup_paths
+
+    def failing_cleanup(paths):
+        real_cleanup(paths)
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(email_attachments, "_cleanup_paths", failing_cleanup)
+
+    async def consume() -> None:
+        async with email_attachments.async_email_attachments(
+            DelayedHass(media_dir),
+            _envelope(_raw_email()),
+            _document(),
+        ):
+            pytest.fail("cancelled staging reached processor")
+
+    task = asyncio.create_task(consume())
+    await stage_started.wait()
+    task.cancel()
+    release_stage.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert list(media_dir.iterdir()) == []
