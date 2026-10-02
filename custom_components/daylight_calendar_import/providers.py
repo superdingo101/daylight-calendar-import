@@ -15,6 +15,8 @@ from .sources import SourceDocument
 
 IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 PDF_MEDIA_TYPE = "application/pdf"
+AI_TASK_MAX_ATTACHMENTS = 4
+AI_TASK_MAX_TOTAL_BYTES = 10 * 1024 * 1024
 
 
 class SourceValidationError(ServiceValidationError):
@@ -96,7 +98,13 @@ class AITaskParserProvider:
         component = getattr(self._hass, "data", {}).get(DATA_COMPONENT)
         entity = component.get_entity(self._entity_id) if component else None
         images = bool(entity and entity.supported_features & AITaskEntityFeature.SUPPORT_ATTACHMENTS)
-        return ParserCapabilities(text=True, images=images, pdfs=images, max_attachments=4, max_total_bytes=10 * 1024 * 1024)
+        return ParserCapabilities(
+            text=True,
+            images=images,
+            pdfs=images,
+            max_attachments=AI_TASK_MAX_ATTACHMENTS,
+            max_total_bytes=AI_TASK_MAX_TOTAL_BYTES,
+        )
 
     async def async_parse(
         self, source: SourceDocument, *, reference_datetime: str, time_zone: str
