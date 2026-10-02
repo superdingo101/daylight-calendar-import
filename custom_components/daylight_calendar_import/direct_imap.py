@@ -11,6 +11,7 @@ import re
 import ssl
 from typing import Protocol
 
+from .email_safety import normalize_sender_allowlist
 from .email_source import (
     MAX_IMAP_IDENTIFIER,
     DirectImapReference,
@@ -108,6 +109,7 @@ class DirectImapSettings:
     charset: str = DEFAULT_IMAP_CHARSET
     verify_ssl: bool = True
     timeout: float = DEFAULT_IMAP_TIMEOUT
+    sender_allowlist: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Reject malformed settings before opening a network connection."""
@@ -127,6 +129,11 @@ class DirectImapSettings:
             raise ValueError(_ERR_PORT)
         if type(self.verify_ssl) is not bool:
             raise ValueError(_ERR_VERIFY_SSL)
+        object.__setattr__(
+            self,
+            "sender_allowlist",
+            normalize_sender_allowlist(self.sender_allowlist),
+        )
         if (
             isinstance(self.timeout, bool)
             or not isinstance(self.timeout, (int, float))
@@ -420,7 +427,10 @@ class DirectImapSource:
         self._settings = settings
         self._client_factory = client_factory
         self._clock = clock
-        self._config = EmailSourceConfig(source_id=settings.source_id)
+        self._config = EmailSourceConfig(
+            source_id=settings.source_id,
+            sender_allowlist=settings.sender_allowlist,
+        )
 
     @property
     def config(self) -> EmailSourceConfig:
