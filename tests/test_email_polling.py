@@ -640,3 +640,53 @@ async def test_attachment_staging_cancellation_releases_claim_and_reraises() -> 
         )
 
     assert store.failures == ["activity-1"]
+
+
+async def test_teardown_failure_after_processor_success_does_not_release_claim() -> None:
+    source = FakeSource([[_envelope("teardown@example.test")]])
+    store = FakeStore()
+    processor_calls = 0
+
+    @asynccontextmanager
+    async def stager(_envelope, document):
+        yield document
+        raise RuntimeError("teardown failed")
+
+    async def processor(document, activity_id):
+        nonlocal processor_calls
+        del document, activity_id
+        processor_calls += 1
+
+    with pytest.raises(RuntimeError, match="teardown failed"):
+        await async_poll_email_source(
+            source,
+            store,
+            processor,
+            attachment_stager=stager,
+        )
+
+    assert processor_calls == 1
+    assert store.failures == []
+
+
+async def test_teardown_cancellation_after_processor_success_does_not_release_claim() -> None:
+    source = FakeSource([[_envelope("teardown-cancel@example.test")]])
+    store = FakeStore()
+
+    @asynccontextmanager
+    async def stager(_envelope, document):
+        yield document
+        raise asyncio.CancelledError
+
+    async def processor(document, activity_id):
+        del document, activity_id
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_poll_email_source(
+            source,
+            store,
+            processor,
+            attachment_stager=stager,
+        )
+
+    assert store.failures == []
