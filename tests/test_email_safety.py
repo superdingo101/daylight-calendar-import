@@ -221,3 +221,34 @@ def test_exact_sender_allowlist_rejects_group_syntax(
     )
 
     assert allowlist.allows(raw_message) is False
+
+
+def test_exact_sender_allowlist_rejects_empty_mailbox_group(
+    monkeypatch,
+) -> None:
+    class FakeGroup:
+        display_name = None
+        addresses = ()
+
+    class FakeHeader:
+        defects = ()
+        groups = (FakeGroup(),)
+
+    class FakeMessage:
+        def get_all(self, _name, _default):
+            return [FakeHeader()]
+
+    class FakeParser:
+        def parsebytes(self, _raw_message):
+            return FakeMessage()
+
+    monkeypatch.setattr(
+        email_safety,
+        "BytesParser",
+        lambda **_kwargs: FakeParser(),
+    )
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+
+    assert allowlist.allows(b"mail") is False
