@@ -726,7 +726,7 @@ async def test_cleanup_cancellation_after_processor_failure_releases_claim_then_
 
     assert stage.cleanup_contexts == ["processor failure"]
     assert store.failures == ["activity-1"]
-    assert processed == ["Bad"]
+    assert processed == ["Event"]
     assert store.claim_calls == ["<cleanup-cancel@example.test>"]
 
 
