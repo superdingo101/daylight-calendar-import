@@ -164,3 +164,9 @@ async def test_email_source_protocol_acknowledges_persistable_provenance() -> No
     )
     await source.async_acknowledge(envelope.provenance, disposition=disposition)
     assert source.acknowledged == (envelope.provenance, disposition)
+
+
+def test_email_source_config_defaults_to_no_sender_filter() -> None:
+    config = EmailSourceConfig(source_id="source-1")
+
+    assert config.sender_allowlist == ()
