@@ -668,3 +668,504 @@ async def test_async_stage_cancellation_ignores_cleanup_cancellation(
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+def _single_image_email(payload: bytes = JPEG) -> bytes:
+    message = EmailMessage()
+    message["Subject"] = "Single image"
+    message.set_content("See image")
+    message.add_attachment(
+        payload,
+        maintype="image",
+        subtype="jpeg",
+        filename="single.jpg",
+    )
+    return message.as_bytes()
+
+
+def test_cleanup_error_message_preserves_first_error_and_separator(tmp_path) -> None:
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    error = email_attachments.EmailAttachmentCleanupError(
+        (first, second),
+        OSError("first failure"),
+    )
+
+    assert error.failed_paths == (first, second)
+    assert str(error) == (
+        "first failure; failed staged email attachment path(s): "
+        f"{first}, {second}"
+    )
+
+
+def test_cleanup_reporting_message_is_exact(caplog) -> None:
+    email_attachments._report_cleanup_failure(
+        "processor failure",
+        OSError("cleanup exploded"),
+    )
+
+    assert caplog.records[-1].getMessage() == (
+        "Failed to clean staged email attachments after processor failure: "
+        "cleanup exploded"
+    )
+
+
+def test_attachment_payload_error_message_is_exact() -> None:
+    part = EmailMessage()
+    part.set_type("image/png")
+    part.set_payload([EmailMessage()])
+
+    with pytest.raises(email_attachments.EmailAttachmentError) as caught:
+        email_attachments._attachment_payload(part)
+
+    assert str(caught.value) == "Email attachment payload could not be decoded"
+
+
+def test_cleanup_paths_ignores_already_missing_file(tmp_path) -> None:
+    email_attachments._cleanup_paths((tmp_path / "already-gone.png",))
+
+
+def test_cleanup_paths_preserves_first_error_and_all_failed_paths(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    for path in (first, second):
+        path.write_bytes(b"data")
+
+    def unlink(path, missing_ok=False):
+        del missing_ok
+        if path == first:
+            raise OSError("first failure")
+        raise OSError("second failure")
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+    with pytest.raises(email_attachments.EmailAttachmentCleanupError) as caught:
+        email_attachments._cleanup_paths((first, second))
+
+    assert caught.value.failed_paths == (first, second)
+    assert str(caught.value) == (
+        "first failure; failed staged email attachment path(s): "
+        f"{first}, {second}"
+    )
+
+
+async def test_async_cleanup_cancellation_reports_exact_underlying_error(
+    monkeypatch,
+    caplog,
+    tmp_path,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    def fail_cleanup(_paths):
+        raise OSError("cleanup exploded")
+
+    monkeypatch.setattr(email_attachments, "_cleanup_paths", fail_cleanup)
+
+    class DelayedHass(AttachmentHass):
+        async def async_add_executor_job(self, func, *args):
+            started.set()
+            await release.wait()
+            return await asyncio.to_thread(func, *args)
+
+    task = asyncio.create_task(
+        email_attachments._async_cleanup_paths(
+            DelayedHass(tmp_path),
+            (tmp_path / "staged.png",),
+            context="shutdown",
+        )
+    )
+    await started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert caplog.records[-1].getMessage() == (
+        "Failed to clean staged email attachments after shutdown: "
+        "cleanup exploded"
+    )
+
+
+async def test_stage_cleanup_passes_and_reports_exact_context(
+    monkeypatch,
+    caplog,
+    tmp_path,
+) -> None:
+    received_contexts: list[str] = []
+
+    async def fail_cleanup(_hass, _paths, *, context):
+        received_contexts.append(context)
+        raise OSError("cleanup exploded")
+
+    monkeypatch.setattr(
+        email_attachments,
+        "_async_cleanup_paths",
+        fail_cleanup,
+    )
+    stage = email_attachments.EmailAttachmentStage(
+        _document(),
+        AttachmentHass(tmp_path),
+        (),
+    )
+
+    await stage.async_cleanup("processor failure")
+
+    assert received_contexts == ["processor failure"]
+    assert caplog.records[-1].getMessage() == (
+        "Failed to clean staged email attachments after processor failure: "
+        "cleanup exploded"
+    )
+
+
+def test_raw_message_limit_allows_exact_boundary() -> None:
+    raw = _raw_email(supported=False)
+
+    assert email_attachments._stage_email_attachments(
+        raw,
+        {},
+        max_raw_bytes=len(raw),
+    ) == ((), ())
+
+
+def test_raw_message_limit_error_message_is_exact() -> None:
+    raw = _raw_email(supported=False)
+
+    with pytest.raises(SourceValidationError) as caught:
+        email_attachments._stage_email_attachments(
+            raw,
+            {},
+            max_raw_bytes=len(raw) - 1,
+        )
+
+    assert caught.value.code == "source_too_large"
+    assert str(caught.value) == "Source attachments exceed the size limit"
+
+
+def test_existing_attachment_count_allows_exact_boundary() -> None:
+    existing = tuple(
+        SourceAttachment(
+            id=str(index),
+            media_type="image/png",
+            size_bytes=1,
+            content_ref=f"media-source://existing/{index}",
+        )
+        for index in range(4)
+    )
+
+    assert email_attachments._stage_email_attachments(
+        _raw_email(supported=False),
+        {},
+        existing,
+        max_attachments=4,
+    ) == ((), ())
+
+
+def test_existing_attachment_count_error_message_is_exact() -> None:
+    existing = tuple(
+        SourceAttachment(
+            id=str(index),
+            media_type="image/png",
+            size_bytes=1,
+            content_ref=f"media-source://existing/{index}",
+        )
+        for index in range(5)
+    )
+
+    with pytest.raises(SourceValidationError) as caught:
+        email_attachments._stage_email_attachments(
+            _raw_email(supported=False),
+            {},
+            existing,
+            max_attachments=4,
+        )
+
+    assert caught.value.code == "too_many_attachments"
+    assert str(caught.value) == "Too many source attachments"
+
+
+def test_existing_attachment_bytes_allow_exact_boundary() -> None:
+    existing = (
+        SourceAttachment(
+            id="existing",
+            media_type="image/png",
+            size_bytes=10,
+            content_ref="media-source://existing",
+        ),
+    )
+
+    assert email_attachments._stage_email_attachments(
+        _raw_email(supported=False),
+        {},
+        existing,
+        max_total_bytes=10,
+    ) == ((), ())
+
+
+def test_existing_attachment_bytes_error_message_is_exact() -> None:
+    existing = (
+        SourceAttachment(
+            id="existing",
+            media_type="image/png",
+            size_bytes=11,
+            content_ref="media-source://existing",
+        ),
+    )
+
+    with pytest.raises(SourceValidationError) as caught:
+        email_attachments._stage_email_attachments(
+            _raw_email(supported=False),
+            {},
+            existing,
+            max_total_bytes=10,
+        )
+
+    assert caught.value.code == "source_too_large"
+    assert str(caught.value) == "Source attachments exceed the size limit"
+
+
+def test_incoming_attachment_count_error_message_is_exact(tmp_path) -> None:
+    with pytest.raises(SourceValidationError) as caught:
+        email_attachments._stage_email_attachments(
+            _raw_email(),
+            {"local": str(tmp_path)},
+            max_attachments=2,
+        )
+
+    assert caught.value.code == "too_many_attachments"
+    assert str(caught.value) == "Too many source attachments"
+
+
+def test_parse_error_message_is_exact(monkeypatch, tmp_path) -> None:
+    class BrokenParser:
+        def parsebytes(self, _raw):
+            raise ValueError("broken")
+
+    monkeypatch.setattr(
+        email_attachments,
+        "BytesParser",
+        lambda **_kwargs: BrokenParser(),
+    )
+
+    with pytest.raises(email_attachments.EmailAttachmentError) as caught:
+        email_attachments._stage_email_attachments(
+            b"mail",
+            {"local": str(tmp_path)},
+        )
+
+    assert str(caught.value) == "Email attachments could not be parsed"
+
+
+def test_missing_media_directory_error_message_is_exact() -> None:
+    with pytest.raises(SourceValidationError) as caught:
+        email_attachments._stage_email_attachments(
+            _single_image_email(),
+            {},
+        )
+
+    assert caught.value.code == "media_storage_unavailable"
+    assert str(caught.value) == "No local media directory configured"
+
+
+def test_decoded_bytes_allow_exact_boundary(tmp_path) -> None:
+    attachments, paths = email_attachments._stage_email_attachments(
+        _single_image_email(),
+        {"local": str(tmp_path)},
+        max_total_bytes=len(JPEG),
+    )
+    try:
+        assert len(attachments) == 1
+        assert attachments[0].size_bytes == len(JPEG)
+    finally:
+        email_attachments._cleanup_paths(paths)
+
+
+def test_decoded_bytes_error_message_is_exact(tmp_path) -> None:
+    with pytest.raises(SourceValidationError) as caught:
+        email_attachments._stage_email_attachments(
+            _single_image_email(),
+            {"local": str(tmp_path)},
+            max_total_bytes=len(JPEG) - 1,
+        )
+
+    assert caught.value.code == "source_too_large"
+    assert str(caught.value) == "Source attachments exceed the size limit"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_decoded_bytes_are_cumulative_across_attachments(tmp_path) -> None:
+    message = EmailMessage()
+    message.set_content("attachments")
+    message.add_attachment(
+        b"aaaa",
+        maintype="image",
+        subtype="jpeg",
+        filename="one.jpg",
+    )
+    message.add_attachment(
+        b"bbbb",
+        maintype="image",
+        subtype="jpeg",
+        filename="two.jpg",
+    )
+
+    with pytest.raises(SourceValidationError) as caught:
+        email_attachments._stage_email_attachments(
+            message.as_bytes(),
+            {"local": str(tmp_path)},
+            max_total_bytes=6,
+        )
+
+    assert caught.value.code == "source_too_large"
+    assert str(caught.value) == "Source attachments exceed the size limit"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_nested_media_directory_is_created_with_parents(tmp_path) -> None:
+    media_dir = tmp_path / "nested" / "media" / "email"
+
+    attachments, paths = email_attachments._stage_email_attachments(
+        _single_image_email(),
+        {"local": str(media_dir)},
+    )
+    try:
+        assert media_dir.is_dir()
+        assert len(attachments) == 1
+    finally:
+        email_attachments._cleanup_paths(paths)
+
+
+def test_named_temporary_file_contract_is_exact(monkeypatch, tmp_path) -> None:
+    real = email_attachments.tempfile.NamedTemporaryFile
+    calls: list[dict[str, object]] = []
+
+    def capture(**kwargs):
+        calls.append(dict(kwargs))
+        return real(**kwargs)
+
+    monkeypatch.setattr(
+        email_attachments.tempfile,
+        "NamedTemporaryFile",
+        capture,
+    )
+
+    attachments, paths = email_attachments._stage_email_attachments(
+        _single_image_email(),
+        {"local": str(tmp_path)},
+    )
+    try:
+        assert len(attachments) == 1
+        assert calls == [{
+            "prefix": "daylight-email-",
+            "suffix": ".jpg",
+            "dir": tmp_path,
+            "delete": False,
+        }]
+    finally:
+        email_attachments._cleanup_paths(paths)
+
+
+def test_staging_failure_log_context_is_exact(
+    monkeypatch,
+    caplog,
+    tmp_path,
+) -> None:
+    def fail_payload(_part):
+        raise RuntimeError("decode failed")
+
+    def fail_cleanup(_paths):
+        raise OSError("cleanup exploded")
+
+    monkeypatch.setattr(
+        email_attachments,
+        "_attachment_payload",
+        fail_payload,
+    )
+    monkeypatch.setattr(
+        email_attachments,
+        "_cleanup_paths",
+        fail_cleanup,
+    )
+
+    with pytest.raises(RuntimeError, match="decode failed"):
+        email_attachments._stage_email_attachments(
+            _single_image_email(),
+            {"local": str(tmp_path)},
+        )
+
+    assert caplog.records[-1].getMessage() == (
+        "Failed to clean staged email attachments after staging failure: "
+        "cleanup exploded"
+    )
+
+
+async def test_async_stage_accounts_for_existing_attachments(tmp_path) -> None:
+    existing = tuple(
+        SourceAttachment(
+            id=str(index),
+            media_type="image/png",
+            size_bytes=1,
+            content_ref=f"media-source://existing/{index}",
+        )
+        for index in range(4)
+    )
+
+    with pytest.raises(SourceValidationError) as caught:
+        await email_attachments.async_stage_email_attachments(
+            AttachmentHass(tmp_path),
+            _envelope(_single_image_email()),
+            _document(existing),
+        )
+
+    assert caught.value.code == "too_many_attachments"
+    assert str(caught.value) == "Too many source attachments"
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_async_stage_cancellation_uses_exact_cleanup_context(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    contexts: list[str] = []
+
+    class DelayedHass(AttachmentHass):
+        async def async_add_executor_job(self, func, *args):
+            if func is email_attachments._stage_email_attachments:
+                started.set()
+                await release.wait()
+            return await asyncio.to_thread(func, *args)
+
+    async def capture_cleanup(self, context):
+        contexts.append(context)
+        email_attachments._cleanup_paths(self._paths)
+
+    monkeypatch.setattr(
+        email_attachments.EmailAttachmentStage,
+        "async_cleanup",
+        capture_cleanup,
+    )
+
+    task = asyncio.create_task(
+        email_attachments.async_stage_email_attachments(
+            DelayedHass(tmp_path),
+            _envelope(_single_image_email()),
+            _document(),
+        )
+    )
+    await started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert contexts == ["staging cancellation"]
+    assert list(tmp_path.iterdir()) == []
