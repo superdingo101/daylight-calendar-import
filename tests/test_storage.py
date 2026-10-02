@@ -1872,3 +1872,72 @@ async def test_zero_event_claim_is_retryable_by_current_policy(monkeypatch):
     assert store.get_activity(activity_id)["status"] == "failed"
     assert "source_claims" not in backend.saved[-1]
 
+
+
+async def test_failed_claim_release_is_retried_before_next_source_claim(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<retry-release@example.test>"
+    received_at = datetime.fromisoformat("2026-10-01T12:00:00+00:00")
+    activity_id = await store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title=None,
+        received_at=received_at,
+    )
+    assert activity_id is not None
+
+    backend.save_error = RuntimeError("storage unavailable")
+    backend.fail_on_save_attempt = backend.save_attempts + 1
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await store.async_record_parse_failure(activity_id)
+
+    assert store.is_source_duplicate(source_id) is True
+
+    backend.save_error = None
+    retry_id = await store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title=None,
+        received_at=received_at,
+    )
+
+    assert retry_id is not None
+    assert retry_id != activity_id
+    assert store.get_activity(activity_id)["status"] == "failed"
+    assert store.is_source_duplicate(source_id) is True
+    assert backend.saved[-1]["source_claims"] == {
+        retry_id: source_fingerprint(source_id)
+    }
+
+
+async def test_failed_claim_release_retry_aborts_if_storage_is_still_unavailable(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<retry-release@example.test>"
+    received_at = datetime.fromisoformat("2026-10-01T12:00:00+00:00")
+    activity_id = await store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title=None,
+        received_at=received_at,
+    )
+    assert activity_id is not None
+
+    backend.save_error = RuntimeError("storage unavailable")
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await store.async_record_parse_failure(activity_id)
+
+    saved_count = len(backend.saved)
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await store.async_begin_source_submission(
+            source_id=source_id,
+            source_kind="email",
+            source_title=None,
+            received_at=received_at,
+        )
+
+    assert len(backend.saved) == saved_count
+    assert store.is_source_duplicate(source_id) is True
