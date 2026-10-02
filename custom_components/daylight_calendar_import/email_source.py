@@ -59,6 +59,7 @@ class EmailSourceConfig:
     source_id: str
     source_type: EmailSourceType = EmailSourceType.DIRECT_IMAP
     disposition: EmailDisposition = field(default_factory=EmailDisposition)
+    sender_allowlist: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
