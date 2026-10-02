@@ -20,14 +20,20 @@ async def _async_record_parse_failure_cancellation_safe(
     activity_id: str,
 ) -> None:
     """Persist source-claim release before propagating caller cancellation."""
-    try:
-        await store.async_record_parse_failure(activity_id)
-    except asyncio.CancelledError:
+    cancelled = False
+    while True:
         try:
             await store.async_record_parse_failure(activity_id)
-        except (asyncio.CancelledError, Exception):
-            pass
-        raise
+        except asyncio.CancelledError:
+            cancelled = True
+            continue
+        except Exception:
+            if cancelled:
+                raise asyncio.CancelledError from None
+            raise
+        if cancelled:
+            raise asyncio.CancelledError
+        return
 
 
 @dataclass(frozen=True, slots=True)
