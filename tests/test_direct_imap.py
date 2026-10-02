@@ -208,6 +208,7 @@ def test_direct_imap_settings_and_source_config_hide_secret() -> None:
     assert source.config.source_id == "mailbox-1"
     assert source.config.source_type is EmailSourceType.DIRECT_IMAP
     assert source.config.disposition == EmailDisposition()
+    assert source.config.sender_allowlist == ()
 
 
 @pytest.mark.parametrize(
@@ -1189,3 +1190,40 @@ async def test_collect_default_clock_is_timezone_aware() -> None:
     [envelope] = [item async for item in source.async_collect()]
 
     assert envelope.received_at.tzinfo is UTC
+
+
+def test_direct_imap_settings_normalize_sender_allowlist() -> None:
+    settings = _settings(
+        sender_allowlist=(
+            "Trusted@Example.Test",
+            "other@example.test",
+            "TRUSTED@example.test",
+        )
+    )
+    source, _ = _source(FakeImapClient(), settings=settings)
+
+    assert settings.sender_allowlist == (
+        "trusted@example.test",
+        "other@example.test",
+    )
+    assert source.config.sender_allowlist == settings.sender_allowlist
+
+
+@pytest.mark.parametrize(
+    "sender_allowlist",
+    (
+        "trusted@example.test",
+        ("",),
+        ("not-an-address",),
+        ("trusted@",),
+        (42,),
+    ),
+)
+def test_direct_imap_settings_reject_invalid_sender_allowlist(
+    sender_allowlist: object,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="sender_allowlist entries must be valid email addresses",
+    ):
+        _settings(sender_allowlist=sender_allowlist)
