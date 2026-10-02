@@ -697,29 +697,37 @@ async def test_processor_cancellation_cleans_stage_then_releases_claim() -> None
     assert store.failures == ["activity-1"]
 
 
-async def test_cleanup_cancellation_during_processor_failure_does_not_block_claim_release() -> None:
-    source = FakeSource([[_envelope("cleanup-cancel@example.test")]])
+async def test_cleanup_cancellation_after_processor_failure_releases_claim_then_stops() -> None:
+    source = FakeSource([[
+        _envelope("cleanup-cancel@example.test", subject="Bad"),
+        _envelope("later@example.test", subject="Later"),
+    ]])
     store = FakeStore()
     stage = FakeAttachmentStage(
         _document_for_polling(),
         cleanup_error=asyncio.CancelledError(),
     )
+    processed: list[str | None] = []
 
-    async def stager(_envelope, _document):
-        return stage
+    async def stager(_envelope, document):
+        return stage if document.title == "Bad" else FakeAttachmentStage(document)
 
-    async def processor(_document, _activity_id):
+    async def processor(document, _activity_id):
+        processed.append(document.title)
         raise RuntimeError("processor failed")
 
-    result = await async_poll_email_source(
-        source,
-        store,
-        processor,
-        attachment_stager=stager,
-    )
+    with pytest.raises(asyncio.CancelledError):
+        await async_poll_email_source(
+            source,
+            store,
+            processor,
+            attachment_stager=stager,
+        )
 
-    assert result.processing_failures == 1
+    assert stage.cleanup_contexts == ["processor failure"]
     assert store.failures == ["activity-1"]
+    assert processed == ["Bad"]
+    assert store.claim_calls == ["<cleanup-cancel@example.test>"]
 
 
 async def test_cleanup_cancellation_after_success_keeps_claim() -> None:
