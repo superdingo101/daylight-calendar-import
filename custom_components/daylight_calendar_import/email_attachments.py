@@ -106,8 +106,10 @@ def _stage_email_attachments(
                 )
             )
     except BaseException:
-        for path in paths:
-            path.unlink(missing_ok=True)
+        try:
+            _cleanup_paths(tuple(paths))
+        except Exception:
+            pass
         raise
 
     return tuple(attachments), tuple(paths)
@@ -156,10 +158,16 @@ async def _async_cleanup_late_staging(
     hass: HomeAssistant,
     staging: asyncio.Future,
 ) -> None:
-    """Consume a late staging result after caller cancellation and clean it up."""
+    """Finish late staging/cleanup without replacing the original cancellation."""
+    while not staging.done():
+        try:
+            await asyncio.wait({staging})
+        except asyncio.CancelledError:
+            asyncio.current_task().uncancel()  # type: ignore[union-attr]
+
     try:
-        _, paths = await staging
-    except Exception:
+        _, paths = staging.result()
+    except BaseException:
         return
     try:
         await _async_cleanup_paths(hass, paths)
@@ -194,5 +202,11 @@ async def async_email_attachments(
     )
     try:
         yield staged_document
-    finally:
+    except BaseException:
+        try:
+            await _async_cleanup_paths(hass, paths)
+        except (asyncio.CancelledError, Exception):
+            pass
+        raise
+    else:
         await _async_cleanup_paths(hass, paths)
