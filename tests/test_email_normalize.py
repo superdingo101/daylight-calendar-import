@@ -634,3 +634,98 @@ def test_related_uses_stdlib_decoded_rfc2231_continuation_start() -> None:
         _envelope(raw),
         document_id_factory=lambda: "doc",
     ).text == "RFC2231 continuation root"
+
+
+def test_malformed_parsed_header_hits_normalization_error_boundary() -> None:
+    raw = (
+        b"Subject: Broken disposition\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-Disposition: attachment; filename*\r\n\r\n"
+        b"Body"
+    )
+
+    with pytest.raises(
+        EmailNormalizationError,
+        match="could not be normalized",
+    ):
+        normalize_email(
+            _envelope(raw),
+            document_id_factory=lambda: "doc",
+        )
+
+
+def test_format_flowed_joins_normal_soft_line_break() -> None:
+    raw = (
+        b"Subject: Flowed\r\n"
+        b"Content-Type: text/plain; format=flowed\r\n\r\n"
+        b"Friday at \r\n"
+        b"5 PM"
+    )
+
+    assert normalize_email(
+        _envelope(raw),
+        document_id_factory=lambda: "doc",
+    ).text == "Friday at 5 PM"
+
+
+def test_format_flowed_delsp_removes_only_soft_break_space() -> None:
+    raw = (
+        b"Subject: Flowed\r\n"
+        b"Content-Type: text/plain; format=flowed; delsp=yes\r\n\r\n"
+        b"Friday at  \r\n"
+        b"5 PM"
+    )
+
+    assert normalize_email(
+        _envelope(raw),
+        document_id_factory=lambda: "doc",
+    ).text == "Friday at 5 PM"
+
+
+def test_format_flowed_signature_separator_is_not_joined() -> None:
+    raw = (
+        b"Subject: Flowed\r\n"
+        b"Content-Type: text/plain; format=flowed\r\n\r\n"
+        b"Body\r\n"
+        b"-- \r\n"
+        b"Signature"
+    )
+
+    assert normalize_email(
+        _envelope(raw),
+        document_id_factory=lambda: "doc",
+    ).text == "Body\n--\nSignature"
+
+
+def test_format_flowed_terminal_soft_line_degrades_safely() -> None:
+    raw = (
+        b"Subject: Flowed\r\n"
+        b"Content-Type: text/plain; format=flowed; delsp=yes\r\n\r\n"
+        b"Trailing "
+    )
+
+    assert normalize_email(
+        _envelope(raw),
+        document_id_factory=lambda: "doc",
+    ).text == "Trailing"
+
+
+def test_related_content_id_cfws_matches_designated_root() -> None:
+    raw = (
+        b"Subject: Related\r\n"
+        b"Content-Type: multipart/related; boundary=rel; start=\"<root@id>\"\r\n\r\n"
+        b"--rel\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-ID: <resource@id>\r\n\r\n"
+        b"Wrong resource\r\n"
+        b"--rel\r\n"
+        b"Content-Type: text/html\r\n"
+        b"Content-ID: (note) <root@id>\r\n\r\n"
+        b"<p>Designated root</p>\r\n"
+        b"--rel--\r\n"
+    )
+
+    assert normalize_email(
+        _envelope(raw),
+        document_id_factory=lambda: "doc",
+    ).text == "Designated root"
