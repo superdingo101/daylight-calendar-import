@@ -53,20 +53,19 @@ class ExactSenderAllowlist:
         """Return whether one unambiguous From mailbox is allowlisted."""
         try:
             message = BytesParser(policy=policy.default).parsebytes(raw_message)
+            from_headers = list(message.get_all("from", []))
+            if len(from_headers) != 1:
+                return False
+
+            header = from_headers[0]
+            if getattr(header, "defects", ()):
+                return False
+
+            addresses = tuple(getattr(header, "addresses", ()))
+            if len(addresses) != 1:
+                return False
+
+            sender = addresses[0].addr_spec.strip().casefold()
         except Exception:
             return False
-
-        from_headers = list(message.get_all("from", []))
-        if len(from_headers) != 1:
-            return False
-
-        header = from_headers[0]
-        if getattr(header, "defects", ()):
-            return False
-
-        addresses = tuple(getattr(header, "addresses", ()))
-        if len(addresses) != 1:
-            return False
-
-        sender = addresses[0].addr_spec.strip().casefold()
         return bool(sender) and sender in self.senders
