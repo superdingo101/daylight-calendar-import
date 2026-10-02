@@ -796,3 +796,80 @@ def test_generic_cleanup_failure_reporting_is_actionable(caplog) -> None:
 
     assert "staging failure" in caplog.text
     assert "cleanup exploded" in caplog.text
+
+
+async def test_late_cleanup_cancellation_is_suppressed(tmp_path) -> None:
+    staging = asyncio.get_running_loop().create_future()
+    staging.set_result(((), (tmp_path / "staged.png",)))
+
+    async def cancelled_cleanup(_hass, _paths):
+        raise asyncio.CancelledError
+
+    original = email_attachments._async_cleanup_paths
+    email_attachments._async_cleanup_paths = cancelled_cleanup
+    try:
+        await email_attachments._async_cleanup_late_staging(
+            AttachmentHass(tmp_path),
+            staging,
+        )
+    finally:
+        email_attachments._async_cleanup_paths = original
+
+
+async def test_body_failure_wins_over_cleanup_cancellation(monkeypatch, tmp_path) -> None:
+    async def cancelled_cleanup(_hass, _paths):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        email_attachments,
+        "_async_cleanup_paths",
+        cancelled_cleanup,
+    )
+
+    with pytest.raises(RuntimeError, match="processor failed"):
+        async with email_attachments.async_email_attachments(
+            AttachmentHass(tmp_path),
+            _envelope(_raw_email()),
+            _document(),
+        ):
+            raise RuntimeError("processor failed")
+
+
+async def test_successful_body_propagates_cleanup_cancellation(monkeypatch, tmp_path) -> None:
+    async def cancelled_cleanup(_hass, _paths):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        email_attachments,
+        "_async_cleanup_paths",
+        cancelled_cleanup,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        async with email_attachments.async_email_attachments(
+            AttachmentHass(tmp_path),
+            _envelope(_raw_email()),
+            _document(),
+        ):
+            pass
+
+
+async def test_successful_body_reports_cleanup_failure(monkeypatch, caplog, tmp_path) -> None:
+    async def failing_cleanup(_hass, _paths):
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(
+        email_attachments,
+        "_async_cleanup_paths",
+        failing_cleanup,
+    )
+
+    async with email_attachments.async_email_attachments(
+        AttachmentHass(tmp_path),
+        _envelope(_raw_email()),
+        _document(),
+    ):
+        pass
+
+    assert "successful processing" in caplog.text
+    assert "cleanup failed" in caplog.text
