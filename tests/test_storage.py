@@ -2120,3 +2120,71 @@ async def test_pending_release_retry_cancellation_finishes_release_then_raises(m
 
     assert store.is_source_duplicate(source_id) is False
     assert store.get_activity(activity_id)["status"] == "failed"
+
+
+async def test_claim_acquisition_reconciles_if_retry_fails_after_cancellation(monkeypatch):
+    backend = BlockingSaveBackend()
+    backend.block_on_attempt = 1
+    backend.save_error = RuntimeError("storage unavailable")
+    backend.fail_on_save_attempt = 2
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<claim-retry-fails@example.test>"
+
+    task = asyncio.create_task(store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title="Cancelled claim",
+        received_at=datetime.fromisoformat("2026-10-01T12:00:00+00:00"),
+    ))
+    await backend.saved_before_block.wait()
+    task.cancel()
+    backend.release_block.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert store.is_source_duplicate(source_id) is False
+    assert store.list_activity()[0]["status"] == "failed"
+    assert "source_claims" not in backend.saved[-1]
+
+
+async def test_pending_handoff_reconciles_if_retry_fails_after_cancellation(monkeypatch):
+    backend = BlockingSaveBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<handoff-retry-fails@example.test>"
+    activity_id = await store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title="Handoff",
+        received_at=datetime.fromisoformat("2026-10-01T12:00:00+00:00"),
+    )
+    assert activity_id is not None
+    backend.block_on_attempt = backend.save_attempts + 1
+    backend.save_error = RuntimeError("storage unavailable")
+    backend.fail_on_save_attempt = backend.save_attempts + 2
+
+    task = asyncio.create_task(store.async_add(
+        source_text="Friday at 5",
+        events=[draft()],
+        source_id=source_id,
+        source_kind="email",
+        source_title="Handoff",
+        activity_id=activity_id,
+    ))
+    await backend.saved_before_block.wait()
+    task.cancel()
+    backend.release_block.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    pending = store.get(activity_id)
+    assert pending is not None
+    assert pending.source_fingerprint == source_fingerprint(source_id)
+    assert store.get_activity(activity_id)["status"] == "review_ready"
+
+    await store.async_record_parse_failure(activity_id)
+    assert store.get(activity_id) == pending
+    assert store.get_activity(activity_id)["status"] == "review_ready"
