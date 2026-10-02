@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass
+from typing import Protocol
 
 from .email_normalize import EmailNormalizationError, normalize_email
 from .email_source import EmailEnvelope, EmailSource
@@ -14,9 +14,22 @@ from .storage import PendingImportStore
 
 
 type EmailDocumentProcessor = Callable[[SourceDocument, str], Awaitable[None]]
+
+
+class StagedEmailDocument(Protocol):
+    """Temporary resources associated with one email parse call."""
+
+    @property
+    def document(self) -> SourceDocument:
+        """Return the document passed to the processor."""
+
+    async def async_cleanup(self, context: str) -> None:
+        """Release temporary resources."""
+
+
 type EmailAttachmentStager = Callable[
     [EmailEnvelope, SourceDocument],
-    AbstractAsyncContextManager[SourceDocument],
+    Awaitable[StagedEmailDocument],
 ]
 
 
@@ -39,20 +52,7 @@ async def async_poll_email_source(
     *,
     attachment_stager: EmailAttachmentStager | None = None,
 ) -> EmailPollResult:
-    """Collect and process every envelope yielded during one poll cycle.
-
-    Transport failures are intentionally allowed to escape. The caller may invoke
-    this function again later; Direct IMAP opens a fresh connection for each
-    collection attempt. Per-message normalization and processing failures are
-    isolated so one bad message does not prevent later eligible messages in the
-    same successful collection from being considered.
-
-    The processor receives the normalized document and its durable activity ID.
-    An optional attachment stager may add temporary media references around that
-    one processor call. Before returning successfully, the processor must hand the
-    claimed source into a durable local outcome such as pending review. Upstream
-    acknowledgement is deliberately outside this v0.5 slice.
-    """
+    """Collect and process every envelope yielded during one poll cycle."""
     discovered = 0
     claimed = 0
     processed = 0
@@ -84,31 +84,37 @@ async def async_poll_email_source(
             continue
 
         claimed += 1
-        processor_completed = False
+        stage: StagedEmailDocument | None = None
         try:
-            context = (
-                attachment_stager(envelope, document)
-                if attachment_stager is not None
-                else nullcontext(document)
-            )
-            async with context as process_document:
-                await processor(process_document, activity_id)
-                processor_completed = True
+            process_document = document
+            if attachment_stager is not None:
+                stage = await attachment_stager(envelope, document)
+                process_document = stage.document
+            await processor(process_document, activity_id)
         except asyncio.CancelledError:
-            if not processor_completed:
+            if stage is not None:
                 try:
-                    await store.async_record_parse_failure(activity_id)
-                except (asyncio.CancelledError, Exception):
+                    await stage.async_cleanup("processor cancellation")
+                except asyncio.CancelledError:
                     pass
+            try:
+                await store.async_record_parse_failure(activity_id)
+            except (asyncio.CancelledError, Exception):
+                pass
             raise
         except Exception:
-            if processor_completed:
-                raise
+            if stage is not None:
+                try:
+                    await stage.async_cleanup("processor failure")
+                except asyncio.CancelledError:
+                    pass
             await store.async_record_parse_failure(activity_id)
             processing_failures += 1
             continue
 
         processed += 1
+        if stage is not None:
+            await stage.async_cleanup("successful processing")
 
     return EmailPollResult(
         discovered=discovered,
