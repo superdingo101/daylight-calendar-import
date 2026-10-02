@@ -103,12 +103,15 @@ async def async_poll_email_source(
                 pass
             raise
         except Exception:
+            cleanup_cancelled = False
             if stage is not None:
                 try:
                     await stage.async_cleanup("processor failure")
                 except asyncio.CancelledError:
-                    pass
+                    cleanup_cancelled = True
             await store.async_record_parse_failure(activity_id)
+            if cleanup_cancelled:
+                raise asyncio.CancelledError
             processing_failures += 1
             continue
 
