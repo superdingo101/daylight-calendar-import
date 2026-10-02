@@ -364,23 +364,35 @@ class PendingImportStore:
             )
             source_claims = dict(self._source_claims)
             source_claims[identifier] = fingerprint
-            await self._async_save(
+            cancelled = await self._async_save_cancellation_safe(
                 self._items,
                 activity=activity,
                 source_claims=source_claims,
             )
             self._activity = activity
             self._source_claims = source_claims
+            if cancelled:
+                self._source_claim_releases.add(identifier)
+                try:
+                    await self._async_record_parse_failure_locked(identifier)
+                except Exception:
+                    raise asyncio.CancelledError from None
+                raise asyncio.CancelledError
             return identifier
 
     async def async_record_parse_failure(self, activity_id: str) -> None:
         """Finalize a failed parse while keeping the original source private."""
         async with self._lock:
+            activity = self.get_activity(activity_id)
+            if activity is not None and activity["status"] != "processing":
+                return
             if activity_id in self._source_claims:
                 self._source_claim_releases.add(activity_id)
-            await self._async_record_parse_failure_locked(activity_id)
+            cancelled = await self._async_record_parse_failure_locked(activity_id)
+            if cancelled:
+                raise asyncio.CancelledError
 
-    async def _async_record_parse_failure_locked(self, activity_id: str) -> None:
+    async def _async_record_parse_failure_locked(self, activity_id: str) -> bool:
         """Persist one failure transition and release its source claim."""
         activity = self._finish_submission(
             activity_id, "failed",
@@ -388,7 +400,7 @@ class PendingImportStore:
         )
         source_claims = dict(self._source_claims)
         source_claims.pop(activity_id, None)
-        await self._async_save(
+        cancelled = await self._async_save_cancellation_safe(
             self._items,
             activity=activity,
             source_claims=source_claims,
@@ -396,11 +408,14 @@ class PendingImportStore:
         self._activity = activity
         self._source_claims = source_claims
         self._source_claim_releases.discard(activity_id)
+        return cancelled
 
     async def _async_retry_source_claim_releases_locked(self) -> None:
         """Retry claim releases that previously failed to persist."""
         for activity_id in tuple(self._source_claim_releases):
-            await self._async_record_parse_failure_locked(activity_id)
+            cancelled = await self._async_record_parse_failure_locked(activity_id)
+            if cancelled:
+                raise asyncio.CancelledError
 
     def _finish_submission(self, activity_id: str | None, status: str,
                            guidance: str | None = None) -> tuple[dict[str, Any], ...]:
@@ -626,7 +641,7 @@ class PendingImportStore:
             items = dict(self._items)
             items[pending.id] = pending
             activity = self._transition(pending, "review_ready")
-            await self._async_save(
+            cancelled = await self._async_save_cancellation_safe(
                 items,
                 activity=activity,
                 source_claims=source_claims,
@@ -634,6 +649,8 @@ class PendingImportStore:
             self._items = items
             self._activity = activity
             self._source_claims = source_claims
+            if cancelled:
+                raise asyncio.CancelledError
             return PendingImportAddResult(
                 pending=pending,
                 duplicate_source=False,
@@ -906,6 +923,32 @@ class PendingImportStore:
             for item in self._items.values()
             for event in item.events
         }
+
+    async def _async_save_cancellation_safe(
+        self,
+        items: dict[str, PendingImport],
+        *,
+        seen_source_fingerprints: tuple[str, ...] | None = None,
+        seen_event_fingerprints: tuple[str, ...] | None = None,
+        activity: tuple[dict[str, Any], ...] | None = None,
+        source_claims: dict[str, str] | None = None,
+    ) -> bool:
+        """Complete an idempotent snapshot save before propagating cancellation."""
+        cancelled = False
+        while True:
+            try:
+                await self._async_save(
+                    items,
+                    seen_source_fingerprints=seen_source_fingerprints,
+                    seen_event_fingerprints=seen_event_fingerprints,
+                    activity=activity,
+                    source_claims=source_claims,
+                )
+            except asyncio.CancelledError:
+                cancelled = True
+                asyncio.current_task().uncancel()
+                continue
+            return cancelled
 
     async def _async_save(
         self,
