@@ -15,27 +15,6 @@ from .storage import PendingImportStore
 type EmailDocumentProcessor = Callable[[SourceDocument, str], Awaitable[None]]
 
 
-async def _async_record_parse_failure_cancellation_safe(
-    store: PendingImportStore,
-    activity_id: str,
-) -> None:
-    """Persist source-claim release before propagating caller cancellation."""
-    cancelled = False
-    while True:
-        try:
-            await store.async_record_parse_failure(activity_id)
-        except asyncio.CancelledError:
-            cancelled = True
-            continue
-        except Exception:
-            if cancelled:
-                raise asyncio.CancelledError from None
-            raise
-        if cancelled:
-            raise asyncio.CancelledError
-        return
-
-
 @dataclass(frozen=True, slots=True)
 class EmailPollResult:
     """Outcome counts for one complete source collection attempt."""
@@ -101,18 +80,12 @@ async def async_poll_email_source(
             await processor(document, activity_id)
         except asyncio.CancelledError:
             try:
-                await _async_record_parse_failure_cancellation_safe(
-                    store,
-                    activity_id,
-                )
+                await store.async_record_parse_failure(activity_id)
             except (asyncio.CancelledError, Exception):
                 pass
             raise
         except Exception:
-            await _async_record_parse_failure_cancellation_safe(
-                store,
-                activity_id,
-            )
+            await store.async_record_parse_failure(activity_id)
             processing_failures += 1
             continue
 
