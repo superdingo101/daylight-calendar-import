@@ -186,19 +186,17 @@ def _stage_email_attachments(
 
 def _cleanup_paths(paths: tuple[Path, ...]) -> None:
     """Attempt every staged-file deletion, then report all paths that failed."""
-    first_error: Exception | None = None
-    failed_paths: list[Path] = []
+    failures: list[tuple[Path, Exception]] = []
     for path in paths:
         try:
             path.unlink(missing_ok=True)
         except Exception as exc:
-            failed_paths.append(path)
-            if first_error is None:
-                first_error = exc
-    if failed_paths:
-        assert first_error is not None
+            failures.append((path, exc))
+    if failures:
+        failed_paths = tuple(path for path, _ in failures)
+        first_error = failures[0][1]
         raise EmailAttachmentCleanupError(
-            tuple(failed_paths),
+            failed_paths,
             first_error,
         ) from first_error
 
