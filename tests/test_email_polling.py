@@ -863,3 +863,36 @@ async def test_cleanup_cancellation_preserves_shutdown_when_claim_release_is_can
         )
 
     assert store.failures == ["activity-1"]
+
+
+async def test_claim_release_failure_log_message_is_exact(caplog) -> None:
+    source = FakeSource([[_envelope("release-log@example.test")]])
+
+    class FailingReleaseStore(FakeStore):
+        async def async_record_parse_failure(self, activity_id: str) -> None:
+            raise RuntimeError("storage unavailable")
+
+    store = FailingReleaseStore()
+    stage = FakeAttachmentStage(
+        _document_for_polling(),
+        cleanup_error=asyncio.CancelledError(),
+    )
+
+    async def stager(_envelope, _document):
+        return stage
+
+    async def processor(_document, _activity_id):
+        raise RuntimeError("processor failed")
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_poll_email_source(
+            source,
+            store,
+            processor,
+            attachment_stager=stager,
+        )
+
+    assert caplog.records[-1].getMessage() == (
+        "Failed to release email source claim activity-1 during cancellation: "
+        "storage unavailable"
+    )
