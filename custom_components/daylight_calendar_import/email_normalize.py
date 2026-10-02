@@ -230,8 +230,7 @@ def _extract_body(part: Message) -> tuple[bool, str]:
     subtype = part.get_content_subtype().casefold()
 
     if subtype == "related":
-        root = _related_root(part, children)
-        return _extract_body(root) if root is not None else (False, "")
+        return _extract_body(_related_root(part, children))
 
     if subtype == "alternative":
         for child in reversed(children):
@@ -250,10 +249,7 @@ def _extract_body(part: Message) -> tuple[bool, str]:
     return supported, _join_text(texts)
 
 
-def _related_root(part: Message, children: list[Message]) -> Message | None:
-    if not children:
-        return None
-
+def _related_root(part: Message, children: list[Message]) -> Message:
     start = part.get_param("start", header="content-type")
     if start is not None:
         target = str(start).strip()
