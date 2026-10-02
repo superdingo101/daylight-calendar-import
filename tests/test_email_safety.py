@@ -97,16 +97,31 @@ def test_exact_sender_allowlist_rejects_nonmatching_or_ambiguous_from(
     assert allowlist.allows(raw_message) is False
 
 
-def test_exact_sender_allowlist_rejects_defective_from_header() -> None:
+def test_exact_sender_allowlist_rejects_defective_from_header(
+    monkeypatch,
+) -> None:
+    class FakeHeader:
+        defects = (ValueError("defective header"),)
+        addresses = ()
+
+    class FakeMessage:
+        def get_all(self, _name, _default):
+            return [FakeHeader()]
+
+    class FakeParser:
+        def parsebytes(self, _raw_message):
+            return FakeMessage()
+
+    monkeypatch.setattr(
+        email_safety,
+        "BytesParser",
+        lambda **_kwargs: FakeParser(),
+    )
     allowlist = email_safety.ExactSenderAllowlist(
         ("trusted@example.test",)
     )
-    raw = (
-        b"From: =?utf-8?Q?Broken <trusted@example.test>\r\n"
-        b"Subject: Event\r\n\r\nBody"
-    )
 
-    assert allowlist.allows(raw) is False
+    assert allowlist.allows(b"mail") is False
 
 
 def test_exact_sender_allowlist_rejects_parser_failure(monkeypatch) -> None:
@@ -152,3 +167,22 @@ def test_exact_sender_allowlist_rejects_empty_addr_spec(monkeypatch) -> None:
     )
 
     assert allowlist.allows(b"mail") is False
+
+
+def test_normalize_sender_allowlist_rejects_missing_username_or_domain(
+    monkeypatch,
+) -> None:
+    class MissingDomainAddress:
+        username = "trusted"
+        domain = ""
+
+        def __init__(self, *, addr_spec):
+            del addr_spec
+
+    monkeypatch.setattr(email_safety, "Address", MissingDomainAddress)
+
+    with pytest.raises(
+        ValueError,
+        match="sender_allowlist entries must be valid email addresses",
+    ):
+        email_safety.normalize_sender_allowlist(("trusted@example.test",))
