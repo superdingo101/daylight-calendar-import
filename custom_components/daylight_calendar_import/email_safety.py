@@ -61,7 +61,15 @@ class ExactSenderAllowlist:
             if getattr(header, "defects", ()):
                 return False
 
-            addresses = tuple(getattr(header, "addresses", ()))
+            groups = tuple(getattr(header, "groups", ()))
+            if len(groups) != 1:
+                return False
+
+            group = groups[0]
+            if getattr(group, "display_name", None) is not None:
+                return False
+
+            addresses = tuple(getattr(group, "addresses", ()))
             if len(addresses) != 1:
                 return False
 
