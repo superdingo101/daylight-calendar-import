@@ -350,22 +350,21 @@ class PendingImportStore:
         """Let a storage transaction finish before propagating caller cancellation."""
         task = asyncio.create_task(operation)
         cancelled = False
-        while True:
+        while not task.done():
             try:
-                result = await asyncio.shield(task)
+                await asyncio.wait({task})
             except asyncio.CancelledError:
-                if task.done():
-                    return task.result(), cancelled
                 cancelled = True
-                current = asyncio.current_task()
-                if current is not None:
-                    current.uncancel()
-                continue
-            except Exception:
-                if cancelled:
-                    raise asyncio.CancelledError from None
-                raise
-            return result, cancelled
+                asyncio.current_task().uncancel()  # type: ignore[union-attr]
+        if task.cancelled():
+            raise asyncio.CancelledError
+        try:
+            result = task.result()
+        except Exception:
+            if cancelled:
+                raise asyncio.CancelledError from None
+            raise
+        return result, cancelled
 
     async def async_begin_source_submission(
         self,
