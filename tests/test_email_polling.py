@@ -790,3 +790,76 @@ async def test_processor_cancellation_ignores_cleanup_cancellation_before_claim_
 
     assert stage.cleanup_contexts == ["processor cancellation"]
     assert store.failures == ["activity-1"]
+
+
+async def test_cleanup_cancellation_preserves_shutdown_when_claim_release_fails(
+    caplog,
+) -> None:
+    source = FakeSource([[
+        _envelope("cleanup-release-fails@example.test", subject="Bad"),
+        _envelope("later@example.test", subject="Later"),
+    ]])
+
+    class FailingReleaseStore(FakeStore):
+        async def async_record_parse_failure(self, activity_id: str) -> None:
+            self.failures.append(activity_id)
+            raise RuntimeError("storage unavailable")
+
+    store = FailingReleaseStore()
+    stage = FakeAttachmentStage(
+        _document_for_polling(),
+        cleanup_error=asyncio.CancelledError(),
+    )
+    processed: list[str | None] = []
+
+    async def stager(_envelope, document):
+        return stage if document.title == "Bad" else FakeAttachmentStage(document)
+
+    async def processor(document, _activity_id):
+        processed.append(document.title)
+        raise RuntimeError("processor failed")
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_poll_email_source(
+            source,
+            store,
+            processor,
+            attachment_stager=stager,
+        )
+
+    assert store.failures == ["activity-1"]
+    assert store.claim_calls == ["<cleanup-release-fails@example.test>"]
+    assert processed == ["Event"]
+    assert "storage unavailable" in caplog.text
+    assert "activity-1" in caplog.text
+
+
+async def test_cleanup_cancellation_preserves_shutdown_when_claim_release_is_cancelled() -> None:
+    source = FakeSource([[_envelope("cleanup-release-cancel@example.test")]])
+
+    class CancelledReleaseStore(FakeStore):
+        async def async_record_parse_failure(self, activity_id: str) -> None:
+            self.failures.append(activity_id)
+            raise asyncio.CancelledError
+
+    store = CancelledReleaseStore()
+    stage = FakeAttachmentStage(
+        _document_for_polling(),
+        cleanup_error=asyncio.CancelledError(),
+    )
+
+    async def stager(_envelope, _document):
+        return stage
+
+    async def processor(_document, _activity_id):
+        raise RuntimeError("processor failed")
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_poll_email_source(
+            source,
+            store,
+            processor,
+            attachment_stager=stager,
+        )
+
+    assert store.failures == ["activity-1"]
