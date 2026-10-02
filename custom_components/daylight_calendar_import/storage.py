@@ -948,6 +948,10 @@ class PendingImportStore:
                 cancelled = True
                 asyncio.current_task().uncancel()
                 continue
+            except Exception:
+                if cancelled:
+                    return True
+                raise
             return cancelled
 
     async def _async_save(
