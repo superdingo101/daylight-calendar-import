@@ -91,8 +91,12 @@ def _stage_email_attachments(
                 dir=media_path,
                 delete=False,
             ) as staged:
-                staged.write(data)
-            staged_path = Path(staged.name)
+                staged_path = Path(staged.name)
+                try:
+                    staged.write(data)
+                except BaseException:
+                    staged_path.unlink(missing_ok=True)
+                    raise
             paths.append(staged_path)
             attachments.append(
                 SourceAttachment(
