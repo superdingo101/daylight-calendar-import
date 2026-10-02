@@ -992,3 +992,40 @@ async def test_empty_sender_allowlist_preserves_existing_behavior() -> None:
     assert result.safety_rejections == 0
     assert result.processed == 1
     assert processed == ["Event"]
+
+
+async def test_malformed_from_header_is_rejected_without_blocking_later_mail() -> None:
+    malformed = EmailEnvelope(
+        received_at=_RECEIVED_AT,
+        raw_message=(
+            b"From: :;Z\r\n"
+            b"Subject: Malformed\r\n"
+            b"Message-ID: <malformed-from@example.test>\r\n\r\n"
+            b"Body"
+        ),
+        provenance=_envelope("base@example.test").provenance,
+    )
+    source = FakeSource(
+        [[
+            malformed,
+            _envelope(
+                "good@example.test",
+                subject="Good",
+                sender="trusted@example.test",
+            ),
+        ]],
+        sender_allowlist=("trusted@example.test",),
+    )
+    store = FakeStore()
+    processed: list[str | None] = []
+
+    async def processor(document, activity_id):
+        del activity_id
+        processed.append(document.title)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.safety_rejections == 1
+    assert result.processed == 1
+    assert store.claim_calls == ["<good@example.test>"]
+    assert processed == ["Good"]
