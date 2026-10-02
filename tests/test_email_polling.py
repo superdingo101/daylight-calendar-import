@@ -756,3 +756,29 @@ def _document_for_polling() -> SourceDocument:
         title="Event",
         upstream_source_id="<stage@example.test>",
     )
+
+
+async def test_processor_cancellation_ignores_cleanup_cancellation_before_claim_release() -> None:
+    source = FakeSource([[_envelope("processor-and-cleanup-cancel@example.test")]])
+    store = FakeStore()
+    stage = FakeAttachmentStage(
+        _document_for_polling(),
+        cleanup_error=asyncio.CancelledError(),
+    )
+
+    async def stager(_envelope, _document):
+        return stage
+
+    async def processor(_document, _activity_id):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_poll_email_source(
+            source,
+            store,
+            processor,
+            attachment_stager=stager,
+        )
+
+    assert stage.cleanup_contexts == ["processor cancellation"]
+    assert store.failures == ["activity-1"]
