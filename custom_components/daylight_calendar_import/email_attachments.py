@@ -42,9 +42,14 @@ class EmailAttachmentError(ValueError):
 class EmailAttachmentCleanupError(OSError):
     """One or more staged email attachment files could not be removed."""
 
-    def __init__(self, failed_paths: tuple[Path, ...]) -> None:
+    def __init__(
+        self,
+        failed_paths: tuple[Path, ...],
+        first_error: Exception,
+    ) -> None:
         super().__init__(
-            f"Failed to remove {len(failed_paths)} staged email attachment file(s)"
+            f"{first_error}; failed staged email attachment path(s): "
+            + ", ".join(str(path) for path in failed_paths)
         )
         self.failed_paths = failed_paths
 
@@ -89,21 +94,11 @@ def _attachment_payload(part: Message) -> bytes:
 def _decoded_payload_upper_bound(part: Message) -> int:
     """Bound decoded bytes from the transfer-encoded payload without decoding it."""
     payload = part.get_payload(decode=False)
-    if isinstance(payload, bytes):
-        return len(payload)
     if not isinstance(payload, str):
-        return AI_TASK_MAX_TOTAL_BYTES + 1
+        raise EmailAttachmentError("Email attachment payload could not be bounded")
     if str(part.get("Content-Transfer-Encoding", "")).casefold() == "base64":
         encoded_chars = sum(1 for char in payload if not char.isspace())
-        padding = 0
-        for char in reversed(payload):
-            if char.isspace():
-                continue
-            if char == "=" and padding < 2:
-                padding += 1
-                continue
-            break
-        return max(0, ((encoded_chars + 3) // 4) * 3 - padding)
+        return ((encoded_chars + 3) // 4) * 3
     return len(payload)
 
 
@@ -151,18 +146,10 @@ def _stage_email_attachments(
     media_path.mkdir(parents=True, exist_ok=True)
     attachments: list[SourceAttachment] = []
     paths: list[Path] = []
-    actual_total = sum(item.size_bytes for item in existing_attachments)
-
     try:
         for part in parts:
             media_type = part.get_content_type().casefold()
             data = _attachment_payload(part)
-            actual_total += len(data)
-            if actual_total > max_total_bytes:
-                raise SourceValidationError(
-                    "source_too_large",
-                    "Source attachments exceed the size limit",
-                )
             filename = part.get_filename()
             staged_file = tempfile.NamedTemporaryFile(
                 prefix="daylight-email-",
@@ -209,7 +196,11 @@ def _cleanup_paths(paths: tuple[Path, ...]) -> None:
             if first_error is None:
                 first_error = exc
     if failed_paths:
-        raise EmailAttachmentCleanupError(tuple(failed_paths)) from first_error
+        assert first_error is not None
+        raise EmailAttachmentCleanupError(
+            tuple(failed_paths),
+            first_error,
+        ) from first_error
 
 
 async def _async_cleanup_paths(
