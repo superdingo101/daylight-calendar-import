@@ -148,13 +148,20 @@ def normalize_email(
 ) -> SourceDocument:
     """Normalize one email envelope without exposing transport provenance downstream."""
     message = _parse_message(envelope.raw_message)
-    identity = (
-        envelope.upstream_source_id
-        if envelope.upstream_source_id not in (None, "")
-        else _message_identity(message, envelope.raw_message)
-    )
-    _, text = _extract_body(message)
-    title = _first_header(message, "subject")
+    try:
+        identity = (
+            envelope.upstream_source_id
+            if envelope.upstream_source_id not in (None, "")
+            else _message_identity(message, envelope.raw_message)
+        )
+        _, text = _extract_body(message)
+        title = _first_header(message, "subject")
+    except EmailNormalizationError:
+        raise
+    except Exception as exc:
+        raise EmailNormalizationError(
+            "Email message could not be normalized"
+        ) from exc
 
     make_id = document_id_factory or (lambda: str(uuid4()))
     return SourceDocument(
@@ -203,17 +210,21 @@ def _valid_message_id(message: Message) -> str | None:
     header = headers[0]
     if getattr(header, "defects", ()):
         return None
+    return _canonical_msg_id(header)
 
+
+def _canonical_msg_id(value: object) -> str | None:
+    """Return one defect-free semantic msg-id token using the stdlib parser."""
     try:
-        token, remainder = get_msg_id(str(header))
+        token, remainder = get_msg_id(str(value))
     except Exception:
         return None
 
     if remainder.strip() or getattr(token, "all_defects", ()):
         return None
 
-    value = str(getattr(token, "value", "")).strip()
-    return value or None
+    canonical = str(getattr(token, "value", "")).strip()
+    return canonical or None
 
 
 def _extract_body(part: Message) -> tuple[bool, str]:
@@ -251,11 +262,14 @@ def _extract_body(part: Message) -> tuple[bool, str]:
 
 def _related_root(part: Message, children: list[Message]) -> Message:
     start = part.get_param("start", header="content-type")
-    if start is not None:
-        target = str(start).strip()
+    target = _canonical_msg_id(start) if start is not None else None
+    if target is not None:
         for child in children:
             content_id = child.get("content-id")
-            if content_id is not None and str(content_id).strip() == target:
+            if (
+                content_id is not None
+                and _canonical_msg_id(content_id) == target
+            ):
                 return child
 
     return children[0]
@@ -265,7 +279,33 @@ def _render_text_part(part: Message) -> str:
     text = _decode_text_part(part)
     if part.get_content_type().casefold() == "text/html":
         return html_to_text(text)
+    if (part.get_param("format", header="content-type") or "").casefold() == "flowed":
+        text = _decode_format_flowed(
+            text,
+            delsp=(
+                part.get_param("delsp", header="content-type") or ""
+            ).casefold()
+            == "yes",
+        )
     return _normalize_body_text(text)
+
+
+def _decode_format_flowed(value: str, *, delsp: bool) -> str:
+    """Join ordinary flowed soft line breaks; this is not full RFC 3676 handling."""
+    lines = value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    logical: list[str] = []
+    current = ""
+
+    for line in lines:
+        flowed = line.endswith(" ") and line != "-- "
+        current += line[:-1] if flowed and delsp else line
+        if not flowed:
+            logical.append(current)
+            current = ""
+
+    if current:
+        logical.append(current)
+    return "\n".join(logical)
 
 
 def _decode_text_part(part: Message) -> str:
