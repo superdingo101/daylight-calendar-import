@@ -729,3 +729,286 @@ def test_related_content_id_cfws_matches_designated_root() -> None:
         _envelope(raw),
         document_id_factory=lambda: "doc",
     ).text == "Designated root"
+
+
+def test_html_character_references_are_decoded() -> None:
+    assert html_to_text("Tom &amp; Jerry") == "Tom & Jerry"
+
+
+def test_html_break_and_inline_boundaries_are_exact() -> None:
+    assert html_to_text(
+        "<span>before</span><br><span>after</span>"
+    ) == "before\nafter"
+
+
+def test_html_safe_link_and_image_spacing_is_exact() -> None:
+    assert html_to_text(
+        '<p>A<a href="https://example.test">B</a>'
+        '<img alt="Icon">C</p>'
+    ) == "A https://example.test B Icon C"
+
+
+def test_html_block_endtags_separate_following_inline_text() -> None:
+    assert html_to_text(
+        "<p>One</p><span>mid</span><p>Two</p>"
+    ) == "One\nmid\nTwo"
+
+
+def test_normalize_email_preserves_received_at() -> None:
+    envelope = _envelope(_raw_message())
+
+    source = normalize_email(
+        envelope,
+        document_id_factory=lambda: "doc",
+    )
+
+    assert source.received_at == envelope.received_at
+
+
+def test_normalization_error_message_is_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_extract(_message: object) -> tuple[bool, str]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(email_normalize, "_extract_body", fail_extract)
+
+    with pytest.raises(EmailNormalizationError) as exc_info:
+        normalize_email(
+            _envelope(_raw_message()),
+            document_id_factory=lambda: "doc",
+        )
+
+    assert str(exc_info.value) == "Email message could not be normalized"
+
+
+def test_parse_error_message_is_exact(monkeypatch: pytest.MonkeyPatch) -> None:
+    class BrokenParser:
+        def __init__(self, *, policy: object) -> None:
+            pass
+
+        def parsebytes(self, raw_message: bytes) -> None:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(email_normalize, "BytesParser", BrokenParser)
+
+    with pytest.raises(EmailNormalizationError) as exc_info:
+        stable_email_identity(b"anything")
+
+    assert str(exc_info.value) == "Email message could not be parsed"
+
+
+def test_canonical_message_id_without_token_value_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeToken:
+        all_defects: tuple[()] = ()
+
+    monkeypatch.setattr(
+        email_normalize,
+        "get_msg_id",
+        lambda _value: (FakeToken(), ""),
+    )
+
+    assert email_normalize._canonical_msg_id("anything") is None
+
+
+def test_extract_body_reports_attachment_as_unsupported() -> None:
+    part = EmailMessage()
+    part.set_content("Hidden attachment text")
+    part["Content-Disposition"] = "attachment"
+
+    assert email_normalize._extract_body(part) == (False, "")
+
+
+def test_extract_body_reports_unsupported_leaf_as_unsupported() -> None:
+    part = EmailMessage()
+    part.set_type("application/json")
+    part.set_payload("{}")
+
+    assert email_normalize._extract_body(part) == (False, "")
+
+
+def test_extract_body_reports_alternative_support_flag() -> None:
+    alternative = EmailMessage()
+    alternative.make_alternative()
+
+    unsupported = EmailMessage()
+    unsupported.set_type("application/json")
+    unsupported.set_payload("{}")
+    alternative.attach(unsupported)
+
+    preferred = EmailMessage()
+    preferred.set_content("Preferred")
+    alternative.attach(preferred)
+
+    assert email_normalize._extract_body(alternative) == (True, "Preferred")
+
+
+def test_extract_body_reports_unsupported_alternative_flag() -> None:
+    alternative = EmailMessage()
+    alternative.make_alternative()
+
+    unsupported = EmailMessage()
+    unsupported.set_type("application/json")
+    unsupported.set_payload("{}")
+    alternative.attach(unsupported)
+
+    assert email_normalize._extract_body(alternative) == (False, "")
+
+
+def test_extract_body_reports_mixed_without_supported_children() -> None:
+    mixed = EmailMessage()
+    mixed.make_mixed()
+
+    unsupported = EmailMessage()
+    unsupported.set_type("application/json")
+    unsupported.set_payload("{}")
+    mixed.attach(unsupported)
+
+    assert email_normalize._extract_body(mixed) == (False, "")
+
+
+def test_extract_body_keeps_support_if_later_mixed_child_is_unsupported() -> None:
+    mixed = EmailMessage()
+    mixed.make_mixed()
+
+    supported = EmailMessage()
+    supported.set_content("Visible")
+    mixed.attach(supported)
+
+    unsupported = EmailMessage()
+    unsupported.set_type("application/json")
+    unsupported.set_payload("{}")
+    mixed.attach(unsupported)
+
+    assert email_normalize._extract_body(mixed) == (True, "Visible")
+
+
+def test_related_root_uses_exact_content_type_parameter_names() -> None:
+    class FakeRelatedPart:
+        def get_param(self, name: str, *, header: str | None = None) -> str:
+            assert name == "start"
+            assert header == "content-type"
+            return "<root@id>"
+
+    class FakeChild:
+        def get(self, name: str) -> str:
+            assert name == "content-id"
+            return "<root@id>"
+
+    child = FakeChild()
+
+    assert email_normalize._related_root(
+        FakeRelatedPart(),  # type: ignore[arg-type]
+        [child],  # type: ignore[list-item]
+    ) is child
+
+
+def test_related_root_without_start_does_not_parse_missing_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    related = EmailMessage()
+    related.make_related()
+    child = EmailMessage()
+    child.set_content("Root")
+    related.attach(child)
+
+    def fail_if_called(_value: object) -> str | None:
+        raise AssertionError("missing start must not be parsed")
+
+    monkeypatch.setattr(email_normalize, "_canonical_msg_id", fail_if_called)
+
+    assert email_normalize._related_root(related, [child]) is child
+
+
+def test_render_text_part_uses_exact_flowed_parameters_and_delsp() -> None:
+    class FakeFlowedPart:
+        def get_payload(self, decode: bool = False) -> bytes:
+            assert decode is True
+            return b"soft \r\nbreak"
+
+        def get_content_charset(self) -> str:
+            return "us-ascii"
+
+        def get_content_type(self) -> str:
+            return "text/plain"
+
+        def get_param(
+            self,
+            name: str,
+            *,
+            header: str | None = None,
+        ) -> str | None:
+            assert header == "content-type"
+            if name == "format":
+                return "flowed"
+            if name == "delsp":
+                return "yes"
+            raise AssertionError(f"unexpected parameter: {name}")
+
+    assert email_normalize._render_text_part(
+        FakeFlowedPart()  # type: ignore[arg-type]
+    ) == "softbreak"
+
+
+def test_decode_format_flowed_normalizes_bare_carriage_return() -> None:
+    assert email_normalize._decode_format_flowed(
+        "soft \rbreak",
+        delsp=True,
+    ) == "softbreak"
+
+
+def test_decode_text_part_requests_nondecoded_payload_explicitly() -> None:
+    class FakeTextPart:
+        def get_payload(self, decode: bool | None = False) -> object:
+            if decode is True:
+                return None
+            if decode is False:
+                return "Already decoded"
+            return "wrong decode argument"
+
+        def get_content_charset(self) -> None:
+            return None
+
+    assert email_normalize._decode_text_part(
+        FakeTextPart()  # type: ignore[arg-type]
+    ) == "Already decoded"
+
+
+def test_decode_text_part_defaults_to_us_ascii_with_replacement() -> None:
+    class FakeTextPart:
+        def get_payload(self, decode: bool = False) -> bytes:
+            assert decode is True
+            return b"caf\xc3\xa9"
+
+        def get_content_charset(self) -> None:
+            return None
+
+    assert email_normalize._decode_text_part(
+        FakeTextPart()  # type: ignore[arg-type]
+    ) == "caf\ufffd\ufffd"
+
+
+def test_decode_text_part_unknown_charset_uses_utf8_replacement() -> None:
+    class FakeTextPart:
+        def get_payload(self, decode: bool = False) -> bytes:
+            assert decode is True
+            return b"\xff"
+
+        def get_content_charset(self) -> str:
+            return "x-not-real"
+
+    assert email_normalize._decode_text_part(
+        FakeTextPart()  # type: ignore[arg-type]
+    ) == "\ufffd"
+
+
+def test_inline_style_malformed_declaration_does_not_stop_later_hide() -> None:
+    assert email_normalize._inline_style_hides(
+        "broken declaration; display:none"
+    )
+
+
+def test_normalize_body_text_preserves_bare_carriage_return_as_line_break() -> None:
+    assert email_normalize._normalize_body_text("one\rtwo") == "one\ntwo"
