@@ -59,8 +59,8 @@ async def async_poll_email_source(
             normalization_failures += 1
             continue
 
-        source_id = document.upstream_source_id
-        if source_id is None or not source_id.strip():
+        source_id = document.upstream_source_id or ""
+        if not source_id.strip():
             normalization_failures += 1
             continue
 
