@@ -186,3 +186,15 @@ def test_normalize_sender_allowlist_rejects_missing_username_or_domain(
         match="sender_allowlist entries must be valid email addresses",
     ):
         email_safety.normalize_sender_allowlist(("trusted@example.test",))
+
+
+def test_exact_sender_allowlist_rejects_lazy_header_parse_failure() -> None:
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+    raw = (
+        b"From: :;Z\r\n"
+        b"Subject: Malformed From\r\n\r\nBody"
+    )
+
+    assert allowlist.allows(raw) is False
