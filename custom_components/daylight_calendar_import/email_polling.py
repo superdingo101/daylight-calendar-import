@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -77,6 +78,12 @@ async def async_poll_email_source(
         claimed += 1
         try:
             await processor(document, activity_id)
+        except asyncio.CancelledError:
+            try:
+                await store.async_record_parse_failure(activity_id)
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise
         except Exception:
             await store.async_record_parse_failure(activity_id)
             processing_failures += 1
