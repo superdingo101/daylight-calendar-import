@@ -1,9 +1,8 @@
-"""Property tests for semantic email identity."""
+from __future__ import annotations
 
-from email import policy
-from email.message import EmailMessage
+from hashlib import sha256
 
-from hypothesis import given, settings, strategies as st
+from hypothesis import given, strategies as st
 
 from custom_components.daylight_calendar_import.email_normalize import (
     FALLBACK_IDENTITY_PREFIX,
@@ -11,49 +10,40 @@ from custom_components.daylight_calendar_import.email_normalize import (
 )
 
 
-PROPERTY_SETTINGS = settings(max_examples=100, deadline=None, derandomize=True)
-HEADER_TEXT = st.text(
-    alphabet=st.characters(
-        blacklist_categories=("Cc", "Cs"),
-        blacklist_characters="\r\n",
-    ),
-    min_size=1,
-    max_size=80,
-).filter(lambda value: bool(value.strip()))
-BODY_TEXT = st.text(
-    alphabet=st.characters(blacklist_categories=("Cs",)),
-    max_size=300,
+@given(st.binary(max_size=4096))
+def test_raw_fallback_identity_is_deterministic(raw_body: bytes) -> None:
+    raw = b"Subject: Property\r\n\r\n" + raw_body
+
+    expected = FALLBACK_IDENTITY_PREFIX + sha256(raw).hexdigest()
+    assert stable_email_identity(raw) == expected
+    assert stable_email_identity(raw) == stable_email_identity(raw)
+
+
+@given(
+    st.binary(max_size=1024),
+    st.binary(max_size=1024),
 )
-
-
-@PROPERTY_SETTINGS
-@given(first_body=BODY_TEXT, second_body=BODY_TEXT)
-def test_message_id_is_authoritative_over_body_changes(
-    first_body: str,
-    second_body: str,
+def test_raw_fallback_tracks_exact_wire_bytes(
+    first_body: bytes,
+    second_body: bytes,
 ) -> None:
-    first = EmailMessage()
-    first["Message-ID"] = "<stable@example.test>"
-    first.set_content(first_body)
-    second = EmailMessage()
-    second["Message-ID"] = "<stable@example.test>"
-    second.set_content(second_body)
+    first = b"Subject: Property\r\n\r\n" + first_body
+    second = b"Subject: Property\r\nX-Wire: changed\r\n\r\n" + second_body
 
-    assert stable_email_identity(first.as_bytes(policy=policy.default)) == (
-        stable_email_identity(second.as_bytes(policy=policy.default))
+    assert stable_email_identity(first) == (
+        FALLBACK_IDENTITY_PREFIX + sha256(first).hexdigest()
+    )
+    assert stable_email_identity(second) == (
+        FALLBACK_IDENTITY_PREFIX + sha256(second).hexdigest()
     )
 
 
-@PROPERTY_SETTINGS
-@given(subject=HEADER_TEXT, body=BODY_TEXT)
-def test_fallback_identity_is_deterministic(subject: str, body: str) -> None:
-    message = EmailMessage()
-    message["Subject"] = subject
-    message.set_content(body)
-    raw = message.as_bytes(policy=policy.default)
+@given(st.binary(max_size=2048))
+def test_valid_message_id_is_authoritative_over_wire_body(raw_body: bytes) -> None:
+    raw = (
+        b"Message-ID: <property@example.test>\r\n"
+        b"Subject: Property\r\n\r\n"
+        + raw_body
+    )
 
-    first = stable_email_identity(raw)
-    second = stable_email_identity(raw)
-
-    assert first == second
-    assert first.startswith(FALLBACK_IDENTITY_PREFIX)
+    assert stable_email_identity(raw) == "<property@example.test>"
