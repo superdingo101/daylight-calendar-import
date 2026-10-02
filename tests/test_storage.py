@@ -1696,3 +1696,179 @@ def test_old_pending_event_without_destination_defaults_to_unselected():
     raw = event.as_dict()
     raw.pop("calendar_entity")
     assert PendingEvent.from_dict(raw) == event
+
+async def test_source_submission_claim_blocks_duplicate_before_parser(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    received_at = datetime.fromisoformat("2026-10-01T12:00:00+00:00")
+
+    activity_id = await store.async_begin_source_submission(
+        source_id="<mail-1@example.test>", source_kind="email",
+        source_title="School notice", received_at=received_at,
+    )
+
+    assert activity_id is not None
+    assert store.is_source_duplicate("<mail-1@example.test>") is True
+    assert await store.async_begin_source_submission(
+        source_id="<mail-1@example.test>", source_kind="email",
+        source_title="School notice", received_at=received_at,
+    ) is None
+    assert backend.saved[-1]["source_claims"] == {
+        activity_id: source_fingerprint("<mail-1@example.test>")
+    }
+    assert "<mail-1@example.test>" not in str(backend.saved[-1])
+
+
+async def test_source_submission_claim_is_atomic_under_concurrency(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    received_at = datetime.fromisoformat("2026-10-01T12:00:00+00:00")
+
+    results = await asyncio.gather(*(
+        store.async_begin_source_submission(
+            source_id="<same@example.test>", source_kind="email",
+            source_title=None, received_at=received_at,
+        )
+        for _ in range(2)
+    ))
+
+    assert sum(result is not None for result in results) == 1
+    assert sum(result is None for result in results) == 1
+    assert len(backend.saved) == 1
+
+
+async def test_source_claim_save_failure_leaves_source_retryable(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    backend.save_error = RuntimeError("storage unavailable")
+
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await store.async_begin_source_submission(
+            source_id="<mail-1@example.test>", source_kind="email",
+            source_title=None,
+            received_at=datetime.fromisoformat("2026-10-01T12:00:00+00:00"),
+        )
+
+    assert store.is_source_duplicate("<mail-1@example.test>") is False
+    assert backend.saved == []
+
+
+async def test_parse_failure_releases_source_claim_for_retry(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    received_at = datetime.fromisoformat("2026-10-01T12:00:00+00:00")
+    activity_id = await store.async_begin_source_submission(
+        source_id="<mail-1@example.test>", source_kind="email",
+        source_title=None, received_at=received_at,
+    )
+    assert activity_id is not None
+
+    await store.async_record_parse_failure(activity_id)
+
+    assert store.is_source_duplicate("<mail-1@example.test>") is False
+    assert "source_claims" not in backend.saved[-1]
+    retry_id = await store.async_begin_source_submission(
+        source_id="<mail-1@example.test>", source_kind="email",
+        source_title=None, received_at=received_at,
+    )
+    assert retry_id is not None and retry_id != activity_id
+
+
+async def test_claim_handoff_to_pending_is_one_durable_transaction(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<mail-1@example.test>"
+    activity_id = await store.async_begin_source_submission(
+        source_id=source_id, source_kind="email", source_title="Party",
+        received_at=datetime.fromisoformat("2026-10-01T12:00:00+00:00"),
+    )
+    assert activity_id is not None
+
+    result = await store.async_add(
+        source_text="Friday at 5", events=[draft()], source_id=source_id,
+        source_kind="email", source_title="Party", activity_id=activity_id,
+    )
+
+    assert result.pending is not None
+    assert result.pending.id == activity_id
+    assert result.pending.source_fingerprint == source_fingerprint(source_id)
+    assert "source_claims" not in backend.saved[-1]
+    assert store.is_source_duplicate(source_id) is True
+
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.is_source_duplicate(source_id) is True
+    assert restarted.get(activity_id) is not None
+
+
+async def test_claim_cannot_be_finalized_with_different_source(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    activity_id = await store.async_begin_source_submission(
+        source_id="<mail-1@example.test>", source_kind="email", source_title=None,
+        received_at=datetime.fromisoformat("2026-10-01T12:00:00+00:00"),
+    )
+    assert activity_id is not None
+    saved_count = len(backend.saved)
+
+    with pytest.raises(ValueError, match="does not match claimed source"):
+        await store.async_add(
+            source_text="Friday at 5", events=[draft()],
+            source_id="<different@example.test>", activity_id=activity_id,
+        )
+
+    assert len(backend.saved) == saved_count
+    assert store.is_source_duplicate("<mail-1@example.test>") is True
+    assert store.is_source_duplicate("<different@example.test>") is False
+
+
+async def test_restart_releases_interrupted_claim_for_retry(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<mail-1@example.test>"
+    activity_id = await store.async_begin_source_submission(
+        source_id=source_id, source_kind="email", source_title=None,
+        received_at=datetime.fromisoformat("2026-10-01T12:00:00+00:00"),
+    )
+    assert activity_id is not None
+    backend.load_result = backend.saved[-1]
+
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+
+    assert restarted.is_source_duplicate(source_id) is False
+    assert restarted.get_activity(activity_id)["status"] == "failed"
+    assert "source_claims" not in backend.saved[-1]
+
+
+async def test_zero_event_claim_is_retryable_by_current_policy(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<no-events@example.test>"
+    activity_id = await store.async_begin_source_submission(
+        source_id=source_id, source_kind="email", source_title="FYI",
+        received_at=datetime.fromisoformat("2026-10-01T12:00:00+00:00"),
+    )
+    assert activity_id is not None
+
+    result = await store.async_add(
+        source_text="No calendar item here", events=[], source_id=source_id,
+        source_kind="email", source_title="FYI", activity_id=activity_id,
+    )
+
+    assert result.pending is None
+    assert result.duplicate_source is False
+    assert result.duplicate_events == 0
+    assert store.is_source_duplicate(source_id) is False
+    assert store.get_activity(activity_id)["status"] == "failed"
+    assert "source_claims" not in backend.saved[-1]
+
