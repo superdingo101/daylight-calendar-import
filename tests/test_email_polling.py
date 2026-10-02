@@ -402,3 +402,39 @@ async def test_cancellation_during_failed_checkpoint_preserves_cancellation() ->
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_repeated_cancellation_keeps_retrying_claim_release() -> None:
+    source = FakeSource([[_envelope("repeat-cancel@example.test")]])
+    attempts = 0
+    attempt_started = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
+    release_checkpoint = asyncio.Event()
+
+    class RepeatedlyCancelledStore(FakeStore):
+        async def async_record_parse_failure(self, activity_id: str) -> None:
+            nonlocal attempts
+            index = attempts
+            attempts += 1
+            attempt_started[index].set()
+            await release_checkpoint.wait()
+            self.failures.append(activity_id)
+
+    store = RepeatedlyCancelledStore()
+
+    async def processor(document, activity_id):
+        del document, activity_id
+        raise RuntimeError("AI failed")
+
+    task = asyncio.create_task(async_poll_email_source(source, store, processor))
+    await attempt_started[0].wait()
+    task.cancel()
+    await attempt_started[1].wait()
+    task.cancel()
+    await attempt_started[2].wait()
+    release_checkpoint.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert attempts == 3
+    assert store.failures == ["activity-1"]
