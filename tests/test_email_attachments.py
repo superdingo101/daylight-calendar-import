@@ -529,3 +529,35 @@ async def test_late_cleanup_failure_does_not_replace_staging_cancellation(
         await task
 
     assert list(media_dir.iterdir()) == []
+
+
+def test_cleanup_paths_preserves_first_error_when_multiple_deletions_fail(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    third = tmp_path / "third.png"
+    for path in (first, second, third):
+        path.write_bytes(b"data")
+
+    original_unlink = Path.unlink
+    attempted: list[Path] = []
+
+    def unlink(path, missing_ok=False):
+        attempted.append(path)
+        if path == first:
+            raise OSError("first cleanup failure")
+        if path == second:
+            raise OSError("second cleanup failure")
+        return original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+    with pytest.raises(OSError, match="first cleanup failure"):
+        email_attachments._cleanup_paths((first, second, third))
+
+    assert attempted == [first, second, third]
+    assert first.exists()
+    assert second.exists()
+    assert not third.exists()
