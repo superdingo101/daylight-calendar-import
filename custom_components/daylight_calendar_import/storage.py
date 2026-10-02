@@ -236,6 +236,7 @@ class PendingImportStore:
         self._seen_source_fingerprints: tuple[str, ...] = ()
         self._seen_event_fingerprints: tuple[str, ...] = ()
         self._source_claims: dict[str, str] = {}
+        self._source_claim_releases: set[str] = set()
         self._lock = asyncio.Lock()
 
     async def async_load(self) -> None:
@@ -247,6 +248,7 @@ class PendingImportStore:
             self._seen_source_fingerprints = ()
             self._seen_event_fingerprints = ()
             self._source_claims = {}
+            self._source_claim_releases = set()
             return
 
         items = (
@@ -261,6 +263,7 @@ class PendingImportStore:
             data.get(_STORAGE_SEEN_EVENTS, ())
         )
         self._source_claims = dict(data.get(_STORAGE_SOURCE_CLAIMS, {}))
+        self._source_claim_releases = set()
         interrupted = [item["id"] for item in self._activity if item["status"] == "processing"]
         for activity_id in interrupted:
             self._activity = self._finish_submission(
@@ -351,6 +354,7 @@ class PendingImportStore:
         """Atomically reserve a source identity before an expensive parser call."""
         fingerprint = build_source_fingerprint(source_id)
         async with self._lock:
+            await self._async_retry_source_claim_releases_locked()
             if self._source_fingerprint_exists(fingerprint):
                 return None
             identifier, activity = self._propose_submission_activity(
@@ -372,18 +376,31 @@ class PendingImportStore:
     async def async_record_parse_failure(self, activity_id: str) -> None:
         """Finalize a failed parse while keeping the original source private."""
         async with self._lock:
-            activity = self._finish_submission(
-                activity_id, "failed", "Parsing failed. Check the configured AI Task and submit the source again."
-            )
-            source_claims = dict(self._source_claims)
-            source_claims.pop(activity_id, None)
-            await self._async_save(
-                self._items,
-                activity=activity,
-                source_claims=source_claims,
-            )
-            self._activity = activity
-            self._source_claims = source_claims
+            if activity_id in self._source_claims:
+                self._source_claim_releases.add(activity_id)
+            await self._async_record_parse_failure_locked(activity_id)
+
+    async def _async_record_parse_failure_locked(self, activity_id: str) -> None:
+        """Persist one failure transition and release its source claim."""
+        activity = self._finish_submission(
+            activity_id, "failed",
+            "Parsing failed. Check the configured AI Task and submit the source again.",
+        )
+        source_claims = dict(self._source_claims)
+        source_claims.pop(activity_id, None)
+        await self._async_save(
+            self._items,
+            activity=activity,
+            source_claims=source_claims,
+        )
+        self._activity = activity
+        self._source_claims = source_claims
+        self._source_claim_releases.discard(activity_id)
+
+    async def _async_retry_source_claim_releases_locked(self) -> None:
+        """Retry claim releases that previously failed to persist."""
+        for activity_id in tuple(self._source_claim_releases):
+            await self._async_record_parse_failure_locked(activity_id)
 
     def _finish_submission(self, activity_id: str | None, status: str,
                            guidance: str | None = None) -> tuple[dict[str, Any], ...]:
