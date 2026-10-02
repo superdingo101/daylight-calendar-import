@@ -698,3 +698,101 @@ async def test_body_cancellation_wins_over_cleanup_failure(
             _document(),
         ):
             raise asyncio.CancelledError
+
+
+def test_attachment_count_limit_is_enforced_before_decoding(monkeypatch, tmp_path) -> None:
+    def fail_decode(_part):
+        raise AssertionError("attachment payload should not be decoded")
+
+    monkeypatch.setattr(email_attachments, "_attachment_payload", fail_decode)
+
+    with pytest.raises(SourceValidationError) as caught:
+        email_attachments._stage_email_attachments(
+            _raw_email(),
+            {"local": str(tmp_path / "media")},
+            (),
+            2,
+            10 * 1024 * 1024,
+        )
+
+    assert caught.value.code == "too_many_attachments"
+    assert not (tmp_path / "media").exists()
+
+
+def test_attachment_size_limit_is_enforced_before_decoding(monkeypatch, tmp_path) -> None:
+    def fail_decode(_part):
+        raise AssertionError("attachment payload should not be decoded")
+
+    monkeypatch.setattr(email_attachments, "_attachment_payload", fail_decode)
+
+    with pytest.raises(SourceValidationError) as caught:
+        email_attachments._stage_email_attachments(
+            _raw_email(),
+            {"local": str(tmp_path / "media")},
+            (),
+            4,
+            1,
+        )
+
+    assert caught.value.code == "source_too_large"
+    assert not (tmp_path / "media").exists()
+
+
+def test_attachment_size_limit_counts_existing_attachments(tmp_path) -> None:
+    existing = SourceAttachment(
+        id="existing",
+        media_type="image/png",
+        size_bytes=9,
+        content_ref="media-source://existing",
+    )
+
+    with pytest.raises(SourceValidationError) as caught:
+        email_attachments._stage_email_attachments(
+            _raw_email(),
+            {"local": str(tmp_path / "media")},
+            (existing,),
+            4,
+            10,
+        )
+
+    assert caught.value.code == "source_too_large"
+    assert not (tmp_path / "media").exists()
+
+
+def test_decoded_payload_upper_bound_handles_non_base64_and_invalid_payload() -> None:
+    plain = EmailMessage()
+    plain.set_type("image/png")
+    plain.set_payload("abcd")
+    assert email_attachments._decoded_payload_upper_bound(plain) == 4
+
+    invalid = EmailMessage()
+    invalid.set_type("image/png")
+    invalid.set_payload([EmailMessage()])
+    with pytest.raises(
+        email_attachments.EmailAttachmentError,
+        match="could not be bounded",
+    ):
+        email_attachments._decoded_payload_upper_bound(invalid)
+
+
+def test_cleanup_failure_reporting_includes_failed_paths(caplog, tmp_path) -> None:
+    failed = tmp_path / "staged.png"
+    error = email_attachments.EmailAttachmentCleanupError(
+        (failed,),
+        OSError("permission denied"),
+    )
+
+    email_attachments._report_cleanup_failure("processor failure", error)
+
+    assert "processor failure" in caplog.text
+    assert str(failed) in caplog.text
+
+
+def test_generic_cleanup_failure_reporting_is_actionable(caplog) -> None:
+    email_attachments._report_cleanup_failure(
+        "staging failure",
+        OSError("cleanup exploded"),
+    )
+
+    assert "staging failure" in caplog.text
+    assert "cleanup exploded" in caplog.text
