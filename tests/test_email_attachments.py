@@ -561,3 +561,140 @@ def test_cleanup_paths_preserves_first_error_when_multiple_deletions_fail(
     assert first.exists()
     assert second.exists()
     assert not third.exists()
+
+
+def test_partial_staging_cleanup_error_preserves_original_failure(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    raw = _raw_email()
+    real_named_temporary_file = email_attachments.tempfile.NamedTemporaryFile
+    real_cleanup = email_attachments._cleanup_paths
+    cleanup_batches: list[tuple[Path, ...]] = []
+    calls = 0
+
+    class FailingFile:
+        name = str(tmp_path / "failed.pdf")
+
+        def __enter__(self):
+            Path(self.name).write_bytes(b"partial")
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def write(self, _data):
+            raise OSError("storage full")
+
+    def named_temporary_file(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return FailingFile()
+        return real_named_temporary_file(**kwargs)
+
+    def failing_cleanup(paths):
+        cleanup_batches.append(paths)
+        real_cleanup(paths)
+        raise OSError("cleanup also failed")
+
+    monkeypatch.setattr(
+        email_attachments.tempfile,
+        "NamedTemporaryFile",
+        named_temporary_file,
+    )
+    monkeypatch.setattr(email_attachments, "_cleanup_paths", failing_cleanup)
+
+    with pytest.raises(OSError, match="storage full"):
+        email_attachments._stage_email_attachments(
+            raw,
+            {"local": str(tmp_path)},
+        )
+
+    assert len(cleanup_batches) == 1
+    assert len(cleanup_batches[0]) == 2
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_repeated_cancellation_while_waiting_for_late_staging_still_cleans(
+    tmp_path,
+) -> None:
+    media_dir = tmp_path / "media"
+    stage_started = asyncio.Event()
+    release_stage = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    class DelayedHass(AttachmentHass):
+        async def async_add_executor_job(self, func, *args):
+            if func is email_attachments._stage_email_attachments:
+                stage_started.set()
+                await release_stage.wait()
+            if func is email_attachments._cleanup_paths:
+                cleanup_started.set()
+                await release_cleanup.wait()
+            return await asyncio.to_thread(func, *args)
+
+    async def consume() -> None:
+        async with email_attachments.async_email_attachments(
+            DelayedHass(media_dir),
+            _envelope(_raw_email()),
+            _document(),
+        ):
+            pytest.fail("cancelled staging reached processor")
+
+    task = asyncio.create_task(consume())
+    await stage_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    release_stage.set()
+    await cleanup_started.wait()
+    release_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert list(media_dir.iterdir()) == []
+
+
+async def test_body_failure_wins_over_cleanup_failure(monkeypatch, tmp_path) -> None:
+    async def failing_cleanup(_hass, _paths):
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(
+        email_attachments,
+        "_async_cleanup_paths",
+        failing_cleanup,
+    )
+
+    with pytest.raises(RuntimeError, match="processor failed"):
+        async with email_attachments.async_email_attachments(
+            AttachmentHass(tmp_path),
+            _envelope(_raw_email()),
+            _document(),
+        ):
+            raise RuntimeError("processor failed")
+
+
+async def test_body_cancellation_wins_over_cleanup_failure(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    async def failing_cleanup(_hass, _paths):
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(
+        email_attachments,
+        "_async_cleanup_paths",
+        failing_cleanup,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        async with email_attachments.async_email_attachments(
+            AttachmentHass(tmp_path),
+            _envelope(_raw_email()),
+            _document(),
+        ):
+            raise asyncio.CancelledError
