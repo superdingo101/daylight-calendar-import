@@ -367,6 +367,7 @@ async def test_cancellation_during_failure_checkpoint_completes_release_first() 
     task = asyncio.create_task(async_poll_email_source(source, store, processor))
     await checkpoint_started.wait()
     task.cancel()
+    await asyncio.sleep(0)
     release_checkpoint.set()
 
     with pytest.raises(asyncio.CancelledError):
@@ -396,6 +397,7 @@ async def test_cancellation_during_failed_checkpoint_preserves_cancellation() ->
     task = asyncio.create_task(async_poll_email_source(source, store, processor))
     await checkpoint_started.wait()
     task.cancel()
+    await asyncio.sleep(0)
     release_checkpoint.set()
 
     with pytest.raises(asyncio.CancelledError):
