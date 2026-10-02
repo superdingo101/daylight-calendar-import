@@ -2034,6 +2034,8 @@ async def test_claim_handoff_cancellation_keeps_durable_pending_import(monkeypat
 async def test_claim_acquisition_cancellation_preserves_cancel_if_cleanup_save_fails(monkeypatch):
     backend = BlockingSaveBackend()
     backend.block_on_attempt = 1
+    backend.save_error = RuntimeError("storage unavailable")
+    backend.fail_on_save_attempt = 3
     store = make_store(monkeypatch, backend)
     await store.async_load()
     source_id = "<claim-cleanup-fails@example.test>"
@@ -2047,11 +2049,6 @@ async def test_claim_acquisition_cancellation_preserves_cancel_if_cleanup_save_f
     await backend.saved_before_block.wait()
     task.cancel()
     backend.release_block.set()
-
-    while backend.save_attempts < 2:
-        await asyncio.sleep(0)
-    backend.save_error = RuntimeError("storage unavailable")
-    backend.fail_on_save_attempt = 3
 
     with pytest.raises(asyncio.CancelledError):
         await task
