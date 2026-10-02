@@ -20,12 +20,11 @@ async def _async_record_parse_failure_cancellation_safe(
     activity_id: str,
 ) -> None:
     """Persist source-claim release before propagating caller cancellation."""
-    checkpoint = asyncio.create_task(store.async_record_parse_failure(activity_id))
     try:
-        await asyncio.shield(checkpoint)
+        await store.async_record_parse_failure(activity_id)
     except asyncio.CancelledError:
         try:
-            await checkpoint
+            await store.async_record_parse_failure(activity_id)
         except (asyncio.CancelledError, Exception):
             pass
         raise
