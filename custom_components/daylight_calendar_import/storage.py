@@ -27,6 +27,7 @@ ACTIVITY_LIMIT = 500
 ACTIVITY_TRANSITIONS_PER_IMPORT = 32
 _STORAGE_ITEMS = "items"
 _STORAGE_ACTIVITY = "activity"
+_STORAGE_SOURCE_CLAIMS = "source_claims"
 _STORAGE_SEEN_SOURCES = "seen_source_fingerprints"
 _STORAGE_SEEN_EVENTS = "seen_event_fingerprints"
 
@@ -234,6 +235,7 @@ class PendingImportStore:
         self._activity: tuple[dict[str, Any], ...] = ()
         self._seen_source_fingerprints: tuple[str, ...] = ()
         self._seen_event_fingerprints: tuple[str, ...] = ()
+        self._source_claims: dict[str, str] = {}
         self._lock = asyncio.Lock()
 
     async def async_load(self) -> None:
@@ -244,6 +246,7 @@ class PendingImportStore:
             self._activity = ()
             self._seen_source_fingerprints = ()
             self._seen_event_fingerprints = ()
+            self._source_claims = {}
             return
 
         items = (
@@ -257,13 +260,19 @@ class PendingImportStore:
         self._seen_event_fingerprints = tuple(
             data.get(_STORAGE_SEEN_EVENTS, ())
         )
+        self._source_claims = dict(data.get(_STORAGE_SOURCE_CLAIMS, {}))
         interrupted = [item["id"] for item in self._activity if item["status"] == "processing"]
         for activity_id in interrupted:
             self._activity = self._finish_submission(
                 activity_id, "failed", "Processing was interrupted. Check the source and submit it again."
             )
-        if interrupted:
-            await self._async_save(self._items, activity=self._activity)
+        if interrupted or self._source_claims:
+            await self._async_save(
+                self._items,
+                activity=self._activity,
+                source_claims={},
+            )
+            self._source_claims = {}
 
     def get(self, pending_id: str) -> PendingImport | None:
         """Return one pending import by ID."""
@@ -292,29 +301,72 @@ class PendingImportStore:
         """Keep pending imports and live parser checkpoints outside the history cap."""
         return set(self._items) | {item["id"] for item in self._activity if item["status"] == "processing"}
 
+    def _propose_submission_activity(
+        self,
+        *,
+        source_kind: str,
+        source_title: str | None,
+        received_at: datetime,
+    ) -> tuple[str, tuple[dict[str, Any], ...]]:
+        """Build a processing activity record without mutating durable state."""
+        identifier = str(uuid4())
+        received = received_at.isoformat()
+        processing = datetime.now(UTC).isoformat()
+        record = {
+            "id": identifier, "created_at": received, "source_kind": source_kind,
+            "source_title": source_title, "title": source_title or "Submission",
+            "created_count": 0, "rejected_count": 0, "status": "processing",
+            "transitions": [{"type": "received", "at": received, "event_id": None},
+                            {"type": "processing", "at": processing, "event_id": None}],
+        }
+        history = list(self._activity) + [record]
+        active_ids = self._protected_activity_ids()
+        active_ids.add(identifier)
+        while sum(item["id"] not in active_ids for item in history) > ACTIVITY_LIMIT:
+            history.pop(next(index for index, item in enumerate(history)
+                             if item["id"] not in active_ids))
+        return identifier, tuple(history)
+
     async def async_begin_submission(self, *, source_kind: str, source_title: str | None,
                                      received_at: datetime) -> str:
         """Checkpoint a private source summary before invoking the parser."""
         async with self._lock:
-            identifier = str(uuid4())
-            received = received_at.isoformat()
-            processing = datetime.now(UTC).isoformat()
-            record = {
-                "id": identifier, "created_at": received, "source_kind": source_kind,
-                "source_title": source_title, "title": source_title or "Submission",
-                "created_count": 0, "rejected_count": 0, "status": "processing",
-                "transitions": [{"type": "received", "at": received, "event_id": None},
-                                {"type": "processing", "at": processing, "event_id": None}],
-            }
-            history = list(self._activity) + [record]
-            active_ids = self._protected_activity_ids()
-            active_ids.add(identifier)
-            while sum(item["id"] not in active_ids for item in history) > ACTIVITY_LIMIT:
-                history.pop(next(index for index, item in enumerate(history)
-                                 if item["id"] not in active_ids))
-            activity = tuple(history)
+            identifier, activity = self._propose_submission_activity(
+                source_kind=source_kind,
+                source_title=source_title,
+                received_at=received_at,
+            )
             await self._async_save(self._items, activity=activity)
             self._activity = activity
+            return identifier
+
+    async def async_begin_source_submission(
+        self,
+        *,
+        source_id: str,
+        source_kind: str,
+        source_title: str | None,
+        received_at: datetime,
+    ) -> str | None:
+        """Atomically reserve a source identity before an expensive parser call."""
+        fingerprint = build_source_fingerprint(source_id)
+        async with self._lock:
+            if self._source_fingerprint_exists(fingerprint):
+                return None
+            identifier, activity = self._propose_submission_activity(
+                source_kind=source_kind,
+                source_title=source_title,
+                received_at=received_at,
+            )
+            source_claims = dict(self._source_claims)
+            source_claims[identifier] = fingerprint
+            await self._async_save(
+                self._items,
+                activity=activity,
+                source_claims=source_claims,
+            )
+            self._activity = activity
+            self._source_claims = source_claims
             return identifier
 
     async def async_record_parse_failure(self, activity_id: str) -> None:
@@ -323,8 +375,15 @@ class PendingImportStore:
             activity = self._finish_submission(
                 activity_id, "failed", "Parsing failed. Check the configured AI Task and submit the source again."
             )
-            await self._async_save(self._items, activity=activity)
+            source_claims = dict(self._source_claims)
+            source_claims.pop(activity_id, None)
+            await self._async_save(
+                self._items,
+                activity=activity,
+                source_claims=source_claims,
+            )
             self._activity = activity
+            self._source_claims = source_claims
 
     def _finish_submission(self, activity_id: str | None, status: str,
                            guidance: str | None = None) -> tuple[dict[str, Any], ...]:
@@ -430,14 +489,8 @@ class PendingImportStore:
             return edited
 
     def is_source_duplicate(self, source_id: str) -> bool:
-        """Return whether a source ID is already pending or handled."""
-        fingerprint = build_source_fingerprint(source_id)
-        if fingerprint in self._seen_source_fingerprints:
-            return True
-        return any(
-            item.source_fingerprint == fingerprint
-            for item in self._items.values()
-        )
+        """Return whether a source ID is pending, handled, or being processed."""
+        return self._source_fingerprint_exists(build_source_fingerprint(source_id))
 
     async def async_add(
         self,
@@ -464,11 +517,29 @@ class PendingImportStore:
         )
 
         async with self._lock:
-            if source_fp is not None and self._source_fingerprint_exists(source_fp):
+            source_claims = self._source_claims
+            if activity_id is not None and activity_id in source_claims:
+                if source_fp is None or source_claims[activity_id] != source_fp:
+                    raise ValueError("source_id does not match claimed source")
+                source_claims = {
+                    identifier: fingerprint
+                    for identifier, fingerprint in source_claims.items()
+                    if identifier != activity_id
+                }
+
+            if source_fp is not None and self._source_fingerprint_exists(
+                source_fp,
+                exclude_claim_id=activity_id,
+            ):
                 activity = self._finish_submission(activity_id, "duplicate")
                 if activity_id is not None:
-                    await self._async_save(self._items, activity=activity)
+                    await self._async_save(
+                        self._items,
+                        activity=activity,
+                        source_claims=source_claims,
+                    )
                     self._activity = activity
+                    self._source_claims = source_claims
                 return PendingImportAddResult(
                     pending=None,
                     duplicate_source=True,
@@ -505,10 +576,17 @@ class PendingImportStore:
                         self._items,
                         seen_source_fingerprints=seen_sources,
                         activity=activity,
+                        source_claims=source_claims,
                     )
                     self._seen_source_fingerprints = seen_sources
+                    self._source_claims = source_claims
                 elif activity_id is not None:
-                    await self._async_save(self._items, activity=activity)
+                    await self._async_save(
+                        self._items,
+                        activity=activity,
+                        source_claims=source_claims,
+                    )
+                    self._source_claims = source_claims
                 self._activity = activity
                 return PendingImportAddResult(
                     pending=None,
@@ -531,9 +609,14 @@ class PendingImportStore:
             items = dict(self._items)
             items[pending.id] = pending
             activity = self._transition(pending, "review_ready")
-            await self._async_save(items, activity=activity)
+            await self._async_save(
+                items,
+                activity=activity,
+                source_claims=source_claims,
+            )
             self._items = items
             self._activity = activity
+            self._source_claims = source_claims
             return PendingImportAddResult(
                 pending=pending,
                 duplicate_source=False,
@@ -782,12 +865,22 @@ class PendingImportStore:
         """Remove the backing storage file."""
         await self._store.async_remove()
 
-    def _source_fingerprint_exists(self, fingerprint: str) -> bool:
+    def _source_fingerprint_exists(
+        self,
+        fingerprint: str,
+        *,
+        exclude_claim_id: str | None = None,
+    ) -> bool:
         if fingerprint in self._seen_source_fingerprints:
             return True
-        return any(
+        if any(
             item.source_fingerprint == fingerprint
             for item in self._items.values()
+        ):
+            return True
+        return any(
+            claim_fingerprint == fingerprint and claim_id != exclude_claim_id
+            for claim_id, claim_fingerprint in self._source_claims.items()
         )
 
     def _active_event_fingerprints(self) -> set[str]:
@@ -804,6 +897,7 @@ class PendingImportStore:
         seen_source_fingerprints: tuple[str, ...] | None = None,
         seen_event_fingerprints: tuple[str, ...] | None = None,
         activity: tuple[dict[str, Any], ...] | None = None,
+        source_claims: dict[str, str] | None = None,
     ) -> None:
         """Persist a proposed collection and deduplication history."""
         seen_sources = (
@@ -823,6 +917,9 @@ class PendingImportStore:
             data[_STORAGE_SEEN_SOURCES] = list(seen_sources)
         if seen_events:
             data[_STORAGE_SEEN_EVENTS] = list(seen_events)
+        claims = self._source_claims if source_claims is None else source_claims
+        if claims:
+            data[_STORAGE_SOURCE_CLAIMS] = dict(claims)
         history = self._activity if activity is None else activity
         if history:
             data[_STORAGE_ACTIVITY] = list(history)
