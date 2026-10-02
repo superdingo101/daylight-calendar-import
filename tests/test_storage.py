@@ -1954,6 +1954,11 @@ class BlockingSaveBackend(FakeStoreBackend):
 
     async def async_save(self, data):
         self.save_attempts += 1
+        if self.save_error is not None and (
+            self.fail_on_save_attempt is None
+            or self.save_attempts == self.fail_on_save_attempt
+        ):
+            raise self.save_error
         self.saved.append(data)
         if self.save_attempts == self.block_on_attempt:
             self.saved_before_block.set()
@@ -2024,3 +2029,97 @@ async def test_claim_handoff_cancellation_keeps_durable_pending_import(monkeypat
     await store.async_record_parse_failure(activity_id)
     assert store.get(activity_id) == pending
     assert store.get_activity(activity_id)["status"] == "review_ready"
+
+
+async def test_claim_acquisition_cancellation_preserves_cancel_if_cleanup_save_fails(monkeypatch):
+    backend = BlockingSaveBackend()
+    backend.block_on_attempt = 1
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<claim-cleanup-fails@example.test>"
+
+    task = asyncio.create_task(store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title="Cancelled claim",
+        received_at=datetime.fromisoformat("2026-10-01T12:00:00+00:00"),
+    ))
+    await backend.saved_before_block.wait()
+    task.cancel()
+    backend.release_block.set()
+
+    while backend.save_attempts < 2:
+        await asyncio.sleep(0)
+    backend.save_error = RuntimeError("storage unavailable")
+    backend.fail_on_save_attempt = 3
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert store.is_source_duplicate(source_id) is True
+
+
+async def test_parse_failure_cancellation_finishes_release_then_raises(monkeypatch):
+    backend = BlockingSaveBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<release-cancel@example.test>"
+    activity_id = await store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title=None,
+        received_at=datetime.fromisoformat("2026-10-01T12:00:00+00:00"),
+    )
+    assert activity_id is not None
+    backend.block_on_attempt = backend.save_attempts + 1
+
+    task = asyncio.create_task(store.async_record_parse_failure(activity_id))
+    await backend.saved_before_block.wait()
+    task.cancel()
+    backend.release_block.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert store.is_source_duplicate(source_id) is False
+    assert store.get_activity(activity_id)["status"] == "failed"
+    assert "source_claims" not in backend.saved[-1]
+
+
+async def test_pending_release_retry_cancellation_finishes_release_then_raises(monkeypatch):
+    backend = BlockingSaveBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<retry-cancel@example.test>"
+    received_at = datetime.fromisoformat("2026-10-01T12:00:00+00:00")
+    activity_id = await store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title=None,
+        received_at=received_at,
+    )
+    assert activity_id is not None
+
+    backend.save_error = RuntimeError("storage unavailable")
+    backend.fail_on_save_attempt = backend.save_attempts + 1
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await store.async_record_parse_failure(activity_id)
+
+    backend.save_error = None
+    backend.fail_on_save_attempt = None
+    backend.block_on_attempt = backend.save_attempts + 1
+    task = asyncio.create_task(store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title=None,
+        received_at=received_at,
+    ))
+    await backend.saved_before_block.wait()
+    task.cancel()
+    backend.release_block.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert store.is_source_duplicate(source_id) is False
+    assert store.get_activity(activity_id)["status"] == "failed"
