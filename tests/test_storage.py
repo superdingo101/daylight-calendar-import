@@ -2208,3 +2208,94 @@ async def test_pending_handoff_cancellation_before_persistence_finishes_transact
     assert pending is not None
     assert store.get_activity(activity_id)["status"] == "review_ready"
     assert "source_claims" not in backend.saved[-1]
+
+
+async def test_transaction_helper_propagates_inner_cancellation(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    async def cancelled_operation():
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await store._async_complete_transaction(cancelled_operation())
+
+
+async def test_transaction_helper_handles_missing_current_task_reference(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def operation():
+        started.set()
+        await release.wait()
+        return "done"
+
+    task = asyncio.create_task(store._async_complete_transaction(operation()))
+    await started.wait()
+    monkeypatch.setattr(storage_module.asyncio, "current_task", lambda: None)
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    result, cancelled = await task
+    assert result == "done"
+    assert cancelled is True
+
+
+async def test_transaction_helper_preserves_cancellation_over_later_error(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def operation():
+        started.set()
+        await release.wait()
+        raise RuntimeError("transaction failed")
+
+    task = asyncio.create_task(store._async_complete_transaction(operation()))
+    await started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_cancelled_duplicate_claim_returns_cancellation_without_cleanup(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<already-claimed@example.test>"
+    received_at = datetime.fromisoformat("2026-10-01T12:00:00+00:00")
+    first = await store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title=None,
+        received_at=received_at,
+    )
+    assert first is not None
+
+    await store._lock.acquire()
+    task = asyncio.create_task(store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title=None,
+        received_at=received_at,
+    ))
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    store._lock.release()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert store.is_source_duplicate(source_id) is True
+    assert store.get_activity(first)["status"] == "processing"
