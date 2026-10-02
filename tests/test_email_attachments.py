@@ -322,3 +322,29 @@ def test_partial_staging_failure_removes_earlier_files(monkeypatch, tmp_path) ->
         )
 
     assert list(tmp_path.iterdir()) == []
+
+
+def test_attached_message_content_is_not_treated_as_parent_attachment(tmp_path) -> None:
+    nested = EmailMessage()
+    nested["Subject"] = "Forwarded"
+    nested.set_content("Forwarded body")
+    nested.add_attachment(
+        PNG,
+        maintype="image",
+        subtype="png",
+        filename="nested.png",
+    )
+
+    outer = EmailMessage()
+    outer["Subject"] = "Outer"
+    outer.set_content("Outer body")
+    outer.add_attachment(nested)
+
+    attachments, paths = email_attachments._stage_email_attachments(
+        outer.as_bytes(),
+        {"local": str(tmp_path)},
+    )
+
+    assert attachments == ()
+    assert paths == ()
+    assert list(tmp_path.iterdir()) == []
