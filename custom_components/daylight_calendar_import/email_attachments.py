@@ -1,16 +1,15 @@
-"""Temporary staging for supported MIME attachments from email sources."""
+"""Bounded temporary staging for supported MIME attachments from email sources."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterable
-import logging
-from contextlib import asynccontextmanager
-from dataclasses import replace
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
 from email import policy
 from email.message import Message
 from email.parser import BytesParser
 from hashlib import sha256
+import logging
 from pathlib import Path
 import tempfile
 from uuid import uuid4
@@ -33,6 +32,10 @@ _SUPPORTED_MEDIA_SUFFIXES = {
     "image/webp": ".webp",
     "application/pdf": ".pdf",
 }
+EMAIL_STAGING_MAX_RAW_BYTES = (
+    (AI_TASK_MAX_TOTAL_BYTES * 4 + 2) // 3
+    + 1024 * 1024
+)
 
 
 class EmailAttachmentError(ValueError):
@@ -56,14 +59,6 @@ class EmailAttachmentCleanupError(OSError):
 
 def _report_cleanup_failure(context: str, error: Exception) -> None:
     """Emit an actionable cleanup error without masking the primary failure."""
-    if isinstance(error, EmailAttachmentCleanupError):
-        paths = ", ".join(str(path) for path in error.failed_paths)
-        _LOGGER.error(
-            "Failed to remove staged email attachment(s) after %s: %s",
-            context,
-            paths,
-        )
-        return
     _LOGGER.error(
         "Failed to clean staged email attachments after %s: %s",
         context,
@@ -91,99 +86,6 @@ def _attachment_payload(part: Message) -> bytes:
     raise EmailAttachmentError("Email attachment payload could not be decoded")
 
 
-def _decoded_payload_upper_bound(part: Message) -> int:
-    """Bound decoded bytes from the transfer-encoded payload without decoding it."""
-    payload = part.get_payload(decode=False)
-    if not isinstance(payload, str):
-        raise EmailAttachmentError("Email attachment payload could not be bounded")
-    if str(part.get("Content-Transfer-Encoding", "")).casefold() == "base64":
-        encoded_chars = sum(1 for char in payload if not char.isspace())
-        return ((encoded_chars + 3) // 4) * 3
-    return len(payload)
-
-
-def _stage_email_attachments(
-    raw_message: bytes,
-    media_dirs: dict[str, str],
-    existing_attachments: tuple[SourceAttachment, ...] = (),
-    max_attachments: int = AI_TASK_MAX_ATTACHMENTS,
-    max_total_bytes: int = AI_TASK_MAX_TOTAL_BYTES,
-) -> tuple[tuple[SourceAttachment, ...], tuple[Path, ...]]:
-    """Stage supported email attachments under Home Assistant local media."""
-    try:
-        message = BytesParser(policy=policy.default).parsebytes(raw_message)
-        parts: list[Message] = []
-        total_bound = sum(item.size_bytes for item in existing_attachments)
-        for part in _supported_leaf_parts(message):
-            if len(existing_attachments) + len(parts) >= max_attachments:
-                raise SourceValidationError(
-                    "too_many_attachments",
-                    "Too many source attachments",
-                )
-            part_bound = _decoded_payload_upper_bound(part)
-            if total_bound + part_bound > max_total_bytes:
-                raise SourceValidationError(
-                    "source_too_large",
-                    "Source attachments exceed the size limit",
-                )
-            total_bound += part_bound
-            parts.append(part)
-    except SourceValidationError:
-        raise
-    except Exception as exc:
-        raise EmailAttachmentError("Email attachments could not be parsed") from exc
-
-    if not parts:
-        return (), ()
-    if not media_dirs:
-        raise SourceValidationError(
-            "media_storage_unavailable",
-            "No local media directory configured",
-        )
-
-    media_alias, directory = next(iter(media_dirs.items()))
-    media_path = Path(directory)
-    media_path.mkdir(parents=True, exist_ok=True)
-    attachments: list[SourceAttachment] = []
-    paths: list[Path] = []
-    try:
-        for part in parts:
-            media_type = part.get_content_type().casefold()
-            data = _attachment_payload(part)
-            filename = part.get_filename()
-            staged_file = tempfile.NamedTemporaryFile(
-                prefix="daylight-email-",
-                suffix=_SUPPORTED_MEDIA_SUFFIXES[media_type],
-                dir=media_path,
-                delete=False,
-            )
-            staged_path = Path(staged_file.name)
-            paths.append(staged_path)
-            with staged_file as staged:
-                staged.write(data)
-            attachments.append(
-                SourceAttachment(
-                    id=str(uuid4()),
-                    filename=filename,
-                    media_type=media_type,
-                    size_bytes=len(data),
-                    content_ref=(
-                        f"media-source://media_source/{media_alias}/"
-                        f"{staged_path.name}"
-                    ),
-                    sha256=sha256(data).hexdigest(),
-                )
-            )
-    except BaseException:
-        try:
-            _cleanup_paths(tuple(paths))
-        except Exception as cleanup_error:
-            _report_cleanup_failure("staging failure", cleanup_error)
-        raise
-
-    return tuple(attachments), tuple(paths)
-
-
 def _cleanup_paths(paths: tuple[Path, ...]) -> None:
     """Attempt every staged-file deletion, then report all paths that failed."""
     failures: list[tuple[Path, Exception]] = []
@@ -204,8 +106,10 @@ def _cleanup_paths(paths: tuple[Path, ...]) -> None:
 async def _async_cleanup_paths(
     hass: HomeAssistant,
     paths: tuple[Path, ...],
+    *,
+    context: str,
 ) -> None:
-    """Finish the complete cleanup batch before propagating cancellation."""
+    """Finish the cleanup batch before propagating cancellation."""
     cleanup = asyncio.ensure_future(
         hass.async_add_executor_job(_cleanup_paths, paths)
     )
@@ -221,42 +125,170 @@ async def _async_cleanup_paths(
         try:
             cleanup.result()
         except Exception as cleanup_error:
-            _report_cleanup_failure("cleanup cancellation", cleanup_error)
+            _report_cleanup_failure(context, cleanup_error)
         raise asyncio.CancelledError
 
     cleanup.result()
 
 
-async def _async_cleanup_late_staging(
-    hass: HomeAssistant,
+@dataclass(frozen=True, slots=True)
+class EmailAttachmentStage:
+    """A staged email document and the temp files that back its media refs."""
+
+    document: SourceDocument
+    _hass: HomeAssistant = field(repr=False, compare=False)
+    _paths: tuple[Path, ...] = field(repr=False, compare=False)
+
+    async def async_cleanup(self, context: str) -> None:
+        """Remove staged files; log ordinary cleanup failures."""
+        try:
+            await _async_cleanup_paths(
+                self._hass,
+                self._paths,
+                context=context,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as cleanup_error:
+            _report_cleanup_failure(context, cleanup_error)
+
+
+def _stage_email_attachments(
+    raw_message: bytes,
+    media_dirs: dict[str, str],
+    existing_attachments: tuple[SourceAttachment, ...] = (),
+    max_attachments: int = AI_TASK_MAX_ATTACHMENTS,
+    max_total_bytes: int = AI_TASK_MAX_TOTAL_BYTES,
+    max_raw_bytes: int = EMAIL_STAGING_MAX_RAW_BYTES,
+) -> tuple[tuple[SourceAttachment, ...], tuple[Path, ...]]:
+    """Stage supported email attachments under Home Assistant local media."""
+    if len(raw_message) > max_raw_bytes:
+        raise SourceValidationError(
+            "source_too_large",
+            "Source attachments exceed the size limit",
+        )
+
+    existing_count = len(existing_attachments)
+    if existing_count > max_attachments:
+        raise SourceValidationError(
+            "too_many_attachments",
+            "Too many source attachments",
+        )
+
+    total_bytes = sum(item.size_bytes for item in existing_attachments)
+    if total_bytes > max_total_bytes:
+        raise SourceValidationError(
+            "source_too_large",
+            "Source attachments exceed the size limit",
+        )
+
+    try:
+        message = BytesParser(policy=policy.default).parsebytes(raw_message)
+        parts: list[Message] = []
+        for part in _supported_leaf_parts(message):
+            if existing_count + len(parts) >= max_attachments:
+                raise SourceValidationError(
+                    "too_many_attachments",
+                    "Too many source attachments",
+                )
+            parts.append(part)
+    except SourceValidationError:
+        raise
+    except Exception as exc:
+        raise EmailAttachmentError("Email attachments could not be parsed") from exc
+
+    if not parts:
+        return (), ()
+    if not media_dirs:
+        raise SourceValidationError(
+            "media_storage_unavailable",
+            "No local media directory configured",
+        )
+
+    media_alias, directory = next(iter(media_dirs.items()))
+    media_path = Path(directory)
+    media_path.mkdir(parents=True, exist_ok=True)
+    attachments: list[SourceAttachment] = []
+    paths: list[Path] = []
+
+    try:
+        for part in parts:
+            media_type = part.get_content_type().casefold()
+            data = _attachment_payload(part)
+            total_bytes += len(data)
+            if total_bytes > max_total_bytes:
+                raise SourceValidationError(
+                    "source_too_large",
+                    "Source attachments exceed the size limit",
+                )
+
+            staged_file = tempfile.NamedTemporaryFile(
+                prefix="daylight-email-",
+                suffix=_SUPPORTED_MEDIA_SUFFIXES[media_type],
+                dir=media_path,
+                delete=False,
+            )
+            staged_path = Path(staged_file.name)
+            paths.append(staged_path)
+            with staged_file as staged:
+                staged.write(data)
+
+            attachments.append(
+                SourceAttachment(
+                    id=str(uuid4()),
+                    filename=part.get_filename(),
+                    media_type=media_type,
+                    size_bytes=len(data),
+                    content_ref=(
+                        f"media-source://media_source/{media_alias}/"
+                        f"{staged_path.name}"
+                    ),
+                    sha256=sha256(data).hexdigest(),
+                )
+            )
+    except BaseException:
+        try:
+            _cleanup_paths(tuple(paths))
+        except Exception as cleanup_error:
+            _report_cleanup_failure("staging failure", cleanup_error)
+        raise
+
+    return tuple(attachments), tuple(paths)
+
+
+async def _async_wait_for_staging(
     staging: asyncio.Future,
-) -> None:
-    """Finish late staging/cleanup without replacing the original cancellation."""
+) -> tuple[
+    tuple[tuple[SourceAttachment, ...], tuple[Path, ...]],
+    bool,
+]:
+    """Let synchronous staging reach a definite result before cancellation escapes."""
+    cancelled = False
     while not staging.done():
         try:
             await asyncio.wait({staging})
         except asyncio.CancelledError:
+            cancelled = True
             asyncio.current_task().uncancel()  # type: ignore[union-attr]
 
+    if staging.cancelled():
+        raise asyncio.CancelledError
+
     try:
-        _, paths = staging.result()
-    except BaseException:
-        return
-    try:
-        await _async_cleanup_paths(hass, paths)
-    except asyncio.CancelledError:
-        pass
-    except Exception as cleanup_error:
-        _report_cleanup_failure("late staging cancellation", cleanup_error)
+        result = staging.result()
+    except Exception:
+        if cancelled:
+            raise asyncio.CancelledError from None
+        raise
+    return result, cancelled
 
 
-@asynccontextmanager
-async def async_email_attachments(
+async def async_stage_email_attachments(
     hass: HomeAssistant,
     envelope: EmailEnvelope,
     document: SourceDocument,
-) -> AsyncIterator[SourceDocument]:
-    """Yield an email document with temporary image/PDF attachment media refs."""
+) -> EmailAttachmentStage:
+    """Stage supported MIME attachments and return explicit resource ownership."""
     staging = asyncio.ensure_future(
         hass.async_add_executor_job(
             _stage_email_attachments,
@@ -265,31 +297,22 @@ async def async_email_attachments(
             document.attachments,
         )
     )
-    try:
-        attachments, paths = await asyncio.shield(staging)
-    except asyncio.CancelledError:
-        await _async_cleanup_late_staging(hass, staging)
-        raise
+    (attachments, paths), cancelled = await _async_wait_for_staging(staging)
 
     staged_document = (
         replace(document, attachments=document.attachments + attachments)
         if attachments
         else document
     )
-    try:
-        yield staged_document
-    except BaseException:
+    stage = EmailAttachmentStage(
+        document=staged_document,
+        _hass=hass,
+        _paths=paths,
+    )
+    if cancelled:
         try:
-            await _async_cleanup_paths(hass, paths)
+            await stage.async_cleanup("staging cancellation")
         except asyncio.CancelledError:
             pass
-        except Exception as cleanup_error:
-            _report_cleanup_failure("processor failure", cleanup_error)
-        raise
-    else:
-        try:
-            await _async_cleanup_paths(hass, paths)
-        except asyncio.CancelledError:
-            raise
-        except Exception as cleanup_error:
-            _report_cleanup_failure("successful processing", cleanup_error)
+        raise asyncio.CancelledError
+    return stage
