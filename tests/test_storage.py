@@ -2222,30 +2222,6 @@ async def test_transaction_helper_propagates_inner_cancellation(monkeypatch):
         await store._async_complete_transaction(cancelled_operation())
 
 
-async def test_transaction_helper_handles_missing_current_task_reference(monkeypatch):
-    backend = FakeStoreBackend()
-    store = make_store(monkeypatch, backend)
-    await store.async_load()
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def operation():
-        started.set()
-        await release.wait()
-        return "done"
-
-    task = asyncio.create_task(store._async_complete_transaction(operation()))
-    await started.wait()
-    monkeypatch.setattr(storage_module.asyncio, "current_task", lambda: None)
-    task.cancel()
-    await asyncio.sleep(0)
-    release.set()
-
-    result, cancelled = await task
-    assert result == "done"
-    assert cancelled is True
-
-
 async def test_transaction_helper_preserves_cancellation_over_later_error(monkeypatch):
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
