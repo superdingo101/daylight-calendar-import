@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+import custom_components.daylight_calendar_import.email_polling as email_polling_module
 from custom_components.daylight_calendar_import.direct_imap import (
     DirectImapConnectionError,
 )
@@ -23,6 +24,7 @@ from custom_components.daylight_calendar_import.email_source import (
     EmailSourceConfig,
     EmailSourceType,
 )
+from custom_components.daylight_calendar_import.sources import SourceDocument, SourceKind
 
 
 _RECEIVED_AT = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
@@ -92,6 +94,7 @@ class FakeStore:
     def __init__(self) -> None:
         self.claimed_source_ids: set[str] = set()
         self.claim_calls: list[str] = []
+        self.claim_requests: list[dict[str, object]] = []
         self.failures: list[str] = []
         self.fail_claim = False
         self._counter = 0
@@ -104,8 +107,13 @@ class FakeStore:
         source_title: str | None,
         received_at: datetime,
     ) -> str | None:
-        del source_kind, source_title, received_at
         self.claim_calls.append(source_id)
+        self.claim_requests.append({
+            "source_id": source_id,
+            "source_kind": source_kind,
+            "source_title": source_title,
+            "received_at": received_at,
+        })
         if self.fail_claim:
             raise RuntimeError("storage unavailable")
         if source_id in self.claimed_source_ids:
@@ -146,6 +154,26 @@ async def test_poll_processes_every_eligible_message_in_one_cycle() -> None:
         ("One", "activity-1"),
         ("Two", "activity-2"),
         ("Three", "activity-3"),
+    ]
+    assert store.claim_requests == [
+        {
+            "source_id": "<one@example.test>",
+            "source_kind": "email",
+            "source_title": "One",
+            "received_at": _RECEIVED_AT,
+        },
+        {
+            "source_id": "<two@example.test>",
+            "source_kind": "email",
+            "source_title": "Two",
+            "received_at": _RECEIVED_AT,
+        },
+        {
+            "source_id": "<three@example.test>",
+            "source_kind": "email",
+            "source_title": "Three",
+            "received_at": _RECEIVED_AT,
+        },
     ]
 
 
@@ -345,3 +373,156 @@ async def test_poll_cancellation_keeps_original_cancellation_if_checkpoint_fails
 
     with pytest.raises(asyncio.CancelledError):
         await async_poll_email_source(source, store, processor)
+
+
+
+async def test_multiple_normalization_failures_are_counted_individually() -> None:
+    broken = EmailEnvelope(
+        received_at=_RECEIVED_AT,
+        raw_message=(
+            b"Subject: Broken\r\n"
+            b"Message-ID: <broken@example.test>\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"Content-Disposition: attachment; filename*\r\n\r\n"
+            b"Body"
+        ),
+        provenance=_envelope("base@example.test").provenance,
+    )
+    source = FakeSource(
+        [[broken, broken, _envelope("good@example.test", subject="Good")]]
+    )
+    store = FakeStore()
+    processed: list[str | None] = []
+
+    async def processor(document, activity_id):
+        del activity_id
+        processed.append(document.title)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result == EmailPollResult(
+        discovered=3,
+        claimed=1,
+        processed=1,
+        duplicates=0,
+        normalization_failures=2,
+        processing_failures=0,
+    )
+    assert processed == ["Good"]
+
+
+async def test_missing_normalized_identities_are_counted_and_do_not_stop_cycle(
+    monkeypatch,
+) -> None:
+    envelopes = [
+        _envelope("one@example.test"),
+        _envelope("two@example.test"),
+        _envelope("good@example.test"),
+    ]
+    documents = iter([
+        SourceDocument(
+            id="doc-1",
+            kind=SourceKind.EMAIL,
+            received_at=_RECEIVED_AT,
+            title="No identity 1",
+            upstream_source_id=None,
+        ),
+        SourceDocument(
+            id="doc-2",
+            kind=SourceKind.EMAIL,
+            received_at=_RECEIVED_AT,
+            title="No identity 2",
+            upstream_source_id=None,
+        ),
+        SourceDocument(
+            id="doc-3",
+            kind=SourceKind.EMAIL,
+            received_at=_RECEIVED_AT,
+            title="Good",
+            upstream_source_id="<good@example.test>",
+        ),
+    ])
+    monkeypatch.setattr(
+        email_polling_module,
+        "normalize_email",
+        lambda envelope: next(documents),
+    )
+    source = FakeSource([envelopes])
+    store = FakeStore()
+    processed: list[str | None] = []
+
+    async def processor(document, activity_id):
+        del activity_id
+        processed.append(document.title)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result == EmailPollResult(
+        discovered=3,
+        claimed=1,
+        processed=1,
+        duplicates=0,
+        normalization_failures=2,
+        processing_failures=0,
+    )
+    assert store.claim_calls == ["<good@example.test>"]
+    assert processed == ["Good"]
+
+
+async def test_multiple_duplicates_are_counted_and_do_not_stop_cycle() -> None:
+    source = FakeSource([[
+        _envelope("dup-one@example.test"),
+        _envelope("dup-two@example.test"),
+        _envelope("good@example.test", subject="Good"),
+    ]])
+    store = FakeStore()
+    store.claimed_source_ids.update({
+        "<dup-one@example.test>",
+        "<dup-two@example.test>",
+    })
+    processed: list[str | None] = []
+
+    async def processor(document, activity_id):
+        del activity_id
+        processed.append(document.title)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result == EmailPollResult(
+        discovered=3,
+        claimed=1,
+        processed=1,
+        duplicates=2,
+        normalization_failures=0,
+        processing_failures=0,
+    )
+    assert processed == ["Good"]
+
+
+async def test_multiple_processing_failures_are_counted_individually() -> None:
+    source = FakeSource([[
+        _envelope("bad-one@example.test", subject="Bad one"),
+        _envelope("bad-two@example.test", subject="Bad two"),
+        _envelope("good@example.test", subject="Good"),
+    ]])
+    store = FakeStore()
+    processed: list[str | None] = []
+
+    async def processor(document, activity_id):
+        del activity_id
+        processed.append(document.title)
+        if document.title != "Good":
+            raise RuntimeError("AI unavailable")
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result == EmailPollResult(
+        discovered=3,
+        claimed=3,
+        processed=1,
+        duplicates=0,
+        normalization_failures=0,
+        processing_failures=2,
+    )
+    assert processed == ["Bad one", "Bad two", "Good"]
+    assert store.failures == ["activity-1", "activity-2"]
