@@ -37,11 +37,8 @@ def _supported_leaf_parts(part: Message) -> Iterable[Message]:
     if part.get_content_maintype().casefold() == "message":
         return
     if part.is_multipart():
-        payload = part.get_payload()
-        if isinstance(payload, list):
-            for child in payload:
-                if isinstance(child, Message):
-                    yield from _supported_leaf_parts(child)
+        for child in part.iter_parts():
+            yield from _supported_leaf_parts(child)
         return
     if part.get_content_type().casefold() in _SUPPORTED_MEDIA_SUFFIXES:
         yield part
