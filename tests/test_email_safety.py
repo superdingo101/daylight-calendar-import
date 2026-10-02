@@ -198,3 +198,26 @@ def test_exact_sender_allowlist_rejects_lazy_header_parse_failure() -> None:
     )
 
     assert allowlist.allows(raw) is False
+
+
+@pytest.mark.parametrize(
+    "raw_message",
+    (
+        (
+            b"From: Friends: trusted@example.test;\r\n"
+            b"Subject: Named group\r\n\r\nBody"
+        ),
+        (
+            b"From: trusted@example.test, Undisclosed:;\r\n"
+            b"Subject: Extra empty group\r\n\r\nBody"
+        ),
+    ),
+)
+def test_exact_sender_allowlist_rejects_group_syntax(
+    raw_message: bytes,
+) -> None:
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+
+    assert allowlist.allows(raw_message) is False
