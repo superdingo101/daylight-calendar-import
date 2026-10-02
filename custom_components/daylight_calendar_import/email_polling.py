@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+import logging
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -11,6 +12,8 @@ from .email_normalize import EmailNormalizationError, normalize_email
 from .email_source import EmailEnvelope, EmailSource
 from .sources import SourceDocument
 from .storage import PendingImportStore
+
+_LOGGER = logging.getLogger(__name__)
 
 
 type EmailDocumentProcessor = Callable[[SourceDocument, str], Awaitable[None]]
@@ -109,9 +112,19 @@ async def async_poll_email_source(
                     await stage.async_cleanup("processor failure")
                 except asyncio.CancelledError:
                     cleanup_cancelled = True
-            await store.async_record_parse_failure(activity_id)
             if cleanup_cancelled:
+                try:
+                    await store.async_record_parse_failure(activity_id)
+                except asyncio.CancelledError:
+                    pass
+                except Exception as release_error:
+                    _LOGGER.error(
+                        "Failed to release email source claim %s during cancellation: %s",
+                        activity_id,
+                        release_error,
+                    )
                 raise asyncio.CancelledError
+            await store.async_record_parse_failure(activity_id)
             processing_failures += 1
             continue
 
