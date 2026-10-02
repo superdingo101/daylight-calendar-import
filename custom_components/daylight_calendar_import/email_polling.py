@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .email_normalize import EmailNormalizationError, normalize_email
+from .email_safety import ExactSenderAllowlist
 from .email_source import EmailEnvelope, EmailSource
 from .sources import SourceDocument
 from .storage import PendingImportStore
@@ -46,6 +47,7 @@ class EmailPollResult:
     duplicates: int
     normalization_failures: int
     processing_failures: int
+    safety_rejections: int = 0
 
 
 async def async_poll_email_source(
@@ -62,9 +64,21 @@ async def async_poll_email_source(
     duplicates = 0
     normalization_failures = 0
     processing_failures = 0
+    safety_rejections = 0
+    sender_allowlist = (
+        ExactSenderAllowlist(source.config.sender_allowlist)
+        if source.config.sender_allowlist
+        else None
+    )
 
     async for envelope in source.async_collect():
         discovered += 1
+        if (
+            sender_allowlist is not None
+            and not sender_allowlist.allows(envelope.raw_message)
+        ):
+            safety_rejections += 1
+            continue
         try:
             document = normalize_email(envelope)
         except EmailNormalizationError:
@@ -139,4 +153,5 @@ async def async_poll_email_source(
         duplicates=duplicates,
         normalization_failures=normalization_failures,
         processing_failures=processing_failures,
+        safety_rejections=safety_rejections,
     )
