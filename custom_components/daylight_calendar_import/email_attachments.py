@@ -82,19 +82,16 @@ def _stage_email_attachments(
             media_type = part.get_content_type().casefold()
             data = _attachment_payload(part)
             filename = part.get_filename()
-            with tempfile.NamedTemporaryFile(
+            staged_file = tempfile.NamedTemporaryFile(
                 prefix="daylight-email-",
                 suffix=_SUPPORTED_MEDIA_SUFFIXES[media_type],
                 dir=media_path,
                 delete=False,
-            ) as staged:
-                staged_path = Path(staged.name)
-                try:
-                    staged.write(data)
-                except BaseException:
-                    staged_path.unlink(missing_ok=True)
-                    raise
+            )
+            staged_path = Path(staged_file.name)
             paths.append(staged_path)
+            with staged_file as staged:
+                staged.write(data)
             attachments.append(
                 SourceAttachment(
                     id=str(uuid4()),
@@ -116,13 +113,43 @@ def _stage_email_attachments(
     return tuple(attachments), tuple(paths)
 
 
+def _cleanup_paths(paths: tuple[Path, ...]) -> None:
+    """Attempt every staged-file deletion, then raise the first cleanup error."""
+    first_error: Exception | None = None
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+    if first_error is not None:
+        raise first_error
+
+
 async def _async_cleanup_paths(
     hass: HomeAssistant,
     paths: tuple[Path, ...],
 ) -> None:
-    """Remove staged attachment files without exposing cleanup races."""
-    for path in paths:
-        await asyncio.shield(hass.async_add_executor_job(path.unlink, True))
+    """Finish the complete cleanup batch before propagating cancellation."""
+    cleanup = asyncio.ensure_future(
+        hass.async_add_executor_job(_cleanup_paths, paths)
+    )
+    cancelled = False
+    while not cleanup.done():
+        try:
+            await asyncio.wait({cleanup})
+        except asyncio.CancelledError:
+            cancelled = True
+            asyncio.current_task().uncancel()  # type: ignore[union-attr]
+
+    if cancelled:
+        try:
+            cleanup.result()
+        except Exception:
+            pass
+        raise asyncio.CancelledError
+
+    cleanup.result()
 
 
 async def _async_cleanup_late_staging(
@@ -134,7 +161,10 @@ async def _async_cleanup_late_staging(
         _, paths = await staging
     except Exception:
         return
-    await _async_cleanup_paths(hass, paths)
+    try:
+        await _async_cleanup_paths(hass, paths)
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 @asynccontextmanager
