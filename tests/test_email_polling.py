@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
@@ -312,3 +313,35 @@ async def test_processing_failure_checkpoint_failure_aborts_cycle() -> None:
         await async_poll_email_source(source, store, processor)
 
     assert processed == ["Event"]
+
+
+async def test_poll_cancellation_releases_claim_and_reraises() -> None:
+    source = FakeSource([[_envelope("cancelled@example.test")]])
+    store = FakeStore()
+
+    async def processor(document, activity_id):
+        del document, activity_id
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_poll_email_source(source, store, processor)
+
+    assert store.failures == ["activity-1"]
+
+
+async def test_poll_cancellation_keeps_original_cancellation_if_checkpoint_fails() -> None:
+    source = FakeSource([[_envelope("cancelled@example.test")]])
+
+    class FailingFailureStore(FakeStore):
+        async def async_record_parse_failure(self, activity_id: str) -> None:
+            del activity_id
+            raise RuntimeError("checkpoint unavailable")
+
+    store = FailingFailureStore()
+
+    async def processor(document, activity_id):
+        del document, activity_id
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_poll_email_source(source, store, processor)
