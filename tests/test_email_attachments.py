@@ -59,10 +59,11 @@ def _raw_email(*, include_supported: bool = True) -> bytes:
             subtype="pdf",
             filename="schedule.pdf",
         )
-        message.add_related(
+        message.add_attachment(
             PNG,
             maintype="image",
             subtype="png",
+            disposition="inline",
             cid="<inline@example.test>",
         )
     message.add_attachment(
