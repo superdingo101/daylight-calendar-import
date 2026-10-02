@@ -564,3 +564,73 @@ def test_message_id_parser_failure_falls_back_to_raw_wire(
     assert stable_email_identity(raw) == (
         FALLBACK_IDENTITY_PREFIX + sha256(raw).hexdigest()
     )
+
+
+def test_hidden_subtree_keeps_void_elements_hidden() -> None:
+    assert html_to_text(
+        '<div hidden>secret<img alt="also secret">still secret</div>'
+        '<p>Visible</p>'
+    ) == "Visible"
+
+
+def test_html_image_without_alt_adds_no_text() -> None:
+    assert html_to_text("<img><p>Visible</p>") == "Visible"
+
+
+def test_malformed_hidden_markup_does_not_pop_wrong_skip_frame() -> None:
+    parser = email_normalize._HTMLTextExtractor()
+    parser.handle_starttag("div", [("hidden", None)])
+    parser.handle_starttag("span", [])
+    parser.handle_endtag("div")
+    parser.handle_data("still hidden")
+    parser.handle_endtag("span")
+    parser.handle_endtag("div")
+    parser.handle_data("Visible")
+
+    assert parser.text() == "Visible"
+
+
+@pytest.mark.parametrize(
+    ("remainder", "defects"),
+    (
+        (" trailing", ()),
+        ("", (ValueError("defect"),)),
+    ),
+)
+def test_noncanonical_message_id_parse_result_uses_raw_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    remainder: str,
+    defects: tuple[Exception, ...],
+) -> None:
+    class FakeToken:
+        all_defects = defects
+        value = "<message@example.test>"
+
+    raw = _raw_message(message_id=b"<message@example.test>")
+    monkeypatch.setattr(
+        email_normalize,
+        "get_msg_id",
+        lambda _value: (FakeToken(), remainder),
+    )
+
+    assert stable_email_identity(raw) == (
+        FALLBACK_IDENTITY_PREFIX + sha256(raw).hexdigest()
+    )
+
+
+def test_related_uses_stdlib_decoded_rfc2231_continuation_start() -> None:
+    raw = (
+        b"Subject: Related\r\n"
+        b"Content-Type: multipart/related; boundary=rel; "
+        b"start*0*=us-ascii''%3Croot; start*1*=%40id%3E\r\n\r\n"
+        b"--rel\r\nContent-Type: text/plain\r\nContent-ID: <resource@id>\r\n\r\n"
+        b"Wrong resource\r\n"
+        b"--rel\r\nContent-Type: text/html\r\nContent-ID: <root@id>\r\n\r\n"
+        b"<p>RFC2231 continuation root</p>\r\n"
+        b"--rel--\r\n"
+    )
+
+    assert normalize_email(
+        _envelope(raw),
+        document_id_factory=lambda: "doc",
+    ).text == "RFC2231 continuation root"
