@@ -628,3 +628,43 @@ async def test_async_stage_cancellation_cleans_finished_result(tmp_path) -> None
     with pytest.raises(asyncio.CancelledError):
         await task
     assert list(tmp_path.iterdir()) == []
+
+
+async def test_async_stage_cancellation_ignores_cleanup_cancellation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class DelayedHass(AttachmentHass):
+        async def async_add_executor_job(self, func, *args):
+            if func is email_attachments._stage_email_attachments:
+                started.set()
+                await release.wait()
+            return await asyncio.to_thread(func, *args)
+
+    async def cancel_cleanup(self, context):
+        del self, context
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        email_attachments.EmailAttachmentStage,
+        "async_cleanup",
+        cancel_cleanup,
+    )
+
+    task = asyncio.create_task(
+        email_attachments.async_stage_email_attachments(
+            DelayedHass(tmp_path),
+            _envelope(_raw_email()),
+            _document(),
+        )
+    )
+    await started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
