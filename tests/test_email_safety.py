@@ -129,7 +129,7 @@ def test_exact_sender_allowlist_rejects_defective_from_header(
 
     monkeypatch.setattr(
         email_safety,
-        "BytesParser",
+        "BytesHeaderParser",
         lambda **_kwargs: FakeParser(),
     )
     allowlist = email_safety.ExactSenderAllowlist(
@@ -146,7 +146,7 @@ def test_exact_sender_allowlist_rejects_parser_failure(monkeypatch) -> None:
 
     monkeypatch.setattr(
         email_safety,
-        "BytesParser",
+        "BytesHeaderParser",
         lambda **_kwargs: BrokenParser(),
     )
     allowlist = email_safety.ExactSenderAllowlist(
@@ -174,7 +174,7 @@ def test_exact_sender_allowlist_rejects_empty_addr_spec(monkeypatch) -> None:
 
     monkeypatch.setattr(
         email_safety,
-        "BytesParser",
+        "BytesHeaderParser",
         lambda **_kwargs: FakeParser(),
     )
     allowlist = email_safety.ExactSenderAllowlist(
@@ -259,7 +259,7 @@ def test_exact_sender_allowlist_rejects_empty_mailbox_group(
 
     monkeypatch.setattr(
         email_safety,
-        "BytesParser",
+        "BytesHeaderParser",
         lambda **_kwargs: FakeParser(),
     )
     allowlist = email_safety.ExactSenderAllowlist(
@@ -316,5 +316,103 @@ def test_exact_sender_allowlist_rejects_empty_strict_address(
 
 def test_raw_header_lines_normalize_supported_line_endings() -> None:
     assert email_safety._raw_header_lines(
-        b"One: 1\r\nTwo: 2\rThree: 3\n\nBody"
+        b"One: 1\r\nTwo: 2\rThree: 3"
     ) == (b"One: 1", b"Two: 2", b"Three: 3")
+
+
+
+@pytest.mark.parametrize("newline", (b"\r\n", b"\n", b"\r"))
+def test_exact_sender_allowlist_rejects_control_whitespace_in_field_name(
+    newline: bytes,
+) -> None:
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+    raw = (
+        b"Subject: Event"
+        + newline
+        + b"From: trusted@example.test"
+        + newline
+        + b"From \v: attacker@example.test"
+        + newline
+        + newline
+        + b"Body"
+    )
+
+    assert allowlist.allows(raw) is False
+
+
+def test_raw_header_block_excludes_message_body() -> None:
+    body = b"body-marker-" + (b"x" * 100_000)
+    raw = (
+        b"From: trusted@example.test\r\n"
+        b"Subject: Event\r\n\r\n"
+        + body
+    )
+
+    header_block = email_safety._raw_header_block(raw)
+
+    assert header_block == (
+        b"From: trusted@example.test\r\n"
+        b"Subject: Event"
+    )
+    assert body not in header_block
+
+
+def test_raw_header_block_requires_header_body_separator() -> None:
+    assert email_safety._raw_header_block(
+        b"From: trusted@example.test"
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "header_block",
+    (
+        b"From \v: attacker@example.test\r\nFrom: trusted@example.test",
+        b"NoColonHere\r\nFrom: trusted@example.test",
+        b": empty-name\r\nFrom: trusted@example.test",
+    ),
+)
+def test_raw_header_validation_rejects_invalid_field_names(
+    header_block: bytes,
+) -> None:
+    assert email_safety._has_invalid_header_field_name(header_block) is True
+
+
+def test_raw_header_validation_allows_folding() -> None:
+    header_block = (
+        b"From: Trusted Person\r\n"
+        b" <trusted@example.test>\r\n"
+        b"Subject: Event"
+    )
+
+    assert email_safety._has_invalid_header_field_name(header_block) is False
+
+
+def test_exact_sender_allowlist_parses_headers_without_body(
+    monkeypatch,
+) -> None:
+    seen: list[bytes] = []
+    real_parser = email_safety.BytesHeaderParser
+
+    class RecordingParser:
+        def __init__(self, **kwargs):
+            self._parser = real_parser(**kwargs)
+
+        def parsebytes(self, raw_headers):
+            seen.append(raw_headers)
+            return self._parser.parsebytes(raw_headers)
+
+    monkeypatch.setattr(email_safety, "BytesHeaderParser", RecordingParser)
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+    raw = (
+        b"From: trusted@example.test\r\n"
+        b"Subject: Event\r\n\r\n"
+        b"body-marker"
+    )
+
+    assert allowlist.allows(raw) is True
+    assert seen
+    assert b"body-marker" not in seen[0]

@@ -6,31 +6,55 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from email import policy
 from email.headerregistry import Address
-from email.parser import BytesParser
+from email.parser import BytesHeaderParser
 from email.utils import getaddresses
 
 _ERR_ALLOWLIST = "sender_allowlist entries must be valid email addresses"
+_HEADER_SEPARATORS = (b"\r\n\r\n", b"\n\n", b"\r\r")
 
 
-def _raw_header_lines(raw_message: bytes) -> tuple[bytes, ...]:
+def _raw_header_block(raw_message: bytes) -> bytes | None:
+    """Return only the bytes before the first supported header/body boundary."""
+    offsets = tuple(
+        offset
+        for separator in _HEADER_SEPARATORS
+        if (offset := raw_message.find(separator)) >= 0
+    )
+    if not offsets:
+        return None
+    return raw_message[: min(offsets)]
+
+
+def _raw_header_lines(header_block: bytes) -> tuple[bytes, ...]:
     """Return header lines with CRLF, LF, and bare CR normalized uniformly."""
-    normalized = raw_message.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-    header_block = normalized.partition(b"\n\n")[0]
-    return tuple(header_block.split(b"\n"))
+    normalized = header_block.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return tuple(normalized.split(b"\n"))
 
 
-def _has_malformed_from_field_name(raw_message: bytes) -> bool:
-    """Return whether a raw header line uses whitespace before the From colon."""
-    for line in _raw_header_lines(raw_message):
-        if line[:4].lower() != b"from":
+def _has_invalid_header_field_name(header_block: bytes) -> bool:
+    """Return whether any non-continuation header line has invalid field syntax."""
+    saw_field = False
+    for line in _raw_header_lines(header_block):
+        if line.startswith((b" ", b"\t")):
+            if not saw_field:
+                return True
             continue
-        remainder = line[4:]
-        if (
-            remainder.startswith((b" ", b"\t"))
-            and remainder.lstrip(b" \t").startswith(b":")
+
+        field_name, separator, _value = line.partition(b":")
+        if not separator or not field_name:
+            return True
+        if any(
+            byte < 33 or byte > 126 or byte == ord(":")
+            for byte in field_name
         ):
             return True
+        saw_field = True
     return False
+
+
+def _canonical_header_bytes(header_block: bytes) -> bytes:
+    """Return a header-only message with canonical CRLF line endings."""
+    return b"\r\n".join(_raw_header_lines(header_block)) + b"\r\n\r\n"
 
 
 def _normalize_exact_mailbox(value: object) -> str:
@@ -74,10 +98,16 @@ class ExactSenderAllowlist:
     def allows(self, raw_message: bytes) -> bool:
         """Return whether one unambiguous From mailbox is allowlisted."""
         try:
-            if _has_malformed_from_field_name(raw_message):
+            header_block = _raw_header_block(raw_message)
+            if (
+                header_block is None
+                or _has_invalid_header_field_name(header_block)
+            ):
                 return False
 
-            message = BytesParser(policy=policy.default).parsebytes(raw_message)
+            message = BytesHeaderParser(policy=policy.default).parsebytes(
+                _canonical_header_bytes(header_block)
+            )
             if getattr(message, "defects", ()):
                 return False
 
