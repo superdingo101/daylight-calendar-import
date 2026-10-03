@@ -29,7 +29,7 @@
       },
       "email": {
         "title": "Direct IMAP",
-        "description": "Connect a mailbox for Daylight to poll every five minutes. Messages are only acknowledged after durable local handling.",
+        "description": "Connect a mailbox for Daylight to poll every five minutes. Messages are marked seen only after durable local handling.",
         "data": {
           "email_host": "IMAP host",
           "email_port": "IMAP port",
@@ -37,8 +37,7 @@
           "email_password": "Password or app password",
           "email_mailbox": "Mailbox",
           "email_verify_ssl": "Verify TLS certificate",
-          "email_sender_allowlist": "Allowed sender addresses (one per line or comma-separated)",
-          "email_mark_seen": "Mark durably handled messages as seen"
+          "email_sender_allowlist": "Allowed sender addresses (one per line or comma-separated)"
         }
       }
     },
