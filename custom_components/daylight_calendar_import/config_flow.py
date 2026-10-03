@@ -164,6 +164,7 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
                 return self.async_create_entry(data=options)
 
         current = self.config_entry.options
+        suggested_values = user_input if user_input is not None else current
         schema = vol.Schema(
             {
                 vol.Required(CONF_EMAIL_HOST): selector.TextSelector(),
@@ -208,7 +209,7 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
             step_id="email",
             data_schema=self.add_suggested_values_to_schema(
                 schema,
-                current,
+                suggested_values,
             ),
             errors=errors,
         )
