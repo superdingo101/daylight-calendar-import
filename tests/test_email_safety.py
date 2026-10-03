@@ -425,3 +425,26 @@ def test_exact_sender_allowlist_parses_headers_without_body(
     assert allowlist.allows(raw) is True
     assert seen
     assert b"body-marker" not in seen[0]
+
+
+
+def test_exact_sender_allowlist_rejects_header_parser_message_defect(
+    monkeypatch,
+) -> None:
+    class FakeMessage:
+        defects = (ValueError("defective message headers"),)
+
+    class FakeParser:
+        def parsebytes(self, _raw_headers):
+            return FakeMessage()
+
+    monkeypatch.setattr(
+        email_safety,
+        "BytesHeaderParser",
+        lambda **_kwargs: FakeParser(),
+    )
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+
+    assert allowlist.allows(b"X: y\r\n\r\n") is False
