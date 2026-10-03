@@ -210,3 +210,37 @@ def test_email_source_config_rejects_invalid_sender_allowlist(
             source_id="source-1",
             sender_allowlist=sender_allowlist,  # type: ignore[arg-type]
         )
+
+
+
+@pytest.mark.parametrize("mark_seen", (0, 1, "true", None))
+def test_email_disposition_rejects_non_boolean_mark_seen(
+    mark_seen: object,
+) -> None:
+    with pytest.raises(ValueError, match="^mark_seen must be a boolean$"):
+        EmailDisposition(mark_seen=mark_seen)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field", ("move_to_folder", "add_flag"))
+@pytest.mark.parametrize("value", ("", "   ", 42, False))
+def test_email_disposition_rejects_invalid_optional_strings(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match=rf"^{field} must be a non-empty string or None$",
+    ):
+        EmailDisposition(**{field: value})  # type: ignore[arg-type]
+
+
+
+def test_email_source_config_rejects_invalid_disposition_type() -> None:
+    with pytest.raises(
+        ValueError,
+        match="^disposition must be an EmailDisposition$",
+    ):
+        EmailSourceConfig(
+            source_id="source-1",
+            disposition=object(),  # type: ignore[arg-type]
+        )

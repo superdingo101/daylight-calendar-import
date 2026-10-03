@@ -10,7 +10,7 @@ from typing import Protocol
 
 from .email_normalize import EmailNormalizationError, normalize_email
 from .email_safety import ExactSenderAllowlist
-from .email_source import EmailEnvelope, EmailSource
+from .email_source import EmailDisposition, EmailEnvelope, EmailSource
 from .sources import SourceDocument
 from .storage import PendingImportStore
 
@@ -37,6 +37,30 @@ type EmailAttachmentStager = Callable[
 ]
 
 
+async def _async_acknowledge_if_durable(
+    source: EmailSource,
+    store: PendingImportStore,
+    envelope: EmailEnvelope,
+    source_id: str,
+    disposition: EmailDisposition,
+) -> bool | None:
+    """Acknowledge only after the source identity is known to be durable."""
+    if disposition == EmailDisposition():
+        return None
+    if not store.is_source_durable(source_id):
+        return None
+    try:
+        await source.async_acknowledge(
+            envelope.provenance,
+            disposition=disposition,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return False
+    return True
+
+
 @dataclass(frozen=True, slots=True)
 class EmailPollResult:
     """Outcome counts for one complete source collection attempt."""
@@ -48,6 +72,8 @@ class EmailPollResult:
     normalization_failures: int
     processing_failures: int
     safety_rejections: int = 0
+    acknowledged: int = 0
+    acknowledgement_failures: int = 0
 
 
 async def async_poll_email_source(
@@ -65,6 +91,9 @@ async def async_poll_email_source(
     normalization_failures = 0
     processing_failures = 0
     safety_rejections = 0
+    acknowledged = 0
+    acknowledgement_failures = 0
+    disposition = source.config.disposition
     sender_allowlist = (
         ExactSenderAllowlist(source.config.sender_allowlist)
         if source.config.sender_allowlist
@@ -98,6 +127,13 @@ async def async_poll_email_source(
         )
         if activity_id is None:
             duplicates += 1
+            acknowledgement = await _async_acknowledge_if_durable(
+                source, store, envelope, source_id, disposition
+            )
+            if acknowledgement is True:
+                acknowledged += 1
+            elif acknowledgement is False:
+                acknowledgement_failures += 1
             continue
 
         claimed += 1
@@ -145,6 +181,13 @@ async def async_poll_email_source(
         processed += 1
         if stage is not None:
             await stage.async_cleanup("successful processing")
+        acknowledgement = await _async_acknowledge_if_durable(
+            source, store, envelope, source_id, disposition
+        )
+        if acknowledgement is True:
+            acknowledged += 1
+        elif acknowledgement is False:
+            acknowledgement_failures += 1
 
     return EmailPollResult(
         discovered=discovered,
@@ -154,4 +197,6 @@ async def async_poll_email_source(
         normalization_failures=normalization_failures,
         processing_failures=processing_failures,
         safety_rejections=safety_rejections,
+        acknowledged=acknowledged,
+        acknowledgement_failures=acknowledgement_failures,
     )

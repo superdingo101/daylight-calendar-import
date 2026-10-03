@@ -54,6 +54,9 @@ class FakeImapClient:
         select_response: FakeResponse | None = None,
         search_response: FakeResponse | None = None,
         fetch_responses: dict[str, FakeResponse | BaseException] | None = None,
+        uid_responses: dict[
+            tuple[str, tuple[str, ...]], FakeResponse | BaseException
+        ] | None = None,
         hello_error: BaseException | None = None,
         login_error: BaseException | None = None,
         select_error: BaseException | None = None,
@@ -71,6 +74,7 @@ class FakeImapClient:
         )
         self.search_response = search_response or _ok(b"", b"Search completed")
         self.fetch_responses = fetch_responses or {}
+        self.uid_responses = uid_responses or {}
         self.hello_error = hello_error
         self.login_error = login_error
         self.select_error = select_error
@@ -118,8 +122,13 @@ class FakeImapClient:
 
     async def uid(self, command: str, *criteria: str) -> FakeResponse:
         self.uid_calls.append((command, criteria))
-        uid = criteria[0]
-        response = self.fetch_responses[uid]
+        if command.casefold() == "fetch":
+            response = self.fetch_responses[criteria[0]]
+        else:
+            response = self.uid_responses.get(
+                (command.casefold(), criteria),
+                _ok(b"UID command completed"),
+            )
         if isinstance(response, BaseException):
             raise response
         return response
@@ -209,6 +218,16 @@ def test_direct_imap_settings_and_source_config_hide_secret() -> None:
     assert source.config.source_type is EmailSourceType.DIRECT_IMAP
     assert source.config.disposition == EmailDisposition()
     assert source.config.sender_allowlist == ()
+
+
+def test_direct_imap_settings_propagate_disposition_to_source_config() -> None:
+    disposition = EmailDisposition(mark_seen=True, add_flag="daylight-processed")
+    source, _ = _source(
+        FakeImapClient(),
+        settings=_settings(disposition=disposition),
+    )
+
+    assert source.config.disposition == disposition
 
 
 @pytest.mark.parametrize(
@@ -1077,24 +1096,177 @@ async def test_acknowledge_default_is_non_destructive_noop() -> None:
     assert factory.calls == []
 
 
+async def test_acknowledge_store_combines_seen_and_custom_flag() -> None:
+    disposition = EmailDisposition(
+        mark_seen=True,
+        add_flag="daylight-processed",
+    )
+    client = FakeImapClient()
+    source, _ = _source(client)
+
+    await source.async_acknowledge(_provenance(), disposition=disposition)
+
+    assert client.select_calls == ["INBOX"]
+    assert client.uid_calls == [
+        ("store", ("1", "+FLAGS.SILENT", r"(\Seen daylight-processed)"))
+    ]
+    assert client.logout_calls == 1
+
+
+async def test_acknowledge_store_deduplicates_seen_flag() -> None:
+    disposition = EmailDisposition(mark_seen=True, add_flag=r"\Seen")
+    client = FakeImapClient()
+    source, _ = _source(client)
+
+    await source.async_acknowledge(_provenance(), disposition=disposition)
+
+    assert client.uid_calls == [
+        ("store", ("1", "+FLAGS.SILENT", r"(\Seen)"))
+    ]
+
+
+async def test_acknowledge_move_uses_stable_uid_reference() -> None:
+    client = FakeImapClient()
+    source, _ = _source(client)
+
+    await source.async_acknowledge(
+        _provenance(),
+        disposition=EmailDisposition(move_to_folder="Processed"),
+    )
+
+    assert client.uid_calls == [("move", ("1", "Processed"))]
+    assert client.logout_calls == 1
+
+
 @pytest.mark.parametrize(
     "disposition",
     (
-        EmailDisposition(mark_seen=True),
-        EmailDisposition(move_to_folder="Processed"),
-        EmailDisposition(add_flag="daylight-processed"),
+        EmailDisposition(mark_seen=True, move_to_folder="Processed"),
+        EmailDisposition(
+            move_to_folder="Processed",
+            add_flag="daylight-processed",
+        ),
     ),
 )
-async def test_acknowledge_rejects_upstream_mutation_until_later_pr(
+async def test_acknowledge_rejects_move_with_flag_mutation(
     disposition: EmailDisposition,
 ) -> None:
-    source, _ = _source(FakeImapClient())
+    source, factory = _source(FakeImapClient())
 
     with pytest.raises(
         DirectImapUnsupportedDispositionError,
-        match="^Upstream IMAP disposition is not implemented yet$",
+        match="^IMAP move cannot be combined with flag changes$",
     ):
         await source.async_acknowledge(_provenance(), disposition=disposition)
+
+    assert factory.calls == []
+
+
+@pytest.mark.parametrize("flag", ("two flags", "(", "\\", "flag]"))
+async def test_acknowledge_rejects_unsafe_imap_flag(flag: str) -> None:
+    source, factory = _source(FakeImapClient())
+
+    with pytest.raises(
+        DirectImapUnsupportedDispositionError,
+        match="^IMAP add_flag must be a valid flag or keyword$",
+    ):
+        await source.async_acknowledge(
+            _provenance(),
+            disposition=EmailDisposition(add_flag=flag),
+        )
+
+    assert factory.calls == []
+
+
+async def test_acknowledge_rejects_uidvalidity_change_before_mutation() -> None:
+    client = FakeImapClient(
+        select_response=_ok(
+            b"OK [UIDVALIDITY 9999] UIDs valid",
+            b"Select completed",
+        )
+    )
+    source, _ = _source(client)
+
+    with pytest.raises(
+        DirectImapProtocolError,
+        match="^IMAP mailbox UIDVALIDITY changed before acknowledgement$",
+    ):
+        await source.async_acknowledge(
+            _provenance(),
+            disposition=EmailDisposition(mark_seen=True),
+        )
+
+    assert client.uid_calls == []
+    assert client.logout_calls == 1
+
+
+async def test_acknowledge_rejects_failed_store_response() -> None:
+    key = ("store", ("1", "+FLAGS.SILENT", r"(\Seen)"))
+    client = FakeImapClient(uid_responses={key: _no(b"STORE failed")})
+    source, _ = _source(client)
+
+    with pytest.raises(
+        DirectImapProtocolError,
+        match="^IMAP UID STORE acknowledgement failed$",
+    ):
+        await source.async_acknowledge(
+            _provenance(),
+            disposition=EmailDisposition(mark_seen=True),
+        )
+
+    assert client.logout_calls == 1
+
+
+async def test_acknowledge_rejects_failed_move_response() -> None:
+    key = ("move", ("1", "Processed"))
+    client = FakeImapClient(uid_responses={key: _no(b"MOVE failed")})
+    source, _ = _source(client)
+
+    with pytest.raises(
+        DirectImapProtocolError,
+        match="^IMAP UID MOVE acknowledgement failed$",
+    ):
+        await source.async_acknowledge(
+            _provenance(),
+            disposition=EmailDisposition(move_to_folder="Processed"),
+        )
+
+    assert client.logout_calls == 1
+
+
+async def test_acknowledge_wraps_uid_transport_failure() -> None:
+    key = ("store", ("1", "+FLAGS.SILENT", r"(\Seen)"))
+    client = FakeImapClient(
+        uid_responses={key: RuntimeError("connection lost")}
+    )
+    source, _ = _source(client)
+
+    with pytest.raises(
+        DirectImapConnectionError,
+        match="^IMAP acknowledgement command failed$",
+    ):
+        await source.async_acknowledge(
+            _provenance(),
+            disposition=EmailDisposition(mark_seen=True),
+        )
+
+    assert client.logout_calls == 1
+
+
+async def test_acknowledge_cancellation_logs_out_and_propagates() -> None:
+    key = ("store", ("1", "+FLAGS.SILENT", r"(\Seen)"))
+    client = FakeImapClient(
+        uid_responses={key: asyncio.CancelledError()}
+    )
+    source, _ = _source(client)
+
+    with pytest.raises(asyncio.CancelledError):
+        await source.async_acknowledge(
+            _provenance(),
+            disposition=EmailDisposition(mark_seen=True),
+        )
+
+    assert client.logout_calls == 1
 
 
 @pytest.mark.parametrize(
@@ -1108,6 +1280,16 @@ async def test_acknowledge_rejects_upstream_mutation_until_later_pr(
         (
             _provenance(reference="uid:1"),
             "Email provenance has the wrong transport reference",
+        ),
+        (
+            _provenance(
+                reference=DirectImapReference(
+                    mailbox="Archive",
+                    uid_validity=1234,
+                    uid=1,
+                )
+            ),
+            "Email provenance belongs to another mailbox",
         ),
     ),
 )
@@ -1232,3 +1414,21 @@ def test_direct_imap_source_rejects_invalid_sender_allowlist(
         match="sender_allowlist entries must be valid email addresses",
     ):
         _source(FakeImapClient(), settings=settings)
+
+
+
+async def test_acknowledge_store_adds_custom_flag_without_seen() -> None:
+    client = FakeImapClient()
+    source, _ = _source(client)
+
+    await source.async_acknowledge(
+        _provenance(),
+        disposition=EmailDisposition(add_flag="daylight-processed"),
+    )
+
+    assert client.uid_calls == [
+        (
+            "store",
+            ("1", "+FLAGS.SILENT", "(daylight-processed)"),
+        )
+    ]
