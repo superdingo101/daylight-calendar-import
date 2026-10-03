@@ -16,6 +16,16 @@ from .storage import PendingImportStore
 
 _LOGGER = logging.getLogger(__name__)
 
+_SAFETY_REJECTION_GUIDANCE = (
+    "Email was rejected by the configured sender safety policy and left untouched."
+)
+_NORMALIZATION_FAILURE_GUIDANCE = (
+    "Email could not be normalized and was left untouched for a later retry."
+)
+_IDENTITY_FAILURE_GUIDANCE = (
+    "Email did not produce a stable source identity and was left untouched."
+)
+
 
 type EmailDocumentProcessor = Callable[[SourceDocument, str], Awaitable[None]]
 
@@ -102,30 +112,47 @@ async def async_poll_email_source(
 
     async for envelope in source.async_collect():
         discovered += 1
+        activity_id = await store.async_begin_source_discovery(
+            source_kind="email",
+            source_title="Email",
+            received_at=envelope.received_at,
+        )
         if (
             sender_allowlist is not None
             and not sender_allowlist.allows(envelope.raw_message)
         ):
+            await store.async_record_source_failure(
+                activity_id,
+                _SAFETY_REJECTION_GUIDANCE,
+            )
             safety_rejections += 1
             continue
         try:
             document = normalize_email(envelope)
         except EmailNormalizationError:
+            await store.async_record_source_failure(
+                activity_id,
+                _NORMALIZATION_FAILURE_GUIDANCE,
+            )
             normalization_failures += 1
             continue
 
         source_id = document.upstream_source_id or ""
         if not source_id.strip():
+            await store.async_record_source_failure(
+                activity_id,
+                _IDENTITY_FAILURE_GUIDANCE,
+            )
             normalization_failures += 1
             continue
 
-        activity_id = await store.async_begin_source_submission(
+        claimed_source = await store.async_claim_source_discovery(
+            activity_id,
             source_id=source_id,
             source_kind=document.kind.value,
             source_title=document.title,
-            received_at=document.received_at,
         )
-        if activity_id is None:
+        if not claimed_source:
             duplicates += 1
             acknowledgement = await _async_acknowledge_if_durable(
                 source, store, envelope, source_id, disposition
