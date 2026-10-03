@@ -51,8 +51,10 @@ function activityTime(value, locale) {
 }
 
 function activityLabel(type) {
-  return ({review_ready: "Awaiting review", event_rejected: "Rejected",
-    calendar_write_started: "Calendar write started", calendar_created: "Calendar created",
+  return ({discovered: "Discovered", processing: "Processing",
+    review_ready: "Awaiting review", duplicate: "Duplicate", failed: "Failed",
+    event_rejected: "Rejected", calendar_write_started: "Calendar write started",
+    calendar_created: "Calendar created",
     calendar_write_uncertain: "Calendar write needs confirmation",
     mixed: "Mixed event outcomes"})[type] || type.replaceAll("_", " ");
 }
