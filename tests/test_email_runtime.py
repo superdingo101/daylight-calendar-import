@@ -14,7 +14,6 @@ from custom_components.daylight_calendar_import.const import (
     CONF_EMAIL_ENABLED,
     CONF_EMAIL_HOST,
     CONF_EMAIL_MAILBOX,
-    CONF_EMAIL_MARK_SEEN,
     CONF_EMAIL_PASSWORD,
     CONF_EMAIL_PORT,
     CONF_EMAIL_SENDER_ALLOWLIST,
@@ -62,7 +61,6 @@ def _options(**overrides):
         CONF_EMAIL_MAILBOX: "INBOX",
         CONF_EMAIL_VERIFY_SSL: True,
         CONF_EMAIL_SENDER_ALLOWLIST: "",
-        CONF_EMAIL_MARK_SEEN: True,
     }
     values.update(overrides)
     return values
@@ -117,7 +115,6 @@ def test_direct_imap_settings_from_options_preserves_explicit_values():
                 CONF_EMAIL_MAILBOX: "Calendar",
                 CONF_EMAIL_VERIFY_SSL: False,
                 CONF_EMAIL_SENDER_ALLOWLIST: "trusted@example.test",
-                CONF_EMAIL_MARK_SEEN: False,
             }
         ),
     )
@@ -126,7 +123,7 @@ def test_direct_imap_settings_from_options_preserves_explicit_values():
     assert settings.mailbox == "Calendar"
     assert settings.verify_ssl is False
     assert settings.sender_allowlist == ("trusted@example.test",)
-    assert settings.disposition.mark_seen is False
+    assert settings.disposition.mark_seen is True
 
 
 def test_email_review_source_text_includes_attachment_metadata_only():
@@ -252,6 +249,7 @@ async def test_runtime_starts_immediately_skips_overlap_and_stops(monkeypatch):
     await started.wait()
     assert calls == 1
     assert callbacks[0][1] == timedelta(seconds=17)
+    assert getattr(runtime._schedule_poll, "_hass_callback", False) is True
 
     callbacks[0][0](None)
     await asyncio.sleep(0)
