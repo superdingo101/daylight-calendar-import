@@ -17,7 +17,6 @@ from .const import (
     CONF_EMAIL_ENABLED,
     CONF_EMAIL_HOST,
     CONF_EMAIL_MAILBOX,
-    CONF_EMAIL_MARK_SEEN,
     CONF_EMAIL_PASSWORD,
     CONF_EMAIL_PORT,
     CONF_EMAIL_SENDER_ALLOWLIST,
@@ -140,11 +139,17 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
         user_input: dict[str, Any] | None = None,
     ) -> FlowResult:
         """Validate and save Direct IMAP connection options."""
+        current = self.config_entry.options
         errors: dict[str, str] = {}
         if user_input is not None:
+            password = (
+                user_input.get(CONF_EMAIL_PASSWORD)
+                or current.get(CONF_EMAIL_PASSWORD, "")
+            )
             options = {
                 CONF_EMAIL_ENABLED: True,
                 **user_input,
+                CONF_EMAIL_PASSWORD: password,
             }
             try:
                 settings = direct_imap_settings_from_options(
@@ -163,8 +168,15 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
             else:
                 return self.async_create_entry(data=options)
 
-        current = self.config_entry.options
-        suggested_values = user_input if user_input is not None else current
+        suggested_values = (
+            user_input
+            if user_input is not None
+            else {
+                key: value
+                for key, value in current.items()
+                if key != CONF_EMAIL_PASSWORD
+            }
+        )
         schema = vol.Schema(
             {
                 vol.Required(CONF_EMAIL_HOST): selector.TextSelector(),
@@ -180,7 +192,10 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
                     )
                 ),
                 vol.Required(CONF_EMAIL_USERNAME): selector.TextSelector(),
-                vol.Required(CONF_EMAIL_PASSWORD): selector.TextSelector(
+                vol.Optional(
+                    CONF_EMAIL_PASSWORD,
+                    default="",
+                ): selector.TextSelector(
                     selector.TextSelectorConfig(
                         type=selector.TextSelectorType.PASSWORD,
                     )
@@ -199,10 +214,6 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
                 ): selector.TextSelector(
                     selector.TextSelectorConfig(multiline=True)
                 ),
-                vol.Required(
-                    CONF_EMAIL_MARK_SEEN,
-                    default=True,
-                ): selector.BooleanSelector(),
             }
         )
         return self.async_show_form(
