@@ -63,11 +63,21 @@ _ERR_FETCH_LITERAL_SIZE = "IMAP UID fetch returned an invalid BODY literal lengt
 _ERR_FETCH_UNTERMINATED = "IMAP UID fetch returned an unterminated FETCH response"  # pragma: no mutate
 _ERR_SEARCH_TRANSPORT = "IMAP UID search failed"  # pragma: no mutate
 _ERR_FETCH_TRANSPORT = "IMAP UID fetch failed"  # pragma: no mutate
-_ERR_DISPOSITION = "Upstream IMAP disposition is not implemented yet"  # pragma: no mutate
+_ERR_DISPOSITION_COMBINATION = "IMAP move cannot be combined with flag changes"  # pragma: no mutate
+_ERR_DISPOSITION_FLAG = "IMAP add_flag must be a valid flag or keyword"  # pragma: no mutate
+_ERR_ACK_UIDVALIDITY = "IMAP mailbox UIDVALIDITY changed before acknowledgement"  # pragma: no mutate
+_ERR_ACK_STORE = "IMAP UID STORE acknowledgement failed"  # pragma: no mutate
+_ERR_ACK_MOVE = "IMAP UID MOVE acknowledgement failed"  # pragma: no mutate
+_ERR_ACK_TRANSPORT = "IMAP acknowledgement command failed"  # pragma: no mutate
 _ERR_PROVENANCE_SOURCE = "Email provenance belongs to another source"  # pragma: no mutate
 _ERR_PROVENANCE_TYPE = "Email provenance has the wrong source type"  # pragma: no mutate
 _ERR_PROVENANCE_REFERENCE = "Email provenance has the wrong transport reference"  # pragma: no mutate
+_ERR_PROVENANCE_MAILBOX = "Email provenance belongs to another mailbox"  # pragma: no mutate
 _ERR_CONNECTION = "IMAP connection failed"  # pragma: no mutate
+
+_IMAP_FLAG_RE = re.compile(
+    r"^(?:\\[A-Za-z0-9][A-Za-z0-9._-]*|[A-Za-z0-9][A-Za-z0-9._-]*)$"
+)
 
 
 class DirectImapError(Exception):
@@ -109,6 +119,7 @@ class DirectImapSettings:
     verify_ssl: bool = True
     timeout: float = DEFAULT_IMAP_TIMEOUT
     sender_allowlist: tuple[str, ...] = ()
+    disposition: EmailDisposition = field(default_factory=EmailDisposition)
 
     def __post_init__(self) -> None:
         """Reject malformed settings before opening a network connection."""
@@ -423,6 +434,7 @@ class DirectImapSource:
         self._clock = clock
         self._config = EmailSourceConfig(
             source_id=settings.source_id,
+            disposition=settings.disposition,
             sender_allowlist=settings.sender_allowlist,
         )
 
@@ -487,12 +499,64 @@ class DirectImapSource:
         *,
         disposition: EmailDisposition,
     ) -> None:
-        """Apply the v0.5 default: durable local handling without mailbox mutation."""
+        """Apply one retry-safe upstream disposition after durable local handling."""
         self._validate_provenance(provenance)
-        if disposition != EmailDisposition():
+        if disposition == EmailDisposition():
+            return
+
+        reference = provenance.transport_reference
+        if disposition.move_to_folder is not None and (
+            disposition.mark_seen or disposition.add_flag is not None
+        ):
             raise DirectImapUnsupportedDispositionError(
-                _ERR_DISPOSITION
+                _ERR_DISPOSITION_COMBINATION
             )
+        if (
+            disposition.add_flag is not None
+            and _IMAP_FLAG_RE.fullmatch(disposition.add_flag) is None
+        ):
+            raise DirectImapUnsupportedDispositionError(
+                _ERR_DISPOSITION_FLAG
+            )
+
+        client, uid_validity = await self._async_open(reference.mailbox)
+        try:
+            if uid_validity != reference.uid_validity:
+                raise DirectImapProtocolError(_ERR_ACK_UIDVALIDITY)
+            try:
+                if disposition.move_to_folder is not None:
+                    response = await client.uid(
+                        "move",
+                        str(reference.uid),
+                        disposition.move_to_folder,
+                    )
+                    _require_ok(response, _ERR_ACK_MOVE)
+                else:
+                    flags: list[str] = []
+                    if disposition.mark_seen:
+                        flags.append(r"\Seen")
+                    if (
+                        disposition.add_flag is not None
+                        and disposition.add_flag not in flags
+                    ):
+                        flags.append(disposition.add_flag)
+                    response = await client.uid(
+                        "store",
+                        str(reference.uid),
+                        "+FLAGS.SILENT",
+                        f"({' '.join(flags)})",
+                    )
+                    _require_ok(response, _ERR_ACK_STORE)
+            except asyncio.CancelledError:
+                raise
+            except DirectImapError:
+                raise
+            except Exception:
+                raise DirectImapConnectionError(
+                    _ERR_ACK_TRANSPORT
+                ) from None
+        finally:
+            await self._async_logout_cancellation_safe(client)
 
     def _validate_provenance(self, provenance: EmailProvenance) -> None:
         if provenance.source_id != self._settings.source_id:
@@ -503,6 +567,8 @@ class DirectImapSource:
             raise DirectImapProtocolError(
                 _ERR_PROVENANCE_REFERENCE
             )
+        if provenance.transport_reference.mailbox != self._settings.mailbox:
+            raise DirectImapProtocolError(_ERR_PROVENANCE_MAILBOX)
 
     async def _async_open(self, mailbox: str) -> tuple[_ImapClient, int]:
         try:
