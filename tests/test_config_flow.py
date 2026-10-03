@@ -18,7 +18,6 @@ from custom_components.daylight_calendar_import.const import (
     CONF_EMAIL_MAILBOX,
     CONF_EMAIL_PASSWORD,
     CONF_EMAIL_PORT,
-    CONF_EMAIL_SENDER_ALLOWLIST,
     CONF_EMAIL_USERNAME,
     CONF_EMAIL_VERIFY_SSL,
 )
@@ -215,9 +214,6 @@ async def test_options_flow_validates_and_saves_direct_imap():
         CONF_EMAIL_PASSWORD: "app-secret",
         CONF_EMAIL_MAILBOX: "INBOX",
         CONF_EMAIL_VERIFY_SSL: True,
-        CONF_EMAIL_SENDER_ALLOWLIST: (
-            "trusted@example.test\nother@example.test"
-        ),
     }
 
     with (
@@ -243,10 +239,7 @@ async def test_options_flow_validates_and_saves_direct_imap():
     validate.assert_awaited_once_with()
     settings = source_factory.call_args.args[0]
     assert settings.source_id == "test-entry:direct-imap"
-    assert settings.sender_allowlist == (
-        "trusted@example.test",
-        "other@example.test",
-    )
+    assert settings.sender_allowlist == ()
     create_entry.assert_called_once_with(
         data={CONF_EMAIL_ENABLED: True, **user_input}
     )
@@ -268,7 +261,6 @@ async def test_options_flow_reports_invalid_imap_credentials():
         CONF_EMAIL_PASSWORD: "wrong-secret",
         CONF_EMAIL_MAILBOX: "INBOX",
         CONF_EMAIL_VERIFY_SSL: True,
-        CONF_EMAIL_SENDER_ALLOWLIST: "",
     }
 
     with (
@@ -357,7 +349,6 @@ async def test_options_flow_shows_email_form_with_all_fields():
         CONF_EMAIL_PASSWORD,
         CONF_EMAIL_MAILBOX,
         CONF_EMAIL_VERIFY_SSL,
-        CONF_EMAIL_SENDER_ALLOWLIST,
     ]
 
 
@@ -391,7 +382,6 @@ async def test_options_flow_reports_direct_imap_validation_errors(
         CONF_EMAIL_PASSWORD: "secret",
         CONF_EMAIL_MAILBOX: "INBOX",
         CONF_EMAIL_VERIFY_SSL: True,
-        CONF_EMAIL_SENDER_ALLOWLIST: "",
     }
 
     with (
@@ -430,7 +420,6 @@ async def test_options_flow_reports_invalid_email_configuration():
         CONF_EMAIL_PASSWORD: "secret",
         CONF_EMAIL_MAILBOX: "INBOX",
         CONF_EMAIL_VERIFY_SSL: True,
-        CONF_EMAIL_SENDER_ALLOWLIST: "",
     }
 
     with (
@@ -475,7 +464,6 @@ async def test_options_flow_preserves_attempted_values_after_validation_error(
         CONF_EMAIL_PASSWORD: "old-secret",
         CONF_EMAIL_MAILBOX: "Old",
         CONF_EMAIL_VERIFY_SSL: True,
-        CONF_EMAIL_SENDER_ALLOWLIST: "",
     })
     source = SimpleNamespace(async_validate=AsyncMock(side_effect=error))
     user_input = {
@@ -485,7 +473,6 @@ async def test_options_flow_preserves_attempted_values_after_validation_error(
         CONF_EMAIL_PASSWORD: "new-secret",
         CONF_EMAIL_MAILBOX: "Calendar",
         CONF_EMAIL_VERIFY_SSL: False,
-        CONF_EMAIL_SENDER_ALLOWLIST: "trusted@example.test",
     }
 
     with (
@@ -527,7 +514,6 @@ async def test_options_flow_preserves_attempted_values_after_invalid_configurati
         CONF_EMAIL_PASSWORD: "old-secret",
         CONF_EMAIL_MAILBOX: "Old",
         CONF_EMAIL_VERIFY_SSL: True,
-        CONF_EMAIL_SENDER_ALLOWLIST: "",
     })
     user_input = {
         CONF_EMAIL_HOST: "new.example.test",
@@ -536,7 +522,6 @@ async def test_options_flow_preserves_attempted_values_after_invalid_configurati
         CONF_EMAIL_PASSWORD: "new-secret",
         CONF_EMAIL_MAILBOX: "Calendar",
         CONF_EMAIL_VERIFY_SSL: False,
-        CONF_EMAIL_SENDER_ALLOWLIST: "trusted@example.test",
     }
 
     with (
@@ -577,7 +562,6 @@ async def test_options_flow_initial_email_form_uses_persisted_suggestions():
         CONF_EMAIL_PASSWORD: "saved-secret",
         CONF_EMAIL_MAILBOX: "Calendar",
         CONF_EMAIL_VERIFY_SSL: False,
-        CONF_EMAIL_SENDER_ALLOWLIST: "trusted@example.test",
     }
     entry = _options_entry(current)
 
@@ -623,7 +607,6 @@ async def test_options_flow_reuses_saved_password_when_edit_form_is_blank():
         CONF_EMAIL_PASSWORD: "saved-secret",
         CONF_EMAIL_MAILBOX: "INBOX",
         CONF_EMAIL_VERIFY_SSL: True,
-        CONF_EMAIL_SENDER_ALLOWLIST: "",
     })
     validate = AsyncMock()
     source = SimpleNamespace(async_validate=validate)
@@ -634,7 +617,6 @@ async def test_options_flow_reuses_saved_password_when_edit_form_is_blank():
         CONF_EMAIL_PASSWORD: "",
         CONF_EMAIL_MAILBOX: "Calendar",
         CONF_EMAIL_VERIFY_SSL: True,
-        CONF_EMAIL_SENDER_ALLOWLIST: "",
     }
 
     with (
