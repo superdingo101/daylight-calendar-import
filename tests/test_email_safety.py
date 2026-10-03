@@ -448,3 +448,41 @@ def test_exact_sender_allowlist_rejects_header_parser_message_defect(
     )
 
     assert allowlist.allows(b"X: y\r\n\r\n") is False
+
+
+
+@pytest.mark.parametrize(
+    ("separator", "body"),
+    (
+        (b"\r\n\r\n", b"crlf-body"),
+        (b"\n\n", b"lf-body"),
+        (b"\r\r", b"cr-body"),
+    ),
+)
+def test_raw_header_block_finds_supported_boundaries(
+    separator: bytes,
+    body: bytes,
+) -> None:
+    header = b"From: trusted@example.test"
+    assert email_safety._raw_header_block(header + separator + body) == header
+
+
+def test_raw_header_block_allows_exact_header_limit() -> None:
+    header = b"X:" + (b"a" * (email_safety.MAX_EMAIL_HEADER_BYTES - 2))
+    raw = header + b"\r\n\r\nBody"
+
+    assert email_safety._raw_header_block(raw) == header
+
+
+def test_raw_header_block_rejects_header_over_limit() -> None:
+    header = b"X:" + (b"a" * (email_safety.MAX_EMAIL_HEADER_BYTES - 1))
+    raw = header + b"\r\n\r\nBody"
+
+    assert email_safety._raw_header_block(raw) is None
+
+
+def test_large_body_does_not_affect_bounded_header_extraction() -> None:
+    header = b"From: trusted@example.test"
+    raw = header + b"\r\n\r\n" + (b"x" * 1_000_000)
+
+    assert email_safety._raw_header_block(raw) == header

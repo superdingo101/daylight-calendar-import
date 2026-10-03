@@ -10,19 +10,33 @@ from email.parser import BytesHeaderParser
 from email.utils import getaddresses
 
 _ERR_ALLOWLIST = "sender_allowlist entries must be valid email addresses"
-_HEADER_SEPARATORS = (b"\r\n\r\n", b"\n\n", b"\r\r")
+MAX_EMAIL_HEADER_BYTES = 64 * 1024
 
 
 def _raw_header_block(raw_message: bytes) -> bytes | None:
-    """Return only the bytes before the first supported header/body boundary."""
-    offsets = tuple(
-        offset
-        for separator in _HEADER_SEPARATORS
-        if (offset := raw_message.find(separator)) >= 0
-    )
-    if not offsets:
-        return None
-    return raw_message[: min(offsets)]
+    """Return a bounded header block without scanning the message body."""
+    index = 0
+    max_boundary_start = min(len(raw_message), MAX_EMAIL_HEADER_BYTES + 1)
+    while index < max_boundary_start:
+        byte = raw_message[index]
+        if byte == 13:  # CR
+            if (
+                index + 3 < len(raw_message)
+                and raw_message[index + 1] == 10
+                and raw_message[index + 2] == 13
+                and raw_message[index + 3] == 10
+            ):
+                return raw_message[:index]
+            if index + 1 < len(raw_message) and raw_message[index + 1] == 13:
+                return raw_message[:index]
+        elif (
+            byte == 10  # LF
+            and index + 1 < len(raw_message)
+            and raw_message[index + 1] == 10
+        ):
+            return raw_message[:index]
+        index += 1
+    return None
 
 
 def _raw_header_lines(header_block: bytes) -> tuple[bytes, ...]:
