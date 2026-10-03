@@ -446,3 +446,159 @@ async def test_options_flow_reports_invalid_email_configuration():
     assert show_form.call_args.kwargs["errors"] == {
         "base": "invalid_email_config"
     }
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    (
+        (DirectImapAuthenticationError("bad credentials"), "invalid_auth"),
+        (DirectImapMailboxError("mailbox unavailable"), "invalid_mailbox"),
+        (DirectImapConnectionError("offline"), "cannot_connect"),
+    ),
+)
+async def test_options_flow_preserves_attempted_values_after_validation_error(
+    error,
+    expected_code,
+):
+    flow = DaylightCalendarImportOptionsFlow()
+    expected = {"type": "form"}
+    entry = _options_entry({
+        CONF_EMAIL_HOST: "old.example.test",
+        CONF_EMAIL_PORT: 993,
+        CONF_EMAIL_USERNAME: "old@example.test",
+        CONF_EMAIL_PASSWORD: "old-secret",
+        CONF_EMAIL_MAILBOX: "Old",
+        CONF_EMAIL_VERIFY_SSL: True,
+        CONF_EMAIL_SENDER_ALLOWLIST: "",
+        CONF_EMAIL_MARK_SEEN: True,
+    })
+    source = SimpleNamespace(async_validate=AsyncMock(side_effect=error))
+    user_input = {
+        CONF_EMAIL_HOST: "new.example.test",
+        CONF_EMAIL_PORT: 1993,
+        CONF_EMAIL_USERNAME: "new@example.test",
+        CONF_EMAIL_PASSWORD: "new-secret",
+        CONF_EMAIL_MAILBOX: "Calendar",
+        CONF_EMAIL_VERIFY_SSL: False,
+        CONF_EMAIL_SENDER_ALLOWLIST: "trusted@example.test",
+        CONF_EMAIL_MARK_SEEN: False,
+    }
+
+    with (
+        patch.object(
+            DaylightCalendarImportOptionsFlow,
+            "config_entry",
+            new_callable=PropertyMock,
+            return_value=entry,
+        ),
+        patch(
+            "custom_components.daylight_calendar_import.config_flow.DirectImapSource",
+            Mock(return_value=source),
+        ),
+        patch.object(
+            flow,
+            "add_suggested_values_to_schema",
+            Mock(return_value=object()),
+        ) as add_suggested,
+        patch.object(
+            flow,
+            "async_show_form",
+            Mock(return_value=expected),
+        ) as show_form,
+    ):
+        result = await flow.async_step_email(user_input)
+
+    assert result is expected
+    assert show_form.call_args.kwargs["errors"] == {"base": expected_code}
+    assert add_suggested.call_args.args[1] == user_input
+
+
+async def test_options_flow_preserves_attempted_values_after_invalid_configuration():
+    flow = DaylightCalendarImportOptionsFlow()
+    expected = {"type": "form"}
+    entry = _options_entry({
+        CONF_EMAIL_HOST: "old.example.test",
+        CONF_EMAIL_PORT: 993,
+        CONF_EMAIL_USERNAME: "old@example.test",
+        CONF_EMAIL_PASSWORD: "old-secret",
+        CONF_EMAIL_MAILBOX: "Old",
+        CONF_EMAIL_VERIFY_SSL: True,
+        CONF_EMAIL_SENDER_ALLOWLIST: "",
+        CONF_EMAIL_MARK_SEEN: True,
+    })
+    user_input = {
+        CONF_EMAIL_HOST: "new.example.test",
+        CONF_EMAIL_PORT: 0,
+        CONF_EMAIL_USERNAME: "new@example.test",
+        CONF_EMAIL_PASSWORD: "new-secret",
+        CONF_EMAIL_MAILBOX: "Calendar",
+        CONF_EMAIL_VERIFY_SSL: False,
+        CONF_EMAIL_SENDER_ALLOWLIST: "trusted@example.test",
+        CONF_EMAIL_MARK_SEEN: False,
+    }
+
+    with (
+        patch.object(
+            DaylightCalendarImportOptionsFlow,
+            "config_entry",
+            new_callable=PropertyMock,
+            return_value=entry,
+        ),
+        patch.object(
+            flow,
+            "add_suggested_values_to_schema",
+            Mock(return_value=object()),
+        ) as add_suggested,
+        patch.object(
+            flow,
+            "async_show_form",
+            Mock(return_value=expected),
+        ) as show_form,
+    ):
+        result = await flow.async_step_email(user_input)
+
+    assert result is expected
+    assert show_form.call_args.kwargs["errors"] == {
+        "base": "invalid_email_config"
+    }
+    assert add_suggested.call_args.args[1] == user_input
+
+
+async def test_options_flow_initial_email_form_uses_persisted_suggestions():
+    flow = DaylightCalendarImportOptionsFlow()
+    expected = {"type": "form"}
+    current = {
+        CONF_EMAIL_ENABLED: True,
+        CONF_EMAIL_HOST: "imap.example.test",
+        CONF_EMAIL_PORT: 1993,
+        CONF_EMAIL_USERNAME: "calendar@example.test",
+        CONF_EMAIL_PASSWORD: "saved-secret",
+        CONF_EMAIL_MAILBOX: "Calendar",
+        CONF_EMAIL_VERIFY_SSL: False,
+        CONF_EMAIL_SENDER_ALLOWLIST: "trusted@example.test",
+        CONF_EMAIL_MARK_SEEN: False,
+    }
+    entry = _options_entry(current)
+
+    with (
+        patch.object(
+            DaylightCalendarImportOptionsFlow,
+            "config_entry",
+            new_callable=PropertyMock,
+            return_value=entry,
+        ),
+        patch.object(
+            flow,
+            "add_suggested_values_to_schema",
+            Mock(return_value=object()),
+        ) as add_suggested,
+        patch.object(
+            flow,
+            "async_show_form",
+            Mock(return_value=expected),
+        ),
+    ):
+        result = await flow.async_step_email()
+
+    assert result is expected
+    assert add_suggested.call_args.args[1] == current
