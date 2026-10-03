@@ -232,3 +232,15 @@ def test_email_disposition_rejects_invalid_optional_strings(
         match=rf"^{field} must be a non-empty string or None$",
     ):
         EmailDisposition(**{field: value})  # type: ignore[arg-type]
+
+
+
+def test_email_source_config_rejects_invalid_disposition_type() -> None:
+    with pytest.raises(
+        ValueError,
+        match="^disposition must be an EmailDisposition$",
+    ):
+        EmailSourceConfig(
+            source_id="source-1",
+            disposition=object(),  # type: ignore[arg-type]
+        )
