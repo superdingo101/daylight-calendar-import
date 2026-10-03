@@ -1162,7 +1162,7 @@ async def test_acknowledge_rejects_move_with_flag_mutation(
     assert factory.calls == []
 
 
-@pytest.mark.parametrize("flag", ("two flags", "(", r"\", "flag]"))
+@pytest.mark.parametrize("flag", ("two flags", "(", "\\", "flag]"))
 async def test_acknowledge_rejects_unsafe_imap_flag(flag: str) -> None:
     source, factory = _source(FakeImapClient())
 
