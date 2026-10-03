@@ -2275,3 +2275,35 @@ async def test_cancelled_duplicate_claim_returns_cancellation_without_cleanup(mo
 
     assert store.is_source_duplicate(source_id) is True
     assert store.get_activity(first)["status"] == "processing"
+
+
+
+async def test_source_durable_excludes_live_claim_and_includes_pending(
+    monkeypatch,
+) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<durable@example.test>"
+    activity_id = await store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title="Durable",
+        received_at=datetime.fromisoformat("2026-10-01T12:00:00+00:00"),
+    )
+    assert activity_id is not None
+
+    assert store.is_source_duplicate(source_id) is True
+    assert store.is_source_durable(source_id) is False
+
+    result = await store.async_add(
+        source_text="Friday at 5",
+        events=[draft()],
+        source_id=source_id,
+        source_kind="email",
+        source_title="Durable",
+        activity_id=activity_id,
+    )
+
+    assert result.pending is not None
+    assert store.is_source_durable(source_id) is True
