@@ -175,8 +175,9 @@ async def test_setup_email_runtime_builds_and_starts_runtime(monkeypatch):
     processor = AsyncMock()
     entry = SimpleNamespace(entry_id="entry-1", options=_options())
 
+    hass = FakeHass()
     result = await async_setup_email_runtime(
-        FakeHass(),
+        hass,
         entry,
         store,
         processor,
@@ -185,8 +186,7 @@ async def test_setup_email_runtime_builds_and_starts_runtime(monkeypatch):
     assert result is runtime
     settings = source_factory.call_args.args[0]
     assert settings.source_id == "entry-1:direct-imap"
-    runtime_factory.assert_called_once()
-    assert runtime_factory.call_args.args[1:] == (source, store, processor)
+    runtime_factory.assert_called_once_with(hass, source, store, processor)
     runtime.async_start.assert_awaited_once_with()
 
 
@@ -197,8 +197,8 @@ async def test_runtime_starts_immediately_skips_overlap_and_stops(monkeypatch):
     monkeypatch.setattr(
         runtime_module,
         "async_track_time_interval",
-        lambda _hass, callback, interval: (
-            callbacks.append((callback, interval)) or cancel_interval
+        lambda tracked_hass, callback, interval: (
+            callbacks.append((tracked_hass, callback, interval)) or cancel_interval
         ),
     )
     started = asyncio.Event()
@@ -223,15 +223,18 @@ async def test_runtime_starts_immediately_skips_overlap_and_stops(monkeypatch):
     await runtime.async_start()
     await started.wait()
     assert calls == 1
-    assert callbacks[0][1] == timedelta(seconds=17)
+    assert callbacks[0][0] is hass
+    assert callbacks[0][2] == timedelta(seconds=17)
     assert getattr(runtime._schedule_poll, "_hass_callback", False) is True
 
-    callbacks[0][0](None)
+    callbacks[0][1](None)
     await asyncio.sleep(0)
     assert calls == 1
 
     await runtime.async_stop()
     cancel_interval.assert_called_once_with()
+    assert runtime._cancel_interval is None
+    assert runtime._task is None
     assert hass.created_tasks[0].cancelled()
 
 
@@ -264,16 +267,23 @@ async def test_runtime_can_schedule_again_after_completed_poll(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "error",
+    ("error", "expected_message"),
     (
-        DirectImapConnectionError("offline"),
-        RuntimeError("storage failed"),
+        (
+            DirectImapConnectionError("offline"),
+            "Direct IMAP poll failed: offline",
+        ),
+        (
+            RuntimeError("storage failed"),
+            "Email poll failed",
+        ),
     ),
 )
 async def test_runtime_keeps_transient_poll_failure_retryable(
     monkeypatch,
     caplog,
     error,
+    expected_message,
 ):
     hass = FakeHass()
     monkeypatch.setattr(
@@ -296,7 +306,7 @@ async def test_runtime_keeps_transient_poll_failure_retryable(
     await runtime.async_start()
     await hass.created_tasks[-1]
 
-    assert "poll failed" in caplog.text.lower()
+    assert caplog.records[-1].getMessage() == expected_message
     await runtime.async_stop()
 
 
@@ -355,6 +365,58 @@ async def test_runtime_logs_retryable_failures_from_poll_result(
     monkeypatch,
     caplog,
 ) -> None:
+    hass = FakeHass()
+    source = SimpleNamespace()
+    store = SimpleNamespace()
+    processor = AsyncMock()
+    runtime = EmailPollingRuntime(hass, source, store, processor)
+    poll = AsyncMock(
+        return_value=EmailPollResult(
+            discovered=3,
+            claimed=1,
+            processed=1,
+            duplicates=2,
+            normalization_failures=2,
+            processing_failures=3,
+            acknowledged=1,
+            acknowledgement_failures=4,
+        )
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "async_poll_email_source",
+        poll,
+    )
+
+    await runtime._async_poll()
+
+    poll.assert_awaited_once_with(
+        source,
+        store,
+        processor,
+        attachment_stager=runtime._async_stage_attachments,
+    )
+    assert caplog.records[-1].getMessage() == (
+        "Direct IMAP poll completed with retryable failures: "
+        "normalization=2 processing=3 acknowledgement=4"
+    )
+
+
+@pytest.mark.parametrize(
+    ("normalization_failures", "processing_failures", "acknowledgement_failures"),
+    (
+        (1, 0, 0),
+        (0, 1, 0),
+        (0, 0, 1),
+    ),
+)
+async def test_runtime_warns_for_each_retryable_failure_category(
+    monkeypatch,
+    caplog,
+    normalization_failures,
+    processing_failures,
+    acknowledgement_failures,
+) -> None:
     runtime = EmailPollingRuntime(
         FakeHass(),
         SimpleNamespace(),
@@ -366,14 +428,14 @@ async def test_runtime_logs_retryable_failures_from_poll_result(
         "async_poll_email_source",
         AsyncMock(
             return_value=EmailPollResult(
-                discovered=3,
+                discovered=1,
                 claimed=1,
-                processed=1,
-                duplicates=2,
-                normalization_failures=2,
-                processing_failures=3,
-                acknowledged=1,
-                acknowledgement_failures=4,
+                processed=0,
+                duplicates=0,
+                normalization_failures=normalization_failures,
+                processing_failures=processing_failures,
+                acknowledged=0,
+                acknowledgement_failures=acknowledgement_failures,
             )
         ),
     )
@@ -382,7 +444,9 @@ async def test_runtime_logs_retryable_failures_from_poll_result(
 
     assert caplog.records[-1].getMessage() == (
         "Direct IMAP poll completed with retryable failures: "
-        "normalization=2 processing=3 acknowledgement=4"
+        f"normalization={normalization_failures} "
+        f"processing={processing_failures} "
+        f"acknowledgement={acknowledgement_failures}"
     )
 
 
