@@ -140,12 +140,17 @@ class EmailPollingRuntime:
     async def _async_poll(self) -> None:
         """Run one poll cycle while keeping transient failures retryable."""
         try:
-            await async_poll_email_source(
+            result = await async_poll_email_source(
                 self._source,
                 self._store,
                 self._processor,
                 attachment_stager=self._async_stage_attachments,
             )
+            if result.acknowledgement_failures:
+                _LOGGER.warning(
+                    "Direct IMAP acknowledgement failed for %d message(s)",
+                    result.acknowledgement_failures,
+                )
         except asyncio.CancelledError:
             raise
         except DirectImapError as exc:
