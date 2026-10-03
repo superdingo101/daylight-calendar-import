@@ -1834,3 +1834,77 @@ def test_image_upload_schema_preserves_home_assistant_file_id():
     assert SUBMIT_IMAGE_SCHEMA({ATTR_FILE_ID: file_id})[ATTR_FILE_ID] == file_id
     with pytest.raises(vol.Invalid):
         SUBMIT_IMAGE_SCHEMA({ATTR_FILE_ID: "../../some-file"})
+
+
+
+async def test_setup_email_runtime_reuses_parser_store_and_default_calendar(
+    monkeypatch,
+):
+    hass = FakeHass()
+    runtime = SimpleNamespace(async_stop=AsyncMock())
+    captured = {}
+    setup_runtime = AsyncMock(return_value=runtime)
+    parse = AsyncMock(return_value=ParseOutcome([draft()], ["Review time"]))
+    pending_store = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_record_parse_failure=AsyncMock(),
+        async_add=AsyncMock(
+            return_value=PendingImportAddResult(
+                pending=pending(draft()),
+                duplicate_source=False,
+                duplicate_events=0,
+            )
+        ),
+    )
+
+    async def capture_runtime(hass_arg, entry_arg, store_arg, processor):
+        captured["args"] = (hass_arg, entry_arg, store_arg)
+        captured["processor"] = processor
+        return await setup_runtime(hass_arg, entry_arg, store_arg, processor)
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: pending_store,
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.parse_source_with_provider",
+        parse,
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_setup_email_runtime",
+        capture_runtime,
+    )
+    config_entry = entry()
+
+    assert await async_setup_entry(hass, config_entry) is True
+    assert captured["args"] == (hass, config_entry, pending_store)
+    assert pending_store.email_runtime is runtime
+
+    document = SourceDocument(
+        id="email-doc",
+        kind=SourceKind.EMAIL,
+        received_at=datetime(2026, 10, 3, 12, 0, tzinfo=UTC),
+        text="Friday at 5",
+        title="School notice",
+        upstream_source_id="<school@example.test>",
+    )
+    await captured["processor"](document, "email-activity")
+
+    parse.assert_awaited_once_with(
+        hass,
+        source=document,
+        ai_task_entity="ai_task.test",
+    )
+    pending_store.async_add.assert_awaited_once_with(
+        source_text="Friday at 5",
+        events=[draft()],
+        source_id="<school@example.test>",
+        calendar_entity="calendar.family",
+        source_kind="email",
+        source_title="School notice",
+        warnings=["Review time"],
+        activity_id="email-activity",
+    )
+
+    assert await async_unload_entry(hass, config_entry) is True
+    runtime.async_stop.assert_awaited_once_with()

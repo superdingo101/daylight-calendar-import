@@ -17,5 +17,35 @@
     "error": {
       "default_not_allowed": "The default calendar must be included in the allowed calendars."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Email ingestion",
+        "description": "Enable optional self-hosted Direct IMAP ingestion.",
+        "data": {
+          "email_enabled": "Enable Direct IMAP email ingestion"
+        }
+      },
+      "email": {
+        "title": "Direct IMAP",
+        "description": "Connect a mailbox for Daylight to poll every five minutes. Messages are marked seen only after durable local handling.",
+        "data": {
+          "email_host": "IMAP host",
+          "email_port": "IMAP port",
+          "email_username": "Username",
+          "email_password": "Password or app password",
+          "email_mailbox": "Mailbox",
+          "email_verify_ssl": "Verify TLS certificate",
+          "email_sender_allowlist": "Allowed sender addresses (one per line or comma-separated)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "The IMAP server rejected the username or password.",
+      "invalid_mailbox": "The configured mailbox could not be selected.",
+      "invalid_email_config": "The email configuration is invalid.",
+      "cannot_connect": "Unable to connect to the IMAP server."
+    }
   }
 }
