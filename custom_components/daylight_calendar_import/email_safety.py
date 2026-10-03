@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from email import policy
@@ -11,32 +12,16 @@ from email.utils import getaddresses
 
 _ERR_ALLOWLIST = "sender_allowlist entries must be valid email addresses"
 MAX_EMAIL_HEADER_BYTES = 64 * 1024
+_HEADER_BODY_BOUNDARY = re.compile(br"\r\n\r\n|\n\n|\r\r")
 
 
 def _raw_header_block(raw_message: bytes) -> bytes | None:
     """Return a bounded header block without scanning the message body."""
-    index = 0
-    max_boundary_start = min(len(raw_message), MAX_EMAIL_HEADER_BYTES + 1)
-    while index < max_boundary_start:
-        byte = raw_message[index]
-        if byte == 13:  # CR
-            if (
-                index + 3 < len(raw_message)
-                and raw_message[index + 1] == 10
-                and raw_message[index + 2] == 13
-                and raw_message[index + 3] == 10
-            ):
-                return raw_message[:index]
-            if index + 1 < len(raw_message) and raw_message[index + 1] == 13:
-                return raw_message[:index]
-        elif (
-            byte == 10  # LF
-            and index + 1 < len(raw_message)
-            and raw_message[index + 1] == 10
-        ):
-            return raw_message[:index]
-        index += 1
-    return None
+    prefix = raw_message[: MAX_EMAIL_HEADER_BYTES + 4]
+    match = _HEADER_BODY_BOUNDARY.search(prefix)
+    if match is None or match.start() > MAX_EMAIL_HEADER_BYTES:
+        return None
+    return prefix[: match.start()]
 
 
 def _raw_header_lines(header_block: bytes) -> tuple[bytes, ...]:
