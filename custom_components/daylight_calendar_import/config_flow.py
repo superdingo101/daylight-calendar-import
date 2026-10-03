@@ -118,7 +118,7 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
         if user_input is not None:
             if not user_input[CONF_EMAIL_ENABLED]:
                 return self.async_create_entry(
-                    data={CONF_EMAIL_ENABLED: False}
+                    data={**current, CONF_EMAIL_ENABLED: False}
                 )
             return await self.async_step_email()
 
