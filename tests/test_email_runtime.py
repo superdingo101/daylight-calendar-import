@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -66,19 +66,6 @@ def _options(**overrides):
     values.update(overrides)
     return values
 
-
-def _document(*, text="Friday at 5", attachments=()):
-    return SourceDocument(
-        id="doc-1",
-        kind=SourceKind.EMAIL,
-        received_at=runtime_module.datetime.now(runtime_module.UTC)
-        if hasattr(runtime_module, "datetime")
-        else __import__("datetime").datetime.now(__import__("datetime").UTC),
-        text=text,
-        title="School notice",
-        attachments=attachments,
-        upstream_source_id="<message@example.test>",
-    )
 
 
 @pytest.mark.parametrize(
@@ -162,9 +149,7 @@ def test_email_review_source_text_includes_attachment_metadata_only():
     document = SourceDocument(
         id="doc-1",
         kind=SourceKind.EMAIL,
-        received_at=__import__("datetime").datetime(
-            2026, 10, 3, 12, 0, tzinfo=__import__("datetime").UTC
-        ),
+        received_at=datetime(2026, 10, 3, 12, 0, tzinfo=UTC),
         text="Friday at 5",
         attachments=attachments,
     )
@@ -187,9 +172,7 @@ def test_email_review_source_text_allows_attachment_only_source():
     document = SourceDocument(
         id="doc-1",
         kind=SourceKind.EMAIL,
-        received_at=__import__("datetime").datetime(
-            2026, 10, 3, 12, 0, tzinfo=__import__("datetime").UTC
-        ),
+        received_at=datetime(2026, 10, 3, 12, 0, tzinfo=UTC),
         text=None,
         attachments=(attachment,),
     )
