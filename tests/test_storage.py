@@ -1849,7 +1849,7 @@ async def test_restart_releases_interrupted_claim_for_retry(monkeypatch):
     assert "source_claims" not in backend.saved[-1]
 
 
-async def test_zero_event_claim_is_retryable_by_current_policy(monkeypatch):
+async def test_zero_event_claim_is_durably_handled(monkeypatch):
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
     await store.async_load()
@@ -1868,8 +1868,13 @@ async def test_zero_event_claim_is_retryable_by_current_policy(monkeypatch):
     assert result.pending is None
     assert result.duplicate_source is False
     assert result.duplicate_events == 0
-    assert store.is_source_duplicate(source_id) is False
-    assert store.get_activity(activity_id)["status"] == "failed"
+    assert store.is_source_duplicate(source_id) is True
+    assert store.is_source_durable(source_id) is True
+    assert store.get_activity(activity_id)["status"] == "no_events"
+    assert "guidance" not in store.get_activity(activity_id)
+    assert backend.saved[-1]["seen_source_fingerprints"] == [
+        source_fingerprint(source_id)
+    ]
     assert "source_claims" not in backend.saved[-1]
 
 

@@ -42,6 +42,10 @@ from .const import (
     SERVICE_SUBMIT_IMAGE,
     SERVICE_SUBMIT_PDF,
 )
+from .email_runtime import (
+    async_setup_email_runtime,
+    email_review_source_text,
+)
 from .models import DraftValidationError, EventDraft
 from .parser import ParseOutcome, async_parse_source as parse_source_with_provider
 from .pdfs import async_pdf_source
@@ -148,6 +152,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except Exception:
                 pass
             raise
+
+    async def process_email_document(
+        source: SourceDocument,
+        activity_id: str,
+    ) -> None:
+        """Send one normalized email through the existing review pipeline."""
+        outcome = await parse_submission(source, activity_id)
+        await pending_store.async_add(
+            source_text=email_review_source_text(source),
+            events=outcome.events,
+            source_id=source.upstream_source_id,
+            calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
+            source_kind=source.kind.value,
+            source_title=source.title,
+            warnings=outcome.warnings,
+            activity_id=activity_id,
+        )
 
     def event_calendar(event: PendingEvent) -> str:
         calendar_entity = event.calendar_entity or entry.data[CONF_CALENDAR_ENTITY]
@@ -619,6 +640,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN, SERVICE_RESOLVE_PENDING_EVENT, handle_resolve_pending_event,
         schema=RESOLVE_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
     )
+    pending_store.email_runtime = await async_setup_email_runtime(
+        hass,
+        entry,
+        pending_store,
+        process_email_document,
+    )
     return True
 
 
@@ -642,6 +669,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_remove(DOMAIN, SERVICE_APPROVE_PENDING_EVENT)
     hass.services.async_remove(DOMAIN, SERVICE_RESOLVE_PENDING_EVENT)
     store = hass.data[DOMAIN][entry.entry_id]
+    email_runtime = getattr(store, "email_runtime", None)
+    if email_runtime is not None:
+        await email_runtime.async_stop()
     if store.active_submissions:
         await asyncio.gather(*tuple(store.active_submissions), return_exceptions=True)
     hass.data[DOMAIN].pop(entry.entry_id, None)

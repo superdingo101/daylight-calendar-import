@@ -10,13 +10,44 @@ from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
-from .const import CONF_AI_TASK_ENTITY, CONF_CALENDAR_ENTITIES, CONF_CALENDAR_ENTITY, DOMAIN
+from .const import (
+    CONF_AI_TASK_ENTITY,
+    CONF_CALENDAR_ENTITIES,
+    CONF_CALENDAR_ENTITY,
+    CONF_EMAIL_ENABLED,
+    CONF_EMAIL_HOST,
+    CONF_EMAIL_MAILBOX,
+    CONF_EMAIL_PASSWORD,
+    CONF_EMAIL_PORT,
+    CONF_EMAIL_USERNAME,
+    CONF_EMAIL_VERIFY_SSL,
+    DOMAIN,
+)
+from .direct_imap import (
+    DirectImapAuthenticationError,
+    DirectImapError,
+    DirectImapMailboxError,
+    DirectImapSource,
+)
+from .email_runtime import (
+    DEFAULT_EMAIL_MAILBOX,
+    DEFAULT_EMAIL_PORT,
+    direct_imap_settings_from_options,
+)
 
 
 class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Configure Daylight Calendar Import."""
 
     VERSION = 2
+
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Create the Direct IMAP options flow."""
+        del config_entry
+        return DaylightCalendarImportOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -70,3 +101,119 @@ class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+
+
+
+class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
+    """Configure optional self-hosted Direct IMAP ingestion."""
+
+    async def async_step_init(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> FlowResult:
+        """Enable or disable email ingestion."""
+        current = self.config_entry.options
+        if user_input is not None:
+            if not user_input[CONF_EMAIL_ENABLED]:
+                return self.async_create_entry(
+                    data={**current, CONF_EMAIL_ENABLED: False}
+                )
+            return await self.async_step_email()
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_EMAIL_ENABLED,
+                    default=current.get(CONF_EMAIL_ENABLED, False),
+                ): selector.BooleanSelector(),
+            }
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=schema,
+        )
+
+    async def async_step_email(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> FlowResult:
+        """Validate and save Direct IMAP connection options."""
+        current = self.config_entry.options
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            password = (
+                user_input.get(CONF_EMAIL_PASSWORD)
+                or current.get(CONF_EMAIL_PASSWORD, "")
+            )
+            options = {
+                CONF_EMAIL_ENABLED: True,
+                **user_input,
+                CONF_EMAIL_PASSWORD: password,
+            }
+            try:
+                settings = direct_imap_settings_from_options(
+                    self.config_entry.entry_id,
+                    options,
+                )
+                await DirectImapSource(settings).async_validate()
+            except DirectImapAuthenticationError:
+                errors["base"] = "invalid_auth"
+            except DirectImapMailboxError:
+                errors["base"] = "invalid_mailbox"
+            except ValueError:
+                errors["base"] = "invalid_email_config"
+            except DirectImapError:
+                errors["base"] = "cannot_connect"
+            else:
+                return self.async_create_entry(data=options)
+
+        suggested_values = (
+            user_input
+            if user_input is not None
+            else {
+                key: value
+                for key, value in current.items()
+                if key != CONF_EMAIL_PASSWORD
+            }
+        )
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_EMAIL_HOST): selector.TextSelector(),
+                vol.Required(
+                    CONF_EMAIL_PORT,
+                    default=DEFAULT_EMAIL_PORT,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1,
+                        max=65535,
+                        step=1,
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Required(CONF_EMAIL_USERNAME): selector.TextSelector(),
+                vol.Optional(
+                    CONF_EMAIL_PASSWORD,
+                    default="",
+                ): selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        type=selector.TextSelectorType.PASSWORD,
+                    )
+                ),
+                vol.Required(
+                    CONF_EMAIL_MAILBOX,
+                    default=DEFAULT_EMAIL_MAILBOX,
+                ): selector.TextSelector(),
+                vol.Required(
+                    CONF_EMAIL_VERIFY_SSL,
+                    default=True,
+                ): selector.BooleanSelector(),
+            }
+        )
+        return self.async_show_form(
+            step_id="email",
+            data_schema=self.add_suggested_values_to_schema(
+                schema,
+                suggested_values,
+            ),
+            errors=errors,
+        )

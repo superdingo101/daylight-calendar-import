@@ -34,6 +34,15 @@ The parser instructs the AI not to invent missing event data. Invalid individual
 
 The current minimum supported Home Assistant version is **2026.7.4**. CI tests that version explicitly alongside the current development test environment.
 
+
+## Upcoming v0.5 Direct IMAP ingestion
+
+The current development branch adds optional self-hosted Direct IMAP ingestion for the upcoming v0.5 release. Existing installations enable it from the integration's **Options** flow and provide an IMAP host, port, username, password/app password, mailbox, and TLS verification setting. Saved passwords remain server-side when the options form is reopened; leaving the password field blank keeps the existing credential.
+
+The v0.5 Direct IMAP runtime uses a deliberately bounded transport policy: it polls the selected mailbox for unseen, undeleted messages immediately at setup and every five minutes, does not overlap polling cycles, and marks a message seen only after its source identity is durably handled locally. Normalized messages reuse the existing parser, pending-review store, default calendar, lifecycle history, deduplication, and temporary attachment-staging pipeline. Failed normalization, parsing, storage, or acknowledgement remains retryable and is reported through sanitized aggregate logging.
+
+Sender allowlisting, leaving successfully handled messages unread, custom IMAP searches/flags, MOVE rules, OAuth/provider-specific setup, multiple mailboxes/accounts, and hosted forwarding are intentionally not part of this bounded v0.5 Direct IMAP surface; those require additional transport checkpoint/search semantics rather than another UI toggle.
+
 ## Installation
 
 ### HACS custom repository
@@ -89,7 +98,7 @@ Parser capabilities validate media type, attachment count, aggregate size, and t
 
 The canonical public client/server contract for the future managed parser is documented in [`docs/hosted-api.md`](docs/hosted-api.md), with executable JSON Schemas under [`schemas/hosted/v1/`](schemas/hosted/v1/). The private `daylight-cloud` service must implement and contract-test against these public schemas; review, deduplication, conflict detection, lifecycle state, notifications, and calendar writes remain local to Home Assistant.
 
-Email/SMS ingestion and hosted relay services remain future work.
+Hosted relay services and SMS ingestion remain future work. Direct IMAP ingestion is implemented on the development branch for the upcoming v0.5 release.
 
 ## Tests
 
