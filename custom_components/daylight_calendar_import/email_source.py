@@ -53,6 +53,17 @@ class EmailDisposition:
     move_to_folder: str | None = None
     add_flag: str | None = None
 
+    def __post_init__(self) -> None:
+        """Reject malformed transport-neutral disposition values."""
+        if type(self.mark_seen) is not bool:
+            raise ValueError("mark_seen must be a boolean")
+        for name in ("move_to_folder", "add_flag"):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise ValueError(f"{name} must be a non-empty string or None")
+
 
 @dataclass(frozen=True, slots=True)
 class EmailSourceConfig:
