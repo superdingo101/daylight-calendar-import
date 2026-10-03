@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
+import pytest
+
 from custom_components.daylight_calendar_import.config_flow import (
     DaylightCalendarImportConfigFlow,
     DaylightCalendarImportOptionsFlow,
