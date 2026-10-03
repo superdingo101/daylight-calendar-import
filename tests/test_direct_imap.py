@@ -1192,7 +1192,7 @@ async def test_collect_default_clock_is_timezone_aware() -> None:
     assert envelope.received_at.tzinfo is UTC
 
 
-def test_direct_imap_settings_normalize_sender_allowlist() -> None:
+def test_direct_imap_source_config_normalizes_sender_allowlist() -> None:
     settings = _settings(
         sender_allowlist=(
             "Trusted@Example.Test",
@@ -1203,10 +1203,14 @@ def test_direct_imap_settings_normalize_sender_allowlist() -> None:
     source, _ = _source(FakeImapClient(), settings=settings)
 
     assert settings.sender_allowlist == (
+        "Trusted@Example.Test",
+        "other@example.test",
+        "TRUSTED@example.test",
+    )
+    assert source.config.sender_allowlist == (
         "trusted@example.test",
         "other@example.test",
     )
-    assert source.config.sender_allowlist == settings.sender_allowlist
 
 
 @pytest.mark.parametrize(
@@ -1219,11 +1223,12 @@ def test_direct_imap_settings_normalize_sender_allowlist() -> None:
         (42,),
     ),
 )
-def test_direct_imap_settings_reject_invalid_sender_allowlist(
+def test_direct_imap_source_rejects_invalid_sender_allowlist(
     sender_allowlist: object,
 ) -> None:
+    settings = _settings(sender_allowlist=sender_allowlist)
     with pytest.raises(
         ValueError,
         match="sender_allowlist entries must be valid email addresses",
     ):
-        _settings(sender_allowlist=sender_allowlist)
+        _source(FakeImapClient(), settings=settings)

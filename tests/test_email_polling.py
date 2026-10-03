@@ -1066,3 +1066,42 @@ async def test_named_from_group_is_rejected_without_blocking_later_mail() -> Non
     assert result.processed == 1
     assert store.claim_calls == ["<good-after-group@example.test>"]
     assert processed == ["Good"]
+
+
+
+async def test_message_level_header_defect_is_rejected_without_blocking_later_mail() -> None:
+    malformed = EmailEnvelope(
+        received_at=_RECEIVED_AT,
+        raw_message=(
+            b"\tFrom: attacker@example.test\r\n"
+            b"From: trusted@example.test\r\n"
+            b"Subject: Ambiguous malformed headers\r\n"
+            b"Message-ID: <message-defect@example.test>\r\n\r\n"
+            b"Body"
+        ),
+        provenance=_envelope("base@example.test").provenance,
+    )
+    source = FakeSource(
+        [[
+            malformed,
+            _envelope(
+                "good-after-defect@example.test",
+                subject="Good",
+                sender="trusted@example.test",
+            ),
+        ]],
+        sender_allowlist=("TRUSTED@EXAMPLE.TEST",),
+    )
+    store = FakeStore()
+    processed: list[str | None] = []
+
+    async def processor(document, activity_id):
+        del activity_id
+        processed.append(document.title)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.safety_rejections == 1
+    assert result.processed == 1
+    assert store.claim_calls == ["<good-after-defect@example.test>"]
+    assert processed == ["Good"]

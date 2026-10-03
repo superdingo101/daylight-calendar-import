@@ -41,11 +41,6 @@ class ExactSenderAllowlist:
     senders: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "senders",
-            normalize_sender_allowlist(self.senders),
-        )
         if not self.senders:
             raise ValueError("sender allowlist must contain at least one address")
 
@@ -53,6 +48,9 @@ class ExactSenderAllowlist:
         """Return whether one unambiguous From mailbox is allowlisted."""
         try:
             message = BytesParser(policy=policy.default).parsebytes(raw_message)
+            if getattr(message, "defects", ()):
+                return False
+
             from_headers = list(message.get_all("from", []))
             if len(from_headers) != 1:
                 return False

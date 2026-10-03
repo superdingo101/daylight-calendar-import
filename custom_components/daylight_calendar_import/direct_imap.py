@@ -11,7 +11,6 @@ import re
 import ssl
 from typing import Protocol
 
-from .email_safety import normalize_sender_allowlist
 from .email_source import (
     MAX_IMAP_IDENTIFIER,
     DirectImapReference,
@@ -129,11 +128,6 @@ class DirectImapSettings:
             raise ValueError(_ERR_PORT)
         if type(self.verify_ssl) is not bool:
             raise ValueError(_ERR_VERIFY_SSL)
-        object.__setattr__(
-            self,
-            "sender_allowlist",
-            normalize_sender_allowlist(self.sender_allowlist),
-        )
         if (
             isinstance(self.timeout, bool)
             or not isinstance(self.timeout, (int, float))

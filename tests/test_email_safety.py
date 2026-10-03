@@ -252,3 +252,17 @@ def test_exact_sender_allowlist_rejects_empty_mailbox_group(
     )
 
     assert allowlist.allows(b"mail") is False
+
+
+
+def test_exact_sender_allowlist_rejects_message_level_header_defect() -> None:
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+    raw = (
+        b"\tFrom: attacker@example.test\r\n"
+        b"From: trusted@example.test\r\n"
+        b"Subject: Ambiguous malformed headers\r\n\r\nBody"
+    )
+
+    assert allowlist.allows(raw) is False
