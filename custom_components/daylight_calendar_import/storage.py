@@ -573,6 +573,16 @@ class PendingImportStore:
         """Return whether a source ID is pending, handled, or being processed."""
         return self._source_fingerprint_exists(build_source_fingerprint(source_id))
 
+    def is_source_durable(self, source_id: str) -> bool:
+        """Return whether a source ID is durably pending or already handled."""
+        fingerprint = build_source_fingerprint(source_id)
+        if fingerprint in self._seen_source_fingerprints:
+            return True
+        return any(
+            item.source_fingerprint == fingerprint
+            for item in self._items.values()
+        )
+
     async def async_add(
         self,
         *,
