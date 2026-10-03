@@ -16,7 +16,6 @@ from custom_components.daylight_calendar_import.const import (
     CONF_EMAIL_MAILBOX,
     CONF_EMAIL_PASSWORD,
     CONF_EMAIL_PORT,
-    CONF_EMAIL_SENDER_ALLOWLIST,
     CONF_EMAIL_USERNAME,
     CONF_EMAIL_VERIFY_SSL,
 )
@@ -31,7 +30,6 @@ from custom_components.daylight_calendar_import.email_runtime import (
     async_setup_email_runtime,
     direct_imap_settings_from_options,
     email_review_source_text,
-    parse_sender_allowlist,
 )
 from custom_components.daylight_calendar_import.sources import (
     SourceAttachment,
@@ -60,32 +58,10 @@ def _options(**overrides):
         CONF_EMAIL_PASSWORD: "app-secret",
         CONF_EMAIL_MAILBOX: "INBOX",
         CONF_EMAIL_VERIFY_SSL: True,
-        CONF_EMAIL_SENDER_ALLOWLIST: "",
     }
     values.update(overrides)
     return values
 
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    (
-        (None, ()),
-        ("", ()),
-        (" first@example.test,second@example.test\nthird@example.test ",
-         ("first@example.test", "second@example.test", "third@example.test")),
-    ),
-)
-def test_parse_sender_allowlist(value, expected):
-    assert parse_sender_allowlist(value) == expected
-
-
-def test_parse_sender_allowlist_rejects_non_text():
-    with pytest.raises(
-        ValueError,
-        match="^email_sender_allowlist must be text$",
-    ):
-        parse_sender_allowlist(["trusted@example.test"])
 
 
 def test_direct_imap_settings_from_options_uses_defaults_and_policy():
@@ -114,7 +90,6 @@ def test_direct_imap_settings_from_options_preserves_explicit_values():
                 CONF_EMAIL_PORT: 1993,
                 CONF_EMAIL_MAILBOX: "Calendar",
                 CONF_EMAIL_VERIFY_SSL: False,
-                CONF_EMAIL_SENDER_ALLOWLIST: "trusted@example.test",
             }
         ),
     )
@@ -122,7 +97,7 @@ def test_direct_imap_settings_from_options_preserves_explicit_values():
     assert settings.port == 1993
     assert settings.mailbox == "Calendar"
     assert settings.verify_ssl is False
-    assert settings.sender_allowlist == ("trusted@example.test",)
+    assert settings.sender_allowlist == ()
     assert settings.disposition.mark_seen is True
 
 
