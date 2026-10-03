@@ -36,8 +36,7 @@
           "email_username": "Username",
           "email_password": "Password or app password",
           "email_mailbox": "Mailbox",
-          "email_verify_ssl": "Verify TLS certificate",
-          "email_sender_allowlist": "Allowed sender addresses (one per line or comma-separated)"
+          "email_verify_ssl": "Verify TLS certificate"
         }
       }
     },
