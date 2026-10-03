@@ -168,11 +168,12 @@ async def async_setup_email_runtime(
     processor: EmailDocumentProcessor,
 ) -> EmailPollingRuntime | None:
     """Start Direct IMAP polling when email ingestion is enabled."""
-    if not entry.options.get(CONF_EMAIL_ENABLED, False):
+    options = getattr(entry, "options", {})
+    if not options.get(CONF_EMAIL_ENABLED, False):
         return None
 
     source = DirectImapSource(
-        direct_imap_settings_from_options(entry.entry_id, entry.options)
+        direct_imap_settings_from_options(entry.entry_id, options)
     )
     runtime = EmailPollingRuntime(hass, source, store, processor)
     await runtime.async_start()
