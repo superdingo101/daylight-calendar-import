@@ -140,7 +140,13 @@ def test_config_flow_exposes_options_flow():
 async def test_options_flow_can_disable_email_ingestion():
     flow = DaylightCalendarImportOptionsFlow()
     expected = {"type": "create_entry"}
-    entry = _options_entry({CONF_EMAIL_ENABLED: True})
+    entry = _options_entry({
+        CONF_EMAIL_ENABLED: True,
+        CONF_EMAIL_HOST: "imap.example.test",
+        CONF_EMAIL_USERNAME: "calendar@example.test",
+        CONF_EMAIL_PASSWORD: "app-secret",
+        CONF_EMAIL_MAILBOX: "Calendar",
+    })
 
     with (
         patch.object(
@@ -161,7 +167,13 @@ async def test_options_flow_can_disable_email_ingestion():
 
     assert result is expected
     create_entry.assert_called_once_with(
-        data={CONF_EMAIL_ENABLED: False}
+        data={
+            CONF_EMAIL_ENABLED: False,
+            CONF_EMAIL_HOST: "imap.example.test",
+            CONF_EMAIL_USERNAME: "calendar@example.test",
+            CONF_EMAIL_PASSWORD: "app-secret",
+            CONF_EMAIL_MAILBOX: "Calendar",
+        }
     )
 
 
