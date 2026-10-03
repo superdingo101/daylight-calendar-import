@@ -823,7 +823,10 @@ class PendingImportStore:
 
         async with self._lock:
             source_claims = self._source_claims
-            if activity_id is not None and activity_id in source_claims:
+            source_was_claimed = (
+                activity_id is not None and activity_id in source_claims
+            )
+            if source_was_claimed:
                 if source_fp is None or source_claims[activity_id] != source_fp:
                     raise ValueError("source_id does not match claimed source")
                 source_claims = {
@@ -869,10 +872,22 @@ class PendingImportStore:
                 accepted_fingerprints.add(fingerprint)
 
             if not accepted_events:
-                status = "duplicate" if duplicate_events else "failed"
-                activity = self._finish_submission(activity_id, status,
-                    None if duplicate_events else "No reviewable events were found. Check the source and submit it again.")
-                if source_fp is not None and duplicate_events:
+                status = (
+                    "duplicate"
+                    if duplicate_events
+                    else "no_events"
+                    if source_was_claimed
+                    else "failed"
+                )
+                guidance = (
+                    "No reviewable events were found. Check the source and submit it again."
+                    if status == "failed"
+                    else None
+                )
+                activity = self._finish_submission(activity_id, status, guidance)
+                if source_fp is not None and (
+                    duplicate_events or source_was_claimed
+                ):
                     seen_sources = _remember_fingerprints(
                         self._seen_source_fingerprints,
                         (source_fp,),
