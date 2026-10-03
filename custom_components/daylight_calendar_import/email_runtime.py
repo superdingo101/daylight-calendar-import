@@ -27,6 +27,7 @@ from .direct_imap import DirectImapError, DirectImapSettings, DirectImapSource
 from .email_attachments import async_stage_email_attachments
 from .email_polling import EmailDocumentProcessor, async_poll_email_source
 from .email_source import EmailDisposition
+from .sources import SourceDocument
 from .storage import PendingImportStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -69,6 +70,22 @@ def direct_imap_settings_from_options(
             mark_seen=options.get(CONF_EMAIL_MARK_SEEN, True)
         ),
     )
+
+
+def email_review_source_text(document: SourceDocument) -> str:
+    """Build private review text without retaining attachment bytes."""
+    parts: list[str] = []
+    if document.text:
+        parts.append(document.text)
+    for attachment in document.attachments:
+        label = attachment.filename or attachment.media_type
+        digest = (
+            f" (SHA-256: {attachment.sha256})"
+            if attachment.sha256
+            else ""
+        )
+        parts.append(f"Email attachment: {label}{digest}")
+    return "\n\n".join(parts)
 
 
 class EmailPollingRuntime:
