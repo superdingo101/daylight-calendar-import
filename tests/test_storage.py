@@ -2577,3 +2577,55 @@ async def test_claim_discovery_cancellation_releases_claim(monkeypatch) -> None:
     assert failed is not None
     assert failed["status"] == "failed"
     assert "source_claims" not in backend.saved[-1]
+
+
+
+async def test_discovery_cancellation_preserves_cancel_if_failure_cleanup_fails(
+    monkeypatch,
+) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    async def cancelled_transaction(operation):
+        operation.close()
+        return "activity-cancelled", True
+
+    async def failed_cleanup(_activity_id, _guidance):
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(store, "_async_complete_transaction", cancelled_transaction)
+    monkeypatch.setattr(store, "async_record_source_failure", failed_cleanup)
+
+    with pytest.raises(asyncio.CancelledError):
+        await store.async_begin_source_discovery(
+            source_kind="email",
+            source_title="Email",
+            received_at=datetime.fromisoformat("2026-10-03T12:00:00+00:00"),
+        )
+
+
+async def test_claim_discovery_cancellation_preserves_cancel_if_cleanup_fails(
+    monkeypatch,
+) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    async def cancelled_transaction(operation):
+        operation.close()
+        return True, True
+
+    async def failed_cleanup(_activity_id, _guidance):
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(store, "_async_complete_transaction", cancelled_transaction)
+    monkeypatch.setattr(store, "async_record_source_failure", failed_cleanup)
+
+    with pytest.raises(asyncio.CancelledError):
+        await store.async_claim_source_discovery(
+            "activity-cancelled",
+            source_id="<cancelled@example.test>",
+            source_kind="email",
+            source_title="Cancelled",
+        )
