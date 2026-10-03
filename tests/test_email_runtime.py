@@ -378,7 +378,7 @@ async def test_runtime_stop_is_noop_before_start():
     await runtime.async_stop()
 
 
-async def test_runtime_logs_acknowledgement_failures_from_poll_result(
+async def test_runtime_logs_retryable_failures_from_poll_result(
     monkeypatch,
     caplog,
 ) -> None:
@@ -397,10 +397,10 @@ async def test_runtime_logs_acknowledgement_failures_from_poll_result(
                 claimed=1,
                 processed=1,
                 duplicates=2,
-                normalization_failures=0,
-                processing_failures=0,
+                normalization_failures=2,
+                processing_failures=3,
                 acknowledged=1,
-                acknowledgement_failures=2,
+                acknowledgement_failures=4,
             )
         ),
     )
@@ -408,7 +408,8 @@ async def test_runtime_logs_acknowledgement_failures_from_poll_result(
     await runtime._async_poll()
 
     assert caplog.records[-1].getMessage() == (
-        "Direct IMAP acknowledgement failed for 2 message(s)"
+        "Direct IMAP poll completed with retryable failures: "
+        "normalization=2 processing=3 acknowledgement=4"
     )
 
 
@@ -441,4 +442,4 @@ async def test_runtime_does_not_warn_when_acknowledgements_succeed(
 
     await runtime._async_poll()
 
-    assert "acknowledgement failed" not in caplog.text.lower()
+    assert "retryable failures" not in caplog.text.lower()
