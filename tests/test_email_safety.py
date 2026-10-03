@@ -85,6 +85,15 @@ def test_exact_sender_allowlist_accepts_display_name_and_case_insensitively() ->
             b"From: blocked@example.test\r\n"
             b"Subject: Blocked\r\n\r\nBody"
         ),
+        (
+            b"From: trusted@example.test,\r\n"
+            b"Subject: Trailing comma\r\n\r\nBody"
+        ),
+        (
+            b"From : attacker@example.test\r\n"
+            b"From: trusted@example.test\r\n"
+            b"Subject: Invalid From field name\r\n\r\nBody"
+        ),
     ),
 )
 def test_exact_sender_allowlist_rejects_nonmatching_or_ambiguous_from(
@@ -266,3 +275,34 @@ def test_exact_sender_allowlist_rejects_message_level_header_defect() -> None:
     )
 
     assert allowlist.allows(raw) is False
+
+
+
+def test_exact_sender_allowlist_rejects_disagreement_between_parsers(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        email_safety,
+        "getaddresses",
+        lambda _values, *, strict: [("", "other@example.test")],
+    )
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+
+    assert allowlist.allows(_raw_from("trusted@example.test")) is False
+
+
+def test_exact_sender_allowlist_rejects_empty_strict_address(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        email_safety,
+        "getaddresses",
+        lambda _values, *, strict: [("", "")],
+    )
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+
+    assert allowlist.allows(_raw_from("trusted@example.test")) is False
