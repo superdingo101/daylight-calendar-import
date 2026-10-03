@@ -74,11 +74,18 @@ class FakeSource:
         cycles: list[list[EmailEnvelope] | Exception],
         *,
         sender_allowlist: tuple[str, ...] = (),
+        disposition: EmailDisposition = EmailDisposition(),
+        ack_error: BaseException | None = None,
     ) -> None:
         self._cycles = cycles
         self.calls = 0
+        self.ack_error = ack_error
+        self.ack_calls: list[
+            tuple[EmailProvenance, EmailDisposition]
+        ] = []
         self._config = EmailSourceConfig(
             source_id="primary-email",
+            disposition=disposition,
             sender_allowlist=sender_allowlist,
         )
 
@@ -100,7 +107,9 @@ class FakeSource:
         *,
         disposition: EmailDisposition,
     ) -> None:
-        raise AssertionError("polling must not acknowledge upstream messages")
+        self.ack_calls.append((provenance, disposition))
+        if self.ack_error is not None:
+            raise self.ack_error
 
 
 class FakeStore:
@@ -112,6 +121,7 @@ class FakeStore:
         self.claim_requests: list[dict[str, object]] = []
         self.failures: list[str] = []
         self.fail_claim = False
+        self.durable_source_ids: set[str] = set()
         self._counter = 0
 
     async def async_begin_source_submission(
@@ -139,6 +149,9 @@ class FakeStore:
 
     async def async_record_parse_failure(self, activity_id: str) -> None:
         self.failures.append(activity_id)
+
+    def is_source_durable(self, source_id: str) -> bool:
+        return source_id in self.durable_source_ids
 
 
 async def test_poll_processes_every_eligible_message_in_one_cycle() -> None:
@@ -1105,3 +1118,163 @@ async def test_message_level_header_defect_is_rejected_without_blocking_later_ma
     assert result.processed == 1
     assert store.claim_calls == ["<good-after-defect@example.test>"]
     assert processed == ["Good"]
+
+
+
+async def test_poll_acknowledges_only_after_durable_processing() -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source = FakeSource(
+        [[_envelope("durable@example.test")]],
+        disposition=disposition,
+    )
+    store = FakeStore()
+
+    async def processor(document, _activity_id):
+        assert source.ack_calls == []
+        assert document.upstream_source_id is not None
+        store.durable_source_ids.add(document.upstream_source_id)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.processed == 1
+    assert result.acknowledged == 1
+    assert result.acknowledgement_failures == 0
+    assert source.ack_calls == [
+        (_envelope("durable@example.test").provenance, disposition)
+    ]
+
+
+async def test_poll_leaves_upstream_untouched_without_durable_outcome() -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source = FakeSource(
+        [[_envelope("retry@example.test")]],
+        disposition=disposition,
+    )
+    store = FakeStore()
+
+    async def processor(_document, _activity_id):
+        return None
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.processed == 1
+    assert result.acknowledged == 0
+    assert result.acknowledgement_failures == 0
+    assert source.ack_calls == []
+
+
+async def test_poll_acknowledges_durable_duplicate_after_restart() -> None:
+    disposition = EmailDisposition(move_to_folder="Processed")
+    source = FakeSource(
+        [[_envelope("restart@example.test")]],
+        disposition=disposition,
+    )
+    store = FakeStore()
+    source_id = "<restart@example.test>"
+    store.claimed_source_ids.add(source_id)
+    store.durable_source_ids.add(source_id)
+
+    async def processor(document, activity_id):
+        raise AssertionError((document, activity_id))
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.duplicates == 1
+    assert result.processed == 0
+    assert result.acknowledged == 1
+    assert source.ack_calls == [
+        (_envelope("restart@example.test").provenance, disposition)
+    ]
+
+
+async def test_poll_does_not_acknowledge_inflight_duplicate() -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source = FakeSource(
+        [[_envelope("inflight@example.test")]],
+        disposition=disposition,
+    )
+    store = FakeStore()
+    store.claimed_source_ids.add("<inflight@example.test>")
+
+    async def processor(document, activity_id):
+        raise AssertionError((document, activity_id))
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.duplicates == 1
+    assert result.acknowledged == 0
+    assert source.ack_calls == []
+
+
+async def test_poll_never_acknowledges_processing_failure() -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source = FakeSource(
+        [[_envelope("failed@example.test")]],
+        disposition=disposition,
+    )
+    store = FakeStore()
+
+    async def processor(document, _activity_id):
+        assert document.upstream_source_id is not None
+        store.durable_source_ids.add(document.upstream_source_id)
+        raise RuntimeError("AI unavailable")
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.processing_failures == 1
+    assert result.acknowledged == 0
+    assert source.ack_calls == []
+
+
+async def test_poll_acknowledgement_failure_is_retryable_and_later_mail_continues() -> None:
+    disposition = EmailDisposition(mark_seen=True)
+
+    class FailingOnceSource(FakeSource):
+        async def async_acknowledge(
+            self,
+            provenance: EmailProvenance,
+            *,
+            disposition: EmailDisposition,
+        ) -> None:
+            self.ack_calls.append((provenance, disposition))
+            if len(self.ack_calls) == 1:
+                raise RuntimeError("mailbox unavailable")
+
+    source = FailingOnceSource(
+        [[
+            _envelope("first-ack@example.test", subject="First"),
+            _envelope("second-ack@example.test", subject="Second"),
+        ]],
+        disposition=disposition,
+    )
+    store = FakeStore()
+
+    async def processor(document, _activity_id):
+        assert document.upstream_source_id is not None
+        store.durable_source_ids.add(document.upstream_source_id)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.processed == 2
+    assert result.acknowledged == 1
+    assert result.acknowledgement_failures == 1
+    assert len(source.ack_calls) == 2
+
+
+async def test_poll_acknowledgement_cancellation_propagates() -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source = FakeSource(
+        [[_envelope("ack-cancel@example.test")]],
+        disposition=disposition,
+        ack_error=asyncio.CancelledError(),
+    )
+    store = FakeStore()
+
+    async def processor(document, _activity_id):
+        assert document.upstream_source_id is not None
+        store.durable_source_ids.add(document.upstream_source_id)
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_poll_email_source(source, store, processor)
+
+    assert len(source.ack_calls) == 1
