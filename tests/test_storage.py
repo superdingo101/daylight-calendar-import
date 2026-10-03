@@ -2307,3 +2307,14 @@ async def test_source_durable_excludes_live_claim_and_includes_pending(
 
     assert result.pending is not None
     assert store.is_source_durable(source_id) is True
+
+
+
+async def test_source_durable_includes_handled_history(monkeypatch) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<handled@example.test>"
+    store._seen_source_fingerprints = (source_fingerprint(source_id),)
+
+    assert store.is_source_durable(source_id) is True
