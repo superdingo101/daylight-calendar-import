@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from email import policy
@@ -11,8 +10,27 @@ from email.parser import BytesParser
 from email.utils import getaddresses
 
 _ERR_ALLOWLIST = "sender_allowlist entries must be valid email addresses"
-_HEADER_BODY_BOUNDARY = re.compile(br"\r\n\r\n|\n\n|\r\r")
-_MALFORMED_FROM_FIELD_NAME = re.compile(br"(?im)^from[ \t]+:")
+
+
+def _raw_header_lines(raw_message: bytes) -> tuple[bytes, ...]:
+    """Return header lines with CRLF, LF, and bare CR normalized uniformly."""
+    normalized = raw_message.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    header_block = normalized.partition(b"\n\n")[0]
+    return tuple(header_block.split(b"\n"))
+
+
+def _has_malformed_from_field_name(raw_message: bytes) -> bool:
+    """Return whether a raw header line uses whitespace before the From colon."""
+    for line in _raw_header_lines(raw_message):
+        if line[:4].casefold() != b"from":
+            continue
+        remainder = line[4:]
+        if (
+            remainder.startswith((b" ", b"\t"))
+            and remainder.lstrip(b" \t").startswith(b":")
+        ):
+            return True
+    return False
 
 
 def _normalize_exact_mailbox(value: object) -> str:
@@ -56,8 +74,7 @@ class ExactSenderAllowlist:
     def allows(self, raw_message: bytes) -> bool:
         """Return whether one unambiguous From mailbox is allowlisted."""
         try:
-            header_block = _HEADER_BODY_BOUNDARY.split(raw_message, maxsplit=1)[0]
-            if _MALFORMED_FROM_FIELD_NAME.search(header_block):
+            if _has_malformed_from_field_name(raw_message):
                 return False
 
             message = BytesParser(policy=policy.default).parsebytes(raw_message)

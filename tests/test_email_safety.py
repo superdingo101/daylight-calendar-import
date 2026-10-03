@@ -94,6 +94,12 @@ def test_exact_sender_allowlist_accepts_display_name_and_case_insensitively() ->
             b"From: trusted@example.test\r\n"
             b"Subject: Invalid From field name\r\n\r\nBody"
         ),
+        (
+            b"Subject:x\r"
+            b"From: trusted@example.test\r"
+            b"From : attacker@example.test\r\r"
+            b"Body"
+        ),
     ),
 )
 def test_exact_sender_allowlist_rejects_nonmatching_or_ambiguous_from(
@@ -305,3 +311,10 @@ def test_exact_sender_allowlist_rejects_empty_strict_address(
     )
 
     assert allowlist.allows(_raw_from("trusted@example.test")) is False
+
+
+
+def test_raw_header_lines_normalize_supported_line_endings() -> None:
+    assert email_safety._raw_header_lines(
+        b"One: 1\r\nTwo: 2\rThree: 3\n\nBody"
+    ) == (b"One: 1", b"Two: 2", b"Three: 3")
