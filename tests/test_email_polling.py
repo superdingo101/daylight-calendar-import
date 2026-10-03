@@ -1444,3 +1444,106 @@ async def test_poll_duplicate_retains_its_discovery_activity_id() -> None:
     assert result.duplicates == 1
     assert store.discovery_calls[0]["activity_id"] == "activity-1"
     assert store.claim_requests[0]["source_id"] == "<duplicate-lifecycle@example.test>"
+
+
+
+async def test_poll_counts_multiple_sender_rejections() -> None:
+    source = FakeSource(
+        [[
+            _envelope(
+                "blocked-one@example.test",
+                sender="blocked-one@example.test",
+            ),
+            _envelope(
+                "blocked-two@example.test",
+                sender="blocked-two@example.test",
+            ),
+        ]],
+        sender_allowlist=("trusted@example.test",),
+    )
+    store = FakeStore()
+
+    async def processor(document, activity_id):
+        raise AssertionError((document, activity_id))
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.discovered == 2
+    assert result.safety_rejections == 2
+    assert result.claimed == 0
+    assert len(store.source_failures) == 2
+
+
+@pytest.mark.parametrize(
+    ("ack_error", "expected_acknowledged", "expected_failures"),
+    (
+        (None, 2, 0),
+        (RuntimeError("mailbox unavailable"), 0, 2),
+    ),
+)
+async def test_poll_counts_multiple_duplicate_acknowledgement_outcomes(
+    ack_error: BaseException | None,
+    expected_acknowledged: int,
+    expected_failures: int,
+) -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source_ids = (
+        "<duplicate-ack-one@example.test>",
+        "<duplicate-ack-two@example.test>",
+    )
+    source = FakeSource(
+        [[
+            _envelope("duplicate-ack-one@example.test"),
+            _envelope("duplicate-ack-two@example.test"),
+        ]],
+        disposition=disposition,
+        ack_error=ack_error,
+    )
+    store = FakeStore()
+    store.claimed_source_ids.update(source_ids)
+    store.durable_source_ids.update(source_ids)
+
+    async def processor(document, activity_id):
+        raise AssertionError((document, activity_id))
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.duplicates == 2
+    assert result.acknowledged == expected_acknowledged
+    assert result.acknowledgement_failures == expected_failures
+    assert len(source.ack_calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("ack_error", "expected_acknowledged", "expected_failures"),
+    (
+        (None, 2, 0),
+        (RuntimeError("mailbox unavailable"), 0, 2),
+    ),
+)
+async def test_poll_counts_multiple_processed_acknowledgement_outcomes(
+    ack_error: BaseException | None,
+    expected_acknowledged: int,
+    expected_failures: int,
+) -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source = FakeSource(
+        [[
+            _envelope("processed-ack-one@example.test"),
+            _envelope("processed-ack-two@example.test"),
+        ]],
+        disposition=disposition,
+        ack_error=ack_error,
+    )
+    store = FakeStore()
+
+    async def processor(document, _activity_id):
+        assert document.upstream_source_id is not None
+        store.durable_source_ids.add(document.upstream_source_id)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.processed == 2
+    assert result.acknowledged == expected_acknowledged
+    assert result.acknowledgement_failures == expected_failures
+    assert len(source.ack_calls) == 2
