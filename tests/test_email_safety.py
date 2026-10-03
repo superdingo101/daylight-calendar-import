@@ -486,3 +486,254 @@ def test_large_body_does_not_affect_bounded_header_extraction() -> None:
     raw = header + b"\r\n\r\n" + (b"x" * 1_000_000)
 
     assert email_safety._raw_header_block(raw) == header
+
+
+
+def test_raw_header_validation_rejects_leading_tab_continuation() -> None:
+    header_block = (
+        b"\tcontinued-without-field\r\n"
+        b"From: trusted@example.test"
+    )
+
+    assert email_safety._has_invalid_header_field_name(header_block) is True
+
+
+def test_raw_header_validation_allows_tab_folding_after_field() -> None:
+    header_block = (
+        b"Subject: Event\r\n"
+        b"\tcontinued subject\r\n"
+        b"From: trusted@example.test"
+    )
+
+    assert email_safety._has_invalid_header_field_name(header_block) is False
+
+
+def test_raw_header_validation_checks_lines_after_fold() -> None:
+    header_block = (
+        b"Subject: Event\r\n"
+        b" continued subject\r\n"
+        b"MissingColon"
+    )
+
+    assert email_safety._has_invalid_header_field_name(header_block) is True
+
+
+def test_raw_header_validation_allows_colon_in_field_value() -> None:
+    header_block = (
+        b"Subject: time: 17:00\r\n"
+        b"From: trusted@example.test"
+    )
+
+    assert email_safety._has_invalid_header_field_name(header_block) is False
+
+
+@pytest.mark.parametrize("field_name", (b"!", b"~"))
+def test_raw_header_validation_accepts_printable_field_name_boundaries(
+    field_name: bytes,
+) -> None:
+    assert (
+        email_safety._has_invalid_header_field_name(
+            field_name + b": value"
+        )
+        is False
+    )
+
+
+def test_raw_header_validation_rejects_del_in_field_name() -> None:
+    assert (
+        email_safety._has_invalid_header_field_name(
+            b"Bad\x7fName: value"
+        )
+        is True
+    )
+
+
+def test_canonical_header_bytes_are_exact() -> None:
+    assert email_safety._canonical_header_bytes(
+        b"One: 1\nTwo: 2"
+    ) == b"One: 1\r\nTwo: 2\r\n\r\n"
+
+
+def test_exact_sender_allowlist_empty_error_message_is_exact() -> None:
+    with pytest.raises(ValueError) as caught:
+        email_safety.ExactSenderAllowlist(())
+
+    assert str(caught.value) == "sender allowlist must contain at least one address"
+
+
+def test_exact_sender_allowlist_rejects_message_defect_before_valid_sender(
+    monkeypatch,
+) -> None:
+    class FakeAddress:
+        addr_spec = "trusted@example.test"
+
+    class FakeGroup:
+        display_name = None
+        addresses = (FakeAddress(),)
+
+    class FakeHeader:
+        defects = ()
+        groups = (FakeGroup(),)
+
+    class FakeMessage:
+        defects = (ValueError("defective message"),)
+
+        def get_all(self, name, default):
+            assert (name, default) == ("from", [])
+            return [FakeHeader()]
+
+        def raw_items(self):
+            return (("From", "trusted@example.test"),)
+
+    class FakeParser:
+        def parsebytes(self, _raw_headers):
+            return FakeMessage()
+
+    monkeypatch.setattr(
+        email_safety,
+        "BytesHeaderParser",
+        lambda **_kwargs: FakeParser(),
+    )
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+
+    assert allowlist.allows(b"X: y\r\n\r\n") is False
+
+
+def test_exact_sender_allowlist_rejects_header_defect_before_valid_sender(
+    monkeypatch,
+) -> None:
+    class FakeAddress:
+        addr_spec = "trusted@example.test"
+
+    class FakeGroup:
+        display_name = None
+        addresses = (FakeAddress(),)
+
+    class FakeHeader:
+        defects = (ValueError("defective From"),)
+        groups = (FakeGroup(),)
+
+    class FakeMessage:
+        defects = ()
+
+        def get_all(self, name, default):
+            assert (name, default) == ("from", [])
+            return [FakeHeader()]
+
+        def raw_items(self):
+            return (("From", "trusted@example.test"),)
+
+    class FakeParser:
+        def parsebytes(self, _raw_headers):
+            return FakeMessage()
+
+    monkeypatch.setattr(
+        email_safety,
+        "BytesHeaderParser",
+        lambda **_kwargs: FakeParser(),
+    )
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+
+    assert allowlist.allows(b"X: y\r\n\r\n") is False
+
+
+def test_exact_sender_allowlist_requires_exact_get_all_call(
+    monkeypatch,
+) -> None:
+    class FakeAddress:
+        addr_spec = "trusted@example.test"
+
+    class FakeGroup:
+        display_name = None
+        addresses = (FakeAddress(),)
+
+    class FakeHeader:
+        defects = ()
+        groups = (FakeGroup(),)
+
+    class FakeMessage:
+        defects = ()
+
+        def get_all(self, name, default):
+            if name == "from" and default == []:
+                return [FakeHeader()]
+            return []
+
+        def raw_items(self):
+            return (("From", "trusted@example.test"),)
+
+    class FakeParser:
+        def parsebytes(self, _raw_headers):
+            return FakeMessage()
+
+    monkeypatch.setattr(
+        email_safety,
+        "BytesHeaderParser",
+        lambda **_kwargs: FakeParser(),
+    )
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+
+    assert allowlist.allows(b"X: y\r\n\r\n") is True
+
+
+def test_exact_sender_allowlist_accepts_group_without_display_name_attribute(
+    monkeypatch,
+) -> None:
+    class FakeAddress:
+        addr_spec = "trusted@example.test"
+
+    class FakeGroup:
+        addresses = (FakeAddress(),)
+
+    class FakeHeader:
+        defects = ()
+        groups = (FakeGroup(),)
+
+    class FakeMessage:
+        defects = ()
+
+        def get_all(self, name, default):
+            assert (name, default) == ("from", [])
+            return [FakeHeader()]
+
+        def raw_items(self):
+            return (("From", "trusted@example.test"),)
+
+    class FakeParser:
+        def parsebytes(self, _raw_headers):
+            return FakeMessage()
+
+    monkeypatch.setattr(
+        email_safety,
+        "BytesHeaderParser",
+        lambda **_kwargs: FakeParser(),
+    )
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+
+    assert allowlist.allows(b"X: y\r\n\r\n") is True
+
+
+def test_exact_sender_allowlist_rejects_multiple_strict_addresses(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        email_safety,
+        "getaddresses",
+        lambda _values, *, strict: [
+            ("", "trusted@example.test"),
+            ("", "other@example.test"),
+        ],
+    )
+    allowlist = email_safety.ExactSenderAllowlist(
+        ("trusted@example.test",)
+    )
+
+    assert allowlist.allows(_raw_from("trusted@example.test")) is False
