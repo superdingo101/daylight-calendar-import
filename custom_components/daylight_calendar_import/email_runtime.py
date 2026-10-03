@@ -9,14 +9,13 @@ import logging
 import re
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
     CONF_EMAIL_ENABLED,
     CONF_EMAIL_HOST,
     CONF_EMAIL_MAILBOX,
-    CONF_EMAIL_MARK_SEEN,
     CONF_EMAIL_PASSWORD,
     CONF_EMAIL_PORT,
     CONF_EMAIL_SENDER_ALLOWLIST,
@@ -66,9 +65,7 @@ def direct_imap_settings_from_options(
         sender_allowlist=parse_sender_allowlist(
             options.get(CONF_EMAIL_SENDER_ALLOWLIST, "")
         ),
-        disposition=EmailDisposition(
-            mark_seen=options.get(CONF_EMAIL_MARK_SEEN, True)
-        ),
+        disposition=EmailDisposition(mark_seen=True),
     )
 
 
@@ -128,6 +125,7 @@ class EmailPollingRuntime:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
+    @callback
     def _schedule_poll(self, _now: object) -> None:
         """Start a poll unless one is already active."""
         if self._task is not None and not self._task.done():
