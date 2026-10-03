@@ -1278,3 +1278,27 @@ async def test_poll_acknowledgement_cancellation_propagates() -> None:
         await async_poll_email_source(source, store, processor)
 
     assert len(source.ack_calls) == 1
+
+
+
+async def test_poll_counts_duplicate_acknowledgement_failure() -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source = FakeSource(
+        [[_envelope("duplicate-ack-fails@example.test")]],
+        disposition=disposition,
+        ack_error=RuntimeError("mailbox unavailable"),
+    )
+    store = FakeStore()
+    source_id = "<duplicate-ack-fails@example.test>"
+    store.claimed_source_ids.add(source_id)
+    store.durable_source_ids.add(source_id)
+
+    async def processor(document, activity_id):
+        raise AssertionError((document, activity_id))
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.duplicates == 1
+    assert result.acknowledged == 0
+    assert result.acknowledgement_failures == 1
+    assert len(source.ack_calls) == 1
