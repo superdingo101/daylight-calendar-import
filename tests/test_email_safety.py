@@ -136,7 +136,7 @@ def test_exact_sender_allowlist_rejects_defective_from_header(
         ("trusted@example.test",)
     )
 
-    assert allowlist.allows(b"mail") is False
+    assert allowlist.allows(b"X: y\r\n\r\n") is False
 
 
 def test_exact_sender_allowlist_rejects_parser_failure(monkeypatch) -> None:
@@ -153,20 +153,29 @@ def test_exact_sender_allowlist_rejects_parser_failure(monkeypatch) -> None:
         ("trusted@example.test",)
     )
 
-    assert allowlist.allows(b"mail") is False
+    assert allowlist.allows(b"X: y\r\n\r\n") is False
 
 
 def test_exact_sender_allowlist_rejects_empty_addr_spec(monkeypatch) -> None:
     class FakeAddress:
         addr_spec = " "
 
-    class FakeHeader:
-        defects = ()
+    class FakeGroup:
+        display_name = None
         addresses = (FakeAddress(),)
 
+    class FakeHeader:
+        defects = ()
+        groups = (FakeGroup(),)
+
     class FakeMessage:
+        defects = ()
+
         def get_all(self, _name, _default):
             return [FakeHeader()]
+
+        def raw_items(self):
+            return (("From", "trusted@example.test"),)
 
     class FakeParser:
         def parsebytes(self, _raw_message):
@@ -181,7 +190,7 @@ def test_exact_sender_allowlist_rejects_empty_addr_spec(monkeypatch) -> None:
         ("trusted@example.test",)
     )
 
-    assert allowlist.allows(b"mail") is False
+    assert allowlist.allows(b"X: y\r\n\r\n") is False
 
 
 def test_normalize_sender_allowlist_rejects_missing_username_or_domain(
@@ -266,7 +275,7 @@ def test_exact_sender_allowlist_rejects_empty_mailbox_group(
         ("trusted@example.test",)
     )
 
-    assert allowlist.allows(b"mail") is False
+    assert allowlist.allows(b"X: y\r\n\r\n") is False
 
 
 
