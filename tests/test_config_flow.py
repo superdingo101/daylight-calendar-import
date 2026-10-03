@@ -290,6 +290,33 @@ async def test_options_flow_reports_invalid_imap_credentials():
 
 
 
+async def test_options_flow_enable_form_defaults_to_disabled_without_options():
+    flow = DaylightCalendarImportOptionsFlow()
+    expected = {"type": "form"}
+    entry = _options_entry()
+
+    with (
+        patch.object(
+            DaylightCalendarImportOptionsFlow,
+            "config_entry",
+            new_callable=PropertyMock,
+            return_value=entry,
+        ),
+        patch.object(
+            flow,
+            "async_show_form",
+            Mock(return_value=expected),
+        ) as show_form,
+    ):
+        result = await flow.async_step_init()
+
+    assert result is expected
+    schema = show_form.call_args.kwargs["data_schema"]
+    marker = next(iter(schema.schema))
+    assert marker.schema == CONF_EMAIL_ENABLED
+    assert marker.default() is False
+
+
 async def test_options_flow_shows_enable_form_with_current_value():
     flow = DaylightCalendarImportOptionsFlow()
     expected = {"type": "form"}
@@ -342,7 +369,11 @@ async def test_options_flow_shows_email_form_with_all_fields():
     assert show_form.call_args.kwargs["step_id"] == "email"
     assert show_form.call_args.kwargs["errors"] == {}
     schema = show_form.call_args.kwargs["data_schema"]
-    assert [marker.schema for marker in schema.schema] == [
+    fields = {
+        marker.schema: (marker, field_selector)
+        for marker, field_selector in schema.schema.items()
+    }
+    assert list(fields) == [
         CONF_EMAIL_HOST,
         CONF_EMAIL_PORT,
         CONF_EMAIL_USERNAME,
@@ -350,6 +381,23 @@ async def test_options_flow_shows_email_form_with_all_fields():
         CONF_EMAIL_MAILBOX,
         CONF_EMAIL_VERIFY_SSL,
     ]
+
+    port_marker, port_selector = fields[CONF_EMAIL_PORT]
+    assert port_marker.default() == DEFAULT_EMAIL_PORT
+    assert port_selector.config["min"] == 1
+    assert port_selector.config["max"] == 65535
+    assert port_selector.config["step"] == 1
+    assert port_selector.config["mode"] == "box"
+
+    password_marker, password_selector = fields[CONF_EMAIL_PASSWORD]
+    assert password_marker.default() == ""
+    assert password_selector.config["type"] == "password"
+
+    mailbox_marker, _ = fields[CONF_EMAIL_MAILBOX]
+    assert mailbox_marker.default() == DEFAULT_EMAIL_MAILBOX
+
+    verify_ssl_marker, _ = fields[CONF_EMAIL_VERIFY_SSL]
+    assert verify_ssl_marker.default() is True
 
 
 @pytest.mark.parametrize(
@@ -594,6 +642,45 @@ async def test_options_flow_initial_email_form_uses_persisted_suggestions():
     }
     assert CONF_EMAIL_PASSWORD not in suggested
 
+
+
+async def test_options_flow_rejects_blank_password_on_first_enable():
+    flow = DaylightCalendarImportOptionsFlow()
+    expected = {"type": "form"}
+    entry = _options_entry()
+    user_input = {
+        CONF_EMAIL_HOST: "imap.example.test",
+        CONF_EMAIL_PORT: 993,
+        CONF_EMAIL_USERNAME: "calendar@example.test",
+        CONF_EMAIL_PASSWORD: "",
+        CONF_EMAIL_MAILBOX: "INBOX",
+        CONF_EMAIL_VERIFY_SSL: True,
+    }
+
+    with (
+        patch.object(
+            DaylightCalendarImportOptionsFlow,
+            "config_entry",
+            new_callable=PropertyMock,
+            return_value=entry,
+        ),
+        patch(
+            "custom_components.daylight_calendar_import.config_flow.DirectImapSource",
+            Mock(),
+        ) as source_factory,
+        patch.object(
+            flow,
+            "async_show_form",
+            Mock(return_value=expected),
+        ) as show_form,
+    ):
+        result = await flow.async_step_email(user_input)
+
+    assert result is expected
+    source_factory.assert_not_called()
+    assert show_form.call_args.kwargs["errors"] == {
+        "base": "invalid_email_config"
+    }
 
 
 async def test_options_flow_reuses_saved_password_when_edit_form_is_blank():
