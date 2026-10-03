@@ -119,33 +119,60 @@ class FakeStore:
         self.claimed_source_ids: set[str] = set()
         self.claim_calls: list[str] = []
         self.claim_requests: list[dict[str, object]] = []
+        self.discovery_calls: list[dict[str, object]] = []
+        self.source_failures: list[tuple[str, str]] = []
         self.failures: list[str] = []
         self.fail_claim = False
         self.durable_source_ids: set[str] = set()
+        self._received_at: dict[str, datetime] = {}
         self._counter = 0
 
-    async def async_begin_source_submission(
+    async def async_begin_source_discovery(
         self,
+        *,
+        source_kind: str,
+        source_title: str | None,
+        received_at: datetime,
+    ) -> str:
+        self._counter += 1
+        activity_id = f"activity-{self._counter}"
+        self._received_at[activity_id] = received_at
+        self.discovery_calls.append({
+            "activity_id": activity_id,
+            "source_kind": source_kind,
+            "source_title": source_title,
+            "received_at": received_at,
+        })
+        return activity_id
+
+    async def async_claim_source_discovery(
+        self,
+        activity_id: str,
         *,
         source_id: str,
         source_kind: str,
         source_title: str | None,
-        received_at: datetime,
-    ) -> str | None:
+    ) -> bool:
         self.claim_calls.append(source_id)
         self.claim_requests.append({
             "source_id": source_id,
             "source_kind": source_kind,
             "source_title": source_title,
-            "received_at": received_at,
+            "received_at": self._received_at[activity_id],
         })
         if self.fail_claim:
             raise RuntimeError("storage unavailable")
         if source_id in self.claimed_source_ids:
-            return None
+            return False
         self.claimed_source_ids.add(source_id)
-        self._counter += 1
-        return f"activity-{self._counter}"
+        return True
+
+    async def async_record_source_failure(
+        self,
+        activity_id: str,
+        guidance: str,
+    ) -> None:
+        self.source_failures.append((activity_id, guidance))
 
     async def async_record_parse_failure(self, activity_id: str) -> None:
         self.failures.append(activity_id)
@@ -1302,3 +1329,221 @@ async def test_poll_counts_duplicate_acknowledgement_failure() -> None:
     assert result.acknowledged == 0
     assert result.acknowledgement_failures == 1
     assert len(source.ack_calls) == 1
+
+
+
+async def test_poll_records_discovery_before_normalization_and_reuses_activity_id() -> None:
+    source = FakeSource([[_envelope("lifecycle@example.test", subject="Lifecycle")]])
+    store = FakeStore()
+    observed: list[tuple[str | None, str]] = []
+
+    async def processor(document, activity_id):
+        observed.append((document.title, activity_id))
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.discovered == 1
+    assert result.claimed == 1
+    assert store.discovery_calls == [{
+        "activity_id": "activity-1",
+        "source_kind": "email",
+        "source_title": "Email",
+        "received_at": _RECEIVED_AT,
+    }]
+    assert store.claim_requests == [{
+        "source_id": "<lifecycle@example.test>",
+        "source_kind": "email",
+        "source_title": "Lifecycle",
+        "received_at": _RECEIVED_AT,
+    }]
+    assert observed == [("Lifecycle", "activity-1")]
+
+
+async def test_poll_records_normalization_failure_against_discovery() -> None:
+    broken = EmailEnvelope(
+        received_at=_RECEIVED_AT,
+        raw_message=(
+            b"Subject: Broken\r\n"
+            b"Message-ID: <broken-lifecycle@example.test>\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"Content-Disposition: attachment; filename*\r\n\r\n"
+            b"Body"
+        ),
+        provenance=_envelope("base@example.test").provenance,
+    )
+    source = FakeSource([[broken]])
+    store = FakeStore()
+
+    async def processor(document, activity_id):
+        raise AssertionError((document, activity_id))
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.normalization_failures == 1
+    assert store.claim_calls == []
+    assert len(store.source_failures) == 1
+    activity_id, guidance = store.source_failures[0]
+    assert activity_id == "activity-1"
+    assert "could not be normalized" in guidance
+    assert "left untouched" in guidance
+
+
+async def test_poll_records_sender_rejection_against_discovery() -> None:
+    source = FakeSource(
+        [[_envelope(
+            "blocked-lifecycle@example.test",
+            sender="blocked@example.test",
+        )]],
+        sender_allowlist=("trusted@example.test",),
+    )
+    store = FakeStore()
+
+    async def processor(document, activity_id):
+        raise AssertionError((document, activity_id))
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.safety_rejections == 1
+    assert store.claim_calls == []
+    assert len(store.source_failures) == 1
+    activity_id, guidance = store.source_failures[0]
+    assert activity_id == "activity-1"
+    assert "sender safety policy" in guidance
+    assert "left untouched" in guidance
+
+
+async def test_poll_records_missing_identity_against_discovery() -> None:
+    source = FakeSource(
+        [[_envelope("identity-lifecycle@example.test", upstream_source_id="   ")]]
+    )
+    store = FakeStore()
+
+    async def processor(document, activity_id):
+        raise AssertionError((document, activity_id))
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.normalization_failures == 1
+    assert store.claim_calls == []
+    assert len(store.source_failures) == 1
+    activity_id, guidance = store.source_failures[0]
+    assert activity_id == "activity-1"
+    assert "stable source identity" in guidance
+
+
+async def test_poll_duplicate_retains_its_discovery_activity_id() -> None:
+    source = FakeSource([[_envelope("duplicate-lifecycle@example.test")]])
+    store = FakeStore()
+    store.claimed_source_ids.add("<duplicate-lifecycle@example.test>")
+
+    async def processor(document, activity_id):
+        raise AssertionError((document, activity_id))
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.duplicates == 1
+    assert store.discovery_calls[0]["activity_id"] == "activity-1"
+    assert store.claim_requests[0]["source_id"] == "<duplicate-lifecycle@example.test>"
+
+
+
+async def test_poll_counts_multiple_sender_rejections() -> None:
+    source = FakeSource(
+        [[
+            _envelope(
+                "blocked-one@example.test",
+                sender="blocked-one@example.test",
+            ),
+            _envelope(
+                "blocked-two@example.test",
+                sender="blocked-two@example.test",
+            ),
+        ]],
+        sender_allowlist=("trusted@example.test",),
+    )
+    store = FakeStore()
+
+    async def processor(document, activity_id):
+        raise AssertionError((document, activity_id))
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.discovered == 2
+    assert result.safety_rejections == 2
+    assert result.claimed == 0
+    assert len(store.source_failures) == 2
+
+
+@pytest.mark.parametrize(
+    ("ack_error", "expected_acknowledged", "expected_failures"),
+    (
+        (None, 2, 0),
+        (RuntimeError("mailbox unavailable"), 0, 2),
+    ),
+)
+async def test_poll_counts_multiple_duplicate_acknowledgement_outcomes(
+    ack_error: BaseException | None,
+    expected_acknowledged: int,
+    expected_failures: int,
+) -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source_ids = (
+        "<duplicate-ack-one@example.test>",
+        "<duplicate-ack-two@example.test>",
+    )
+    source = FakeSource(
+        [[
+            _envelope("duplicate-ack-one@example.test"),
+            _envelope("duplicate-ack-two@example.test"),
+        ]],
+        disposition=disposition,
+        ack_error=ack_error,
+    )
+    store = FakeStore()
+    store.claimed_source_ids.update(source_ids)
+    store.durable_source_ids.update(source_ids)
+
+    async def processor(document, activity_id):
+        raise AssertionError((document, activity_id))
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.duplicates == 2
+    assert result.acknowledged == expected_acknowledged
+    assert result.acknowledgement_failures == expected_failures
+    assert len(source.ack_calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("ack_error", "expected_acknowledged", "expected_failures"),
+    (
+        (None, 2, 0),
+        (RuntimeError("mailbox unavailable"), 0, 2),
+    ),
+)
+async def test_poll_counts_multiple_processed_acknowledgement_outcomes(
+    ack_error: BaseException | None,
+    expected_acknowledged: int,
+    expected_failures: int,
+) -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source = FakeSource(
+        [[
+            _envelope("processed-ack-one@example.test"),
+            _envelope("processed-ack-two@example.test"),
+        ]],
+        disposition=disposition,
+        ack_error=ack_error,
+    )
+    store = FakeStore()
+
+    async def processor(document, _activity_id):
+        assert document.upstream_source_id is not None
+        store.durable_source_ids.add(document.upstream_source_id)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.processed == 2
+    assert result.acknowledged == expected_acknowledged
+    assert result.acknowledgement_failures == expected_failures
+    assert len(source.ack_calls) == 2

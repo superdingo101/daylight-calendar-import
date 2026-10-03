@@ -567,3 +567,48 @@ test("failed source activity shows actionable retry guidance", async () => {
   assert.equal(panel._content.querySelectorAll("p").some(node =>
     node.textContent.includes("submit the source again")), true);
 });
+
+
+test("activity renders email discovery processing duplicate and failure labels", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "list_activity") {
+      return {response: {activity: [
+        {id: "discover", title: "Email", status: "discovered",
+          created_at: "2026-10-03T12:00:00Z"},
+        {id: "processing", title: "School concert", status: "processing",
+          created_at: "2026-10-03T12:01:00Z"},
+        {id: "duplicate", title: "School concert", status: "duplicate",
+          created_at: "2026-10-03T12:02:00Z"},
+        {id: "failed", title: "Email", status: "failed",
+          created_at: "2026-10-03T12:03:00Z"},
+      ]}};
+    }
+    return {response: {activity: {
+      id: "discover", title: "Email", status: "discovered",
+      transitions: [
+        {type: "received", at: "2026-10-03T11:59:00Z", event_id: null},
+        {type: "discovered", at: "2026-10-03T12:00:00Z", event_id: null},
+        {type: "processing", at: "2026-10-03T12:00:01Z", event_id: null},
+        {type: "failed", at: "2026-10-03T12:00:02Z", event_id: null},
+      ],
+    }}};
+  }};
+  await flush();
+  await panel.showActivity();
+
+  const text = panel._content.querySelectorAll("p").map(node => node.textContent).join("\n");
+  assert.match(text, /Discovered/);
+  assert.match(text, /Processing/);
+  assert.match(text, /Duplicate/);
+  assert.match(text, /Failed/);
+
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.activityId === "discover").click();
+  await flush();
+  const detail = panel._content.querySelectorAll("li").map(node => node.textContent).join("\n");
+  assert.match(detail, /Discovered/);
+  assert.match(detail, /Processing/);
+  assert.match(detail, /Failed/);
+});

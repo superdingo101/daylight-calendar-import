@@ -2318,3 +2318,459 @@ async def test_source_durable_includes_handled_history(monkeypatch) -> None:
     store._seen_source_fingerprints = (source_fingerprint(source_id),)
 
     assert store.is_source_durable(source_id) is True
+
+
+
+async def test_source_discovery_is_private_durable_and_promotes_same_activity(
+    monkeypatch,
+) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    received = datetime.fromisoformat("2026-10-03T12:00:00+00:00")
+
+    activity_id = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Email",
+        received_at=received,
+    )
+
+    discovered = store.get_activity(activity_id)
+    assert discovered is not None
+    assert discovered["status"] == "discovered"
+    assert discovered["source_kind"] == "email"
+    assert discovered["source_title"] == "Email"
+    assert [step["type"] for step in discovered["transitions"]] == [
+        "received",
+        "discovered",
+    ]
+    assert discovered["created_at"] == received.isoformat()
+    assert "source_text" not in str(discovered)
+    assert "source_claims" not in backend.saved[-1]
+
+    claimed = await store.async_claim_source_discovery(
+        activity_id,
+        source_id="<lifecycle@example.test>",
+        source_kind="email",
+        source_title="School concert",
+    )
+
+    assert claimed is True
+    processing = store.get_activity(activity_id)
+    assert processing is not None
+    assert processing["status"] == "processing"
+    assert processing["source_kind"] == "email"
+    assert processing["source_title"] == "School concert"
+    assert processing["title"] == "School concert"
+    assert [step["type"] for step in processing["transitions"]] == [
+        "received",
+        "discovered",
+        "processing",
+    ]
+    processing_step = processing["transitions"][-1]
+    assert set(processing_step) == {"type", "at", "event_id"}
+    assert processing_step["event_id"] is None
+    assert (
+        datetime.fromisoformat(processing_step["at"]).utcoffset().total_seconds()
+        == 0
+    )
+    assert backend.saved[-1]["source_claims"] == {
+        activity_id: source_fingerprint("<lifecycle@example.test>")
+    }
+
+
+async def test_source_discovery_duplicate_finishes_same_activity(monkeypatch) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    existing = await store.async_add(
+        source_text="existing",
+        events=[draft()],
+        source_id="<duplicate@example.test>",
+    )
+    assert existing.pending is not None
+
+    activity_id = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Email",
+        received_at=datetime.fromisoformat("2026-10-03T12:00:00+00:00"),
+    )
+    claimed = await store.async_claim_source_discovery(
+        activity_id,
+        source_id="<duplicate@example.test>",
+        source_kind="email",
+        source_title=None,
+    )
+
+    assert claimed is False
+    duplicate = store.get_activity(activity_id)
+    assert duplicate is not None
+    assert duplicate["status"] == "duplicate"
+    assert duplicate["source_title"] is None
+    assert duplicate["title"] == "Email"
+    assert [step["type"] for step in duplicate["transitions"]] == [
+        "received",
+        "discovered",
+        "duplicate",
+    ]
+    duplicate_step = duplicate["transitions"][-1]
+    assert set(duplicate_step) == {"type", "at", "event_id"}
+    assert duplicate_step["event_id"] is None
+    assert (
+        datetime.fromisoformat(duplicate_step["at"]).utcoffset().total_seconds()
+        == 0
+    )
+    assert existing.pending is not None
+    assert store.get_activity(existing.pending.id)["status"] == "review_ready"
+    assert [item["id"] for item in store.list_activity()].count(activity_id) == 1
+
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    persisted = restarted.get_activity(activity_id)
+    assert persisted is not None
+    assert persisted["status"] == "duplicate"
+    assert [step["type"] for step in persisted["transitions"]] == [
+        "received",
+        "discovered",
+        "duplicate",
+    ]
+
+
+async def test_discovery_failure_is_visible_and_does_not_create_source_claim(
+    monkeypatch,
+) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    activity_id = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Email",
+        received_at=datetime.fromisoformat("2026-10-03T12:00:00+00:00"),
+    )
+
+    await store.async_record_source_failure(
+        activity_id,
+        "Email could not be normalized and was left untouched.",
+    )
+
+    failed = store.get_activity(activity_id)
+    assert failed is not None
+    assert failed["status"] == "failed"
+    assert failed["guidance"] == (
+        "Email could not be normalized and was left untouched."
+    )
+    assert [step["type"] for step in failed["transitions"]] == [
+        "received",
+        "discovered",
+        "failed",
+    ]
+    assert "source_claims" not in backend.saved[-1]
+
+    save_count = len(backend.saved)
+    await store.async_record_source_failure(activity_id, "ignored")
+    assert len(backend.saved) == save_count
+    assert store.get_activity(activity_id) == failed
+
+
+async def test_claim_source_discovery_rejects_unknown_or_non_discovered_activity(
+    monkeypatch,
+) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    with pytest.raises(
+        ValueError,
+        match="^activity must reference a discovered source$",
+    ):
+        await store.async_claim_source_discovery(
+            "missing",
+            source_id="<missing@example.test>",
+            source_kind="email",
+            source_title="Missing",
+        )
+
+    activity_id = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Email",
+        received_at=datetime.fromisoformat("2026-10-03T12:00:00+00:00"),
+    )
+    assert await store.async_claim_source_discovery(
+        activity_id,
+        source_id="<claimed@example.test>",
+        source_kind="email",
+        source_title="Claimed",
+    )
+    with pytest.raises(
+        ValueError,
+        match="^activity must reference a discovered source$",
+    ):
+        await store.async_claim_source_discovery(
+            activity_id,
+            source_id="<claimed-again@example.test>",
+            source_kind="email",
+            source_title="Claimed again",
+        )
+
+
+async def test_discovery_save_failure_is_atomic(monkeypatch) -> None:
+    backend = FakeStoreBackend()
+    backend.save_error = RuntimeError("disk full")
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    with pytest.raises(RuntimeError, match="disk full"):
+        await store.async_begin_source_discovery(
+            source_kind="email",
+            source_title="Email",
+            received_at=datetime.fromisoformat("2026-10-03T12:00:00+00:00"),
+        )
+
+    assert store.list_activity() == ()
+
+
+async def test_restart_marks_interrupted_discovery_failed(monkeypatch) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    activity_id = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Email",
+        received_at=datetime.fromisoformat("2026-10-03T12:00:00+00:00"),
+    )
+    backend.load_result = backend.saved[-1]
+
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+
+    failed = restarted.get_activity(activity_id)
+    assert failed is not None
+    assert failed["status"] == "failed"
+    assert failed["transitions"][-1]["type"] == "failed"
+    assert failed["guidance"] == (
+        "Processing was interrupted. Check the source and submit it again."
+    )
+    assert backend.saved[-1]["activity"][-1] == failed
+
+
+async def test_discovery_cancellation_finishes_failure_checkpoint(monkeypatch) -> None:
+    backend = BlockingSaveBackend()
+    backend.block_on_attempt = 1
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    task = asyncio.create_task(store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Email",
+        received_at=datetime.fromisoformat("2026-10-03T12:00:00+00:00"),
+    ))
+    await backend.saved_before_block.wait()
+    task.cancel()
+    backend.release_block.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    activity = store.list_activity()[0]
+    assert activity["status"] == "failed"
+    assert activity["guidance"] == (
+        "Source discovery was interrupted. Check the source and try again."
+    )
+    assert [step["type"] for step in activity["transitions"]] == [
+        "received",
+        "discovered",
+        "failed",
+    ]
+
+
+async def test_claim_discovery_cancellation_releases_claim(monkeypatch) -> None:
+    backend = BlockingSaveBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    activity_id = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Email",
+        received_at=datetime.fromisoformat("2026-10-03T12:00:00+00:00"),
+    )
+    backend.block_on_attempt = backend.save_attempts + 1
+
+    task = asyncio.create_task(store.async_claim_source_discovery(
+        activity_id,
+        source_id="<cancelled-lifecycle@example.test>",
+        source_kind="email",
+        source_title="Cancelled",
+    ))
+    await backend.saved_before_block.wait()
+    task.cancel()
+    backend.release_block.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert store.is_source_duplicate("<cancelled-lifecycle@example.test>") is False
+    failed = store.get_activity(activity_id)
+    assert failed is not None
+    assert failed["status"] == "failed"
+    assert failed["guidance"] == (
+        "Source processing was interrupted. Check the source and try again."
+    )
+    assert [step["type"] for step in failed["transitions"]] == [
+        "received",
+        "discovered",
+        "processing",
+        "failed",
+    ]
+    assert "source_claims" not in backend.saved[-1]
+
+
+
+async def test_discovery_cancellation_preserves_cancel_if_failure_cleanup_fails(
+    monkeypatch,
+) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    async def cancelled_transaction(operation):
+        operation.close()
+        return "activity-cancelled", True
+
+    async def failed_cleanup(_activity_id, _guidance):
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(store, "_async_complete_transaction", cancelled_transaction)
+    monkeypatch.setattr(store, "async_record_source_failure", failed_cleanup)
+
+    with pytest.raises(asyncio.CancelledError):
+        await store.async_begin_source_discovery(
+            source_kind="email",
+            source_title="Email",
+            received_at=datetime.fromisoformat("2026-10-03T12:00:00+00:00"),
+        )
+
+
+async def test_claim_discovery_cancellation_preserves_cancel_if_cleanup_fails(
+    monkeypatch,
+) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    async def cancelled_transaction(operation):
+        operation.close()
+        return True, True
+
+    async def failed_cleanup(_activity_id, _guidance):
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(store, "_async_complete_transaction", cancelled_transaction)
+    monkeypatch.setattr(store, "async_record_source_failure", failed_cleanup)
+
+    with pytest.raises(asyncio.CancelledError):
+        await store.async_claim_source_discovery(
+            "activity-cancelled",
+            source_id="<cancelled@example.test>",
+            source_kind="email",
+            source_title="Cancelled",
+        )
+
+
+
+async def test_discovered_activity_is_protected_from_history_eviction(
+    monkeypatch,
+) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    monkeypatch.setattr(storage_module, "ACTIVITY_LIMIT", 0)
+    received = datetime.fromisoformat("2026-10-03T12:00:00+00:00")
+
+    first = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="First",
+        received_at=received,
+    )
+    second = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Second",
+        received_at=received,
+    )
+
+    assert {item["id"] for item in store.list_activity()} == {first, second}
+    assert all(item["status"] == "discovered" for item in store.list_activity())
+
+
+async def test_processing_transition_survives_restart_before_recovery(
+    monkeypatch,
+) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    sibling = (
+        await store.async_add(
+            source_text="existing review",
+            events=[draft()],
+            source_kind="manual_text",
+        )
+    ).pending
+    assert sibling is not None
+    activity_id = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Email",
+        received_at=datetime.fromisoformat("2026-10-03T12:00:00+00:00"),
+    )
+    assert await store.async_claim_source_discovery(
+        activity_id,
+        source_id="<restart-processing@example.test>",
+        source_kind="email",
+        source_title="Restart processing",
+    )
+    assert store.get_activity(sibling.id)["status"] == "review_ready"
+    assert [item["id"] for item in store.list_activity()].count(activity_id) == 1
+
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+
+    recovered = restarted.get_activity(activity_id)
+    assert recovered is not None
+    assert recovered["status"] == "failed"
+    assert recovered["source_kind"] == "email"
+    assert recovered["source_title"] == "Restart processing"
+    assert [step["type"] for step in recovered["transitions"]] == [
+        "received",
+        "discovered",
+        "processing",
+        "failed",
+    ]
+    assert restarted.get_activity(sibling.id)["status"] == "review_ready"
+
+
+async def test_load_clears_orphan_source_claim_and_remains_usable(monkeypatch) -> None:
+    orphan_source = "<orphan@example.test>"
+    backend = FakeStoreBackend(load_result={
+        "items": [],
+        "source_claims": {
+            "orphan-activity": source_fingerprint(orphan_source),
+        },
+    })
+    store = make_store(monkeypatch, backend)
+
+    await store.async_load()
+
+    assert backend.saved[-1] == {"items": []}
+    assert store.is_source_duplicate(orphan_source) is False
+
+    activity_id = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Email",
+        received_at=datetime.fromisoformat("2026-10-03T12:00:00+00:00"),
+    )
+    assert await store.async_claim_source_discovery(
+        activity_id,
+        source_id="<usable-after-load@example.test>",
+        source_kind="email",
+        source_title="Usable",
+    )
