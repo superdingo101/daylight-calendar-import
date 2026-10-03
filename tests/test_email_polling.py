@@ -39,10 +39,13 @@ def _envelope(
     *,
     subject: str = "Event",
     body: str = "Friday at 5",
+    sender: str | None = None,
     upstream_source_id: str | None = None,
 ) -> EmailEnvelope:
+    sender_header = f"From: {sender}\r\n" if sender is not None else ""
     raw = (
-        f"Subject: {subject}\r\n"
+        sender_header
+        + f"Subject: {subject}\r\n"
         f"Message-ID: <{message_id}>\r\n"
         "Content-Type: text/plain; charset=utf-8\r\n\r\n"
         f"{body}"
@@ -66,10 +69,18 @@ def _envelope(
 class FakeSource:
     """Deterministic email source for one or more poll invocations."""
 
-    def __init__(self, cycles: list[list[EmailEnvelope] | Exception]) -> None:
+    def __init__(
+        self,
+        cycles: list[list[EmailEnvelope] | Exception],
+        *,
+        sender_allowlist: tuple[str, ...] = (),
+    ) -> None:
         self._cycles = cycles
         self.calls = 0
-        self._config = EmailSourceConfig(source_id="primary-email")
+        self._config = EmailSourceConfig(
+            source_id="primary-email",
+            sender_allowlist=sender_allowlist,
+        )
 
     @property
     def config(self) -> EmailSourceConfig:
@@ -896,3 +907,201 @@ async def test_claim_release_failure_log_message_is_exact(caplog) -> None:
         "Failed to release email source claim activity-1 during cancellation: "
         "storage unavailable"
     )
+
+
+async def test_sender_allowlist_rejects_before_claim_and_ai_work() -> None:
+    source = FakeSource(
+        [[
+            _envelope(
+                "blocked@example.test",
+                subject="Blocked",
+                sender="blocked@example.test",
+            ),
+            _envelope(
+                "allowed@example.test",
+                subject="Allowed",
+                sender="Trusted Person <TRUSTED@EXAMPLE.TEST>",
+            ),
+        ]],
+        sender_allowlist=("trusted@example.test",),
+    )
+    store = FakeStore()
+    processed: list[str | None] = []
+
+    async def processor(document, activity_id):
+        del activity_id
+        processed.append(document.title)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result == EmailPollResult(
+        discovered=2,
+        claimed=1,
+        processed=1,
+        duplicates=0,
+        normalization_failures=0,
+        processing_failures=0,
+        safety_rejections=1,
+    )
+    assert store.claim_calls == ["<allowed@example.test>"]
+    assert processed == ["Allowed"]
+
+
+@pytest.mark.parametrize(
+    "sender_header",
+    (
+        None,
+        "first@example.test, trusted@example.test",
+        "not-an-address",
+    ),
+)
+async def test_sender_allowlist_rejects_missing_ambiguous_or_malformed_from(
+    sender_header: str | None,
+) -> None:
+    source = FakeSource(
+        [[_envelope("blocked@example.test", sender=sender_header)]],
+        sender_allowlist=("trusted@example.test",),
+    )
+    store = FakeStore()
+    processed = False
+
+    async def processor(document, activity_id):
+        nonlocal processed
+        processed = True
+        raise AssertionError((document, activity_id))
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.safety_rejections == 1
+    assert result.claimed == 0
+    assert processed is False
+    assert store.claim_calls == []
+
+
+async def test_empty_sender_allowlist_preserves_existing_behavior() -> None:
+    source = FakeSource([[_envelope("no-from@example.test")]])
+    store = FakeStore()
+    processed: list[str | None] = []
+
+    async def processor(document, activity_id):
+        del activity_id
+        processed.append(document.title)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.safety_rejections == 0
+    assert result.processed == 1
+    assert processed == ["Event"]
+
+
+async def test_malformed_from_header_is_rejected_without_blocking_later_mail() -> None:
+    malformed = EmailEnvelope(
+        received_at=_RECEIVED_AT,
+        raw_message=(
+            b"From: :;Z\r\n"
+            b"Subject: Malformed\r\n"
+            b"Message-ID: <malformed-from@example.test>\r\n\r\n"
+            b"Body"
+        ),
+        provenance=_envelope("base@example.test").provenance,
+    )
+    source = FakeSource(
+        [[
+            malformed,
+            _envelope(
+                "good@example.test",
+                subject="Good",
+                sender="trusted@example.test",
+            ),
+        ]],
+        sender_allowlist=("trusted@example.test",),
+    )
+    store = FakeStore()
+    processed: list[str | None] = []
+
+    async def processor(document, activity_id):
+        del activity_id
+        processed.append(document.title)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.safety_rejections == 1
+    assert result.processed == 1
+    assert store.claim_calls == ["<good@example.test>"]
+    assert processed == ["Good"]
+
+
+async def test_named_from_group_is_rejected_without_blocking_later_mail() -> None:
+    grouped = EmailEnvelope(
+        received_at=_RECEIVED_AT,
+        raw_message=(
+            b"From: Friends: trusted@example.test;\r\n"
+            b"Subject: Grouped\r\n"
+            b"Message-ID: <grouped-from@example.test>\r\n\r\n"
+            b"Body"
+        ),
+        provenance=_envelope("base@example.test").provenance,
+    )
+    source = FakeSource(
+        [[
+            grouped,
+            _envelope(
+                "good-after-group@example.test",
+                subject="Good",
+                sender="trusted@example.test",
+            ),
+        ]],
+        sender_allowlist=("trusted@example.test",),
+    )
+    store = FakeStore()
+    processed: list[str | None] = []
+
+    async def processor(document, activity_id):
+        del activity_id
+        processed.append(document.title)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.safety_rejections == 1
+    assert result.processed == 1
+    assert store.claim_calls == ["<good-after-group@example.test>"]
+    assert processed == ["Good"]
+
+
+
+async def test_message_level_header_defect_is_rejected_without_blocking_later_mail() -> None:
+    malformed = EmailEnvelope(
+        received_at=_RECEIVED_AT,
+        raw_message=(
+            b"\tFrom: attacker@example.test\r\n"
+            b"From: trusted@example.test\r\n"
+            b"Subject: Ambiguous malformed headers\r\n"
+            b"Message-ID: <message-defect@example.test>\r\n\r\n"
+            b"Body"
+        ),
+        provenance=_envelope("base@example.test").provenance,
+    )
+    source = FakeSource(
+        [[
+            malformed,
+            _envelope(
+                "good-after-defect@example.test",
+                subject="Good",
+                sender="trusted@example.test",
+            ),
+        ]],
+        sender_allowlist=("TRUSTED@EXAMPLE.TEST",),
+    )
+    store = FakeStore()
+    processed: list[str | None] = []
+
+    async def processor(document, activity_id):
+        del activity_id
+        processed.append(document.title)
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.safety_rejections == 1
+    assert result.processed == 1
+    assert store.claim_calls == ["<good-after-defect@example.test>"]
+    assert processed == ["Good"]

@@ -8,6 +8,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
+from .email_safety import normalize_sender_allowlist
+
 
 MAX_IMAP_IDENTIFIER = 2**32 - 1
 
@@ -59,6 +61,15 @@ class EmailSourceConfig:
     source_id: str
     source_type: EmailSourceType = EmailSourceType.DIRECT_IMAP
     disposition: EmailDisposition = field(default_factory=EmailDisposition)
+    sender_allowlist: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Normalize transport-neutral sender policy configuration once."""
+        object.__setattr__(
+            self,
+            "sender_allowlist",
+            normalize_sender_allowlist(self.sender_allowlist),
+        )
 
 
 @dataclass(frozen=True, slots=True)

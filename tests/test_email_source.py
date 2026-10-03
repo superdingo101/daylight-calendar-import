@@ -164,3 +164,49 @@ async def test_email_source_protocol_acknowledges_persistable_provenance() -> No
     )
     await source.async_acknowledge(envelope.provenance, disposition=disposition)
     assert source.acknowledged == (envelope.provenance, disposition)
+
+
+def test_email_source_config_defaults_to_no_sender_filter() -> None:
+    config = EmailSourceConfig(source_id="source-1")
+
+    assert config.sender_allowlist == ()
+
+
+
+def test_email_source_config_normalizes_sender_allowlist() -> None:
+    config = EmailSourceConfig(
+        source_id="source-1",
+        sender_allowlist=(
+            "Trusted@Example.Test",
+            "other@example.test",
+            "TRUSTED@example.test",
+        ),
+    )
+
+    assert config.sender_allowlist == (
+        "trusted@example.test",
+        "other@example.test",
+    )
+
+
+@pytest.mark.parametrize(
+    "sender_allowlist",
+    (
+        "trusted@example.test",
+        ("",),
+        ("not-an-address",),
+        ("trusted@",),
+        (42,),
+    ),
+)
+def test_email_source_config_rejects_invalid_sender_allowlist(
+    sender_allowlist: object,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="sender_allowlist entries must be valid email addresses",
+    ):
+        EmailSourceConfig(
+            source_id="source-1",
+            sender_allowlist=sender_allowlist,  # type: ignore[arg-type]
+        )
