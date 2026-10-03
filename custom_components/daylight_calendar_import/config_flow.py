@@ -19,7 +19,6 @@ from .const import (
     CONF_EMAIL_MAILBOX,
     CONF_EMAIL_PASSWORD,
     CONF_EMAIL_PORT,
-    CONF_EMAIL_SENDER_ALLOWLIST,
     CONF_EMAIL_USERNAME,
     CONF_EMAIL_VERIFY_SSL,
     DOMAIN,
@@ -208,12 +207,6 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
                     CONF_EMAIL_VERIFY_SSL,
                     default=True,
                 ): selector.BooleanSelector(),
-                vol.Optional(
-                    CONF_EMAIL_SENDER_ALLOWLIST,
-                    default="",
-                ): selector.TextSelector(
-                    selector.TextSelectorConfig(multiline=True)
-                ),
             }
         )
         return self.async_show_form(
