@@ -455,11 +455,13 @@ class PendingImportStore:
         )
         claimed = result
         if cancelled:
-            if claimed:
-                try:
-                    await self.async_record_parse_failure(activity_id)
-                except (asyncio.CancelledError, Exception):
-                    pass
+            try:
+                await self.async_record_source_failure(
+                    activity_id,
+                    "Source processing was interrupted. Check the source and try again.",
+                )
+            except (asyncio.CancelledError, Exception):
+                pass
             raise asyncio.CancelledError
         return claimed
 
