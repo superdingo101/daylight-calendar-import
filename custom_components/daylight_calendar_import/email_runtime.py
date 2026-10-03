@@ -6,7 +6,6 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
 import logging
-import re
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -18,7 +17,6 @@ from .const import (
     CONF_EMAIL_MAILBOX,
     CONF_EMAIL_PASSWORD,
     CONF_EMAIL_PORT,
-    CONF_EMAIL_SENDER_ALLOWLIST,
     CONF_EMAIL_USERNAME,
     CONF_EMAIL_VERIFY_SSL,
 )
@@ -36,19 +34,6 @@ DEFAULT_EMAIL_PORT = 993
 DEFAULT_EMAIL_MAILBOX = "INBOX"
 
 
-def parse_sender_allowlist(value: object) -> tuple[str, ...]:
-    """Parse a user-facing comma/newline-separated exact sender allowlist."""
-    if value in (None, ""):
-        return ()
-    if not isinstance(value, str):
-        raise ValueError("email_sender_allowlist must be text")
-    return tuple(
-        item.strip()
-        for item in re.split(r"[,\n]", value)
-        if item.strip()
-    )
-
-
 def direct_imap_settings_from_options(
     entry_id: str,
     options: Mapping[str, object],
@@ -62,9 +47,6 @@ def direct_imap_settings_from_options(
         password=options[CONF_EMAIL_PASSWORD],
         mailbox=options.get(CONF_EMAIL_MAILBOX, DEFAULT_EMAIL_MAILBOX),
         verify_ssl=options.get(CONF_EMAIL_VERIFY_SSL, True),
-        sender_allowlist=parse_sender_allowlist(
-            options.get(CONF_EMAIL_SENDER_ALLOWLIST, "")
-        ),
         disposition=EmailDisposition(mark_seen=True),
     )
 
