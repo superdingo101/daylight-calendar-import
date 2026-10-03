@@ -146,9 +146,16 @@ class EmailPollingRuntime:
                 self._processor,
                 attachment_stager=self._async_stage_attachments,
             )
-            if result.acknowledgement_failures:
+            if (
+                result.normalization_failures
+                or result.processing_failures
+                or result.acknowledgement_failures
+            ):
                 _LOGGER.warning(
-                    "Direct IMAP acknowledgement failed for %d message(s)",
+                    "Direct IMAP poll completed with retryable failures: "
+                    "normalization=%d processing=%d acknowledgement=%d",
+                    result.normalization_failures,
+                    result.processing_failures,
                     result.acknowledgement_failures,
                 )
         except asyncio.CancelledError:
