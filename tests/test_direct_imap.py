@@ -1414,3 +1414,21 @@ def test_direct_imap_source_rejects_invalid_sender_allowlist(
         match="sender_allowlist entries must be valid email addresses",
     ):
         _source(FakeImapClient(), settings=settings)
+
+
+
+async def test_acknowledge_store_adds_custom_flag_without_seen() -> None:
+    client = FakeImapClient()
+    source, _ = _source(client)
+
+    await source.async_acknowledge(
+        _provenance(),
+        disposition=EmailDisposition(add_flag="daylight-processed"),
+    )
+
+    assert client.uid_calls == [
+        (
+            "store",
+            ("1", "+FLAGS.SILENT", "(daylight-processed)"),
+        )
+    ]
