@@ -24,6 +24,7 @@ from custom_components.daylight_calendar_import.const import (
 from custom_components.daylight_calendar_import.direct_imap import (
     DirectImapConnectionError,
 )
+from custom_components.daylight_calendar_import.email_polling import EmailPollResult
 from custom_components.daylight_calendar_import.email_runtime import (
     DEFAULT_EMAIL_MAILBOX,
     DEFAULT_EMAIL_PORT,
@@ -375,3 +376,69 @@ async def test_runtime_stop_is_noop_before_start():
         AsyncMock(),
     )
     await runtime.async_stop()
+
+
+async def test_runtime_logs_acknowledgement_failures_from_poll_result(
+    monkeypatch,
+    caplog,
+) -> None:
+    runtime = EmailPollingRuntime(
+        FakeHass(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "async_poll_email_source",
+        AsyncMock(
+            return_value=EmailPollResult(
+                discovered=3,
+                claimed=1,
+                processed=1,
+                duplicates=2,
+                normalization_failures=0,
+                processing_failures=0,
+                acknowledged=1,
+                acknowledgement_failures=2,
+            )
+        ),
+    )
+
+    await runtime._async_poll()
+
+    assert caplog.records[-1].getMessage() == (
+        "Direct IMAP acknowledgement failed for 2 message(s)"
+    )
+
+
+async def test_runtime_does_not_warn_when_acknowledgements_succeed(
+    monkeypatch,
+    caplog,
+) -> None:
+    runtime = EmailPollingRuntime(
+        FakeHass(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "async_poll_email_source",
+        AsyncMock(
+            return_value=EmailPollResult(
+                discovered=1,
+                claimed=1,
+                processed=1,
+                duplicates=0,
+                normalization_failures=0,
+                processing_failures=0,
+                acknowledged=1,
+                acknowledgement_failures=0,
+            )
+        ),
+    )
+
+    await runtime._async_poll()
+
+    assert "acknowledgement failed" not in caplog.text.lower()
