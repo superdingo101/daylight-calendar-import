@@ -26,6 +26,10 @@ from custom_components.daylight_calendar_import.direct_imap import (
     DirectImapConnectionError,
     DirectImapMailboxError,
 )
+from custom_components.daylight_calendar_import.email_runtime import (
+    DEFAULT_EMAIL_MAILBOX,
+    DEFAULT_EMAIL_PORT,
+)
 
 
 def test_config_flow_version():
