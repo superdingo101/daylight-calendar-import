@@ -22,7 +22,7 @@ def _raw_header_lines(raw_message: bytes) -> tuple[bytes, ...]:
 def _has_malformed_from_field_name(raw_message: bytes) -> bool:
     """Return whether a raw header line uses whitespace before the From colon."""
     for line in _raw_header_lines(raw_message):
-        if line[:4].casefold() != b"from":
+        if line[:4].lower() != b"from":
             continue
         remainder = line[4:]
         if (
