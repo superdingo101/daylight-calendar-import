@@ -75,7 +75,9 @@ class EmailSourceConfig:
     sender_allowlist: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        """Normalize transport-neutral sender policy configuration once."""
+        """Normalize and validate transport-neutral source policy once."""
+        if not isinstance(self.disposition, EmailDisposition):
+            raise ValueError("disposition must be an EmailDisposition")
         object.__setattr__(
             self,
             "sender_allowlist",
