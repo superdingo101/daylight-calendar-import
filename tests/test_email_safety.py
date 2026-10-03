@@ -277,7 +277,6 @@ def test_exact_sender_allowlist_rejects_message_level_header_defect() -> None:
     assert allowlist.allows(raw) is False
 
 
-
 def test_exact_sender_allowlist_rejects_disagreement_between_parsers(
     monkeypatch,
 ) -> None:

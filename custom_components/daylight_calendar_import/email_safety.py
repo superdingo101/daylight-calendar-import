@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from email import policy
 from email.headerregistry import Address
 from email.parser import BytesParser
 from email.utils import getaddresses
-import re
 
 _ERR_ALLOWLIST = "sender_allowlist entries must be valid email addresses"
 _HEADER_BODY_BOUNDARY = re.compile(br"\r\n\r\n|\n\n|\r\r")
@@ -84,11 +84,16 @@ class ExactSenderAllowlist:
             if len(addresses) != 1:
                 return False
 
-            # HeaderRegistry is intentionally permissive. The strict legacy
-            # parser catches malformed list syntax it preserves, such as a
-            # trailing comma. Require both parsers to identify the same
-            # single mailbox rather than growing a custom RFC parser here.
-            strict_addresses = getaddresses((str(header),), strict=True)
+            # HeaderRegistry is intentionally permissive and may normalize
+            # malformed list punctuation away. Run the strict parser against
+            # the stored raw From value, then require both parsers to identify
+            # the same single mailbox rather than growing a custom RFC parser.
+            raw_from_values = tuple(
+                value
+                for name, value in message.raw_items()
+                if name.casefold() == "from"
+            )
+            strict_addresses = getaddresses(raw_from_values, strict=True)
             if len(strict_addresses) != 1 or not strict_addresses[0][1]:
                 return False
 
