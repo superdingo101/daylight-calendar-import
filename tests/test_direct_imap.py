@@ -1448,11 +1448,6 @@ async def test_acknowledge_store_adds_custom_flag_without_seen() -> None:
             b"OK [UIDVALIDITY 1234] UIDs valid",
             b"OK [READ-WRITE] Mailbox selected",
         ),
-        _ok(
-            b"FLAGS (\\Seen)",
-            b"OK [PERMANENTFLAGS (\\*)] Permanent flags",
-            b"OK [UIDVALIDITY 1234] UIDs valid",
-        ),
     ),
 )
 async def test_validate_seen_capability_accepts_absent_or_supported_hints(
@@ -1497,11 +1492,20 @@ async def test_validate_seen_capability_rejects_explicit_read_only_mailbox() -> 
     assert client.abort_calls == 0
 
 
-async def test_validate_seen_capability_rejects_advertised_permanentflags_without_seen() -> None:
+@pytest.mark.parametrize(
+    "permanent_flags",
+    (
+        b"OK [PERMANENTFLAGS (\\Answered \\Flagged)] Permanent flags",
+        b"OK [PERMANENTFLAGS (\\*)] Permanent flags",
+    ),
+)
+async def test_validate_seen_capability_rejects_advertised_permanentflags_without_seen(
+    permanent_flags: bytes,
+) -> None:
     client = FakeImapClient(
         select_response=_ok(
             b"FLAGS (\\Seen \\Answered)",
-            b"OK [PERMANENTFLAGS (\\Answered \\Flagged)] Permanent flags",
+            permanent_flags,
             b"OK [UIDVALIDITY 1234] UIDs valid",
         )
     )
