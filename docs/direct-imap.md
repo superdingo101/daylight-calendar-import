@@ -1,8 +1,8 @@
 # Direct IMAP setup and recovery
 
-Direct IMAP is the self-hosted email-ingestion path planned for Daylight Calendar Import v0.5. It lets Home Assistant poll one IMAP mailbox and send eligible messages through the existing Daylight review pipeline.
+Direct IMAP is the self-hosted email-ingestion path introduced in Daylight Calendar Import v0.5.0. It lets Home Assistant poll one IMAP mailbox and send eligible messages through the existing Daylight review pipeline.
 
-This guide documents the intentionally bounded v0.5 behavior, how to enable it safely, and how recovery works when a poll, parse, storage operation, or upstream acknowledgement fails.
+This guide documents the intentionally bounded v0.5.0 behavior, how to enable it safely, and how recovery works when a poll, parse, storage operation, or upstream acknowledgement fails.
 
 ## What v0.5 Direct IMAP does
 
