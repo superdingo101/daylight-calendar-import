@@ -8,7 +8,7 @@
 - Stage direct JPEG, PNG, WebP, and PDF email attachments through Home Assistant local media with bounded count/size limits and best-effort cleanup.
 - Reserve source identities before AI work so repeated or concurrent observations do not duplicate expensive parsing, while interrupted/transient work remains retryable.
 - Correlate email ingestion through Recent activity from discovery to processing and review/no-event/duplicate/failed outcomes without storing raw email bytes or IMAP credentials in lifecycle history.
-- Mark upstream mail `\\Seen` only after a durable local outcome. If acknowledgement fails after persistence, a later poll skips repeated AI work and retries acknowledgement.
+- Mark upstream mail `\\Seen` only after a durable local outcome. If acknowledgement fails after persistence **and the message remains unread so it is rediscovered**, a later poll skips repeated AI work and retries acknowledgement.
 - Treat deterministic source-validation failures as durable terminal failures so unchanged poison messages do not retry forever; temporary provider, storage, media, transport, and acknowledgement failures remain retryable.
 - Validate explicit read-only mailboxes and advertised `PERMANENTFLAGS` that do not allow `\\Seen`, while keeping setup validation non-destructive when servers omit those hints.
 - Add deterministic cross-layer Direct IMAP coverage plus the setup, privacy, retry, and recovery guide in `docs/direct-imap.md`.
