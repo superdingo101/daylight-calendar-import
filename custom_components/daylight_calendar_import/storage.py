@@ -621,6 +621,65 @@ class PendingImportStore:
                 guidance=guidance,
             )
 
+    async def async_record_terminal_source_failure(
+        self,
+        activity_id: str,
+        *,
+        source_id: str,
+        guidance: str,
+    ) -> None:
+        """Persist a deterministic source failure as durably handled."""
+        _, cancelled = await self._async_complete_transaction(
+            self._async_record_terminal_source_failure_transaction(
+                activity_id,
+                source_id=source_id,
+                guidance=guidance,
+            )
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _async_record_terminal_source_failure_transaction(
+        self,
+        activity_id: str,
+        *,
+        source_id: str,
+        guidance: str,
+    ) -> None:
+        """Remember one failed claimed source so unchanged retries are suppressed."""
+        fingerprint = build_source_fingerprint(source_id)
+        async with self._lock:
+            activity = self.get_activity(activity_id)
+            if (
+                activity is not None
+                and activity["status"] not in ("discovered", "processing")
+            ):
+                return
+            if self._source_claims.get(activity_id) != fingerprint:
+                raise ValueError("source_id does not match claimed source")
+
+            activity = self._finish_submission(
+                activity_id,
+                "failed",
+                guidance,
+            )
+            source_claims = dict(self._source_claims)
+            source_claims.pop(activity_id, None)
+            seen_sources = _remember_fingerprints(
+                self._seen_source_fingerprints,
+                (fingerprint,),
+            )
+            await self._async_save(
+                self._items,
+                seen_source_fingerprints=seen_sources,
+                activity=activity,
+                source_claims=source_claims,
+            )
+            self._activity = activity
+            self._seen_source_fingerprints = seen_sources
+            self._source_claims = source_claims
+            self._source_claim_releases.discard(activity_id)
+
     async def _async_record_parse_failure_locked(
         self,
         activity_id: str,
