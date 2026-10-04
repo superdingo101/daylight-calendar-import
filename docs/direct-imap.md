@@ -33,9 +33,9 @@ For the safest first setup, use a dedicated mailbox or folder, or otherwise make
 
 ### Daylight marks successfully handled messages read
 
-A message remains unread while Daylight still needs to retry it. Once Daylight has durably handled the source, it applies the IMAP `\\Seen` flag.
+Processing failures before a durable local outcome are not acknowledged, so the message remains unread and eligible for retry. Once Daylight has durably handled the source, it **attempts** to apply the IMAP `\\Seen` flag.
 
-That means the mailbox's read/unread state is part of the v0.5 transport contract, not merely a visual preference.
+That means the mailbox's read/unread state is part of the v0.5 transport contract, not merely a visual preference. An acknowledgement transport failure can be outcome-uncertain—the server may or may not have applied `\\Seen` before the error was observed—but the local durable result is kept either way.
 
 ### Do not manually mark a failed message read if you want Daylight to retry it
 
@@ -53,7 +53,7 @@ Before enabling Direct IMAP:
 - Direct IMAP v0.5 uses an **implicit TLS IMAP connection** (the `IMAP4_SSL` style, normally port 993). STARTTLS and plaintext IMAP are not supported by this flow.
 - TLS certificate verification is enabled by default. Disabling **Verify TLS certificate** keeps the connection encrypted but disables certificate validation and hostname checking; use that only when you deliberately trust the server/network.
 - The selected AI Task entity must support the content that will actually reach the parser.
-- Emails with direct supported attachments require at least one usable Home Assistant local media directory because Daylight stages those files there temporarily for AI Task processing.
+- Emails with direct supported attachments require Home Assistant local media storage because Daylight stages those files there temporarily for AI Task processing. v0.5 currently uses the **first configured local media directory**; if none is configured, or that selected directory cannot be created/written, attachment staging fails and the message remains retryable.
 
 ### What email content is processable
 
@@ -89,7 +89,7 @@ The fixed v0.5 search deliberately leaves a source unread whenever processing is
 | More than 4 direct supported attachments | Rejected as too many attachments | Reduce/split/resend, or remove the original |
 | More than 10 MiB decoded direct attachment data | Rejected as too large | Reduce/split/resend, or remove the original |
 | Raw RFC message over ~14.3 MiB | Rejected before attachment traversal, including bytes in nested/unsupported parts | Reduce/resend the whole message, or remove the original |
-| No usable/writable Home Assistant local media directory while direct supported attachments are present | Attachment staging fails | Restore/configure writable local media storage, resend without supported attachments, or remove the original |
+| No configured local media directory, or the first configured media directory is not usable/writable, while direct supported attachments are present | Attachment staging fails | Restore/configure the selected local media storage, resend without supported attachments, or remove the original |
 
 Here, “remove the original from discovery” means mark it read, delete it, or otherwise move/remove it from the configured mailbox's fixed unseen/undeleted search.
 
@@ -108,7 +108,7 @@ Enable **Direct IMAP email ingestion**, then provide:
 | Mailbox | Mailbox/folder to poll; defaults to `INBOX` |
 | Verify TLS certificate | Validate the server certificate; enabled by default |
 
-Daylight validates the connection, authentication, mailbox selection, and IMAP UID support before saving an enabled configuration.
+Daylight validates the implicit-TLS connection, authentication, mailbox selection, and that the selected mailbox returns a valid IMAP UIDVALIDITY value before saving an enabled configuration. It does **not** preflight message content, AI attachment capability, or local-media writability; those content/environment failures are discovered during polling and follow the retry behavior documented above.
 
 ### Editing an existing configuration
 
@@ -159,7 +159,7 @@ The opaque source identity is hashed again into Daylight's stored source fingerp
 
 Operational consequences:
 
-- Two distinct emails that reuse the same valid `Message-ID` are treated as the same source. If the first one is already durable, the later one skips AI and is acknowledged as a duplicate. Marking it unread again does not force reparsing; resend the content with a fresh `Message-ID`.
+- Two distinct emails that reuse the same valid `Message-ID` are treated as the same source. If the first one is already durable, the later one skips AI and acknowledgement is attempted as a duplicate. Marking it unread again does not force reparsing; resend the content with a fresh `Message-ID` to make it eligible as a new source. Normal event-draft deduplication still applies after parsing, so a genuinely duplicate event can still be suppressed.
 - If a message has no single valid `Message-ID` (including malformed or multiple Message-ID headers), exact raw wire bytes determine its fallback identity. Semantically identical messages with different wire bytes can therefore be treated as different sources.
 - IMAP UID and UIDVALIDITY are used to safely fetch/acknowledge a mailbox message, but they are not the long-lived Daylight deduplication identity.
 - Completed source fingerprints are kept in a bounded history of the newest **10,000** handled sources. Pending imports remain durable while pending, but a sufficiently old completed source can eventually age out of dedup history and be processed again if rediscovered.
@@ -172,10 +172,10 @@ Operational consequences:
 | Message normalization failure | Lifecycle failure recorded | Left unread | Retry message |
 | AI/parser failure | Lifecycle failure recorded; source claim released | Left unread | Retry parsing |
 | Local storage/processing failure | No false success | Left unread | Retry processing |
-| Successful parse with events | Pending review persisted | Marked seen | No reprocessing |
-| Successful parse with zero events | `no_events` persisted | Marked seen | No reprocessing |
-| Duplicate durable source | Existing durable result retained | Marked seen | No AI call |
-| Local success but IMAP `STORE` fails | Local result remains durable | Usually still unread | Detect duplicate, skip AI, retry acknowledgement |
+| Successful parse with events | Pending review persisted | `\\Seen` attempted after persistence | No reprocessing; if acknowledgement fails and the message remains unread, retry acknowledgement |
+| Successful parse with zero events | `no_events` persisted | `\\Seen` attempted after persistence | No reprocessing; if rediscovered, retry acknowledgement |
+| Duplicate durable source | Existing durable result retained | `\\Seen` attempted | No AI call; retry acknowledgement if rediscovered |
+| Local success but IMAP acknowledgement reports failure | Local result remains durable | Upstream read state can be uncertain | If the message is still unread and rediscovered, detect duplicate, skip AI, and retry acknowledgement |
 
 Retryable per-message failures that complete a poll are summarized in Home Assistant logs. A storage or other unexpected exception that aborts the poll is logged through the generic `Email poll failed` exception path instead of the aggregate counters. The runtime does not intentionally include mailbox credentials or raw private message content in either logging path.
 
@@ -240,7 +240,7 @@ Email normalization reuses Daylight's existing bounded attachment pipeline.
 
 - Raw email bytes are not stored in pending-import storage.
 - Temporary supported attachments are staged only for processing. Cleanup is best-effort: Daylight attempts every staged-file deletion and logs cleanup failures without turning an otherwise durable message back into a retry. If cleanup fails, the staged file can remain in Home Assistant's media directory and may require manual removal using the logged path.
-- Pending review may retain the normalized email body text, the normalized email **Subject** as the source title, plus attachment metadata and SHA-256 digests as review context, not the original attachment bytes. Those attachment digests are **not** the source/event deduplication key; a newly forwarded message with the same attachment can still invoke AI again.
+- Pending review may retain the normalized email body text, the normalized email **Subject** as the source title, and for direct supported attachments the original attachment filename when present (otherwise the media type) plus a SHA-256 digest as review context. It does not retain the original attachment bytes. Subjects and filenames can themselves be sensitive local data. Attachment digests are **not** the source/event deduplication key; a newly forwarded message with the same attachment can still invoke AI again.
 - Lifecycle activity records retain the normalized email **Subject** as the source title. They do not retain the raw email body/source text, upload bytes, mailbox credentials, or IMAP transport details. Treat email subjects as potentially sensitive local data.
 - Source deduplication persists a one-way Daylight fingerprint of the source identity rather than the original `Message-ID` or raw-wire fallback identifier.
 - Saved IMAP passwords remain in Home Assistant configuration storage and are not repopulated into the browser when editing Options.
@@ -255,6 +255,7 @@ The first Direct IMAP release deliberately does **not** expose:
 - configurable polling intervals;
 - MOVE rules or custom IMAP flags;
 - OAuth/provider-specific authentication flows;
+- STARTTLS or plaintext IMAP connections (v0.5 uses implicit TLS);
 - multiple IMAP mailboxes/accounts for one integration entry;
 - hosted email forwarding/relay.
 
