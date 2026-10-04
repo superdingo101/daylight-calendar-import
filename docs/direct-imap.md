@@ -19,6 +19,8 @@ For one configured mailbox, Daylight:
 
 Only one poll runs at a time for the configured integration entry.
 
+A poll processes matching UIDs sequentially. If a large unread backlog makes one poll run longer than five minutes, scheduled ticks that occur while that poll is still active are skipped rather than starting an overlapping poll. The next later tick can continue with whatever remains unread.
+
 ## Important behavior before you enable it
 
 ### Existing unread mail is eligible immediately
@@ -46,16 +48,50 @@ If you manually mark that message read first, Daylight will no longer discover i
 Before enabling Direct IMAP:
 
 - Daylight Calendar Import must already be configured in Home Assistant.
-- The selected AI Task entity must be able to handle the content you expect to receive.
-- Each email must normalize to at least one usable input: **nonblank outer-message body text or at least one supported leaf attachment outside an attached/encapsulated `message/*` part**. A blank message, a message containing only unsupported attachment types, or an outer message whose only usable-looking content is inside an attached email can be rejected before the AI call as retryable and remain unread. To process it, extract/resend the nested content as normal body text or a directly attached supported file; to stop retrying the original, mark it read, delete it, or otherwise remove it from the configured unseen/undeleted mailbox search.
-- Supported attachment handling applies only to direct supported leaf MIME parts outside attached/encapsulated `message/*` parts. Daylight intentionally does **not** descend into attached emails such as `message/rfc822`, and their nested body/attachments do not become parser input. For direct JPEG, PNG, WebP, or PDF leaf parts, the selected AI Task entity must support attachments. Supported inline parts such as logos also count, so attachment capability can be required even when you only care about the email body. Without that capability, the whole source is rejected as retryable and remains unread for a later poll.
-- Every direct supported attachment must contain at least **1 decoded byte**. A zero-byte JPEG/PNG/WebP/PDF is rejected as an empty attachment even when the rest of the message is within the normal count/size bounds. Because that is retryable, the original remains unread and will fail again on later polls until you replace/resend the attachment or remove the original from the unseen/undeleted search.
-- The v0.5 attachment pipeline accepts at most **4 direct supported attachment parts** with at most **10 MiB total decoded attachment data**. The raw email also has an internal safety cap of about **14.3 MiB**. Direct supported inline images count toward those limits; files nested inside attached `message/*` parts are ignored rather than counted. Exceeding any bound is a retryable processing failure, so the original message stays unread and will fail again on later polls until you intervene. To process the content, reduce/remove/split the attachments and send a new eligible message; to stop retrying the oversized original, mark it read, delete it, or otherwise remove it from the configured unseen/undeleted mailbox search.
-- Your mail provider must permit password/app-password IMAP authentication.
-- If the provider requires OAuth-only authentication, that account is not supported by the v0.5 Direct IMAP flow.
-- The configured mailbox must support stable IMAP UID identity.
+- Your mail provider must permit password/app-password IMAP authentication. OAuth-only accounts are not supported by the v0.5 Direct IMAP flow.
+- The configured mailbox must provide IMAP UID/UIDVALIDITY identity.
+- Direct IMAP v0.5 uses an **implicit TLS IMAP connection** (the `IMAP4_SSL` style, normally port 993). STARTTLS and plaintext IMAP are not supported by this flow.
+- TLS certificate verification is enabled by default. Disabling **Verify TLS certificate** keeps the connection encrypted but disables certificate validation and hostname checking; use that only when you deliberately trust the server/network.
+- The selected AI Task entity must support the content that will actually reach the parser.
+- Emails with direct supported attachments require at least one usable Home Assistant local media directory because Daylight stages those files there temporarily for AI Task processing.
 
-TLS certificate verification is enabled by default and should normally remain enabled.
+### What email content is processable
+
+An email must normalize to at least one usable parser input:
+
+- nonblank body text from the **outer message**; or
+- at least one direct supported leaf attachment: JPEG, PNG, WebP, or PDF.
+
+Daylight intentionally does **not** descend into attached/encapsulated `message/*` parts such as `message/rfc822`. Body text and files nested inside an attached email do not become parser input.
+
+Direct supported inline images, such as logos, are attachment input too. If any direct supported attachment is present, the selected AI Task entity must advertise attachment support even when you only care about the email body.
+
+The v0.5 bounds are:
+
+- at most **4 direct supported attachment parts**;
+- each direct supported attachment must contain at least **1 decoded byte**;
+- at most **10 MiB total decoded data** across the direct supported attachments; and
+- about **14.3 MiB maximum for the entire raw RFC message**.
+
+The raw-message cap applies to the whole wire message before MIME traversal. Bytes in unsupported parts and attached `message/*` content therefore still count toward the ~14.3 MiB raw cap even though nested files do not count toward the four-part or 10 MiB decoded-attachment limits.
+
+### Content/configuration conditions that will keep retrying
+
+The fixed v0.5 search deliberately leaves a source unread whenever processing is not durable. Some conditions will therefore repeat on later polls until the source or environment changes:
+
+| Condition | What happens | Recovery |
+| --- | --- | --- |
+| Blank body and no direct supported attachment | Rejected before the AI call | Resend with usable outer body text or a direct supported attachment, or remove the original from discovery |
+| Only unsupported attachment types | No usable parser input | Resend usable content, or mark read/delete/remove the original |
+| Usable content exists only inside an attached `message/*` email | Nested content is ignored; the outer source may be empty | Extract/resend the nested content directly, or remove the original |
+| Direct supported attachment but AI Task lacks attachment support | Processing fails before the AI call | Use an attachment-capable AI Task entity, remove/resend the supported part, or remove the original |
+| Zero-byte direct supported attachment | Rejected as an empty attachment | Replace/resend the attachment, or remove the original |
+| More than 4 direct supported attachments | Rejected as too many attachments | Reduce/split/resend, or remove the original |
+| More than 10 MiB decoded direct attachment data | Rejected as too large | Reduce/split/resend, or remove the original |
+| Raw RFC message over ~14.3 MiB | Rejected before attachment traversal, including bytes in nested/unsupported parts | Reduce/resend the whole message, or remove the original |
+| No usable/writable Home Assistant local media directory while direct supported attachments are present | Attachment staging fails | Restore/configure writable local media storage, resend without supported attachments, or remove the original |
+
+Here, “remove the original from discovery” means mark it read, delete it, or otherwise move/remove it from the configured mailbox's fixed unseen/undeleted search.
 
 ## Configure Direct IMAP
 
@@ -112,6 +148,22 @@ If an unread message corresponds to a source that Daylight already knows is dura
 
 This is especially important after an IMAP acknowledgement failure or a restart between local persistence and `\\Seen`.
 
+### How Direct IMAP identifies duplicates
+
+Daylight's **source identity is not the IMAP UID**. For a normalized email it uses:
+
+1. exactly one valid, defect-free RFC `Message-ID`, when present; otherwise
+2. a SHA-256-based fallback identity derived from the **exact raw RFC wire bytes**.
+
+The opaque source identity is hashed again into Daylight's stored source fingerprint; the original `Message-ID` or raw-message hash string is not stored as the deduplication record.
+
+Operational consequences:
+
+- Two distinct emails that reuse the same valid `Message-ID` are treated as the same source. If the first one is already durable, the later one skips AI and is acknowledged as a duplicate. Marking it unread again does not force reparsing; resend the content with a fresh `Message-ID`.
+- If a message has no single valid `Message-ID` (including malformed or multiple Message-ID headers), exact raw wire bytes determine its fallback identity. Semantically identical messages with different wire bytes can therefore be treated as different sources.
+- IMAP UID and UIDVALIDITY are used to safely fetch/acknowledge a mailbox message, but they are not the long-lived Daylight deduplication identity.
+- Completed source fingerprints are kept in a bounded history of the newest **10,000** handled sources. Pending imports remain durable while pending, but a sufficiently old completed source can eventually age out of dedup history and be processed again if rediscovered.
+
 ## Retry and recovery behavior
 
 | Situation | Local result | Upstream message | Next poll |
@@ -149,7 +201,7 @@ If you expected a message to import but it did not:
 2. Confirm the message is in the configured mailbox.
 3. Confirm the message is **unread** and not deleted.
 4. Check Home Assistant logs for a Direct IMAP connection/retry warning **and** for the generic `Email poll failed` error used when an unexpected storage or processing exception aborts the poll.
-5. Check **Daylight imports -> Recent activity** for a corresponding discovered, processing, failed, duplicate, `no_events`, or review-ready record.
+5. Check **Daylight imports -> Recent activity** for a corresponding discovered, processing, failed, duplicate, `no_events`, or review-ready record. Completed activity history is bounded (currently the newest **500** completed records), so an older completed source may no longer appear there.
 6. If the message failed before becoming durable and was manually marked read, mark it unread again to make it eligible for the next poll.
 7. If a pending import already exists for the message, do not delete/re-forward the email merely to force another AI pass; review the existing pending import.
 8. If local handling succeeded but the email stayed unread, leave it unread. Daylight should recognize the durable source and retry only the IMAP acknowledgement.
@@ -180,7 +232,7 @@ Check required fields, port, mailbox name, and other entered values.
 
 Daylight could not complete the IMAP connection/validation sequence.
 
-Check DNS/network access, server name, port, TLS settings, firewall policy, and provider availability.
+Check DNS/network access, server name, port, implicit-TLS compatibility, TLS settings, firewall policy, provider availability, and whether the selected mailbox returns a valid UIDVALIDITY value. Servers that require STARTTLS rather than implicit TLS are not supported by v0.5 Direct IMAP.
 
 ## Attachments and privacy
 
@@ -190,6 +242,7 @@ Email normalization reuses Daylight's existing bounded attachment pipeline.
 - Temporary supported attachments are staged only for processing. Cleanup is best-effort: Daylight attempts every staged-file deletion and logs cleanup failures without turning an otherwise durable message back into a retry. If cleanup fails, the staged file can remain in Home Assistant's media directory and may require manual removal using the logged path.
 - Pending review may retain the normalized email body text, the normalized email **Subject** as the source title, plus attachment metadata and SHA-256 digests as review context, not the original attachment bytes. Those attachment digests are **not** the source/event deduplication key; a newly forwarded message with the same attachment can still invoke AI again.
 - Lifecycle activity records retain the normalized email **Subject** as the source title. They do not retain the raw email body/source text, upload bytes, mailbox credentials, or IMAP transport details. Treat email subjects as potentially sensitive local data.
+- Source deduplication persists a one-way Daylight fingerprint of the source identity rather than the original `Message-ID` or raw-wire fallback identifier.
 - Saved IMAP passwords remain in Home Assistant configuration storage and are not repopulated into the browser when editing Options.
 
 ## Intentionally unsupported in v0.5
