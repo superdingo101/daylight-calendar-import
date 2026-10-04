@@ -49,7 +49,7 @@ Before enabling Direct IMAP:
 
 - Daylight Calendar Import must already be configured in Home Assistant.
 - Your mail provider must permit password/app-password IMAP authentication. OAuth-only accounts are not supported by the v0.5 Direct IMAP flow.
-- The configured mailbox must provide IMAP UID/UIDVALIDITY identity.
+- The configured mailbox must provide IMAP UID/UIDVALIDITY identity **and allow Daylight to set the standard `\\Seen` flag** after durable handling. A read-only mailbox or account without flag-write permission will cause acknowledgement to fail repeatedly.
 - Direct IMAP v0.5 uses an **implicit TLS IMAP connection** (the `IMAP4_SSL` style, normally port 993). STARTTLS and plaintext IMAP are not supported by this flow.
 - TLS certificate verification is enabled by default. Disabling **Verify TLS certificate** keeps the connection encrypted but disables certificate validation and hostname checking; use that only when you deliberately trust the server/network.
 - The selected AI Task entity must support the content that will actually reach the parser.
@@ -91,6 +91,7 @@ The fixed v0.5 search deliberately leaves a source unread whenever processing is
 | More than 10 MiB decoded direct attachment data | Rejected as too large | Reduce/split/resend, or remove the original |
 | Raw RFC message over ~14.3 MiB | Rejected before attachment traversal, including bytes in nested/unsupported parts | Reduce/resend the whole message, or remove the original |
 | No configured local media directory, or the first configured media directory is not usable/writable, while direct supported attachments are present | Attachment staging fails | Restore/configure the selected local media storage, resend without supported attachments, or remove the original |
+| Mailbox/account cannot set `\\Seen` | Local handling can succeed, but acknowledgement fails and an unread message can be rediscovered repeatedly | Fix the mailbox/account write permission; meanwhile mark/remove the message with another client or disable Direct IMAP to stop the acknowledgement loop |
 
 Here, “remove the original from discovery” means mark it read, delete it, or otherwise move/remove it from the configured mailbox's fixed unseen/undeleted search.
 
