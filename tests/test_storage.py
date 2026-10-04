@@ -2833,6 +2833,53 @@ async def test_terminal_source_failure_is_durable_and_survives_restart(monkeypat
     assert len(backend.saved) == saved_count
 
 
+async def test_failed_terminal_persistence_releases_claim_before_next_retry(
+    monkeypatch,
+) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<terminal-save-retry@example.test>"
+    received_at = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
+    activity_id = await store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title="Terminal",
+        received_at=received_at,
+    )
+    assert activity_id is not None
+
+    backend.save_error = RuntimeError("storage unavailable")
+    backend.fail_on_save_attempt = backend.save_attempts + 1
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await store.async_record_terminal_source_failure(
+            activity_id,
+            source_id=source_id,
+            guidance="Correct and resend.",
+        )
+
+    assert store.is_source_durable(source_id) is False
+    assert store.is_source_duplicate(source_id) is True
+    assert store.get_activity(activity_id)["status"] == "processing"
+
+    backend.save_error = None
+    backend.fail_on_save_attempt = None
+    retry_id = await store.async_begin_source_submission(
+        source_id=source_id,
+        source_kind="email",
+        source_title="Retry",
+        received_at=received_at,
+    )
+
+    assert retry_id is not None
+    assert retry_id != activity_id
+    assert store.get_activity(activity_id)["status"] == "failed"
+    assert store.is_source_durable(source_id) is False
+    assert backend.saved[-1]["source_claims"] == {
+        retry_id: source_fingerprint(source_id)
+    }
+
+
 async def test_terminal_source_failure_rejects_mismatched_claim(monkeypatch):
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
