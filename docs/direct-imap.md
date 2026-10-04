@@ -47,7 +47,7 @@ Before enabling Direct IMAP:
 
 - Daylight Calendar Import must already be configured in Home Assistant.
 - The selected AI Task entity must be able to handle the content you expect to receive.
-- If email attachments need to be interpreted, the AI Task entity must support the relevant attachment path.
+- If an incoming email contains any supported attachment MIME part—JPEG, PNG, WebP, or PDF—the selected AI Task entity must support attachments. Daylight stages every supported part it finds, including inline images such as logos; attachment capability is therefore required even when you only care about the email body. Without that capability, the whole source is rejected as retryable and remains unread for a later poll.
 - Your mail provider must permit password/app-password IMAP authentication.
 - If the provider requires OAuth-only authentication, that account is not supported by the v0.5 Direct IMAP flow.
 - The configured mailbox must support stable IMAP UID identity.
@@ -122,7 +122,7 @@ This is especially important after an IMAP acknowledgement failure or a restart 
 | Duplicate durable source | Existing durable result retained | Marked seen | No AI call |
 | Local success but IMAP `STORE` fails | Local result remains durable | Usually still unread | Detect duplicate, skip AI, retry acknowledgement |
 
-Retryable failures are summarized in Home Assistant logs without intentionally logging mailbox credentials or raw private message content.
+Retryable per-message failures that complete a poll are summarized in Home Assistant logs. A storage or other unexpected exception that aborts the poll is logged through the generic `Email poll failed` exception path instead of the aggregate counters. The runtime does not intentionally include mailbox credentials or raw private message content in either logging path.
 
 ## Home Assistant restart recovery
 
@@ -184,8 +184,8 @@ Check DNS/network access, server name, port, TLS settings, firewall policy, and 
 Email normalization reuses Daylight's existing bounded attachment pipeline.
 
 - Raw email bytes are not stored in pending-import storage.
-- Temporary supported attachments are staged only for processing and are cleaned up afterward.
-- Pending review may retain normalized email text plus attachment metadata/digests needed for review and deduplication, not the original attachment bytes.
+- Temporary supported attachments are staged only for processing. Cleanup is best-effort: Daylight attempts every staged-file deletion and logs cleanup failures without turning an otherwise durable message back into a retry. If cleanup fails, the staged file can remain in Home Assistant's media directory and may require manual removal using the logged path.
+- Pending review may retain normalized email text plus attachment metadata and SHA-256 digests as review context, not the original attachment bytes. Those attachment digests are **not** the source/event deduplication key; a newly forwarded message with the same attachment can still invoke AI again.
 - Lifecycle summaries do not retain raw source text, upload bytes, mailbox credentials, or IMAP transport details.
 - Saved IMAP passwords remain in Home Assistant configuration storage and are not repopulated into the browser when editing Options.
 
