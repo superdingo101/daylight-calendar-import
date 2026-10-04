@@ -669,6 +669,10 @@ class PendingImportStore:
                 self._seen_source_fingerprints,
                 (fingerprint,),
             )
+            # If terminal persistence fails, retry releasing the in-memory claim
+            # before the next duplicate check so the unchanged message can be
+            # processed again after storage recovers.
+            self._source_claim_releases.add(activity_id)
             await self._async_save(
                 self._items,
                 seen_source_fingerprints=seen_sources,
