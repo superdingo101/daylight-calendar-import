@@ -110,7 +110,7 @@ Enable **Direct IMAP email ingestion**, then provide:
 | Mailbox | Mailbox/folder to poll; defaults to `INBOX` |
 | Verify TLS certificate | Validate the server certificate; enabled by default |
 
-Daylight validates the implicit-TLS connection, authentication, mailbox selection, and that the selected mailbox returns a valid IMAP UIDVALIDITY value before saving an enabled configuration. It does **not** preflight message content, AI attachment capability, or local-media writability; those content/environment failures are discovered during polling and follow the retry behavior documented above.
+Daylight validates the implicit-TLS connection, authentication, mailbox selection, and that the selected mailbox returns a valid IMAP UIDVALIDITY value before saving an enabled configuration. It does **not** preflight message content, AI attachment capability, local-media writability, or permission to set `\\Seen`; those content/environment/permission failures are discovered during polling and follow the retry behavior documented above.
 
 ### Editing an existing configuration
 
