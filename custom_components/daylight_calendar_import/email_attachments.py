@@ -38,8 +38,11 @@ EMAIL_STAGING_MAX_RAW_BYTES = (
 )
 
 
-class EmailAttachmentError(ValueError):
-    """Supported MIME attachments could not be staged safely."""
+class EmailAttachmentError(SourceValidationError):
+    """A supported MIME attachment is intrinsically invalid."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__("invalid_attachment", message)
 
 
 class EmailAttachmentCleanupError(OSError):
