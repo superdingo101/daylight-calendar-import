@@ -267,7 +267,7 @@ For a low-risk first run:
 2. Put one known unread test email in it.
 3. Enable Direct IMAP in Daylight Options.
 4. Confirm the message appears in Daylight review or lifecycle history.
-5. Confirm the message becomes read only after the local result exists.
+5. Confirm the local result exists before the message is marked read. If acknowledgement fails, the local result should remain durable even if the message stays unread.
 6. Test a message with no calendar event and confirm it becomes a `no_events` lifecycle result rather than repeatedly parsing.
 7. Restart Home Assistant and verify polling resumes.
 8. Disable and re-enable Direct IMAP, leaving the password blank, and verify the saved credential is reused.
