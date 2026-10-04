@@ -92,25 +92,43 @@ class AITaskParserProvider:
         self._hass = hass
         self._entity_id = entity_id
 
-    @property
-    def capabilities(self) -> ParserCapabilities:
-        """Discover whether the configured AI Task entity accepts attachments."""
+    def _entity(self):
+        """Return the configured AI Task entity when it is currently available."""
         component = getattr(self._hass, "data", {}).get(DATA_COMPONENT)
-        entity = component.get_entity(self._entity_id) if component else None
-        images = bool(entity and entity.supported_features & AITaskEntityFeature.SUPPORT_ATTACHMENTS)
+        return component.get_entity(self._entity_id) if component else None
+
+    @staticmethod
+    def _capabilities_for_entity(entity) -> ParserCapabilities:
+        """Build parser capabilities from one resolved AI Task entity."""
+        attachments = bool(
+            entity
+            and entity.supported_features
+            & AITaskEntityFeature.SUPPORT_ATTACHMENTS
+        )
         return ParserCapabilities(
             text=True,
-            images=images,
-            pdfs=images,
+            images=attachments,
+            pdfs=attachments,
             max_attachments=AI_TASK_MAX_ATTACHMENTS,
             max_total_bytes=AI_TASK_MAX_TOTAL_BYTES,
         )
+
+    @property
+    def capabilities(self) -> ParserCapabilities:
+        """Discover whether the configured AI Task entity accepts attachments."""
+        return self._capabilities_for_entity(self._entity())
 
     async def async_parse(
         self, source: SourceDocument, *, reference_datetime: str, time_zone: str
     ) -> ParseOutcome:
         """Ask AI Task for structured event candidates, then validate each one."""
-        self.capabilities.validate(source)
+        entity = self._entity()
+        if source.attachments and entity is None:
+            raise ProviderError(
+                "provider_unavailable",
+                "Configured AI Task is temporarily unavailable",
+            )
+        self._capabilities_for_entity(entity).validate(source)
         text = (source.text or "").strip()
         attachments = [
             {"media_content_id": item.content_ref, "media_content_type": item.media_type}
