@@ -1569,6 +1569,7 @@ async def test_poll_counts_multiple_processed_acknowledgement_outcomes(
     (
         ("empty_source", "no supported parser input"),
         ("empty_attachment", "empty supported attachment"),
+        ("invalid_attachment", "malformed or undecodable"),
         ("too_many_attachments", "attachment count"),
         ("source_too_large", "source size"),
         ("unsupported_media", "media that is not supported"),
