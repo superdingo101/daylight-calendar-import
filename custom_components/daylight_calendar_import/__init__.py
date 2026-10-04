@@ -159,7 +159,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         activity_id: str,
     ) -> None:
         """Send one normalized email through the existing review pipeline."""
-        outcome = await parse_submission(source, activity_id)
+        # Email polling owns retry/terminal classification for parser failures.
+        outcome = await _async_parse_source(hass, entry, source)
         await pending_store.async_add(
             source_text=email_review_source_text(source),
             events=outcome.events,
