@@ -86,6 +86,7 @@ The terminal v0.5 validation cases are:
 | No usable selected `text/plain`/`text/html` body and no direct supported attachment | Record durable failed source; attempt `\\Seen` | Correct the content and resend it as a **new message** |
 | Direct supported attachment but AI Task lacks attachment support | Record durable failed source; attempt `\\Seen` | Use an attachment-capable AI Task and resend the message |
 | Zero-byte direct supported attachment | Record durable failed source; attempt `\\Seen` | Replace the attachment and resend |
+| Malformed/undecodable supported attachment or supported MIME attachment structure | Record durable failed source; attempt `\\Seen` | Correct the attachment/message and resend |
 | More than 4 direct supported attachments | Record durable failed source; attempt `\\Seen` | Reduce/split attachments and resend |
 | More than 10 MiB decoded direct attachment data | Record durable failed source; attempt `\\Seen` | Reduce/split attachments and resend |
 | Raw RFC message over ~14.3 MiB | Record durable failed source; attempt `\\Seen` | Reduce the whole message and resend |
@@ -101,7 +102,7 @@ Other failures remain retryable because the same unchanged message may succeed l
 | AI/provider runtime failure | Source claim is released; message remains unread | Restore the provider; next poll retries |
 | Storage failure | No false durable success; message remains unread | Restore storage; next poll retries |
 | No configured/usable local media directory for an otherwise valid attachment | Message remains unread | Restore/configure local media storage |
-| Malformed MIME normalization/staging failure not classified as a deterministic source-validation code | Message remains unread | Correct/resend the message if it repeatedly fails |
+| Message normalization failure before a stable claimed source is available | Message remains unread | Correct/resend the message if it repeatedly fails |
 | IMAP acknowledgement transport failure after any durable outcome | Local result remains durable; upstream read state may be uncertain | If still unread, later polls skip AI and retry only acknowledgement |
 
 Here, a “new message” matters because Daylight deduplicates primarily by a valid RFC `Message-ID` when present. Reusing the same `Message-ID` can keep the corrected resend classified as the already-handled source.
