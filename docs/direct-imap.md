@@ -82,7 +82,7 @@ The fixed v0.5 search deliberately leaves a source unread whenever processing is
 | Condition | What happens | Recovery |
 | --- | --- | --- |
 | Blank body and no direct supported attachment | Rejected before the AI call | Resend with usable outer body text or a direct supported attachment, or remove the original from discovery |
-| Only unsupported attachment types | No usable parser input | Resend usable content, or mark read/delete/remove the original |
+| Blank body plus only unsupported attachment types | No usable parser input | Resend usable content, or mark read/delete/remove the original |
 | Usable content exists only inside an attached `message/*` email | Nested content is ignored; the outer source may be empty | Extract/resend the nested content directly, or remove the original |
 | Direct supported attachment but AI Task lacks attachment support | Processing fails before the AI call | Use an attachment-capable AI Task entity, remove/resend the supported part, or remove the original |
 | Zero-byte direct supported attachment | Rejected as an empty attachment | Replace/resend the attachment, or remove the original |
