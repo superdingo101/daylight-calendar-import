@@ -310,7 +310,7 @@ def _validate_seen_write_capability(response: _Response) -> None:
             raise DirectImapMailboxError(_ERR_MAILBOX_READ_ONLY)
         if match := _PERMANENTFLAGS_RE.search(line):
             permanent_flags = {
-                token.casefold()
+                token.lower()
                 for token in match.group(1).split()
             }
 
