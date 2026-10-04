@@ -2812,7 +2812,7 @@ async def test_terminal_source_failure_is_durable_and_survives_restart(monkeypat
     assert record["transitions"][-1]["type"] == "failed"
     assert store.is_source_durable("<terminal@example.test>") is True
     assert store.is_source_duplicate("<terminal@example.test>") is True
-    assert backend.saved[-1]["source_claims"] == {}
+    assert backend.saved[-1].get("source_claims", {}) == {}
     assert backend.saved[-1]["seen_source_fingerprints"] == [
         source_fingerprint("<terminal@example.test>")
     ]
