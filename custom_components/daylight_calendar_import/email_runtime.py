@@ -138,6 +138,12 @@ class EmailPollingRuntime:
                     result.processing_failures,
                     result.acknowledgement_failures,
                 )
+            if result.terminal_failures:
+                _LOGGER.warning(
+                    "Direct IMAP poll permanently rejected %d message(s); "
+                    "their source identities were recorded as handled",
+                    result.terminal_failures,
+                )
         except asyncio.CancelledError:
             raise
         except DirectImapError as exc:
