@@ -314,11 +314,7 @@ def _validate_seen_write_capability(response: _Response) -> None:
                 for token in match.group(1).split()
             }
 
-    if (
-        permanent_flags is not None
-        and b"\\seen" not in permanent_flags
-        and b"\\*" not in permanent_flags
-    ):
+    if permanent_flags is not None and b"\\seen" not in permanent_flags:
         raise DirectImapMailboxError(_ERR_MAILBOX_SEEN_UNAVAILABLE)
 
 
