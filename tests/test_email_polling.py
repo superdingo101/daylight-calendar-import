@@ -1724,3 +1724,20 @@ async def test_terminal_failure_checkpoint_failure_aborts_without_acknowledgemen
         await async_poll_email_source(source, store, processor)
 
     assert source.ack_calls == []
+
+
+
+async def test_terminal_failure_without_disposition_needs_no_acknowledgement() -> None:
+    source = FakeSource([[_envelope("terminal-no-ack@example.test")]])
+    store = FakeStore()
+
+    async def processor(_document, _activity_id):
+        raise SourceValidationError("empty_source", "empty")
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.terminal_failures == 1
+    assert result.acknowledged == 0
+    assert result.acknowledgement_failures == 0
+    assert source.ack_calls == []
+    assert store.is_source_durable("<terminal-no-ack@example.test>") is True
