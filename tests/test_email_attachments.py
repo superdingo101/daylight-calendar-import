@@ -718,6 +718,7 @@ def test_attachment_payload_error_message_is_exact() -> None:
     with pytest.raises(email_attachments.EmailAttachmentError) as caught:
         email_attachments._attachment_payload(part)
 
+    assert caught.value.code == "invalid_attachment"
     assert str(caught.value) == "Email attachment payload could not be decoded"
 
 
@@ -958,6 +959,7 @@ def test_parse_error_message_is_exact(monkeypatch, tmp_path) -> None:
             {"local": str(tmp_path)},
         )
 
+    assert caught.value.code == "invalid_attachment"
     assert str(caught.value) == "Email attachments could not be parsed"
 
 
