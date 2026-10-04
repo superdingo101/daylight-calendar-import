@@ -16,6 +16,7 @@ from custom_components.daylight_calendar_import.email_polling import (
     EmailPollResult,
     async_poll_email_source,
 )
+from custom_components.daylight_calendar_import.providers import SourceValidationError
 from custom_components.daylight_calendar_import.email_source import (
     DirectImapReference,
     EmailDisposition,
@@ -121,10 +122,12 @@ class FakeStore:
         self.claim_requests: list[dict[str, object]] = []
         self.discovery_calls: list[dict[str, object]] = []
         self.source_failures: list[tuple[str, str]] = []
+        self.terminal_failures: list[tuple[str, str, str]] = []
         self.failures: list[str] = []
         self.fail_claim = False
         self.durable_source_ids: set[str] = set()
         self._received_at: dict[str, datetime] = {}
+        self._source_by_activity: dict[str, str] = {}
         self._counter = 0
 
     async def async_begin_source_discovery(
@@ -160,6 +163,7 @@ class FakeStore:
             "source_title": source_title,
             "received_at": self._received_at[activity_id],
         })
+        self._source_by_activity[activity_id] = source_id
         if self.fail_claim:
             raise RuntimeError("storage unavailable")
         if source_id in self.claimed_source_ids:
@@ -176,6 +180,17 @@ class FakeStore:
 
     async def async_record_parse_failure(self, activity_id: str) -> None:
         self.failures.append(activity_id)
+
+    async def async_record_terminal_source_failure(
+        self,
+        activity_id: str,
+        *,
+        source_id: str,
+        guidance: str,
+    ) -> None:
+        assert self._source_by_activity[activity_id] == source_id
+        self.terminal_failures.append((activity_id, source_id, guidance))
+        self.durable_source_ids.add(source_id)
 
     def is_source_durable(self, source_id: str) -> bool:
         return source_id in self.durable_source_ids
@@ -1547,3 +1562,182 @@ async def test_poll_counts_multiple_processed_acknowledgement_outcomes(
     assert result.acknowledged == expected_acknowledged
     assert result.acknowledgement_failures == expected_failures
     assert len(source.ack_calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("code", "guidance_fragment"),
+    (
+        ("empty_source", "no supported parser input"),
+        ("empty_attachment", "empty supported attachment"),
+        ("invalid_attachment", "malformed or undecodable"),
+        ("too_many_attachments", "attachment count"),
+        ("source_too_large", "source size"),
+        ("unsupported_media", "media that is not supported"),
+        ("unsupported_capability", "AI Task cannot process"),
+    ),
+)
+async def test_terminal_source_validation_is_durable_and_acknowledged(
+    code: str,
+    guidance_fragment: str,
+) -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source = FakeSource(
+        [[_envelope(f"{code}@example.test")]],
+        disposition=disposition,
+    )
+    store = FakeStore()
+
+    async def processor(_document, _activity_id):
+        raise SourceValidationError(code, "deterministic validation failure")
+
+    result = await async_poll_email_source(source, store, processor)
+
+    source_id = f"<{code}@example.test>"
+    assert result.terminal_failures == 1
+    assert result.processing_failures == 0
+    assert result.acknowledged == 1
+    assert result.acknowledgement_failures == 0
+    assert store.failures == []
+    assert len(store.terminal_failures) == 1
+    activity_id, recorded_source_id, guidance = store.terminal_failures[0]
+    assert activity_id == "activity-1"
+    assert recorded_source_id == source_id
+    assert guidance_fragment in guidance
+    assert store.is_source_durable(source_id) is True
+    assert source.ack_calls == [
+        (_envelope(f"{code}@example.test").provenance, disposition)
+    ]
+
+
+async def test_nonterminal_source_validation_remains_retryable() -> None:
+    source = FakeSource([[_envelope("media-storage@example.test")]])
+    store = FakeStore()
+
+    async def processor(_document, _activity_id):
+        raise SourceValidationError(
+            "media_storage_unavailable",
+            "No local media directory configured",
+        )
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.terminal_failures == 0
+    assert result.processing_failures == 1
+    assert store.failures == ["activity-1"]
+    assert store.terminal_failures == []
+    assert store.is_source_durable("<media-storage@example.test>") is False
+
+
+async def test_generic_processing_failure_is_not_terminal() -> None:
+    assert email_polling_module._terminal_source_guidance(
+        RuntimeError("AI unavailable")
+    ) is None
+    assert email_polling_module._terminal_source_guidance(
+        SourceValidationError("media_storage_unavailable", "temporary")
+    ) is None
+
+
+async def test_terminal_staging_failure_skips_processor_and_continues() -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source = FakeSource(
+        [[
+            _envelope("too-large@example.test", subject="Too large"),
+            _envelope("good-after-terminal@example.test", subject="Good"),
+        ]],
+        disposition=disposition,
+    )
+    store = FakeStore()
+    processed: list[str | None] = []
+
+    async def stager(_envelope, document):
+        if document.title == "Too large":
+            raise SourceValidationError(
+                "source_too_large",
+                "Source attachments exceed the size limit",
+            )
+        return FakeAttachmentStage(document)
+
+    async def processor(document, _activity_id):
+        processed.append(document.title)
+        assert document.upstream_source_id is not None
+        store.durable_source_ids.add(document.upstream_source_id)
+
+    result = await async_poll_email_source(
+        source,
+        store,
+        processor,
+        attachment_stager=stager,
+    )
+
+    assert result.terminal_failures == 1
+    assert result.processing_failures == 0
+    assert result.processed == 1
+    assert result.acknowledged == 2
+    assert processed == ["Good"]
+    assert store.is_source_durable("<too-large@example.test>") is True
+
+
+async def test_terminal_failure_acknowledgement_failure_stays_locally_durable() -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source = FakeSource(
+        [[_envelope("terminal-ack@example.test")]],
+        disposition=disposition,
+        ack_error=RuntimeError("mailbox unavailable"),
+    )
+    store = FakeStore()
+
+    async def processor(_document, _activity_id):
+        raise SourceValidationError("empty_source", "empty")
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.terminal_failures == 1
+    assert result.acknowledged == 0
+    assert result.acknowledgement_failures == 1
+    assert store.is_source_durable("<terminal-ack@example.test>") is True
+
+
+async def test_terminal_failure_checkpoint_failure_aborts_without_acknowledgement() -> None:
+    disposition = EmailDisposition(mark_seen=True)
+    source = FakeSource(
+        [[_envelope("terminal-storage@example.test")]],
+        disposition=disposition,
+    )
+
+    class FailingTerminalStore(FakeStore):
+        async def async_record_terminal_source_failure(
+            self,
+            activity_id: str,
+            *,
+            source_id: str,
+            guidance: str,
+        ) -> None:
+            del activity_id, source_id, guidance
+            raise RuntimeError("terminal checkpoint unavailable")
+
+    store = FailingTerminalStore()
+
+    async def processor(_document, _activity_id):
+        raise SourceValidationError("empty_source", "empty")
+
+    with pytest.raises(RuntimeError, match="terminal checkpoint unavailable"):
+        await async_poll_email_source(source, store, processor)
+
+    assert source.ack_calls == []
+
+
+
+async def test_terminal_failure_without_disposition_needs_no_acknowledgement() -> None:
+    source = FakeSource([[_envelope("terminal-no-ack@example.test")]])
+    store = FakeStore()
+
+    async def processor(_document, _activity_id):
+        raise SourceValidationError("empty_source", "empty")
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.terminal_failures == 1
+    assert result.acknowledged == 0
+    assert result.acknowledgement_failures == 0
+    assert source.ack_calls == []
+    assert store.is_source_durable("<terminal-no-ack@example.test>") is True

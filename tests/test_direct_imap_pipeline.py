@@ -29,6 +29,7 @@ from custom_components.daylight_calendar_import.email_polling import (
 from custom_components.daylight_calendar_import.email_source import EmailDisposition
 from custom_components.daylight_calendar_import.models import EventDraft
 from custom_components.daylight_calendar_import.parser import ParseOutcome
+from custom_components.daylight_calendar_import.providers import SourceValidationError
 from custom_components.daylight_calendar_import.storage import (
     STORAGE_KEY,
     STORAGE_VERSION,
@@ -549,3 +550,72 @@ async def test_direct_imap_pipeline_normalization_failure_does_not_block_later_m
         ("store", ("4", "+FLAGS.SILENT", "(\\Seen)")),
     ]
     assert factory.remaining == 0
+
+
+
+async def test_direct_imap_terminal_validation_failure_is_durable_across_restart(
+    monkeypatch,
+) -> None:
+    parser = AsyncMock(
+        side_effect=SourceValidationError(
+            "unsupported_capability",
+            "Parser does not support this attachment",
+        )
+    )
+    environment = PipelineEnvironment(monkeypatch, parser)
+    _, first_store, first_processor = await environment.async_setup()
+
+    raw = _message("terminal@example.test", subject="Unsupported")
+    first_collect = FakeImapClient(search_uids=(23,), messages={23: raw})
+    failed_ack = FakeImapClient(store_result="NO")
+    second_collect = FakeImapClient(search_uids=(23,), messages={23: raw})
+    successful_ack = FakeImapClient()
+    source = _source(
+        ScriptedFactory(
+            first_collect,
+            failed_ack,
+            second_collect,
+            successful_ack,
+        )
+    )
+
+    first = await async_poll_email_source(
+        source,
+        first_store,
+        first_processor,
+    )
+
+    assert first.terminal_failures == 1
+    assert first.processing_failures == 0
+    assert first.processed == 0
+    assert first.acknowledged == 0
+    assert first.acknowledgement_failures == 1
+    assert first_store.is_source_durable("<terminal@example.test>") is True
+    first_activity = first_store.list_activity()
+    assert len(first_activity) == 1
+    assert first_activity[0]["status"] == "failed"
+    assert "AI Task cannot process" in first_activity[0]["guidance"]
+    parser.assert_awaited_once()
+
+    _, restarted_store, restarted_processor = await environment.async_setup()
+    assert restarted_store.is_source_durable("<terminal@example.test>") is True
+
+    second = await async_poll_email_source(
+        source,
+        restarted_store,
+        restarted_processor,
+    )
+
+    assert second.claimed == 0
+    assert second.processed == 0
+    assert second.duplicates == 1
+    assert second.terminal_failures == 0
+    assert second.acknowledged == 1
+    assert second.acknowledgement_failures == 0
+    assert parser.await_count == 1
+    assert failed_ack.uid_calls == [
+        ("store", ("23", "+FLAGS.SILENT", "(\\Seen)")),
+    ]
+    assert successful_ack.uid_calls == [
+        ("store", ("23", "+FLAGS.SILENT", "(\\Seen)")),
+    ]

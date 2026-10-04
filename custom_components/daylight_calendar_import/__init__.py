@@ -49,6 +49,7 @@ from .email_runtime import (
 from .models import DraftValidationError, EventDraft
 from .parser import ParseOutcome, async_parse_source as parse_source_with_provider
 from .pdfs import async_pdf_source
+from .providers import SourceValidationError
 from .review_panel import async_register_review_panel, async_remove_review_panel
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .uploads import async_image_source
@@ -158,7 +159,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         activity_id: str,
     ) -> None:
         """Send one normalized email through the existing review pipeline."""
-        outcome = await parse_submission(source, activity_id)
+        # Email polling owns retry/terminal classification for parser failures.
+        outcome = await _async_parse_source(hass, entry, source)
         await pending_store.async_add(
             source_text=email_review_source_text(source),
             events=outcome.events,
@@ -701,7 +703,10 @@ async def _async_parse_source(
 ) -> ParseOutcome:
     """Feed a normalized source into the current text parser boundary."""
     if source.text is None and not source.attachments:
-        raise ServiceValidationError("This source has no text for the configured parser")
+        raise SourceValidationError(
+            "empty_source",
+            "This source has no text or attachments for the configured parser",
+        )
     return await parse_source_with_provider(
         hass,
         source=source,

@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -2779,3 +2779,161 @@ async def test_load_clears_orphan_source_claim_and_remains_usable(monkeypatch) -
         source_kind="email",
         source_title="Usable",
     )
+
+
+async def test_terminal_source_failure_is_durable_and_survives_restart(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    activity_id = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Bad attachment",
+        received_at=datetime(2026, 10, 4, 12, 0, tzinfo=UTC),
+    )
+    assert await store.async_claim_source_discovery(
+        activity_id,
+        source_id="<terminal@example.test>",
+        source_kind="email",
+        source_title="Bad attachment",
+    )
+
+    await store.async_record_terminal_source_failure(
+        activity_id,
+        source_id="<terminal@example.test>",
+        guidance="Correct the attachment and resend it as a new message.",
+    )
+
+    record = store.get_activity(activity_id)
+    assert record is not None
+    assert record["status"] == "failed"
+    assert record["guidance"] == (
+        "Correct the attachment and resend it as a new message."
+    )
+    assert record["transitions"][-1]["type"] == "failed"
+    assert store.is_source_durable("<terminal@example.test>") is True
+    assert store.is_source_duplicate("<terminal@example.test>") is True
+    assert backend.saved[-1].get("source_claims", {}) == {}
+    assert backend.saved[-1]["seen_source_fingerprints"] == [
+        source_fingerprint("<terminal@example.test>")
+    ]
+
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.is_source_durable("<terminal@example.test>") is True
+    assert restarted.get_activity(activity_id)["status"] == "failed"
+
+    # Re-finalizing an already terminal activity is a no-op.
+    saved_count = len(backend.saved)
+    await restarted.async_record_terminal_source_failure(
+        activity_id,
+        source_id="<terminal@example.test>",
+        guidance="Different guidance",
+    )
+    assert len(backend.saved) == saved_count
+
+
+async def test_failed_terminal_persistence_releases_claim_before_email_retry(
+    monkeypatch,
+) -> None:
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    source_id = "<terminal-save-retry@example.test>"
+    received_at = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
+
+    activity_id = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Terminal",
+        received_at=received_at,
+    )
+    assert await store.async_claim_source_discovery(
+        activity_id,
+        source_id=source_id,
+        source_kind="email",
+        source_title="Terminal",
+    )
+
+    backend.save_error = RuntimeError("storage unavailable")
+    backend.fail_on_save_attempt = backend.save_attempts + 1
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await store.async_record_terminal_source_failure(
+            activity_id,
+            source_id=source_id,
+            guidance="Correct and resend.",
+        )
+
+    assert store.is_source_durable(source_id) is False
+    assert store.is_source_duplicate(source_id) is True
+    assert store.get_activity(activity_id)["status"] == "processing"
+
+    backend.save_error = None
+    backend.fail_on_save_attempt = None
+    retry_id = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Retry",
+        received_at=received_at,
+    )
+    assert await store.async_claim_source_discovery(
+        retry_id,
+        source_id=source_id,
+        source_kind="email",
+        source_title="Retry",
+    )
+
+    assert retry_id != activity_id
+    assert store.get_activity(activity_id)["status"] == "failed"
+    assert store.get_activity(retry_id)["status"] == "processing"
+    assert store.is_source_durable(source_id) is False
+    assert backend.saved[-1]["source_claims"] == {
+        retry_id: source_fingerprint(source_id)
+    }
+
+
+async def test_terminal_source_failure_rejects_mismatched_claim(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    activity_id = await store.async_begin_source_discovery(
+        source_kind="email",
+        source_title="Message",
+        received_at=datetime(2026, 10, 4, 12, 0, tzinfo=UTC),
+    )
+    assert await store.async_claim_source_discovery(
+        activity_id,
+        source_id="<claimed@example.test>",
+        source_kind="email",
+        source_title="Message",
+    )
+
+    with pytest.raises(ValueError, match="source_id does not match claimed source"):
+        await store.async_record_terminal_source_failure(
+            activity_id,
+            source_id="<other@example.test>",
+            guidance="Terminal",
+        )
+
+    assert store.is_source_durable("<claimed@example.test>") is False
+    assert store.get_activity(activity_id)["status"] == "processing"
+
+
+async def test_terminal_source_failure_propagates_deferred_cancellation(monkeypatch):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    await store.async_load()
+
+    async def cancelled_transaction(operation):
+        operation.close()
+        return None, True
+
+    monkeypatch.setattr(
+        store,
+        "_async_complete_transaction",
+        cancelled_transaction,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await store.async_record_terminal_source_failure(
+            "activity",
+            source_id="<terminal@example.test>",
+            guidance="Terminal",
+        )

@@ -480,3 +480,40 @@ async def test_runtime_does_not_warn_when_acknowledgements_succeed(
     await runtime._async_poll()
 
     assert "retryable failures" not in caplog.text.lower()
+
+
+async def test_runtime_logs_terminal_failures_separately_from_retryable_failures(
+    monkeypatch,
+    caplog,
+) -> None:
+    runtime = EmailPollingRuntime(
+        FakeHass(),
+        SimpleNamespace(),
+        SimpleNamespace(),
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "async_poll_email_source",
+        AsyncMock(
+            return_value=EmailPollResult(
+                discovered=2,
+                claimed=2,
+                processed=0,
+                duplicates=0,
+                normalization_failures=0,
+                processing_failures=0,
+                terminal_failures=2,
+                acknowledged=2,
+                acknowledgement_failures=0,
+            )
+        ),
+    )
+
+    await runtime._async_poll()
+
+    assert "retryable failures" not in caplog.text
+    assert caplog.records[-1].getMessage() == (
+        "Direct IMAP poll permanently rejected 2 message(s); "
+        "their source identities were recorded as handled"
+    )

@@ -31,9 +31,9 @@ The first poll runs immediately, and the fixed v0.5 search selects every message
 
 For the safest first setup, use a dedicated mailbox or folder, or otherwise make sure the unread messages already present are messages you are comfortable sending through Daylight.
 
-### Daylight marks successfully handled messages read
+### Daylight marks durably handled messages read
 
-Processing failures before a durable local outcome are not acknowledged, so the message remains unread and eligible for retry. Once Daylight has durably handled the source, it **attempts** to apply the IMAP `\\Seen` flag.
+Transient failures before a durable local outcome are not acknowledged, so the message remains unread and eligible for retry. Deterministic source-validation failures—such as an empty source, unsupported parser capability, zero-byte attachment, or hard attachment/message size limit—are instead recorded as a durable failed outcome so the same unchanged message does not retry forever. Once Daylight has a durable success **or terminal validation failure**, it **attempts** to apply the IMAP `\\Seen` flag.
 
 That means the mailbox's read/unread state is part of the v0.5 transport contract, not merely a visual preference. An acknowledgement transport failure can be outcome-uncertain—the server may or may not have applied `\\Seen` before the error was observed—but the local durable result is kept either way.
 
@@ -75,25 +75,37 @@ The v0.5 bounds are:
 
 The raw-message cap applies to the whole wire message before MIME traversal. Bytes in unsupported parts and attached `message/*` content therefore still count toward the ~14.3 MiB raw cap even though nested files do not count toward the four-part or 10 MiB decoded-attachment limits.
 
-### Content/configuration conditions that will keep retrying
+### Deterministic source failures do not retry forever
 
-The fixed v0.5 search deliberately leaves a source unread whenever processing is not durable. Some conditions will therefore repeat on later polls until the source or environment changes:
+After Daylight has a stable source identity, message-intrinsic validation failures are terminal for that exact source. Daylight records the lifecycle as `failed`, remembers the source identity as durably handled, and then attempts to mark the message `\\Seen`. This prevents an unchanged poison message from waking the parser every five minutes.
 
-| Condition | What happens | Recovery |
+The terminal v0.5 validation cases are:
+
+| Condition | Terminal behavior | Recovery |
 | --- | --- | --- |
-| No usable `text/plain`/`text/html` body and no direct supported attachment | Rejected before the AI call | Resend with usable outer body text or a direct supported attachment, or remove the original from discovery |
-| Content exists only in unsupported body/attachment MIME types (for example `text/calendar` without a usable plain/HTML body) | No usable parser input | Resend usable text/HTML or a supported attachment, or remove the original |
-| Usable content exists only inside an attached `message/*` email | Nested content is ignored; the outer source may be empty | Extract/resend the nested content directly, or remove the original |
-| Direct supported attachment but AI Task lacks attachment support | Processing fails before the AI call | Use an attachment-capable AI Task entity, remove/resend the supported part, or remove the original |
-| Zero-byte direct supported attachment | Rejected as an empty attachment | Replace/resend the attachment, or remove the original |
-| Malformed/undecodable supported MIME attachment or MIME structure | Normalization/staging/processing can fail before AI completes | Correct/resend the message, or remove the original if the same malformed source keeps retrying |
-| More than 4 direct supported attachments | Rejected as too many attachments | Reduce/split/resend, or remove the original |
-| More than 10 MiB decoded direct attachment data | Rejected as too large | Reduce/split/resend, or remove the original |
-| Raw RFC message over ~14.3 MiB | Rejected before attachment traversal, including bytes in nested/unsupported parts | Reduce/resend the whole message, or remove the original |
-| No configured local media directory, or the first configured media directory is not usable/writable, while direct supported attachments are present | Attachment staging fails | Restore/configure the selected local media storage, resend without supported attachments, or remove the original |
-| Mailbox/account cannot set `\\Seen` | Local handling can succeed, but acknowledgement fails and an unread message can be rediscovered repeatedly | Fix the mailbox/account write permission; meanwhile mark/remove the message with another client or disable Direct IMAP to stop the acknowledgement loop |
+| No usable selected `text/plain`/`text/html` body and no direct supported attachment | Record durable failed source; attempt `\\Seen` | Correct the content and resend it as a **new message** |
+| Direct supported attachment and the configured AI Task entity is present but lacks attachment support | Record durable failed source; attempt `\\Seen` | Use an attachment-capable AI Task and resend the message |
+| Zero-byte direct supported attachment | Record durable failed source; attempt `\\Seen` | Replace the attachment and resend |
+| Malformed/undecodable supported attachment or supported MIME attachment structure | Record durable failed source; attempt `\\Seen` | Correct the attachment/message and resend |
+| More than 4 direct supported attachments | Record durable failed source; attempt `\\Seen` | Reduce/split attachments and resend |
+| More than 10 MiB decoded direct attachment data | Record durable failed source; attempt `\\Seen` | Reduce/split attachments and resend |
+| Raw RFC message over ~14.3 MiB | Record durable failed source; attempt `\\Seen` | Reduce the whole message and resend |
+| Unsupported parser media/capability reported by the parser boundary | Record durable failed source; attempt `\\Seen` | Correct the content/configuration and resend |
 
-Here, “remove the original from discovery” means mark it read, delete it, or otherwise move/remove it from the configured mailbox's fixed unseen/undeleted search.
+Because the source identity is now durable, merely marking the original message unread again does **not** force another AI pass. Resend corrected content as a new email with a fresh `Message-ID` when you want it processed again.
+
+Other failures remain retryable because the same unchanged message may succeed later:
+
+| Situation | Behavior | Recovery |
+| --- | --- | --- |
+| IMAP connection/search/fetch failure | Message remains unread | Restore connectivity; next poll retries |
+| AI/provider runtime failure, including a temporarily missing AI Task entity/component | Source claim is released; message remains unread | Restore the provider; next poll retries |
+| Storage failure | No false durable success; message remains unread | Restore storage; next poll retries |
+| No configured/usable local media directory for an otherwise valid attachment | Message remains unread | Restore/configure local media storage |
+| Message normalization failure before a stable claimed source is available | Message remains unread | Correct/resend the message if it repeatedly fails |
+| IMAP acknowledgement transport failure after any durable outcome | Local result remains durable; upstream read state may be uncertain | If still unread, later polls skip AI and retry only acknowledgement |
+
+Here, a “new message” matters because Daylight deduplicates primarily by a valid RFC `Message-ID` when present. Reusing the same `Message-ID` can keep the corrected resend classified as the already-handled source.
 
 ## Configure Direct IMAP
 
@@ -110,7 +122,7 @@ Enable **Direct IMAP email ingestion**, then provide:
 | Mailbox | Mailbox/folder to poll; defaults to `INBOX` |
 | Verify TLS certificate | Validate the server certificate; enabled by default |
 
-Daylight validates the implicit-TLS connection, authentication, mailbox selection, and that the selected mailbox returns a valid IMAP UIDVALIDITY value before saving an enabled configuration. It does **not** preflight message content, AI attachment capability, local-media writability, or permission to set `\\Seen`; those content/environment/permission failures are discovered during polling and follow the retry behavior documented above.
+Daylight validates the implicit-TLS connection, authentication, mailbox selection, and that the selected mailbox returns a valid IMAP UIDVALIDITY value before saving an enabled configuration. When the server explicitly advertises that the mailbox is read-only, or advertises `PERMANENTFLAGS` without `\\Seen`, validation rejects the configuration non-destructively. Daylight does **not** mutate a test message merely to probe permissions, so servers that omit those capability hints may still reveal a flag-write problem only during real acknowledgement. Message content, AI attachment capability, and local-media writability are discovered during polling.
 
 ### Editing an existing configuration
 
@@ -167,7 +179,8 @@ What matters operationally:
 | --- | --- | --- | --- |
 | Connection/search failure | No new durable result | Unchanged | Retry connection/search |
 | Message normalization failure | Lifecycle failure recorded | Left unread | Retry message |
-| AI/parser failure | Lifecycle failure recorded; source claim released | Left unread | Retry parsing |
+| Deterministic source-validation failure | Durable `failed` lifecycle result; source identity remembered | `\\Seen` attempted | No reprocessing of the same source; correct and resend as a new message |
+| AI/provider runtime failure | Lifecycle failure recorded; source claim released | Left unread | Retry parsing |
 | Local storage/processing failure | No false success | Left unread | Retry processing |
 | Successful parse with events | Pending review persisted | `\\Seen` attempted after persistence | No reprocessing; if acknowledgement fails and the message remains unread, retry acknowledgement |
 | Successful parse with zero events | `no_events` persisted | `\\Seen` attempted after persistence | No reprocessing; if rediscovered, retry acknowledgement |
@@ -199,9 +212,10 @@ If you expected a message to import but it did not:
 3. Confirm the message is **unread** and not deleted.
 4. Check Home Assistant logs for a Direct IMAP connection/retry warning **and** for the generic `Email poll failed` error used when an unexpected storage or processing exception aborts the poll.
 5. Check **Daylight imports -> Recent activity** for a corresponding discovered, processing, failed, duplicate, `no_events`, or review-ready record. Completed activity history is bounded, so sufficiently old completed records may no longer appear there.
-6. If the message failed before becoming durable and was manually marked read, mark it unread again to make it eligible for the next poll.
-7. If a pending import already exists for the message, do not delete/re-forward the email merely to force another AI pass; review the existing pending import.
-8. If local handling succeeded but the email stayed unread, leave it unread. Daylight should recognize the durable source and retry only the IMAP acknowledgement.
+6. If the message has a retryable failure and was manually marked read, mark it unread again to make it eligible for the next poll.
+7. If Recent activity shows a terminal deterministic validation failure, correct the content/configuration and resend it as a **new message**. Marking the same original unread does not bypass durable source deduplication.
+8. If a pending import already exists for the message, do not delete/re-forward the email merely to force another AI pass; review the existing pending import.
+9. If local handling succeeded or a terminal validation failure was recorded but the email stayed unread, leave it unread. Daylight should recognize the durable source and retry only the IMAP acknowledgement.
 
 ## Configuration errors
 
@@ -215,9 +229,9 @@ Verify the username and credential. Some providers require an app password rathe
 
 ### Invalid mailbox
 
-The account authenticated, but the configured mailbox could not be selected.
+The account authenticated, but the configured mailbox could not be selected or explicitly advertises that Daylight cannot perform the required `\\Seen` flag update.
 
-Use the mailbox/folder name expected by that IMAP server.
+Use the mailbox/folder name expected by that IMAP server and ensure the account has read/write flag permission. Some servers do not advertise enough capability information during selection; those permission failures can still appear later during acknowledgement.
 
 ### Invalid email configuration
 

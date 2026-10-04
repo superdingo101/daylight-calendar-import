@@ -213,10 +213,40 @@ async def test_mixed_pdf_keeps_text_and_attachment_in_one_ai_task_request(monkey
                                        "media_content_type": "application/pdf"}]
 
 
-def test_image_capability_handles_unavailable_entity():
+async def test_image_capability_handles_unavailable_entity(monkeypatch):
     component = SimpleNamespace(get_entity=lambda _id: None)
-    provider = providers.AITaskParserProvider(SimpleNamespace(data={providers.DATA_COMPONENT: component}), "ai_task.missing")
+    provider = providers.AITaskParserProvider(
+        SimpleNamespace(data={providers.DATA_COMPONENT: component}),
+        "ai_task.missing",
+    )
     assert provider.capabilities.images is False
+
+    generate = AsyncMock()
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    seed = TextSourceAdapter().create("seed")
+    image = SourceAttachment(
+        "a",
+        "image/png",
+        25,
+        "media-source://media_source/local/image.png",
+    )
+    source = SourceDocument(
+        seed.id,
+        SourceKind.IMAGE,
+        seed.received_at,
+        attachments=(image,),
+    )
+
+    with pytest.raises(providers.ProviderError) as caught:
+        await provider.async_parse(
+            source,
+            reference_datetime="now",
+            time_zone="UTC",
+        )
+
+    assert caught.value.code == "provider_unavailable"
+    assert str(caught.value) == "Configured AI Task is temporarily unavailable"
+    generate.assert_not_awaited()
 
 
 async def test_provider_maps_ai_task_failure_to_stable_category(monkeypatch):

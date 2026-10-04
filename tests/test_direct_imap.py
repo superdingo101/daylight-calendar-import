@@ -1432,3 +1432,95 @@ async def test_acknowledge_store_adds_custom_flag_without_seen() -> None:
             ("1", "+FLAGS.SILENT", "(daylight-processed)"),
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "select_response",
+    (
+        _ok(
+            b"FLAGS (\\Seen)",
+            b"OK [UIDVALIDITY 1234] UIDs valid",
+            b"Select completed",
+        ),
+        _ok(
+            b"FLAGS (\\Seen)",
+            b"OK [PERMANENTFLAGS (\\Seen \\Answered)] Permanent flags",
+            b"OK [UIDVALIDITY 1234] UIDs valid",
+            b"OK [READ-WRITE] Mailbox selected",
+        ),
+    ),
+)
+async def test_validate_seen_capability_accepts_absent_or_supported_hints(
+    select_response: FakeResponse,
+) -> None:
+    client = FakeImapClient(select_response=select_response)
+    source, _ = _source(
+        client,
+        settings=_settings(
+            disposition=EmailDisposition(mark_seen=True),
+        ),
+    )
+
+    await source.async_validate()
+
+    assert client.logout_calls == 1
+    assert client.abort_calls == 0
+
+
+async def test_validate_seen_capability_rejects_explicit_read_only_mailbox() -> None:
+    client = FakeImapClient(
+        select_response=_ok(
+            b"FLAGS (\\Seen)",
+            b"OK [UIDVALIDITY 1234] UIDs valid",
+            b"OK [READ-ONLY] Mailbox selected",
+        )
+    )
+    source, _ = _source(
+        client,
+        settings=_settings(
+            disposition=EmailDisposition(mark_seen=True),
+        ),
+    )
+
+    with pytest.raises(
+        DirectImapMailboxError,
+        match="^IMAP mailbox is read-only$",
+    ):
+        await source.async_validate()
+
+    assert client.logout_calls == 1
+    assert client.abort_calls == 0
+
+
+@pytest.mark.parametrize(
+    "permanent_flags",
+    (
+        b"OK [PERMANENTFLAGS (\\Answered \\Flagged)] Permanent flags",
+        b"OK [PERMANENTFLAGS (\\*)] Permanent flags",
+    ),
+)
+async def test_validate_seen_capability_rejects_advertised_permanentflags_without_seen(
+    permanent_flags: bytes,
+) -> None:
+    client = FakeImapClient(
+        select_response=_ok(
+            b"FLAGS (\\Seen \\Answered)",
+            permanent_flags,
+            b"OK [UIDVALIDITY 1234] UIDs valid",
+        )
+    )
+    source, _ = _source(
+        client,
+        settings=_settings(
+            disposition=EmailDisposition(mark_seen=True),
+        ),
+    )
+
+    with pytest.raises(
+        DirectImapMailboxError,
+        match=r"^IMAP mailbox does not allow the \\Seen flag$",
+    ):
+        await source.async_validate()
+
+    assert client.logout_calls == 1
+    assert client.abort_calls == 0

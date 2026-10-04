@@ -42,7 +42,7 @@
     },
     "error": {
       "invalid_auth": "The IMAP server rejected the username or password.",
-      "invalid_mailbox": "The configured mailbox could not be selected.",
+      "invalid_mailbox": "The configured mailbox could not be selected or explicitly disallows the required \\Seen flag change.",
       "invalid_email_config": "The email configuration is invalid.",
       "cannot_connect": "Unable to connect to the IMAP server."
     }

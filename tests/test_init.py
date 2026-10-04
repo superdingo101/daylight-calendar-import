@@ -59,6 +59,7 @@ from custom_components.daylight_calendar_import.const import (
 )
 from custom_components.daylight_calendar_import.models import EventDraft
 from custom_components.daylight_calendar_import.parser import ParseOutcome
+from custom_components.daylight_calendar_import.providers import SourceValidationError
 from custom_components.daylight_calendar_import.sources import SourceAttachment, SourceDocument, SourceKind, TextSourceAdapter
 from custom_components.daylight_calendar_import.storage import (
     PendingEvent,
@@ -1668,8 +1669,9 @@ async def test_text_parser_boundary_rejects_attachment_only_source():
     attachment_only = SourceDocument(
         id=text_source.id, kind=SourceKind.PDF, received_at=text_source.received_at
     )
-    with pytest.raises(ServiceValidationError, match="no text"):
+    with pytest.raises(SourceValidationError, match="no text") as caught:
         await _async_parse_source(FakeHass(), entry(), attachment_only)
+    assert caught.value.code == "empty_source"
 
 
 async def test_submit_image_routes_attachment_and_text_into_review(monkeypatch):
