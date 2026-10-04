@@ -30,6 +30,7 @@ _TERMINAL_SOURCE_VALIDATION_CODES = frozenset(
     {
         "empty_source",
         "empty_attachment",
+        "invalid_attachment",
         "too_many_attachments",
         "source_too_large",
         "unsupported_media",
@@ -44,6 +45,10 @@ _TERMINAL_SOURCE_GUIDANCE = {
     "empty_attachment": (
         "Email contains an empty supported attachment. Correct the attachment "
         "and resend it as a new message."
+    ),
+    "invalid_attachment": (
+        "Email contains a malformed or undecodable supported attachment. "
+        "Correct the attachment and resend it as a new message."
     ),
     "too_many_attachments": (
         "Email exceeds the supported attachment count. Reduce or split the "
