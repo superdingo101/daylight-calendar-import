@@ -30,6 +30,11 @@ _STATE_AUTH = "AUTH"
 _STATE_NONAUTH = "NONAUTH"
 
 _UIDVALIDITY_RE = re.compile(rb"\[UIDVALIDITY\s+([0-9]+)\]", re.IGNORECASE)
+_READ_ONLY_RE = re.compile(rb"\[READ-ONLY\]", re.IGNORECASE)
+_PERMANENTFLAGS_RE = re.compile(
+    rb"\[PERMANENTFLAGS\s+\(([^)]*)\)\]",
+    re.IGNORECASE,
+)
 _FETCH_START_RE = re.compile(rb"^[0-9]+\s+FETCH\s+\(", re.IGNORECASE)
 _FETCH_UID_RE = re.compile(rb"\bUID\s+([0-9]+)\b", re.IGNORECASE)
 _LITERAL_SUFFIX_RE = re.compile(rb"\{([0-9]+)\}\s*$")
@@ -46,6 +51,8 @@ _ERR_AUTH = "IMAP authentication failed"  # pragma: no mutate
 _ERR_AUTH_STATE = "IMAP server did not enter authenticated state"  # pragma: no mutate
 _ERR_MAILBOX = "IMAP mailbox selection failed"  # pragma: no mutate
 _ERR_MAILBOX_DATA = "IMAP mailbox selection returned malformed response data"  # pragma: no mutate
+_ERR_MAILBOX_READ_ONLY = "IMAP mailbox is read-only"  # pragma: no mutate
+_ERR_MAILBOX_SEEN_UNAVAILABLE = "IMAP mailbox does not allow the \\Seen flag"  # pragma: no mutate
 _ERR_UIDVALIDITY_INVALID = "IMAP server returned an invalid UIDVALIDITY"  # pragma: no mutate
 _ERR_UIDVALIDITY_MISSING = "IMAP server did not provide UIDVALIDITY"  # pragma: no mutate
 _ERR_SEARCH = "IMAP UID search failed"  # pragma: no mutate
@@ -293,6 +300,28 @@ def _parse_uidvalidity(response: _Response) -> int:
     raise DirectImapProtocolError(_ERR_UIDVALIDITY_MISSING)
 
 
+def _validate_seen_write_capability(response: _Response) -> None:
+    """Reject only explicit evidence that the selected mailbox cannot set \\Seen."""
+    _require_ok(response, _ERR_MAILBOX, DirectImapMailboxError)
+    permanent_flags: set[bytes] | None = None
+    for raw_line in response.lines:
+        line = _line_bytes(raw_line, _ERR_MAILBOX_DATA)
+        if _READ_ONLY_RE.search(line):
+            raise DirectImapMailboxError(_ERR_MAILBOX_READ_ONLY)
+        if match := _PERMANENTFLAGS_RE.search(line):
+            permanent_flags = {
+                token.casefold()
+                for token in match.group(1).split()
+            }
+
+    if (
+        permanent_flags is not None
+        and b"\\seen" not in permanent_flags
+        and b"\\*" not in permanent_flags
+    ):
+        raise DirectImapMailboxError(_ERR_MAILBOX_SEEN_UNAVAILABLE)
+
+
 def _parse_search_uids(response: _Response) -> tuple[int, ...]:
     _require_ok(response, _ERR_SEARCH)
     if not response.lines:
@@ -444,8 +473,11 @@ class DirectImapSource:
         return self._config
 
     async def async_validate(self) -> None:
-        """Validate connection, authentication, mailbox, and UID identity support."""
-        client, _ = await self._async_open(self._settings.mailbox)
+        """Validate connection, mailbox identity, and required flag capability."""
+        client, _ = await self._async_open(
+            self._settings.mailbox,
+            require_seen_write=self._settings.disposition.mark_seen,
+        )
         await self._async_logout_cancellation_safe(client)
 
     async def async_collect(self) -> AsyncIterator[EmailEnvelope]:
@@ -570,7 +602,12 @@ class DirectImapSource:
         if provenance.transport_reference.mailbox != self._settings.mailbox:
             raise DirectImapProtocolError(_ERR_PROVENANCE_MAILBOX)
 
-    async def _async_open(self, mailbox: str) -> tuple[_ImapClient, int]:
+    async def _async_open(
+        self,
+        mailbox: str,
+        *,
+        require_seen_write: bool = False,
+    ) -> tuple[_ImapClient, int]:
         try:
             client = self._client_factory(
                 host=self._settings.host,
@@ -604,6 +641,8 @@ class DirectImapSource:
 
             select_response = await client.select(mailbox)
             uid_validity = _parse_uidvalidity(select_response)
+            if require_seen_write:
+                _validate_seen_write_capability(select_response)
             return client, uid_validity
         except asyncio.CancelledError:
             await self._async_cleanup_failed_open(client, greeted=greeted)
