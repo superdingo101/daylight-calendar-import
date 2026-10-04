@@ -86,6 +86,7 @@ The fixed v0.5 search deliberately leaves a source unread whenever processing is
 | Usable content exists only inside an attached `message/*` email | Nested content is ignored; the outer source may be empty | Extract/resend the nested content directly, or remove the original |
 | Direct supported attachment but AI Task lacks attachment support | Processing fails before the AI call | Use an attachment-capable AI Task entity, remove/resend the supported part, or remove the original |
 | Zero-byte direct supported attachment | Rejected as an empty attachment | Replace/resend the attachment, or remove the original |
+| Malformed/undecodable supported MIME attachment or MIME structure | Normalization/staging/processing can fail before AI completes | Correct/resend the message, or remove the original if the same malformed source keeps retrying |
 | More than 4 direct supported attachments | Rejected as too many attachments | Reduce/split/resend, or remove the original |
 | More than 10 MiB decoded direct attachment data | Rejected as too large | Reduce/split/resend, or remove the original |
 | Raw RFC message over ~14.3 MiB | Rejected before attachment traversal, including bytes in nested/unsupported parts | Reduce/resend the whole message, or remove the original |
@@ -238,12 +239,14 @@ Check DNS/network access, server name, port, implicit-TLS compatibility, TLS set
 
 Email normalization reuses Daylight's existing bounded attachment pipeline.
 
+- Processable normalized email body text and supported staged attachments are passed to the **configured Home Assistant AI Task entity/provider** for event extraction. That provider's own privacy, retention, network, and billing behavior therefore applies to the email content it receives. Because v0.5 has no sender allowlist, any processable unread message in the configured mailbox can reach that AI Task provider.
+- Supported attachment bytes are temporarily written to the selected Home Assistant local media directory so AI Task can access them. Treat that media storage as sensitive while processing is in flight.
 - Raw email bytes are not stored in pending-import storage.
 - Temporary supported attachments are staged only for processing. Cleanup is best-effort: Daylight attempts every staged-file deletion and logs cleanup failures without turning an otherwise durable message back into a retry. If cleanup fails, the staged file can remain in Home Assistant's media directory and may require manual removal using the logged path.
 - Pending review may retain the normalized email body text, the normalized email **Subject** as the source title, and for direct supported attachments the original attachment filename when present (otherwise the media type) plus a SHA-256 digest as review context. It does not retain the original attachment bytes. Subjects and filenames can themselves be sensitive local data. Attachment digests are **not** the source/event deduplication key; a newly forwarded message with the same attachment can still invoke AI again.
 - Lifecycle activity records retain the normalized email **Subject** as the source title. They do not retain the raw email body/source text, upload bytes, mailbox credentials, or IMAP transport details. Treat email subjects as potentially sensitive local data.
 - Source deduplication persists a one-way Daylight fingerprint of the source identity rather than the original `Message-ID` or raw-wire fallback identifier.
-- Saved IMAP passwords remain in Home Assistant configuration storage and are not repopulated into the browser when editing Options.
+- Saved IMAP passwords remain in Home Assistant configuration-entry storage and are not repopulated into the browser when editing Options. Daylight does not add a separate application-level encryption layer for this option, so protect Home Assistant's configuration storage and backups accordingly.
 
 ## Intentionally unsupported in v0.5
 
