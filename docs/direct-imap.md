@@ -84,7 +84,7 @@ The terminal v0.5 validation cases are:
 | Condition | Terminal behavior | Recovery |
 | --- | --- | --- |
 | No usable selected `text/plain`/`text/html` body and no direct supported attachment | Record durable failed source; attempt `\\Seen` | Correct the content and resend it as a **new message** |
-| Direct supported attachment but AI Task lacks attachment support | Record durable failed source; attempt `\\Seen` | Use an attachment-capable AI Task and resend the message |
+| Direct supported attachment and the configured AI Task entity is present but lacks attachment support | Record durable failed source; attempt `\\Seen` | Use an attachment-capable AI Task and resend the message |
 | Zero-byte direct supported attachment | Record durable failed source; attempt `\\Seen` | Replace the attachment and resend |
 | Malformed/undecodable supported attachment or supported MIME attachment structure | Record durable failed source; attempt `\\Seen` | Correct the attachment/message and resend |
 | More than 4 direct supported attachments | Record durable failed source; attempt `\\Seen` | Reduce/split attachments and resend |
@@ -99,7 +99,7 @@ Other failures remain retryable because the same unchanged message may succeed l
 | Situation | Behavior | Recovery |
 | --- | --- | --- |
 | IMAP connection/search/fetch failure | Message remains unread | Restore connectivity; next poll retries |
-| AI/provider runtime failure | Source claim is released; message remains unread | Restore the provider; next poll retries |
+| AI/provider runtime failure, including a temporarily missing AI Task entity/component | Source claim is released; message remains unread | Restore the provider; next poll retries |
 | Storage failure | No false durable success; message remains unread | Restore storage; next poll retries |
 | No configured/usable local media directory for an otherwise valid attachment | Message remains unread | Restore/configure local media storage |
 | Message normalization failure before a stable claimed source is available | Message remains unread | Correct/resend the message if it repeatedly fails |
@@ -122,7 +122,7 @@ Enable **Direct IMAP email ingestion**, then provide:
 | Mailbox | Mailbox/folder to poll; defaults to `INBOX` |
 | Verify TLS certificate | Validate the server certificate; enabled by default |
 
-Daylight validates the implicit-TLS connection, authentication, mailbox selection, and that the selected mailbox returns a valid IMAP UIDVALIDITY value before saving an enabled configuration. When the server explicitly advertises that the mailbox is read-only, or advertises `PERMANENTFLAGS` without `\\Seen` (and without the wildcard `\\*`), validation rejects the configuration non-destructively. Daylight does **not** mutate a test message merely to probe permissions, so servers that omit those capability hints may still reveal a flag-write problem only during real acknowledgement. Message content, AI attachment capability, and local-media writability are discovered during polling.
+Daylight validates the implicit-TLS connection, authentication, mailbox selection, and that the selected mailbox returns a valid IMAP UIDVALIDITY value before saving an enabled configuration. When the server explicitly advertises that the mailbox is read-only, or advertises `PERMANENTFLAGS` without `\\Seen`, validation rejects the configuration non-destructively. Daylight does **not** mutate a test message merely to probe permissions, so servers that omit those capability hints may still reveal a flag-write problem only during real acknowledgement. Message content, AI attachment capability, and local-media writability are discovered during polling.
 
 ### Editing an existing configuration
 
