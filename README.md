@@ -4,7 +4,7 @@ A Home Assistant custom integration that turns unstructured text into validated 
 
 This repository is intentionally separate from [Daylight Calendar Card](https://github.com/superdingo101/daylight-calendar-card). The import integration owns ingestion, parsing, and review; the card may later provide an optional shortcut.
 
-## v0.4.0 review and lifecycle
+## v0.5.0 review and lifecycle
 
 The integration supports:
 
@@ -35,9 +35,9 @@ The parser instructs the AI not to invent missing event data. Invalid individual
 The current minimum supported Home Assistant version is **2026.7.4**. CI tests that version explicitly alongside the current development test environment.
 
 
-## Upcoming v0.5 Direct IMAP ingestion
+## v0.5.0 Direct IMAP ingestion
 
-The current development branch adds optional self-hosted Direct IMAP ingestion for the upcoming v0.5 release. Existing installations enable it from the integration's **Options** flow and provide an IMAP host, port, username, password/app password, mailbox, and TLS verification setting. Saved passwords remain server-side when the options form is reopened; leaving the password field blank keeps the existing credential.
+v0.5.0 adds optional self-hosted Direct IMAP ingestion. Existing installations enable it from the integration's **Options** flow and provide an IMAP host, port, username, password/app password, mailbox, and TLS verification setting. Saved passwords remain server-side when the options form is reopened; leaving the password field blank keeps the existing credential.
 
 **Before enabling it, read [Direct IMAP setup and recovery](docs/direct-imap.md).** The first poll runs immediately and the fixed v0.5 search selects every unread, undeleted message already present in the configured mailbox. Transient failures before a durable local outcome are left unread for retry. Deterministic source-validation failures are recorded as durable failed outcomes so unchanged poison messages do not retry forever; Daylight then attempts to mark them read just like other durable outcomes. An acknowledgement transport failure can leave the upstream read state uncertain while preserving the local result.
 
@@ -100,7 +100,7 @@ Parser capabilities validate media type, attachment count, aggregate size, and t
 
 The canonical public client/server contract for the future managed parser is documented in [`docs/hosted-api.md`](docs/hosted-api.md), with executable JSON Schemas under [`schemas/hosted/v1/`](schemas/hosted/v1/). The private `daylight-cloud` service must implement and contract-test against these public schemas; review, deduplication, conflict detection, lifecycle state, notifications, and calendar writes remain local to Home Assistant.
 
-Hosted relay services and SMS ingestion remain future work. Direct IMAP ingestion is implemented on the development branch for the upcoming v0.5 release.
+Hosted relay services and SMS ingestion remain future work. Direct IMAP ingestion is available in v0.5.0.
 
 ## Tests
 
