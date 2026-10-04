@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.0
+
+- Add optional self-hosted **Direct IMAP** ingestion, configurable from the integration's Options flow with host, port, username, password/app password, mailbox, and TLS certificate verification.
+- Poll the selected mailbox immediately after setup and every five minutes with a fixed unseen + undeleted search, one non-overlapping poll at a time, complete UID enumeration, and non-destructive message fetching.
+- Normalize common plain-text and HTML MIME bodies, preserve a stable source identity from a valid Message-ID when available, and fall back conservatively to exact raw-message identity.
+- Stage direct JPEG, PNG, WebP, and PDF email attachments through Home Assistant local media with bounded count/size limits and best-effort cleanup.
+- Reserve source identities before AI work so repeated or concurrent observations do not duplicate expensive parsing, while interrupted/transient work remains retryable.
+- Correlate email ingestion through Recent activity from discovery to processing and review/no-event/duplicate/failed outcomes without storing raw email bytes or IMAP credentials in lifecycle history.
+- Mark upstream mail `\\Seen` only after a durable local outcome. If acknowledgement fails after persistence, a later poll skips repeated AI work and retries acknowledgement.
+- Treat deterministic source-validation failures as durable terminal failures so unchanged poison messages do not retry forever; temporary provider, storage, media, transport, and acknowledgement failures remain retryable.
+- Validate explicit read-only mailboxes and advertised `PERMANENTFLAGS` that do not allow `\\Seen`, while keeping setup validation non-destructive when servers omit those hints.
+- Add deterministic cross-layer Direct IMAP coverage plus the setup, privacy, retry, and recovery guide in `docs/direct-imap.md`.
+
+### Upgrade from 0.4.0
+
+Restart Home Assistant after updating the integration. **Direct IMAP is disabled by default**, so upgrading from 0.4.0 does not connect to or poll any mailbox until you explicitly enable it in the integration's Options flow. Existing pending imports, event destinations, deduplication history, lifecycle history, and calendar/AI Task configuration remain in the existing storage.
+
+Before enabling Direct IMAP, read `docs/direct-imap.md`. The first poll runs immediately and selects every unread, undeleted message already present in the configured mailbox, so a dedicated mailbox/folder is recommended for the first run. Saved IMAP credentials remain server-side; when editing an existing Direct IMAP configuration, leaving the password field blank keeps the stored credential.
+
+v0.5 Direct IMAP requires password/app-password IMAP authentication over implicit TLS, a mailbox that supports stable UID/UIDVALIDITY identity and permits the standard `\\Seen` flag, and writable local media storage for supported attachments. OAuth-only provider flows, STARTTLS/plaintext IMAP, custom searches/flags, configurable polling intervals, sender filtering in the Home Assistant UI, multiple mailboxes/accounts, and hosted forwarding remain out of scope for v0.5.
+
 ## 0.4.0
 
 - Complete the Home Assistant review panel with event editing, individual and bulk approve/reject, per-event results, and explicit uncertain-write recovery.
