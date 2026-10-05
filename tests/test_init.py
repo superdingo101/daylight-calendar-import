@@ -1904,7 +1904,7 @@ async def test_setup_email_runtime_reuses_parser_store_and_default_calendar(
         "custom_components.daylight_calendar_import.async_setup_email_runtime",
         capture_runtime,
     )
-    config_entry = entry()
+    config_entry = entry({CONF_AI_TASK_ENTITY: "ai_task.updated"})
 
     assert await async_setup_entry(hass, config_entry) is True
     assert captured["args"] == (hass, config_entry, pending_store)
@@ -1923,7 +1923,7 @@ async def test_setup_email_runtime_reuses_parser_store_and_default_calendar(
     parse.assert_awaited_once_with(
         hass,
         source=document,
-        ai_task_entity="ai_task.test",
+        ai_task_entity="ai_task.updated",
     )
     pending_store.async_add.assert_awaited_once_with(
         source_text="Friday at 5",
