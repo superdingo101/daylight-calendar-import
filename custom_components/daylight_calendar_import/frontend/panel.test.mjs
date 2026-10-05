@@ -117,7 +117,7 @@ test("mobile toolbar exposes Home Assistant sidebar navigation", async () => {
   assert.match(styles, /--safe-area-content-inset-left/);
   assert.match(styles, /--safe-area-content-inset-right/);
   assert.match(styles, /\.topbar button:focus-visible \{ outline-color: currentColor; \}/);
-  assert.match(styles, /\.topbar \.menu-button[\s\S]*border-color: transparent/);
+  assert.match(styles, /\.topbar \.menu-button[\s\S]*border: 0/);
 });
 
 test("uncertain recovery requires confirmation, retains errors, and restores review", async () => {
