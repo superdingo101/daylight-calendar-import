@@ -26,9 +26,11 @@ class FakeNode {
     .find(node => node.name === name)}; }
   focus() { globalThis.focusedNode = this; }
   addEventListener(name, callback) { this[name] = callback; }
+  dispatchEvent(event) { globalThis.dispatchedEvents.push({node: this, event}); return true; }
   attachShadow() { this.shadowRoot = new FakeNode("shadow"); return this.shadowRoot; }
 }
 globalThis.HTMLElement = FakeNode;
+globalThis.dispatchedEvents = [];
 globalThis.document = {
   createElement: (tag) => new FakeNode(tag),
   createDocumentFragment: () => new FakeNode(),
@@ -39,23 +41,38 @@ const find = (node, tag) => node.tag === tag ? node : node.children.map(child =>
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 test("mobile toolbar exposes Home Assistant sidebar navigation", async () => {
+  globalThis.dispatchedEvents = [];
   const panel = new DaylightImportPanel();
   panel.narrow = true;
-  const hass = {callWS: async () => ({response: {imports: []}})};
+  const hass = {
+    localize: key => key === "ui.sidebar.sidebar_toggle" ? "Open sidebar" : key,
+    callWS: async () => ({response: {imports: []}}),
+  };
   panel.hass = hass;
   await flush();
 
   const header = find(panel.shadowRoot, "header");
-  const menu = find(header, "ha-menu-button");
+  const menu = panel._menuButton;
   assert.equal(header.className, "topbar");
   assert.equal(find(header, "h1").textContent, "Daylight imports");
-  assert.equal(find(header, "button"), panel._refreshButton);
-  assert.equal(menu.hass, hass);
-  assert.equal(menu.narrow, true);
+  assert.equal(panel._refreshButton.className, "toolbar-refresh");
+  assert.equal(menu.tag, "button");
+  assert.equal(menu.hidden, false);
+  assert.equal(menu.attributes["aria-label"], "Open sidebar");
+  assert.equal(find(menu, "svg").attributes["aria-hidden"], "true");
+  assert.equal(find(menu, "path").attributes.d,
+    "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z");
+
+  menu.click();
+  const [{node, event}] = globalThis.dispatchedEvents;
+  assert.equal(node, panel);
+  assert.equal(event.type, "hass-toggle-menu");
+  assert.equal(event.bubbles, true);
+  assert.equal(event.composed, true);
 
   panel.narrow = false;
   assert.equal(panel.narrow, false);
-  assert.equal(menu.narrow, false);
+  assert.equal(menu.hidden, true);
 });
 
 test("uncertain recovery requires confirmation, retains errors, and restores review", async () => {
