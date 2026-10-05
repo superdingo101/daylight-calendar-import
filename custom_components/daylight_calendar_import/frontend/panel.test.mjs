@@ -38,6 +38,26 @@ const {DaylightImportPanel} = await import("./panel.js");
 const find = (node, tag) => node.tag === tag ? node : node.children.map(child => find(child, tag)).find(Boolean);
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
+test("mobile toolbar exposes Home Assistant sidebar navigation", async () => {
+  const panel = new DaylightImportPanel();
+  panel.narrow = true;
+  const hass = {callWS: async () => ({response: {imports: []}})};
+  panel.hass = hass;
+  await flush();
+
+  const header = find(panel.shadowRoot, "header");
+  const menu = find(header, "ha-menu-button");
+  assert.equal(header.className, "topbar");
+  assert.equal(find(header, "h1").textContent, "Daylight imports");
+  assert.equal(find(header, "button"), panel._refreshButton);
+  assert.equal(menu.hass, hass);
+  assert.equal(menu.narrow, true);
+
+  panel.narrow = false;
+  assert.equal(panel.narrow, false);
+  assert.equal(menu.narrow, false);
+});
+
 test("uncertain recovery requires confirmation, retains errors, and restores review", async () => {
   const panel = new DaylightImportPanel();
   const uncertain = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
