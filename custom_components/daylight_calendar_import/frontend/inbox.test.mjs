@@ -151,3 +151,22 @@ test("timed ranges show both dates, preserve the event zone, and expose DST chan
   locale, "America/Los_Angeles"),
   "Nov 1, 2026 · 12:30 AM (PDT) – 2:30 AM (PST)");
 });
+
+test("language time format supports locales that use non-Latin digits", () => {
+  const value = formatEventRange({
+    all_day: false,
+    start: "2026-10-07T20:00:00-07:00",
+    end: "2026-10-07T21:00:00-07:00",
+  }, {language: "ar-EG", time_format: "language"}, "America/Los_Angeles");
+  assert.match(value, /م/);
+});
+
+test("remote DST ranges preserve each explicit endpoint offset", () => {
+  const locale = {language: "en-US", time_format: "12"};
+  assert.equal(formatEventRange({
+    all_day: false,
+    start: "2026-11-01T00:30:00-07:00",
+    end: "2026-11-01T02:30:00-08:00",
+  }, locale, "America/New_York"),
+  "Nov 1, 2026 · 12:30 AM (UTC-07:00) – 2:30 AM (UTC-08:00)");
+});

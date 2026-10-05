@@ -108,7 +108,8 @@ function useAmPm(locale) {
   if (data.time_format === "12") return true;
   if (data.time_format === "24") return false;
   const testLanguage = data.time_format === "system" ? undefined : data.language;
-  return new Date("January 1, 2023 22:00:00").toLocaleString(testLanguage).includes("10");
+  return new Intl.DateTimeFormat(testLanguage, {hour: "numeric"})
+    .resolvedOptions().hour12 === true;
 }
 
 function makeFormatter(locale, options) {
@@ -166,16 +167,21 @@ function fixedOffsetLabel(offset) {
   return `UTC${sign}${String(Math.floor(absolute / 60)).padStart(2, "0")}:${String(absolute % 60).padStart(2, "0")}`;
 }
 
-function eventDisplayZone(start, end, event, timeZone) {
+function fixedOffsetZone(offset) {
+  return {timeZone: "UTC", fixedOffset: offset, label: fixedOffsetLabel(offset)};
+}
+
+function eventDisplayZones(start, end, event, timeZone) {
   const startOffset = isoOffsetMinutes(event.start);
   const endOffset = isoOffsetMinutes(event.end);
-  if (endOffset === null) return null;
-  if (timeZone && startOffset !== null &&
+  if (startOffset === null || endOffset === null) return null;
+  if (timeZone &&
       namedZoneOffsetMinutes(start, timeZone) === startOffset &&
       namedZoneOffsetMinutes(end, timeZone) === endOffset) {
-    return {timeZone, fixedOffset: null, label: null};
+    const named = {timeZone, fixedOffset: null, label: null};
+    return {start: named, end: named};
   }
-  return {timeZone: "UTC", fixedOffset: endOffset, label: fixedOffsetLabel(endOffset)};
+  return {start: fixedOffsetZone(startOffset), end: fixedOffsetZone(endOffset)};
 }
 
 function displayDate(date, zone) {
@@ -236,15 +242,15 @@ export function formatEventRange(event, locale, timeZone) {
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
     return `${event.start} – ${event.end}`;
   }
-  const zone = eventDisplayZone(start, end, event, timeZone);
-  if (!zone) return `${event.start} – ${event.end}`;
+  const zones = eventDisplayZones(start, end, event, timeZone);
+  if (!zones) return `${event.start} – ${event.end}`;
 
-  const startTime = timeValue(start, locale, zone);
-  const endTime = timeValue(end, locale, zone);
-  const startZone = zoneLabel(start, zone);
-  const endZone = zoneLabel(end, zone);
+  const startTime = timeValue(start, locale, zones.start);
+  const endTime = timeValue(end, locale, zones.end);
+  const startZone = zoneLabel(start, zones.start);
+  const endZone = zoneLabel(end, zones.end);
   const sameZone = startZone === endZone;
-  const sameDay = dateKey(start, zone) === dateKey(end, zone);
+  const sameDay = dateKey(start, zones.start) === dateKey(end, zones.end);
   let times;
   if (useAmPm(locale)) {
     const compactStart = sameZone && startTime.period === endTime.period ?
@@ -255,15 +261,15 @@ export function formatEventRange(event, locale, timeZone) {
   }
 
   if (sameDay && sameZone) {
-    return `${formatDateOnly(end, locale, zone)} · ${times} (${endZone})`;
+    return `${formatDateOnly(end, locale, zones.end)} · ${times} (${endZone})`;
   }
   if (sameDay) {
-    return `${formatDateOnly(end, locale, zone)} · ${clockWithPeriod(startTime)} (${startZone}) – ` +
+    return `${formatDateOnly(end, locale, zones.end)} · ${clockWithPeriod(startTime)} (${startZone}) – ` +
       `${clockWithPeriod(endTime)} (${endZone})`;
   }
-  const startLabel = `${formatDateOnly(start, locale, zone)}, ${clockWithPeriod(startTime)}` +
+  const startLabel = `${formatDateOnly(start, locale, zones.start)}, ${clockWithPeriod(startTime)}` +
     `${sameZone ? "" : ` (${startZone})`}`;
-  const endLabel = `${formatDateOnly(end, locale, zone)}, ${clockWithPeriod(endTime)} (${endZone})`;
+  const endLabel = `${formatDateOnly(end, locale, zones.end)}, ${clockWithPeriod(endTime)} (${endZone})`;
   return `${startLabel} – ${endLabel}`;
 }
 
