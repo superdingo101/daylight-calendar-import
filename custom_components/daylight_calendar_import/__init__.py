@@ -150,6 +150,14 @@ def _calendar_configuration(entry: ConfigEntry) -> tuple[str, tuple[str, ...]]:
     return default_calendar, tuple(dict.fromkeys((*allowed, default_calendar)))
 
 
+def _ai_task_configuration(entry: ConfigEntry) -> str:
+    """Return the effective AI Task entity, preferring post-setup options."""
+    return getattr(entry, "options", {}).get(
+        CONF_AI_TASK_ENTITY,
+        entry.data[CONF_AI_TASK_ENTITY],
+    )
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Daylight Calendar Import from a config entry."""
     pending_store = PendingImportStore(hass)
@@ -158,11 +166,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_register_review_panel(hass)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
     default_calendar, allowed_calendars = _calendar_configuration(entry)
+    ai_task_entity = _ai_task_configuration(entry)
 
     async def parse_submission(source: SourceDocument, activity_id: str) -> Any:
         """Finish a stopped parser without obscuring its original error."""
         try:
-            return await _async_parse_source(hass, entry, source)
+            return await _async_parse_source(hass, source, ai_task_entity)
         except (asyncio.CancelledError, Exception):
             try:
                 await pending_store.async_record_parse_failure(activity_id)
@@ -176,7 +185,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ) -> None:
         """Send one normalized email through the existing review pipeline."""
         # Email polling owns retry/terminal classification for parser failures.
-        outcome = await _async_parse_source(hass, entry, source)
+        outcome = await _async_parse_source(hass, source, ai_task_entity)
         await pending_store.async_add(
             source_text=email_review_source_text(source),
             events=outcome.events,
@@ -195,15 +204,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return calendar_entity
 
     async def handle_parse_text(call: ServiceCall) -> ServiceResponse:
-        outcome = await _parse_for_entry(
-            hass, entry, call.data[ATTR_TEXT], context=call.context
+        outcome = await _parse_text_with_ai_task(
+            hass, ai_task_entity, call.data[ATTR_TEXT], context=call.context
         )
         return {"events": [draft.as_dict() for draft in outcome.events],
                 "warnings": outcome.warnings}
 
     async def handle_import_text(call: ServiceCall) -> ServiceResponse:
-        outcome = await _parse_for_entry(
-            hass, entry, call.data[ATTR_TEXT], context=call.context
+        outcome = await _parse_text_with_ai_task(
+            hass, ai_task_entity, call.data[ATTR_TEXT], context=call.context
         )
         for draft in outcome.events:
             await _async_create_calendar_event(
@@ -220,7 +229,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def handle_submit_text(call: ServiceCall) -> ServiceResponse:
         source_id = call.data.get(ATTR_SOURCE_ID)
-        ai_task_entity = entry.data[CONF_AI_TASK_ENTITY]
         await _async_check_entity_control_permission(
             hass, ai_task_entity, call.context
         )
@@ -304,7 +312,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_submit_image(call: ServiceCall) -> ServiceResponse:
         """Queue event drafts from an uploaded image and optional source text."""
         await _async_check_entity_control_permission(
-            hass, entry.data[CONF_AI_TASK_ENTITY], call.context
+            hass, ai_task_entity, call.context
         )
         async with async_image_source(hass, call.data[ATTR_FILE_ID]) as image:
             source = replace(image, text=call.data.get(ATTR_TEXT, "").strip() or None,
@@ -314,7 +322,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_submit_pdf(call: ServiceCall) -> ServiceResponse:
         """Queue event drafts from a text PDF or attachment-capable parser."""
         await _async_check_entity_control_permission(
-            hass, entry.data[CONF_AI_TASK_ENTITY], call.context
+            hass, ai_task_entity, call.context
         )
         async with async_pdf_source(hass, call.data[ATTR_FILE_ID], call.data.get(ATTR_TEXT, "")) as pdf:
             return await submit_attachment_source(
@@ -387,7 +395,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if call.context is None or call.context.user_id is None:
             raise Unauthorized(context=call.context, permission=POLICY_CONTROL)
         await _async_check_entity_control_permission(
-            hass, entry.data[CONF_AI_TASK_ENTITY], call.context
+            hass, ai_task_entity, call.context
         )
         for calendar_entity in allowed_calendars:
             await _async_check_entity_control_permission(hass, calendar_entity, call.context)
@@ -701,21 +709,23 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await PendingImportStore(hass).async_remove_storage()
 
 
-async def _parse_for_entry(
+async def _parse_text_with_ai_task(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    ai_task_entity: str,
     text: str,
     *,
     context: Context | None = None,
 ) -> ParseOutcome:
-    ai_task_entity = entry.data[CONF_AI_TASK_ENTITY]
+    """Authorize and parse text with one immutable AI Task selection."""
     await _async_check_entity_control_permission(hass, ai_task_entity, context)
     source = TextSourceAdapter().create(text)
-    return await _async_parse_source(hass, entry, source)
+    return await _async_parse_source(hass, source, ai_task_entity)
 
 
 async def _async_parse_source(
-    hass: HomeAssistant, entry: ConfigEntry, source: SourceDocument
+    hass: HomeAssistant,
+    source: SourceDocument,
+    ai_task_entity: str,
 ) -> ParseOutcome:
     """Feed a normalized source into the current text parser boundary."""
     if source.text is None and not source.attachments:
@@ -726,7 +736,7 @@ async def _async_parse_source(
     return await parse_source_with_provider(
         hass,
         source=source,
-        ai_task_entity=entry.data[CONF_AI_TASK_ENTITY],
+        ai_task_entity=ai_task_entity,
     )
 
 

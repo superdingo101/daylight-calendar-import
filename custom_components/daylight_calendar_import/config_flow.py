@@ -45,37 +45,62 @@ _EMAIL_OPTION_KEYS = (
 )
 
 
-def _calendar_selector() -> selector.EntitySelector:
-    """Select one writable calendar entity."""
+def _ai_task_selector() -> selector.EntitySelector:
+    """Select one AI Task entity capable of structured generation."""
     return selector.EntitySelector(
         selector.EntitySelectorConfig(
             filter={
-                "domain": "calendar",
+                "domain": "ai_task",
                 "supported_features": [
-                    "calendar.CalendarEntityFeature.CREATE_EVENT"
+                    "ai_task.AITaskEntityFeature.GENERATE_DATA"
                 ],
             }
         )
     )
 
 
-def _calendar_options(
+def _calendar_selector(*, multiple: bool = False) -> selector.EntitySelector:
+    """Select one or more writable calendar entities."""
+    return selector.EntitySelector(
+        selector.EntitySelectorConfig(
+            multiple=multiple,
+            filter={
+                "domain": "calendar",
+                "supported_features": [
+                    "calendar.CalendarEntityFeature.CREATE_EVENT"
+                ],
+            },
+        )
+    )
+
+
+def _effective_core_options(
     entry: config_entries.ConfigEntry,
-    selected_default: str | None = None,
-) -> tuple[str, list[str]]:
-    """Return the effective default and allowed calendar options."""
+) -> tuple[str, str, list[str]]:
+    """Return effective post-setup editable options."""
     current = entry.options
-    default = selected_default or current.get(
+    ai_task_entity = current.get(
+        CONF_AI_TASK_ENTITY,
+        entry.data[CONF_AI_TASK_ENTITY],
+    )
+    default_calendar = current.get(
         CONF_CALENDAR_ENTITY,
         entry.data[CONF_CALENDAR_ENTITY],
     )
-    allowed = list(
+    allowed_calendars = list(
         current.get(
             CONF_CALENDAR_ENTITIES,
-            entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]]),
+            entry.data.get(
+                CONF_CALENDAR_ENTITIES,
+                [entry.data[CONF_CALENDAR_ENTITY]],
+            ),
         )
     )
-    return default, list(dict.fromkeys((*allowed, default)))
+    return (
+        ai_task_entity,
+        default_calendar,
+        list(dict.fromkeys((*allowed_calendars, default_calendar))),
+    )
 
 
 class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -109,27 +134,10 @@ class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_AI_TASK_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        filter={
-                            "domain": "ai_task",
-                            "supported_features": [
-                                "ai_task.AITaskEntityFeature.GENERATE_DATA"
-                            ],
-                        }
-                    )
-                ),
+                vol.Required(CONF_AI_TASK_ENTITY): _ai_task_selector(),
                 vol.Required(CONF_CALENDAR_ENTITY): _calendar_selector(),
-                vol.Required(CONF_CALENDAR_ENTITIES): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        multiple=True,
-                        filter={
-                            "domain": "calendar",
-                            "supported_features": [
-                                "calendar.CalendarEntityFeature.CREATE_EVENT"
-                            ],
-                        },
-                    )
+                vol.Required(CONF_CALENDAR_ENTITIES): _calendar_selector(
+                    multiple=True
                 ),
             }
         )
@@ -138,49 +146,67 @@ class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
 
 class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
-    """Configure the default calendar and optional Direct IMAP ingestion."""
+    """Configure AI, calendar, and optional Direct IMAP settings."""
 
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> FlowResult:
-        """Configure the default calendar and enable or disable email ingestion."""
+        """Configure core runtime choices and enable or disable email ingestion."""
         current = self.config_entry.options
-        default_calendar, allowed_calendars = _calendar_options(self.config_entry)
+        ai_task_entity, default_calendar, allowed_calendars = _effective_core_options(
+            self.config_entry
+        )
+        errors: dict[str, str] = {}
         if user_input is not None:
-            default_calendar, allowed_calendars = _calendar_options(
-                self.config_entry,
-                user_input[CONF_CALENDAR_ENTITY],
+            selected_allowed = list(
+                dict.fromkeys(user_input[CONF_CALENDAR_ENTITIES])
             )
-            self._calendar_options = {
-                CONF_CALENDAR_ENTITY: default_calendar,
-                CONF_CALENDAR_ENTITIES: allowed_calendars,
-            }
-            if not user_input[CONF_EMAIL_ENABLED]:
-                return self.async_create_entry(
-                    data={
-                        **current,
-                        **self._calendar_options,
-                        CONF_EMAIL_ENABLED: False,
-                    }
-                )
-            return await self.async_step_email()
+            if user_input[CONF_CALENDAR_ENTITY] not in selected_allowed:
+                errors[CONF_CALENDAR_ENTITY] = "default_not_allowed"
+            else:
+                self._pending_core_options = {
+                    CONF_AI_TASK_ENTITY: user_input[CONF_AI_TASK_ENTITY],
+                    CONF_CALENDAR_ENTITY: user_input[CONF_CALENDAR_ENTITY],
+                    CONF_CALENDAR_ENTITIES: selected_allowed,
+                }
+                if not user_input[CONF_EMAIL_ENABLED]:
+                    return self.async_create_entry(
+                        data={
+                            **current,
+                            **self._pending_core_options,
+                            CONF_EMAIL_ENABLED: False,
+                        }
+                    )
+                return await self.async_step_email()
 
         schema = vol.Schema(
             {
+                vol.Required(CONF_AI_TASK_ENTITY): _ai_task_selector(),
                 vol.Required(CONF_CALENDAR_ENTITY): _calendar_selector(),
+                vol.Required(CONF_CALENDAR_ENTITIES): _calendar_selector(
+                    multiple=True
+                ),
                 vol.Required(CONF_EMAIL_ENABLED): selector.BooleanSelector(),
+            }
+        )
+        suggested_values = (
+            user_input
+            if user_input is not None
+            else {
+                CONF_AI_TASK_ENTITY: ai_task_entity,
+                CONF_CALENDAR_ENTITY: default_calendar,
+                CONF_CALENDAR_ENTITIES: allowed_calendars,
+                CONF_EMAIL_ENABLED: current.get(CONF_EMAIL_ENABLED, False),
             }
         )
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
                 schema,
-                {
-                    CONF_CALENDAR_ENTITY: default_calendar,
-                    CONF_EMAIL_ENABLED: current.get(CONF_EMAIL_ENABLED, False),
-                },
+                suggested_values,
             ),
+            errors=errors,
         )
 
     async def async_step_email(
@@ -189,10 +215,13 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
     ) -> FlowResult:
         """Validate and save Direct IMAP connection options."""
         current = self.config_entry.options
-        calendar_options = getattr(self, "_calendar_options", None)
-        if calendar_options is None:
-            default_calendar, allowed_calendars = _calendar_options(self.config_entry)
-            calendar_options = {
+        core_options = getattr(self, "_pending_core_options", None)
+        if core_options is None:
+            ai_task_entity, default_calendar, allowed_calendars = _effective_core_options(
+                self.config_entry
+            )
+            core_options = {
+                CONF_AI_TASK_ENTITY: ai_task_entity,
                 CONF_CALENDAR_ENTITY: default_calendar,
                 CONF_CALENDAR_ENTITIES: allowed_calendars,
             }
@@ -210,7 +239,7 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
             )
             options = {
                 **current,
-                **calendar_options,
+                **core_options,
                 CONF_EMAIL_ENABLED: True,
                 **user_input,
                 CONF_EMAIL_PASSWORD: password,
