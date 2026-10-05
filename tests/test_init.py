@@ -1096,6 +1096,37 @@ async def test_parse_for_entry_uses_updated_ai_option(monkeypatch):
     assert parse.await_args.kwargs["ai_task_entity"] == "ai_task.updated"
 
 
+async def test_parse_for_entry_keeps_authorized_ai_snapshot_during_option_change(
+    monkeypatch,
+):
+    configured = entry({CONF_AI_TASK_ENTITY: "ai_task.old"})
+    permissions = []
+
+    async def check_permission(_hass, entity_id, _context):
+        permissions.append(entity_id)
+        configured.options[CONF_AI_TASK_ENTITY] = "ai_task.new"
+
+    parse = AsyncMock(return_value=ParseOutcome([], []))
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import._async_check_entity_control_permission",
+        check_permission,
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.parse_source_with_provider",
+        parse,
+    )
+
+    assert await _parse_for_entry(
+        FakeHass(), configured, "text", context=Context(user_id="user")
+    ) == ParseOutcome([], [])
+    assert permissions == ["ai_task.old"]
+    parse.assert_awaited_once_with(
+        ANY,
+        source=ANY,
+        ai_task_entity="ai_task.old",
+    )
+
+
 async def test_parse_for_entry(monkeypatch):
     permissions = FakePermissions(allowed=True)
     user = SimpleNamespace(permissions=permissions)
@@ -1698,7 +1729,7 @@ async def test_text_parser_boundary_rejects_attachment_only_source():
         id=text_source.id, kind=SourceKind.PDF, received_at=text_source.received_at
     )
     with pytest.raises(SourceValidationError, match="no text") as caught:
-        await _async_parse_source(FakeHass(), entry(), attachment_only)
+        await _async_parse_source(FakeHass(), attachment_only, "ai_task.test")
     assert caught.value.code == "empty_source"
 
 
