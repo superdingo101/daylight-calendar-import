@@ -24,13 +24,17 @@ a new `write_attempt` token; unchanged retries therefore remain distinguishable.
 Existing callers may omit
 the snapshot for compatibility.
 It also returns `allowed_calendars` and `default_calendar` for the editor.
-The normal panel edits title, ISO start/end, all-day, location, and description.
-Timed values must include an explicit UTC offset; all-day values are dates with
-an exclusive end. The panel sends no destination-calendar override, so existing
-legacy event destinations are preserved. Long descriptions and meeting details
-are sent without frontend truncation.
-`edit_pending_event` accepts an optional `expected_event` containing the event
-snapshot from `get_pending`. If the event changed before the edit acquires the
+The normal panel edits title, ISO start/end, all-day, location, description, and
+destination calendar. Timed values must include an explicit UTC offset; all-day
+values are dates with an exclusive end. The calendar selector is limited to
+`allowed_calendars` and preselects the event's saved destination, falling back
+to `default_calendar` when the event has no explicit destination. On save, the
+panel sends the selected destination as top-level `calendar_entity` alongside
+the complete event draft and stale-state snapshot. Existing event destinations
+therefore remain unchanged unless the user selects a different allowed calendar.
+Long descriptions and meeting details are sent without frontend truncation.
+`edit_pending_event` accepts optional top-level `calendar_entity` plus an optional
+`expected_event` containing the event snapshot from `get_pending`. If the event changed before the edit acquires the
 store lock, the action fails and the client must refresh instead of overwriting it.
 `get_pending_event` returns one event by `pending_id` and `event_id`.
 The panel's approve/reject controls require explicit confirmation and submit
