@@ -1713,10 +1713,12 @@ async def test_submit_image_routes_attachment_and_text_into_review(monkeypatch):
         image_seed.id, SourceKind.IMAGE, image_seed.received_at,
         attachments=(SourceAttachment("image", "image/png", 42, "media-source://media_source/local/image.png", sha256="abc"),),
     )
+    config_entry = entry({CONF_AI_TASK_ENTITY: "ai_task.old"})
     @asynccontextmanager
     async def image_source(_hass, file_id):
         assert _hass is hass
         assert file_id == "a" * 32
+        config_entry.options[CONF_AI_TASK_ENTITY] = "ai_task.new"
         yield image
 
     parse = AsyncMock(return_value=ParseOutcome([draft()], []))
@@ -1728,12 +1730,12 @@ async def test_submit_image_routes_attachment_and_text_into_review(monkeypatch):
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
     hass = FakeHass()
-    await async_setup_entry(hass, entry())
+    await async_setup_entry(hass, config_entry)
     handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_IMAGE)][0]
     result = await handler(SimpleNamespace(data={ATTR_FILE_ID: "a" * 32, ATTR_TEXT: "  Please read  ", ATTR_SOURCE_ID: "upstream"}, context=Context(user_id=None)))
     source = parse.await_args.kwargs["source"]
     assert parse.await_args.args == (hass,)
-    assert parse.await_args.kwargs["ai_task_entity"] == "ai_task.test"
+    assert parse.await_args.kwargs["ai_task_entity"] == "ai_task.old"
     assert source.text == "Please read"
     assert source.attachments == image.attachments
     assert store.async_add.await_args.kwargs["source_text"] == "Please read\n\nImage attachment (SHA-256: abc)"
