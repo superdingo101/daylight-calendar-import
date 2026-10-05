@@ -21,9 +21,10 @@
   "options": {
     "step": {
       "init": {
-        "title": "Email ingestion",
-        "description": "Enable optional self-hosted Direct IMAP ingestion.",
+        "title": "Daylight Calendar Import options",
+        "description": "Choose the default calendar for new imports and enable optional self-hosted Direct IMAP ingestion.",
         "data": {
+          "calendar_entity": "Default calendar for new imports",
           "email_enabled": "Enable Direct IMAP email ingestion"
         }
       },
