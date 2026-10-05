@@ -134,6 +134,24 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return entry.version == 2
 
 
+def _calendar_configuration(entry: ConfigEntry) -> tuple[str, tuple[str, ...]]:
+    """Return effective calendar settings, preferring post-setup options."""
+    options = getattr(entry, "options", {})
+    default_calendar = options.get(
+        CONF_CALENDAR_ENTITY,
+        entry.data[CONF_CALENDAR_ENTITY],
+    )
+    allowed = list(
+        options.get(
+            CONF_CALENDAR_ENTITIES,
+            entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]]),
+        )
+    )
+    if default_calendar not in allowed:
+        allowed.append(default_calendar)
+    return default_calendar, tuple(allowed)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Daylight Calendar Import from a config entry."""
     pending_store = PendingImportStore(hass)
@@ -141,7 +159,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pending_store.active_submissions = set()
     await async_register_review_panel(hass)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
-    allowed_calendars = entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]])
+    default_calendar, allowed_calendars = _calendar_configuration(entry)
 
     async def parse_submission(source: SourceDocument, activity_id: str) -> Any:
         """Finish a stopped parser without obscuring its original error."""
@@ -165,7 +183,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             source_text=email_review_source_text(source),
             events=outcome.events,
             source_id=source.upstream_source_id,
-            calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
+            calendar_entity=default_calendar,
             source_kind=source.kind.value,
             source_title=source.title,
             warnings=outcome.warnings,
@@ -173,7 +191,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     def event_calendar(event: PendingEvent) -> str:
-        calendar_entity = event.calendar_entity or entry.data[CONF_CALENDAR_ENTITY]
+        calendar_entity = event.calendar_entity or default_calendar
         if calendar_entity not in allowed_calendars:
             raise ServiceValidationError("Event calendar is not in the allowed calendars")
         return calendar_entity
@@ -192,7 +210,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for draft in outcome.events:
             await _async_create_calendar_event(
                 hass,
-                entry.data[CONF_CALENDAR_ENTITY],
+                default_calendar,
                 draft,
                 context=call.context,
             )
@@ -233,7 +251,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 source_text=source.text,
                 events=outcome.events,
                 source_id=source.upstream_source_id,
-                calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
+                calendar_entity=default_calendar,
                 warnings=outcome.warnings,
                 activity_id=activity_id,
             )
@@ -271,7 +289,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 source_text="\n\n".join(part for part in (source.text, attachment_note) if part),
                 events=outcome.events,
                 source_id=source.upstream_source_id,
-                calendar_entity=entry.data[CONF_CALENDAR_ENTITY],
+                calendar_entity=default_calendar,
                 source_kind=source.kind.value,
                 source_title=source.title,
                 warnings=outcome.warnings,
@@ -310,7 +328,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pending_to_approve = pending_store.get(pending_id)
         if pending_to_approve is None:
             await _async_check_entity_control_permission(
-                hass, entry.data[CONF_CALENDAR_ENTITY], call.context
+                hass, default_calendar, call.context
             )
         else:
             for calendar_entity in {event_calendar(event) for event in pending_to_approve.events}:
@@ -402,7 +420,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         result = pending.as_service_dict()
         result.pop("source_fingerprint", None)
         result["allowed_calendars"] = list(allowed_calendars)
-        result["default_calendar"] = entry.data[CONF_CALENDAR_ENTITY]
+        result["default_calendar"] = default_calendar
         return {"pending": result}
 
     async def handle_list_activity(call: ServiceCall) -> ServiceResponse:
