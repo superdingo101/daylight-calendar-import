@@ -249,6 +249,93 @@ async def test_options_flow_validates_and_saves_direct_imap():
     )
 
 
+async def test_options_flow_normalizes_number_selector_port_to_int():
+    flow = DaylightCalendarImportOptionsFlow()
+    expected = {"type": "create_entry"}
+    entry = _options_entry()
+    validate = AsyncMock()
+    source = SimpleNamespace(async_validate=validate)
+    user_input = {
+        CONF_EMAIL_HOST: "imap.example.test",
+        CONF_EMAIL_PORT: 993.0,
+        CONF_EMAIL_USERNAME: "calendar@example.test",
+        CONF_EMAIL_PASSWORD: "app-secret",
+        CONF_EMAIL_MAILBOX: "INBOX",
+        CONF_EMAIL_VERIFY_SSL: True,
+    }
+
+    with (
+        patch.object(
+            DaylightCalendarImportOptionsFlow,
+            "config_entry",
+            new_callable=PropertyMock,
+            return_value=entry,
+        ),
+        patch(
+            "custom_components.daylight_calendar_import.config_flow.DirectImapSource",
+            Mock(return_value=source),
+        ) as source_factory,
+        patch.object(
+            flow,
+            "async_create_entry",
+            Mock(return_value=expected),
+        ) as create_entry,
+    ):
+        result = await flow.async_step_email(user_input)
+
+    assert result is expected
+    validate.assert_awaited_once_with()
+    settings = source_factory.call_args.args[0]
+    assert settings.port == 993
+    assert type(settings.port) is int
+    create_entry.assert_called_once_with(
+        data={
+            CONF_EMAIL_ENABLED: True,
+            **user_input,
+            CONF_EMAIL_PORT: 993,
+        }
+    )
+
+
+async def test_options_flow_rejects_fractional_number_selector_port():
+    flow = DaylightCalendarImportOptionsFlow()
+    expected = {"type": "form"}
+    entry = _options_entry()
+    user_input = {
+        CONF_EMAIL_HOST: "imap.example.test",
+        CONF_EMAIL_PORT: 993.5,
+        CONF_EMAIL_USERNAME: "calendar@example.test",
+        CONF_EMAIL_PASSWORD: "app-secret",
+        CONF_EMAIL_MAILBOX: "INBOX",
+        CONF_EMAIL_VERIFY_SSL: True,
+    }
+
+    with (
+        patch.object(
+            DaylightCalendarImportOptionsFlow,
+            "config_entry",
+            new_callable=PropertyMock,
+            return_value=entry,
+        ),
+        patch(
+            "custom_components.daylight_calendar_import.config_flow.DirectImapSource",
+            Mock(),
+        ) as source_factory,
+        patch.object(
+            flow,
+            "async_show_form",
+            Mock(return_value=expected),
+        ) as show_form,
+    ):
+        result = await flow.async_step_email(user_input)
+
+    assert result is expected
+    source_factory.assert_not_called()
+    assert show_form.call_args.kwargs["errors"] == {
+        "base": "invalid_email_config"
+    }
+
+
 async def test_options_flow_reports_invalid_imap_credentials():
     flow = DaylightCalendarImportOptionsFlow()
     expected = {"type": "form"}

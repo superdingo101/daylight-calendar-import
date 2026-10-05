@@ -141,6 +141,12 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
         current = self.config_entry.options
         errors: dict[str, str] = {}
         if user_input is not None:
+            port = user_input.get(CONF_EMAIL_PORT)
+            if isinstance(port, float) and port.is_integer():
+                user_input = {
+                    **user_input,
+                    CONF_EMAIL_PORT: int(port),
+                }
             password = (
                 user_input.get(CONF_EMAIL_PASSWORD)
                 or current.get(CONF_EMAIL_PASSWORD, "")
