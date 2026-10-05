@@ -170,3 +170,12 @@ test("remote DST ranges preserve each explicit endpoint offset", () => {
   }, locale, "America/New_York"),
   "Nov 1, 2026 · 12:30 AM (UTC-07:00) – 2:30 AM (UTC-08:00)");
 });
+
+test("12-hour ranges preserve locale-specific day-period ordering", () => {
+  const value = formatEventRange({
+    all_day: false,
+    start: "2026-10-07T20:00:00-07:00",
+    end: "2026-10-07T21:00:00-07:00",
+  }, {language: "zh-CN", time_format: "12"}, "America/Los_Angeles");
+  assert.match(value, /下午8时–9时/);
+});
