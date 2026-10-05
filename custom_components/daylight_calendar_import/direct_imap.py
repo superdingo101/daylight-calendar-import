@@ -457,7 +457,7 @@ def _extract_fetch_message(
             raise DirectImapProtocolError(
                 _ERR_FETCH_LENGTH
             )
-        return literal, _parse_internaldate(frame_metadata)
+        return literal, _parse_internaldate(tuple(lines[index] for index in frame_metadata))
 
     return None
 
