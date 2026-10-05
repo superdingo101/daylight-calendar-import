@@ -12,6 +12,7 @@ class FakeNode {
   prepend(...children) { this.children.unshift(...children); }
   replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
+  removeAttribute(name) { delete this.attributes[name]; }
   querySelector(tag) { return this.querySelectorAll(tag)[0] || null; }
   querySelectorAll(tag) {
     if (tag.includes(" ")) {
@@ -47,6 +48,7 @@ test("mobile toolbar exposes Home Assistant sidebar navigation", async () => {
   const hass = {
     kioskMode: false,
     dockedSidebar: "auto",
+    config: {version: "2026.7.4"},
     localize: key => key === "ui.sidebar.sidebar_toggle" ? "Open sidebar" : key,
     callWS: async () => ({response: {imports: []}}),
   };
@@ -84,6 +86,22 @@ test("mobile toolbar exposes Home Assistant sidebar navigation", async () => {
 
   panel.narrow = true;
   panel.hass = {...hass, auth: {external: {config: {hasSidebar: true}}}};
+  assert.equal(menu.hidden, false);
+  assert.equal("data-own-safe-area" in panel.attributes, true);
+
+  panel.hass = {
+    ...hass,
+    config: {version: "2026.8.0"},
+    auth: {external: {config: {hasSidebar: true}}},
+  };
+  assert.equal(menu.hidden, false);
+  assert.equal("data-own-safe-area" in panel.attributes, false);
+
+  panel.hass = {
+    ...hass,
+    config: {version: "2026.10.0"},
+    auth: {external: {config: {hasSidebar: true}}},
+  };
   assert.equal(menu.hidden, true);
 
   const styles = find(panel.shadowRoot, "style").textContent;
