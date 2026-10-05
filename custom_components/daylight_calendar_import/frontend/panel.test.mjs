@@ -34,6 +34,11 @@ globalThis.HTMLElement = FakeNode;
 globalThis.dispatchedEvents = [];
 globalThis.document = {
   createElement: (tag) => new FakeNode(tag),
+  createElementNS: (namespace, tag) => {
+    const node = new FakeNode(tag);
+    node.namespace = namespace;
+    return node;
+  },
   createDocumentFragment: () => new FakeNode(),
 };
 globalThis.customElements = {define: () => {}};
@@ -64,6 +69,8 @@ test("mobile toolbar exposes Home Assistant sidebar navigation", async () => {
   assert.equal(menu.hidden, false);
   assert.equal(menu.attributes["aria-label"], "Open sidebar");
   assert.equal(find(menu, "svg").attributes["aria-hidden"], "true");
+  assert.equal(find(menu, "svg").namespace, "http://www.w3.org/2000/svg");
+  assert.equal(find(menu, "path").namespace, "http://www.w3.org/2000/svg");
   assert.equal(find(menu, "path").attributes.d,
     "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z");
 
@@ -110,6 +117,7 @@ test("mobile toolbar exposes Home Assistant sidebar navigation", async () => {
   assert.match(styles, /--safe-area-content-inset-left/);
   assert.match(styles, /--safe-area-content-inset-right/);
   assert.match(styles, /\.topbar button:focus-visible \{ outline-color: currentColor; \}/);
+  assert.match(styles, /\.topbar \.menu-button[\s\S]*border-color: transparent/);
 });
 
 test("uncertain recovery requires confirmation, retains errors, and restores review", async () => {
