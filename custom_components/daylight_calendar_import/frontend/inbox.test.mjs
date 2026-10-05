@@ -130,7 +130,7 @@ test("formats received timestamps and timed event ranges with Home Assistant tim
     "Oct 4, 2026, 6:18 PM");
   assert.equal(formatDateTime("2026-10-05T01:18:00Z", twentyFourHour, "America/Los_Angeles"),
     "Oct 4, 2026, 18:18");
-  assert.equal(formatEventRange(event, twelveHour, "America/Los_Angeles").replace(/\\s/g, " "),
+  assert.equal(formatEventRange(event, twelveHour, "America/Los_Angeles").replace(/\s/g, " "),
     "Oct 7, 2026 · 8–9 PM (PDT)");
   assert.equal(formatEventRange(event, twentyFourHour, "America/Los_Angeles"),
     "Oct 7, 2026 · 20:00–21:00 (PDT)");
@@ -140,7 +140,7 @@ test("timed ranges show both dates, preserve the event zone, and expose DST chan
   const locale = {language: "en-US", time_format: "12"};
   assert.equal(formatEventRange({all_day: false,
     start: "2026-10-07T23:00:00-07:00", end: "2026-10-08T01:00:00-07:00"},
-  locale, "America/Los_Angeles").replace(/\\s/g, " "),
+  locale, "America/Los_Angeles").replace(/\s/g, " "),
   "Oct 7, 2026, 11 PM – Oct 8, 2026, 1 AM (PDT)");
   assert.equal(formatEventRange({all_day: false,
     start: "2026-10-07T20:00:00-04:00", end: "2026-10-07T21:00:00-04:00"},
@@ -167,7 +167,7 @@ test("remote DST ranges preserve each explicit endpoint offset", () => {
     all_day: false,
     start: "2026-11-01T00:30:00-07:00",
     end: "2026-11-01T02:30:00-08:00",
-  }, locale, "America/New_York").replace(/\\s/g, " "),
+  }, locale, "America/New_York").replace(/\s/g, " "),
   "Nov 1, 2026 · 12:30 AM (UTC-07:00) – 2:30 AM (UTC-08:00)");
 });
 
