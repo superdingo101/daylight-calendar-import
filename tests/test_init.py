@@ -27,7 +27,7 @@ from custom_components.daylight_calendar_import import (
     _async_parse_source,
     _calendar_configuration,
     _expected_event,
-    _parse_for_entry,
+    _parse_text_with_ai_task,
     async_remove_entry,
     async_setup_entry,
     async_unload_entry,
@@ -1078,7 +1078,7 @@ def test_ai_task_configuration_prefers_options_and_falls_back_to_data():
     ) == "ai_task.updated"
 
 
-async def test_parse_for_entry_uses_updated_ai_option(monkeypatch):
+async def test_parse_text_with_updated_ai_option(monkeypatch):
     permissions = FakePermissions(allowed=True)
     hass = FakeHass(user=SimpleNamespace(permissions=permissions))
     parse = AsyncMock(return_value=ParseOutcome([], []))
@@ -1089,45 +1089,14 @@ async def test_parse_for_entry_uses_updated_ai_option(monkeypatch):
     context = Context(user_id="allowed-user")
     configured = entry({CONF_AI_TASK_ENTITY: "ai_task.updated"})
 
-    assert await _parse_for_entry(
-        hass, configured, "text", context=context
+    assert await _parse_text_with_ai_task(
+        hass, _ai_task_configuration(configured), "text", context=context
     ) == ParseOutcome([], [])
     assert permissions.calls == [("ai_task.updated", POLICY_CONTROL)]
     assert parse.await_args.kwargs["ai_task_entity"] == "ai_task.updated"
 
 
-async def test_parse_for_entry_keeps_authorized_ai_snapshot_during_option_change(
-    monkeypatch,
-):
-    configured = entry({CONF_AI_TASK_ENTITY: "ai_task.old"})
-    permissions = []
-
-    async def check_permission(_hass, entity_id, _context):
-        permissions.append(entity_id)
-        configured.options[CONF_AI_TASK_ENTITY] = "ai_task.new"
-
-    parse = AsyncMock(return_value=ParseOutcome([], []))
-    monkeypatch.setattr(
-        "custom_components.daylight_calendar_import._async_check_entity_control_permission",
-        check_permission,
-    )
-    monkeypatch.setattr(
-        "custom_components.daylight_calendar_import.parse_source_with_provider",
-        parse,
-    )
-
-    assert await _parse_for_entry(
-        FakeHass(), configured, "text", context=Context(user_id="user")
-    ) == ParseOutcome([], [])
-    assert permissions == ["ai_task.old"]
-    parse.assert_awaited_once_with(
-        ANY,
-        source=ANY,
-        ai_task_entity="ai_task.old",
-    )
-
-
-async def test_parse_for_entry(monkeypatch):
+async def test_parse_text_with_ai_task(monkeypatch):
     permissions = FakePermissions(allowed=True)
     user = SimpleNamespace(permissions=permissions)
     hass = FakeHass(user=user)
@@ -1135,7 +1104,9 @@ async def test_parse_for_entry(monkeypatch):
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     context = Context(user_id="allowed-user")
 
-    assert await _parse_for_entry(hass, entry(), "text", context=context) == ParseOutcome([], [])
+    assert await _parse_text_with_ai_task(
+        hass, "ai_task.test", "text", context=context
+    ) == ParseOutcome([], [])
     assert hass.auth.calls == ["allowed-user"]
     assert permissions.calls == [("ai_task.test", POLICY_CONTROL)]
     assert parse.await_args.kwargs["ai_task_entity"] == "ai_task.test"
@@ -1306,7 +1277,7 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
     hass = FakeHass()
     event = draft()
     submitted = pending(event)
-    parse_for_entry = AsyncMock(return_value=ParseOutcome([event], []))
+    parse_text_with_ai_task = AsyncMock(return_value=ParseOutcome([event], []))
     parse_text = AsyncMock(return_value=ParseOutcome([event], []))
     create_calendar_event = AsyncMock()
     pending_store = SimpleNamespace(
@@ -1326,8 +1297,8 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
         lambda value: pending_store if value is hass else None,
     )
     monkeypatch.setattr(
-        "custom_components.daylight_calendar_import._parse_for_entry",
-        parse_for_entry,
+        "custom_components.daylight_calendar_import._parse_text_with_ai_task",
+        parse_text_with_ai_task,
     )
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.parse_source_with_provider",
@@ -1338,24 +1309,25 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
         create_calendar_event,
     )
     await async_setup_entry(hass, config_entry)
+    config_entry.options[CONF_AI_TASK_ENTITY] = "ai_task.changed_after_setup"
 
     context = Context(user_id=None)
     parse_handler = hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)][0]
     await parse_handler(SimpleNamespace(data={ATTR_TEXT: "parse me"}, context=context))
-    parse_for_entry.assert_awaited_once_with(
-        hass, config_entry, "parse me", context=context
+    parse_text_with_ai_task.assert_awaited_once_with(
+        hass, "ai_task.test", "parse me", context=context
     )
 
     import_handler = hass.services.handlers[(DOMAIN, SERVICE_IMPORT_TEXT)][0]
     await import_handler(
         SimpleNamespace(data={ATTR_TEXT: "import me"}, context=context)
     )
-    assert parse_for_entry.await_args_list[-1].args == (
+    assert parse_text_with_ai_task.await_args_list[-1].args == (
         hass,
-        config_entry,
+        "ai_task.test",
         "import me",
     )
-    assert parse_for_entry.await_args_list[-1].kwargs == {"context": context}
+    assert parse_text_with_ai_task.await_args_list[-1].kwargs == {"context": context}
     create_calendar_event.assert_awaited_once_with(
         hass, "calendar.family", event, context=context
     )
@@ -1382,14 +1354,16 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
     )
 
 
-async def test_parse_for_entry_preserves_parser_arguments(monkeypatch):
+async def test_parse_text_preserves_parser_arguments(monkeypatch):
     parse = AsyncMock(return_value=ParseOutcome([], []))
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.parse_source_with_provider", parse
     )
     hass = FakeHass()
 
-    assert await _parse_for_entry(hass, entry(), "source text") == ParseOutcome([], [])
+    assert await _parse_text_with_ai_task(
+        hass, "ai_task.test", "source text"
+    ) == ParseOutcome([], [])
     parse.assert_awaited_once_with(
         hass,
         source=ANY,
