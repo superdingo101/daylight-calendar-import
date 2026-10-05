@@ -332,6 +332,7 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   assert.equal(globalThis.focusedNode.dataset.eventId, "event");
   globalThis.focusedNode.click();
   const activeForm = find(panel._content, "form");
+  activeForm.elements.namedItem("calendar_entity").value = "calendar.family";
   await panel.saveEdit(event, activeForm);
   assert.match(find(activeForm, "p").textContent, /refresh before editing/);
   assert.equal(globalThis.focusedNode, find(activeForm, "p"));
