@@ -9,6 +9,7 @@ class FakeNode {
     this.dataset = {};
   }
   append(...children) { this.children.push(...children); }
+  appendChild(child) { this.children.push(child); return child; }
   prepend(...children) { this.children.unshift(...children); }
   replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
