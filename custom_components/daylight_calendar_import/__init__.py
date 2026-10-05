@@ -147,9 +147,7 @@ def _calendar_configuration(entry: ConfigEntry) -> tuple[str, tuple[str, ...]]:
             entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]]),
         )
     )
-    if default_calendar not in allowed:
-        allowed.append(default_calendar)
-    return default_calendar, tuple(allowed)
+    return default_calendar, tuple(dict.fromkeys((*allowed, default_calendar)))
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
