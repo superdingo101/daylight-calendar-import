@@ -229,7 +229,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def handle_submit_text(call: ServiceCall) -> ServiceResponse:
         source_id = call.data.get(ATTR_SOURCE_ID)
-        ai_task_entity = ai_task_entity
         await _async_check_entity_control_permission(
             hass, ai_task_entity, call.context
         )
