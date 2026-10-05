@@ -204,15 +204,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return calendar_entity
 
     async def handle_parse_text(call: ServiceCall) -> ServiceResponse:
-        outcome = await _parse_for_entry(
-            hass, entry, call.data[ATTR_TEXT], context=call.context
+        outcome = await _parse_text_with_ai_task(
+            hass, ai_task_entity, call.data[ATTR_TEXT], context=call.context
         )
         return {"events": [draft.as_dict() for draft in outcome.events],
                 "warnings": outcome.warnings}
 
     async def handle_import_text(call: ServiceCall) -> ServiceResponse:
-        outcome = await _parse_for_entry(
-            hass, entry, call.data[ATTR_TEXT], context=call.context
+        outcome = await _parse_text_with_ai_task(
+            hass, ai_task_entity, call.data[ATTR_TEXT], context=call.context
         )
         for draft in outcome.events:
             await _async_create_calendar_event(
@@ -709,14 +709,14 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await PendingImportStore(hass).async_remove_storage()
 
 
-async def _parse_for_entry(
+async def _parse_text_with_ai_task(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    ai_task_entity: str,
     text: str,
     *,
     context: Context | None = None,
 ) -> ParseOutcome:
-    ai_task_entity = _ai_task_configuration(entry)
+    """Authorize and parse text with one immutable AI Task selection."""
     await _async_check_entity_control_permission(hass, ai_task_entity, context)
     source = TextSourceAdapter().create(text)
     return await _async_parse_source(hass, source, ai_task_entity)
