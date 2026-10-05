@@ -15,6 +15,7 @@ const css = `
   }
   .topbar h1 { flex: 1; min-width: 0; margin: 0; font-size: 20px; font-weight: 400; line-height: 1.25; overflow-wrap: anywhere; }
   .topbar ha-menu-button { flex: 0 0 auto; }
+  .topbar button { background: transparent; color: inherit; border-color: currentColor; }
   main { box-sizing: border-box; width: 100%; max-width: 820px; min-width: 0; margin: 0 auto; padding: 20px; }
   button { box-sizing: border-box; min-height: 44px; max-width: 100%; overflow-wrap: anywhere; cursor: pointer; border: 1px solid var(--divider-color); border-radius: 8px; background: var(--card-background-color); color: inherit; padding: 10px 14px; font: inherit; }
   button:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 2px; }
