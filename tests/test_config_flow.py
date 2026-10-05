@@ -125,10 +125,15 @@ async def test_config_flow_rejects_default_outside_allowed_calendars():
 
 
 
-def _options_entry(options=None):
+def _options_entry(options=None, data=None):
     return SimpleNamespace(
         entry_id="test-entry",
         options=options or {},
+        data=data or {
+            CONF_AI_TASK_ENTITY: "ai_task.test",
+            CONF_CALENDAR_ENTITY: "calendar.family",
+            CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
+        },
     )
 
 
@@ -164,7 +169,10 @@ async def test_options_flow_can_disable_email_ingestion():
         ) as create_entry,
     ):
         result = await flow.async_step_init(
-            {CONF_EMAIL_ENABLED: False}
+            {
+                CONF_CALENDAR_ENTITY: "calendar.new",
+                CONF_EMAIL_ENABLED: False,
+            }
         )
 
     assert result is expected
@@ -175,6 +183,12 @@ async def test_options_flow_can_disable_email_ingestion():
             CONF_EMAIL_USERNAME: "calendar@example.test",
             CONF_EMAIL_PASSWORD: "app-secret",
             CONF_EMAIL_MAILBOX: "Calendar",
+            CONF_CALENDAR_ENTITY: "calendar.new",
+            CONF_CALENDAR_ENTITIES: [
+                "calendar.family",
+                "calendar.work",
+                "calendar.new",
+            ],
         }
     )
 
@@ -198,11 +212,18 @@ async def test_options_flow_routes_enabled_email_to_connection_step():
         ) as email_step,
     ):
         result = await flow.async_step_init(
-            {CONF_EMAIL_ENABLED: True}
+            {
+                CONF_CALENDAR_ENTITY: "calendar.family",
+                CONF_EMAIL_ENABLED: True,
+            }
         )
 
     assert result is expected
     email_step.assert_awaited_once_with()
+    assert flow._calendar_options == {
+        CONF_CALENDAR_ENTITY: "calendar.family",
+        CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
+    }
 
 
 async def test_options_flow_validates_and_saves_direct_imap():
@@ -245,7 +266,12 @@ async def test_options_flow_validates_and_saves_direct_imap():
     assert settings.source_id == "test-entry:direct-imap"
     assert settings.sender_allowlist == ()
     create_entry.assert_called_once_with(
-        data={CONF_EMAIL_ENABLED: True, **user_input}
+        data={
+            CONF_CALENDAR_ENTITY: "calendar.family",
+            CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
+            CONF_EMAIL_ENABLED: True,
+            **user_input,
+        }
     )
 
 
@@ -290,6 +316,8 @@ async def test_options_flow_normalizes_number_selector_port_to_int():
     assert type(settings.port) is int
     create_entry.assert_called_once_with(
         data={
+            CONF_CALENDAR_ENTITY: "calendar.family",
+            CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
             CONF_EMAIL_ENABLED: True,
             **user_input,
             CONF_EMAIL_PORT: 993,
@@ -381,7 +409,7 @@ async def test_options_flow_reports_invalid_imap_credentials():
 
 
 
-async def test_options_flow_enable_form_defaults_to_disabled_without_options():
+async def test_options_flow_shows_default_calendar_and_disabled_email_suggestions():
     flow = DaylightCalendarImportOptionsFlow()
     expected = {"type": "form"}
     entry = _options_entry()
@@ -395,31 +423,9 @@ async def test_options_flow_enable_form_defaults_to_disabled_without_options():
         ),
         patch.object(
             flow,
-            "async_show_form",
-            Mock(return_value=expected),
-        ) as show_form,
-    ):
-        result = await flow.async_step_init()
-
-    assert result is expected
-    schema = show_form.call_args.kwargs["data_schema"]
-    marker = next(iter(schema.schema))
-    assert marker.schema == CONF_EMAIL_ENABLED
-    assert marker.default() is False
-
-
-async def test_options_flow_shows_enable_form_with_current_value():
-    flow = DaylightCalendarImportOptionsFlow()
-    expected = {"type": "form"}
-    entry = _options_entry({CONF_EMAIL_ENABLED: True})
-
-    with (
-        patch.object(
-            DaylightCalendarImportOptionsFlow,
-            "config_entry",
-            new_callable=PropertyMock,
-            return_value=entry,
-        ),
+            "add_suggested_values_to_schema",
+            Mock(return_value=object()),
+        ) as add_suggested,
         patch.object(
             flow,
             "async_show_form",
@@ -430,10 +436,51 @@ async def test_options_flow_shows_enable_form_with_current_value():
 
     assert result is expected
     assert show_form.call_args.kwargs["step_id"] == "init"
-    schema = show_form.call_args.kwargs["data_schema"]
-    marker = next(iter(schema.schema))
-    assert marker.schema == CONF_EMAIL_ENABLED
-    assert marker.default() is True
+    schema = add_suggested.call_args.args[0]
+    assert [marker.schema for marker in schema.schema] == [
+        CONF_CALENDAR_ENTITY,
+        CONF_EMAIL_ENABLED,
+    ]
+    assert add_suggested.call_args.args[1] == {
+        CONF_CALENDAR_ENTITY: "calendar.family",
+        CONF_EMAIL_ENABLED: False,
+    }
+
+
+async def test_options_flow_prefers_current_default_calendar_option():
+    flow = DaylightCalendarImportOptionsFlow()
+    expected = {"type": "form"}
+    entry = _options_entry({
+        CONF_CALENDAR_ENTITY: "calendar.work",
+        CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
+        CONF_EMAIL_ENABLED: True,
+    })
+
+    with (
+        patch.object(
+            DaylightCalendarImportOptionsFlow,
+            "config_entry",
+            new_callable=PropertyMock,
+            return_value=entry,
+        ),
+        patch.object(
+            flow,
+            "add_suggested_values_to_schema",
+            Mock(return_value=object()),
+        ) as add_suggested,
+        patch.object(
+            flow,
+            "async_show_form",
+            Mock(return_value=expected),
+        ),
+    ):
+        result = await flow.async_step_init()
+
+    assert result is expected
+    assert add_suggested.call_args.args[1] == {
+        CONF_CALENDAR_ENTITY: "calendar.work",
+        CONF_EMAIL_ENABLED: True,
+    }
 
 
 async def test_options_flow_shows_email_form_with_all_fields():
@@ -821,6 +868,8 @@ async def test_options_flow_reuses_saved_password_when_edit_form_is_blank():
     assert source_factory.call_args.args[0].password == "saved-secret"
     create_entry.assert_called_once_with(
         data={
+            CONF_CALENDAR_ENTITY: "calendar.family",
+            CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
             CONF_EMAIL_ENABLED: True,
             **user_input,
             CONF_EMAIL_PASSWORD: "saved-secret",
