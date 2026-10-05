@@ -299,7 +299,7 @@ test("detail renders timed events with the Home Assistant time preference", asyn
   };
   await flush();
   await panel.showImport("one");
-  assert.equal(find(panel._content, "section").children[1].textContent.replace(/\\s/g, " "),
+  assert.equal(find(panel._content, "section").children[1].textContent.replace(/\s/g, " "),
     "Oct 7, 2026 · 8–9 PM (PDT)");
 });
 
