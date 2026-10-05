@@ -1,24 +1,57 @@
 import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 
 const css = `
-  :host { display: block; color: var(--primary-text-color); font-family: var(--paper-font-body1_-_font-family, sans-serif); }
+  :host {
+    display: block;
+    color: var(--primary-text-color);
+    font-family: var(--paper-font-body1_-_font-family, sans-serif);
+    --daylight-safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+    --daylight-safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+    --daylight-safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+    --daylight-safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+  }
   .topbar {
     box-sizing: border-box;
-    min-height: var(--header-height, 56px);
+    min-height: calc(var(--header-height, 56px) + var(--daylight-safe-top));
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 0 16px;
+    padding-top: var(--daylight-safe-top);
+    padding-right: max(16px, var(--daylight-safe-right));
+    padding-left: max(16px, var(--daylight-safe-left));
     background: var(--app-header-background-color, var(--primary-background-color));
     color: var(--app-header-text-color, var(--primary-text-color));
     border-bottom: var(--app-header-border-bottom, 1px solid var(--divider-color));
   }
   .topbar h1 { flex: 1; min-width: 0; margin: 0; font-size: 20px; font-weight: 400; line-height: 1.25; overflow-wrap: anywhere; }
-  .topbar ha-menu-button { flex: 0 0 auto; }
-  .topbar button { background: transparent; color: inherit; border-color: currentColor; }
-  main { box-sizing: border-box; width: 100%; max-width: 820px; min-width: 0; margin: 0 auto; padding: 20px; }
+  main {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 820px;
+    min-width: 0;
+    margin: 0 auto;
+    padding: 20px;
+    padding-right: max(20px, var(--daylight-safe-right));
+    padding-bottom: max(20px, var(--daylight-safe-bottom));
+    padding-left: max(20px, var(--daylight-safe-left));
+  }
   button { box-sizing: border-box; min-height: 44px; max-width: 100%; overflow-wrap: anywhere; cursor: pointer; border: 1px solid var(--divider-color); border-radius: 8px; background: var(--card-background-color); color: inherit; padding: 10px 14px; font: inherit; }
   button:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 2px; }
+  .topbar button { background: transparent; color: inherit; border-color: currentColor; }
+  .topbar button:focus-visible { outline-color: currentColor; }
+  .menu-button {
+    flex: 0 0 auto;
+    width: 44px;
+    min-width: 44px;
+    padding: 10px;
+    border-color: transparent;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .menu-button[hidden] { display: none; }
+  .menu-button svg { width: 24px; height: 24px; fill: currentColor; }
   ul { list-style: none; padding: 0; display: grid; gap: 12px; }
   li { min-width: 0; border: 1px solid var(--divider-color); border-radius: 12px; padding: 16px; background: var(--card-background-color); overflow-wrap: anywhere; }
   h2 { font-size: 1.15rem; margin: 0 0 8px; overflow-wrap: anywhere; }
@@ -33,8 +66,16 @@ const css = `
   textarea { min-height: 10rem; resize: vertical; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
   @media (max-width: 480px) {
-    .topbar { padding: 0 8px; }
-    main { padding: 12px; }
+    .topbar {
+      padding-right: max(8px, var(--daylight-safe-right));
+      padding-left: max(8px, var(--daylight-safe-left));
+    }
+    main {
+      padding: 12px;
+      padding-right: max(12px, var(--daylight-safe-right));
+      padding-bottom: max(12px, var(--daylight-safe-bottom));
+      padding-left: max(12px, var(--daylight-safe-left));
+    }
     li { padding: 12px; }
     .actions button, .detail-event > button { flex: 1 1 100%; width: 100%; }
   }
@@ -45,6 +86,21 @@ function element(tag, text, className) {
   node.textContent = text;
   if (className) node.className = className;
   return node;
+}
+
+function menuButton() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "menu-button";
+  button.hidden = true;
+  const icon = document.createElement("svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("aria-hidden", "true");
+  const path = document.createElement("path");
+  path.setAttribute("d", "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z");
+  icon.append(path);
+  button.append(icon);
+  return button;
 }
 
 function eventRange(event, hass) {
@@ -91,10 +147,13 @@ export class DaylightImportPanel extends HTMLElement {
     const style = element("style", css);
     const header = document.createElement("header");
     header.className = "topbar";
-    const menu = document.createElement("ha-menu-button");
+    const menu = menuButton();
     this._menuButton = menu;
+    menu.addEventListener("click", () => {
+      this.dispatchEvent(new Event("hass-toggle-menu", {bubbles: true, composed: true}));
+    });
     header.append(menu, element("h1", "Daylight imports"));
-    const refresh = element("button", "Refresh");
+    const refresh = element("button", "Refresh", "toolbar-refresh");
     this._refreshButton = refresh;
     refresh.type = "button";
     refresh.addEventListener("click", () => {
@@ -121,9 +180,10 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   _syncMenuButton() {
-    if (!this._menuButton) return;
-    this._menuButton.hass = this._hass;
-    this._menuButton.narrow = Boolean(this._narrow);
+    this._menuButton.hidden = !this._narrow;
+    const label = this._hass?.localize?.("ui.sidebar.sidebar_toggle") || "Toggle sidebar";
+    this._menuButton.setAttribute("aria-label", label);
+    this._menuButton.title = label;
   }
 
   set hass(value) {
