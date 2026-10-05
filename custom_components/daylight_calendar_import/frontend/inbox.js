@@ -204,14 +204,24 @@ function dateKey(date, zone) {
 
 function timeValue(date, locale, zone) {
   const amPm = useAmPm(locale);
-  const options = amPm ?
+  const shown = displayDate(date, zone);
+  let options = amPm ?
     {timeZone: zone.timeZone, hour: "numeric", minute: "2-digit", hour12: true} :
     {timeZone: zone.timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23"};
-  const parts = makeFormatter(locale, options).formatToParts(displayDate(date, zone));
-  const hour = parts.find(part => part.type === "hour")?.value || "";
+  let parts = makeFormatter(locale, options).formatToParts(shown);
   const minute = parts.find(part => part.type === "minute")?.value || "";
-  const period = parts.find(part => part.type === "dayPeriod")?.value || "";
-  return {clock: amPm && minute === "00" ? hour : `${hour}:${minute}`, period};
+  if (amPm && minute === "00") {
+    options = {timeZone: zone.timeZone, hour: "numeric", hour12: true};
+    parts = makeFormatter(locale, options).formatToParts(shown);
+  }
+  const periodIndex = parts.findIndex(part => part.type === "dayPeriod");
+  const hourIndex = parts.findIndex(part => part.type === "hour");
+  const period = periodIndex === -1 ? "" : parts[periodIndex].value;
+  const full = parts.map(part => part.value).join("").trim();
+  const withoutPeriod = parts
+    .filter(part => part.type !== "dayPeriod")
+    .map(part => part.value).join("").trim();
+  return {full, withoutPeriod, period, periodBefore: periodIndex !== -1 && periodIndex < hourIndex};
 }
 
 function zoneLabel(date, zone) {
@@ -224,8 +234,14 @@ function zoneLabel(date, zone) {
   }
 }
 
-function clockWithPeriod(value) {
-  return value.period ? `${value.clock} ${value.period}` : value.clock;
+function compactTimeRange(startTime, endTime, sameZone, amPm) {
+  if (!amPm) return `${startTime.full}–${endTime.full}`;
+  if (!sameZone || !startTime.period || startTime.period !== endTime.period) {
+    return `${startTime.full}–${endTime.full}`;
+  }
+  return startTime.periodBefore ?
+    `${startTime.full}–${endTime.withoutPeriod}` :
+    `${startTime.withoutPeriod}–${endTime.full}`;
 }
 
 export function formatEventRange(event, locale, timeZone) {
@@ -251,25 +267,18 @@ export function formatEventRange(event, locale, timeZone) {
   const endZone = zoneLabel(end, zones.end);
   const sameZone = startZone === endZone;
   const sameDay = dateKey(start, zones.start) === dateKey(end, zones.end);
-  let times;
-  if (useAmPm(locale)) {
-    const compactStart = sameZone && startTime.period === endTime.period ?
-      startTime.clock : clockWithPeriod(startTime);
-    times = `${compactStart}–${clockWithPeriod(endTime)}`;
-  } else {
-    times = `${startTime.clock}–${endTime.clock}`;
-  }
+  const times = compactTimeRange(startTime, endTime, sameZone, useAmPm(locale));
 
   if (sameDay && sameZone) {
     return `${formatDateOnly(end, locale, zones.end)} · ${times} (${endZone})`;
   }
   if (sameDay) {
-    return `${formatDateOnly(end, locale, zones.end)} · ${clockWithPeriod(startTime)} (${startZone}) – ` +
-      `${clockWithPeriod(endTime)} (${endZone})`;
+    return `${formatDateOnly(end, locale, zones.end)} · ${startTime.full} (${startZone}) – ` +
+      `${endTime.full} (${endZone})`;
   }
-  const startLabel = `${formatDateOnly(start, locale, zones.start)}, ${clockWithPeriod(startTime)}` +
+  const startLabel = `${formatDateOnly(start, locale, zones.start)}, ${startTime.full}` +
     `${sameZone ? "" : ` (${startZone})`}`;
-  const endLabel = `${formatDateOnly(end, locale, zones.end)}, ${clockWithPeriod(endTime)} (${endZone})`;
+  const endLabel = `${formatDateOnly(end, locale, zones.end)}, ${endTime.full} (${endZone})`;
   return `${startLabel} – ${endLabel}`;
 }
 
