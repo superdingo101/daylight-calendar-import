@@ -2,9 +2,20 @@ import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivit
 
 const css = `
   :host { display: block; color: var(--primary-text-color); font-family: var(--paper-font-body1_-_font-family, sans-serif); }
+  .topbar {
+    box-sizing: border-box;
+    min-height: var(--header-height, 56px);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    background: var(--app-header-background-color, var(--primary-background-color));
+    color: var(--app-header-text-color, var(--primary-text-color));
+    border-bottom: var(--app-header-border-bottom, 1px solid var(--divider-color));
+  }
+  .topbar h1 { flex: 1; min-width: 0; margin: 0; font-size: 20px; font-weight: 400; line-height: 1.25; overflow-wrap: anywhere; }
+  .topbar ha-menu-button { flex: 0 0 auto; }
   main { box-sizing: border-box; width: 100%; max-width: 820px; min-width: 0; margin: 0 auto; padding: 20px; }
-  header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-  h1 { min-width: 0; font-size: 1.65rem; line-height: 1.25; overflow-wrap: anywhere; }
   button { box-sizing: border-box; min-height: 44px; max-width: 100%; overflow-wrap: anywhere; cursor: pointer; border: 1px solid var(--divider-color); border-radius: 8px; background: var(--card-background-color); color: inherit; padding: 10px 14px; font: inherit; }
   button:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 2px; }
   ul { list-style: none; padding: 0; display: grid; gap: 12px; }
@@ -21,8 +32,8 @@ const css = `
   textarea { min-height: 10rem; resize: vertical; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
   @media (max-width: 480px) {
+    .topbar { padding: 0 8px; }
     main { padding: 12px; }
-    h1 { font-size: 1.35rem; }
     li { padding: 12px; }
     .actions button, .detail-event > button { flex: 1 1 100%; width: 100%; }
   }
@@ -77,9 +88,11 @@ export class DaylightImportPanel extends HTMLElement {
     this._activityId = null;
     this._activityDetail = null;
     const style = element("style", css);
-    const main = document.createElement("main");
     const header = document.createElement("header");
-    header.append(element("h1", "Daylight imports"));
+    header.className = "topbar";
+    const menu = document.createElement("ha-menu-button");
+    this._menuButton = menu;
+    header.append(menu, element("h1", "Daylight imports"));
     const refresh = element("button", "Refresh");
     this._refreshButton = refresh;
     refresh.type = "button";
@@ -92,12 +105,29 @@ export class DaylightImportPanel extends HTMLElement {
     this._content = document.createElement("div");
     this._announcement = document.createElement("div");
     this._announcement.setAttribute("aria-live", "polite");
-    main.append(header, this._announcement, this._content);
-    this.shadowRoot.append(style, main);
+    const main = document.createElement("main");
+    main.append(this._announcement, this._content);
+    this.shadowRoot.append(style, header, main);
+  }
+
+  set narrow(value) {
+    this._narrow = Boolean(value);
+    this._syncMenuButton();
+  }
+
+  get narrow() {
+    return Boolean(this._narrow);
+  }
+
+  _syncMenuButton() {
+    if (!this._menuButton) return;
+    this._menuButton.hass = this._hass;
+    this._menuButton.narrow = Boolean(this._narrow);
   }
 
   set hass(value) {
     this._hass = value;
+    this._syncMenuButton();
     if (!this._loaded) {
       this._loaded = true;
       void this.refresh();
