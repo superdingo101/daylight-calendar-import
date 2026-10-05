@@ -228,6 +228,10 @@ async def test_options_flow_routes_enabled_email_to_connection_step():
 
 async def test_options_flow_validates_and_saves_direct_imap():
     flow = DaylightCalendarImportOptionsFlow()
+    flow._calendar_options = {
+        CONF_CALENDAR_ENTITY: "calendar.new",
+        CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work", "calendar.new"],
+    }
     expected = {"type": "create_entry"}
     entry = _options_entry()
     validate = AsyncMock()
@@ -267,8 +271,12 @@ async def test_options_flow_validates_and_saves_direct_imap():
     assert settings.sender_allowlist == ()
     create_entry.assert_called_once_with(
         data={
-            CONF_CALENDAR_ENTITY: "calendar.family",
-            CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
+            CONF_CALENDAR_ENTITY: "calendar.new",
+            CONF_CALENDAR_ENTITIES: [
+                "calendar.family",
+                "calendar.work",
+                "calendar.new",
+            ],
             CONF_EMAIL_ENABLED: True,
             **user_input,
         }
@@ -774,9 +782,11 @@ async def test_options_flow_initial_email_form_uses_persisted_suggestions():
     assert result is expected
     suggested = add_suggested.call_args.args[1]
     assert suggested == {
-        key: value
-        for key, value in current.items()
-        if key != CONF_EMAIL_PASSWORD
+        CONF_EMAIL_HOST: "imap.example.test",
+        CONF_EMAIL_PORT: 1993,
+        CONF_EMAIL_USERNAME: "calendar@example.test",
+        CONF_EMAIL_MAILBOX: "Calendar",
+        CONF_EMAIL_VERIFY_SSL: False,
     }
     assert CONF_EMAIL_PASSWORD not in suggested
 
