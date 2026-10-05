@@ -349,7 +349,7 @@ async def test_direct_imap_pipeline_persists_and_acknowledges_durable_message(
 
     assert collect.search_calls == [(("UnSeen UnDeleted",), "us-ascii")]
     assert collect.uid_calls == [
-        ("fetch", ("42", "(UID BODY.PEEK[])")),
+        ("fetch", ("42", "(UID INTERNALDATE BODY.PEEK[])")),
     ]
     assert acknowledge.uid_calls == [
         ("store", ("42", "+FLAGS.SILENT", "(\\Seen)")),
