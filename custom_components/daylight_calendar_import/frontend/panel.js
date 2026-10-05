@@ -1,4 +1,4 @@
-import {decideEvent, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 
 const css = `
   :host { display: block; color: var(--primary-text-color); font-family: var(--paper-font-body1_-_font-family, sans-serif); }
@@ -35,19 +35,12 @@ function element(tag, text, className) {
   return node;
 }
 
-function eventRange(event) {
-  if (!event.all_day) return `${event.start} – ${event.end}`;
-  const end = new Date(`${event.end}T00:00:00Z`);
-  if (Number.isNaN(end.getTime())) return `${event.start} – ${event.end} (exclusive end)`;
-  end.setUTCDate(end.getUTCDate() - 1);
-  const lastDay = end.toISOString().slice(0, 10);
-  return event.start === lastDay ? event.start : `${event.start} – ${lastDay}`;
+function eventRange(event, hass) {
+  return formatEventRange(event, hass?.locale, hass?.config?.time_zone);
 }
 
-function activityTime(value, locale) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "Unknown time" :
-    new Intl.DateTimeFormat(locale, {dateStyle: "medium", timeStyle: "short"}).format(date);
+function activityTime(value, hass) {
+  return formatDateTime(value, hass?.locale, hass?.config?.time_zone);
 }
 
 function activityLabel(type) {
@@ -228,10 +221,10 @@ export class DaylightImportPanel extends HTMLElement {
     for (const event of events) {
       try {
         await decideEvent(this._hass, pendingId, event, action);
-        results.push({id: event.id, title: event.title, range: eventRange(event), outcome: "success"});
+        results.push({id: event.id, title: event.title, range: eventRange(event, this._hass), outcome: "success"});
       } catch (error) {
         const reason = typeof error?.message === "string" ? error.message : "Review action failed";
-        results.push({id: event.id, title: event.title, range: eventRange(event),
+        results.push({id: event.id, title: event.title, range: eventRange(event, this._hass),
           outcome: action === "approve" ?
             `Approval outcome unknown; check the calendar before retrying. ${reason}` : reason});
       }
@@ -504,7 +497,7 @@ export class DaylightImportPanel extends HTMLElement {
         if (item.guidance) content.append(element("p", item.guidance));
         const list = document.createElement("ul");
         for (const transition of item.transitions) {
-          const row = element("li", `${activityTime(transition.at, this._hass?.locale?.language)} · ${activityLabel(transition.type)}${transition.event_id ? ` · Event ID ${transition.event_id}` : ""}`);
+          const row = element("li", `${activityTime(transition.at, this._hass)} · ${activityLabel(transition.type)}${transition.event_id ? ` · Event ID ${transition.event_id}` : ""}`);
           list.append(row);
         }
         content.append(list);
@@ -520,7 +513,7 @@ export class DaylightImportPanel extends HTMLElement {
           open.type = "button";
           open.dataset.activityId = item.id;
           open.addEventListener("click", () => void this.showActivity(item.id));
-          row.append(open, element("p", `${activityTime(item.created_at, this._hass?.locale?.language)} · ${activityLabel(item.status)} · Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
+          row.append(open, element("p", `${activityTime(item.created_at, this._hass)} · ${activityLabel(item.status)} · Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
           list.append(row);
         }
         content.append(list);
@@ -631,7 +624,7 @@ export class DaylightImportPanel extends HTMLElement {
           continue;
         }
         card.append(element("h3", event.title || "Untitled event"));
-        card.append(element("p", `${eventRange(event)}${event.all_day ? " · All day" : ""}`));
+        card.append(element("p", `${eventRange(event, this._hass)}${event.all_day ? " · All day" : ""}`));
         card.append(element("p", `Calendar: ${event.calendar_entity || "Default"} · Status: ${event.status}`));
         if (typeof event.confidence === "number") {
           card.append(element("p", `AI extraction confidence: ${Math.round(event.confidence * 100)}% (estimate)`));
@@ -730,7 +723,7 @@ export class DaylightImportPanel extends HTMLElement {
       content.append(element("p", `${this._items.length} imports awaiting review`, "status"));
       const list = document.createElement("ul");
       for (const item of this._items) {
-        const summary = summarizeImport(item, this._hass?.locale?.language);
+        const summary = summarizeImport(item, this._hass?.locale, this._hass?.config?.time_zone);
         const card = document.createElement("li");
         const open = element("button", summary.title);
         open.type = "button";

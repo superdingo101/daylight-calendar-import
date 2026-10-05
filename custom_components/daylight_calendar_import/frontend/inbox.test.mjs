@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {decideEvent, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 
 test("uncertain recovery sends a scoped explicit resolution and validates the response", async () => {
   const requests = [];
@@ -119,4 +119,35 @@ test("summaries use local time and show concrete attention indicators", () => {
   assert.equal(summarizeImport({...item, source_title: null, event_count: 1}, "en-US").events, "1 event");
   assert.equal(summarizeImport({...item, created_at: "invalid", source_kind: "other"}, "en-US").created, "Unknown time");
   assert.equal(summarizeImport({...item, source_title: null, title: ""}, "en-US").title, "Untitled import");
+});
+
+test("formats received timestamps and timed event ranges with Home Assistant time preferences", () => {
+  const twelveHour = {language: "en-US", time_format: "12"};
+  const twentyFourHour = {language: "en-US", time_format: "24"};
+  const event = {all_day: false, start: "2026-10-07T20:00:00-07:00",
+    end: "2026-10-07T21:00:00-07:00"};
+  assert.equal(formatDateTime("2026-10-05T01:18:00Z", twelveHour, "America/Los_Angeles"),
+    "Oct 4, 2026, 6:18 PM");
+  assert.equal(formatDateTime("2026-10-05T01:18:00Z", twentyFourHour, "America/Los_Angeles"),
+    "Oct 4, 2026, 18:18");
+  assert.equal(formatEventRange(event, twelveHour, "America/Los_Angeles"),
+    "Oct 7, 2026 · 8–9 PM (PDT)");
+  assert.equal(formatEventRange(event, twentyFourHour, "America/Los_Angeles"),
+    "Oct 7, 2026 · 20:00–21:00 (PDT)");
+});
+
+test("timed ranges show both dates, preserve the event zone, and expose DST changes", () => {
+  const locale = {language: "en-US", time_format: "12"};
+  assert.equal(formatEventRange({all_day: false,
+    start: "2026-10-07T23:00:00-07:00", end: "2026-10-08T01:00:00-07:00"},
+  locale, "America/Los_Angeles"),
+  "Oct 7, 2026, 11 PM – Oct 8, 2026, 1 AM (PDT)");
+  assert.equal(formatEventRange({all_day: false,
+    start: "2026-10-07T20:00:00-04:00", end: "2026-10-07T21:00:00-04:00"},
+  locale, "America/Los_Angeles"),
+  "Oct 7, 2026 · 8–9 PM (UTC-04:00)");
+  assert.equal(formatEventRange({all_day: false,
+    start: "2026-11-01T00:30:00-07:00", end: "2026-11-01T02:30:00-08:00"},
+  locale, "America/Los_Angeles"),
+  "Nov 1, 2026 · 12:30 AM (PDT) – 2:30 AM (PST)");
 });
