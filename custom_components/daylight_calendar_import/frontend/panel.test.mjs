@@ -286,6 +286,23 @@ test("opens detail, renders source and events as text, and returns to inbox", as
   assert.equal(globalThis.focusedNode.textContent, "Picnic");
 });
 
+test("detail renders timed events with the Home Assistant time preference", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Soccer Practice",
+    start: "2026-10-07T20:00:00-07:00", end: "2026-10-07T21:00:00-07:00",
+    all_day: false, status: "pending", confidence: 1};
+  panel.hass = {
+    locale: {language: "en-US", time_format: "12"},
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => request.service === "list_pending" ?
+      {response: {imports: []}} : {response: {pending: {id: "one", events: [event]}}},
+  };
+  await flush();
+  await panel.showImport("one");
+  assert.equal(find(panel._content, "section").children[1].textContent.replace(/\s/g, " "),
+    "Oct 7, 2026 · 8–9 PM (PDT)");
+});
+
 test("editor preserves long meeting descriptions and retains a stale edit on failure", async () => {
   const panel = new DaylightImportPanel();
   const description = `Zoom: https://zoom.us/j/123 passcode abc ${"bring cupcakes ".repeat(900)}`;

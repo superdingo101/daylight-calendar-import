@@ -202,6 +202,16 @@ def _fetch_body_before_uid(uid: int, body: bytes) -> FakeResponse:
     )
 
 
+def _fetch_with_internaldate(uid: int, body: bytes, internaldate: bytes) -> FakeResponse:
+    return _ok(
+        b"1 FETCH (UID " + str(uid).encode() + b" INTERNALDATE \"" + internaldate +
+        f"\" BODY[] {{{len(body)}}}".encode(),
+        bytearray(body),
+        b")",
+        b"Fetch completed",
+    )
+
+
 def test_direct_imap_settings_and_source_config_hide_secret() -> None:
     settings = _settings()
     source, _ = _source(FakeImapClient(), settings=settings)
@@ -338,7 +348,7 @@ async def test_default_factory_collects_through_runtime_adapter(
 
     assert envelope.raw_message == body
     assert client.search_calls == [(("UnSeen UnDeleted",), "us-ascii")]
-    assert client.uid_calls == [("fetch", ("7", "(UID BODY.PEEK[])"))]
+    assert client.uid_calls == [("fetch", ("7", "(UID INTERNALDATE BODY.PEEK[])"))]
     assert client.logout_calls == 1
 
 
@@ -441,6 +451,42 @@ async def test_collect_accepts_body_literal_before_uid_metadata() -> None:
     )
 
 
+async def test_collect_uses_server_internaldate_as_received_time() -> None:
+    body = b"Subject: Practice\r\n\r\nSoccer Practice"
+    client = FakeImapClient(
+        search_response=_ok(b"7", b"Search completed"),
+        fetch_responses={
+            "7": _fetch_with_internaldate(
+                7, body, b"04-Oct-2026 18:18:00 -0700"
+            )
+        },
+    )
+    source, _ = _source(client)
+
+    [envelope] = [item async for item in source.async_collect()]
+
+    assert envelope.received_at == datetime(2026, 10, 5, 1, 18, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "internaldate",
+    (b"not-a-date", b"Sun, 04 Oct 2026 18:18:00"),
+)
+async def test_collect_falls_back_to_clock_for_invalid_internaldate(
+    internaldate: bytes,
+) -> None:
+    body = b"Subject: Practice\r\n\r\nSoccer Practice"
+    client = FakeImapClient(
+        search_response=_ok(b"7", b"Search completed"),
+        fetch_responses={"7": _fetch_with_internaldate(7, body, internaldate)},
+    )
+    source, _ = _source(client)
+
+    [envelope] = [item async for item in source.async_collect()]
+
+    assert envelope.received_at == datetime(2026, 10, 1, 15, 0, tzinfo=UTC)
+
+
 async def test_collect_enumerates_every_matching_uid_with_uid_fetch() -> None:
     client = FakeImapClient(
         search_response=_ok(b"7 9 12", b"Search completed"),
@@ -476,9 +522,9 @@ async def test_collect_enumerates_every_matching_uid_with_uid_fetch() -> None:
     )
     assert client.search_calls == [(("UnSeen UnDeleted",), "us-ascii")]
     assert client.uid_calls == [
-        ("fetch", ("7", "(UID BODY.PEEK[])")),
-        ("fetch", ("9", "(UID BODY.PEEK[])")),
-        ("fetch", ("12", "(UID BODY.PEEK[])")),
+        ("fetch", ("7", "(UID INTERNALDATE BODY.PEEK[])")),
+        ("fetch", ("9", "(UID INTERNALDATE BODY.PEEK[])")),
+        ("fetch", ("12", "(UID INTERNALDATE BODY.PEEK[])")),
     ]
     assert client.logout_calls == 1
 
@@ -526,9 +572,9 @@ async def test_collect_skips_uid_deleted_before_fetch(
 
     assert [item.raw_message for item in envelopes] == [b"one", b"three"]
     assert client.uid_calls == [
-        ("fetch", ("1", "(UID BODY.PEEK[])")),
-        ("fetch", ("2", "(UID BODY.PEEK[])")),
-        ("fetch", ("3", "(UID BODY.PEEK[])")),
+        ("fetch", ("1", "(UID INTERNALDATE BODY.PEEK[])")),
+        ("fetch", ("2", "(UID INTERNALDATE BODY.PEEK[])")),
+        ("fetch", ("3", "(UID INTERNALDATE BODY.PEEK[])")),
     ]
     assert client.logout_calls == 1
 

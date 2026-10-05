@@ -42,6 +42,7 @@ _BODY_LITERAL_RE = re.compile(
     rb"\bBODY(?:\.PEEK)?\[\]\s+\{([0-9]+)\}\s*$",
     re.IGNORECASE,
 )
+_INTERNALDATE_RE = re.compile(rb'\bINTERNALDATE\s+"([^"]+)"', re.IGNORECASE)
 
 _ERR_PORT = "port must be an integer between 1 and 65535"  # pragma: no mutate
 _ERR_VERIFY_SSL = "verify_ssl must be a boolean"  # pragma: no mutate
@@ -348,12 +349,29 @@ def _parse_search_uids(response: _Response) -> tuple[int, ...]:
     return tuple(uids)
 
 
-def _extract_fetch_body(
+def _parse_internaldate(metadata: Sequence[bytes]) -> datetime | None:
+    """Parse one IMAP INTERNALDATE, falling back when the server omits it."""
+    values = [
+        match.group(1)
+        for line in metadata
+        for match in _INTERNALDATE_RE.finditer(line)
+    ]
+    if len(values) != 1:
+        return None
+    try:
+        return datetime.strptime(
+            values[0].decode("ascii"), "%d-%b-%Y %H:%M:%S %z"
+        ).astimezone(UTC)
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def _extract_fetch_message(
     response: _Response,
     *,
     expected_uid: int,
-) -> bytes | None:
-    """Return the requested BODY literal without assuming FETCH item order."""
+) -> tuple[bytes, datetime | None] | None:
+    """Return the requested BODY literal and server receipt time."""
     _require_ok(response, _ERR_FETCH)
     lines = tuple(
         _line_bytes(line, _ERR_FETCH_DATA)
@@ -439,7 +457,7 @@ def _extract_fetch_body(
             raise DirectImapProtocolError(
                 _ERR_FETCH_LENGTH
             )
-        return literal
+        return literal, _parse_internaldate(tuple(lines[index] for index in frame_metadata))
 
     return None
 
@@ -494,19 +512,20 @@ class DirectImapSource:
                     fetch_response = await client.uid(
                         "fetch",
                         str(uid),
-                        "(UID BODY.PEEK[])",
+                        "(UID INTERNALDATE BODY.PEEK[])",
                     )
                 except Exception:
                     raise DirectImapConnectionError(_ERR_FETCH_TRANSPORT) from None
 
-                raw_message = _extract_fetch_body(
+                fetched = _extract_fetch_message(
                     fetch_response,
                     expected_uid=uid,
                 )
-                if raw_message is None:
+                if fetched is None:
                     continue
+                raw_message, received_at = fetched
                 yield EmailEnvelope(
-                    received_at=self._clock(),
+                    received_at=received_at or self._clock(),
                     raw_message=raw_message,
                     provenance=EmailProvenance(
                         source_id=self._settings.source_id,
