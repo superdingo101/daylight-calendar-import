@@ -75,9 +75,7 @@ def _calendar_options(
             entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]]),
         )
     )
-    if default not in allowed:
-        allowed.append(default)
-    return default, allowed
+    return default, list(dict.fromkeys((*allowed, default)))
 
 
 class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
