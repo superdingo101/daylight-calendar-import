@@ -21,6 +21,7 @@ from custom_components.daylight_calendar_import import (
     SUBMIT_SCHEMA,
     SUBMIT_IMAGE_SCHEMA,
     SUBMIT_PDF_SCHEMA,
+    _ai_task_configuration,
     _async_check_entity_control_permission,
     _async_create_calendar_event,
     _async_parse_source,
@@ -133,13 +134,14 @@ async def test_panel_registration_failure_leaves_no_services_or_store(monkeypatc
     assert DOMAIN not in hass.data
 
 
-def entry():
+def entry(options=None):
     return SimpleNamespace(
         entry_id="test-entry",
         data={
             CONF_AI_TASK_ENTITY: "ai_task.test",
             CONF_CALENDAR_ENTITY: "calendar.family",
         },
+        options=options or {},
     )
 
 
@@ -1069,6 +1071,31 @@ def test_service_schemas_validate_source_and_pending_ids():
         PENDING_SCHEMA({ATTR_PENDING_ID: ""})
 
 
+def test_ai_task_configuration_prefers_options_and_falls_back_to_data():
+    assert _ai_task_configuration(entry()) == "ai_task.test"
+    assert _ai_task_configuration(
+        entry({CONF_AI_TASK_ENTITY: "ai_task.updated"})
+    ) == "ai_task.updated"
+
+
+async def test_parse_for_entry_uses_updated_ai_option(monkeypatch):
+    permissions = FakePermissions(allowed=True)
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    parse = AsyncMock(return_value=ParseOutcome([], []))
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.parse_source_with_provider",
+        parse,
+    )
+    context = Context(user_id="allowed-user")
+    configured = entry({CONF_AI_TASK_ENTITY: "ai_task.updated"})
+
+    assert await _parse_for_entry(
+        hass, configured, "text", context=context
+    ) == ParseOutcome([], [])
+    assert permissions.calls == [("ai_task.updated", POLICY_CONTROL)]
+    assert parse.await_args.kwargs["ai_task_entity"] == "ai_task.updated"
+
+
 async def test_parse_for_entry(monkeypatch):
     permissions = FakePermissions(allowed=True)
     user = SimpleNamespace(permissions=permissions)
@@ -1926,6 +1953,28 @@ def test_calendar_configuration_prefers_options_and_preserves_allowed_calendars(
     assert _calendar_configuration(entry) == (
         "calendar.new",
         ("calendar.family", "calendar.work", "calendar.new"),
+    )
+
+
+def test_calendar_configuration_uses_exact_allowed_calendar_option():
+    configured = SimpleNamespace(
+        data={
+            CONF_CALENDAR_ENTITY: "calendar.family",
+            CONF_CALENDAR_ENTITIES: [
+                "calendar.family",
+                "calendar.work",
+                "calendar.stale",
+            ],
+        },
+        options={
+            CONF_CALENDAR_ENTITY: "calendar.family",
+            CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
+        },
+    )
+
+    assert _calendar_configuration(configured) == (
+        "calendar.family",
+        ("calendar.family", "calendar.work"),
     )
 
 
