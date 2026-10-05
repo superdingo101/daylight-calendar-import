@@ -56,7 +56,7 @@ test("decisions carry the loaded snapshot and validate the service response", as
     "one", event, "approve"), /unexpected response/);
 });
 
-test("edits use the complete stale snapshot and never request destination routing", async () => {
+test("edits use the complete stale snapshot and optionally route the destination calendar", async () => {
   const original = {id: "event", status: "pending", calendar_entity: "calendar.legacy",
     title: "Meeting", start: "2026-10-01T10:00:00-04:00", end: "2026-10-01T11:00:00-04:00",
     all_day: false, description: "Zoom meeting ID 123, passcode abc"};
@@ -65,14 +65,21 @@ test("edits use the complete stale snapshot and never request destination routin
   const saved = await saveEvent({callWS: async (message) => {
     request = message;
     return {response: {pending_id: "one", event: {...original, ...draft}}};
-  }}, "one", original, draft);
+  }}, "one", original, draft, "calendar.family");
   assert.equal(saved.description.length, 12000);
   assert.equal(request.service, "edit_pending_event");
   assert.deepEqual(request.service_data.expected_event, original);
   assert.equal(request.service_data.event.description.length, 12000);
-  assert.equal(Object.hasOwn(request.service_data, "calendar_entity"), false);
+  assert.equal(request.service_data.calendar_entity, "calendar.family");
   await assert.rejects(saveEvent({callWS: async () => ({response: {event: original}})},
     "one", original, draft), /unexpected response/);
+
+  let unrouted;
+  await saveEvent({callWS: async message => {
+    unrouted = message;
+    return {response: {pending_id: "one", event: original}};
+  }}, "one", original, draft);
+  assert.equal(Object.hasOwn(unrouted.service_data, "calendar_entity"), false);
 });
 
 test("loads detail with a scoped pending ID and rejects a mismatched response", async () => {
