@@ -45,6 +45,8 @@ test("mobile toolbar exposes Home Assistant sidebar navigation", async () => {
   const panel = new DaylightImportPanel();
   panel.narrow = true;
   const hass = {
+    kioskMode: false,
+    dockedSidebar: "auto",
     localize: key => key === "ui.sidebar.sidebar_toggle" ? "Open sidebar" : key,
     callWS: async () => ({response: {imports: []}}),
   };
@@ -73,6 +75,21 @@ test("mobile toolbar exposes Home Assistant sidebar navigation", async () => {
   panel.narrow = false;
   assert.equal(panel.narrow, false);
   assert.equal(menu.hidden, true);
+
+  panel.hass = {...hass, dockedSidebar: "always_hidden"};
+  assert.equal(menu.hidden, false);
+
+  panel.hass = {...hass, kioskMode: true, dockedSidebar: "always_hidden"};
+  assert.equal(menu.hidden, true);
+
+  panel.narrow = true;
+  panel.hass = {...hass, auth: {external: {config: {hasSidebar: true}}}};
+  assert.equal(menu.hidden, true);
+
+  const styles = find(panel.shadowRoot, "style").textContent;
+  assert.match(styles, /--safe-area-content-inset-left/);
+  assert.match(styles, /--safe-area-content-inset-right/);
+  assert.match(styles, /\.topbar button:focus-visible \{ outline-color: currentColor; \}/);
 });
 
 test("uncertain recovery requires confirmation, retains errors, and restores review", async () => {
