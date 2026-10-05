@@ -16,7 +16,7 @@ const css = `
   .detail-event { border-top: 1px solid var(--divider-color); padding: 12px 0; }
   form { display: grid; gap: 12px; }
   label { display: grid; gap: 4px; }
-  input, textarea { box-sizing: border-box; width: 100%; padding: 8px; font: inherit; color: inherit; background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; }
+  input, textarea, select { box-sizing: border-box; width: 100%; padding: 8px; font: inherit; color: inherit; background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; }
   input[type=checkbox] { width: auto; }
   textarea { min-height: 10rem; resize: vertical; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -381,17 +381,19 @@ export class DaylightImportPanel extends HTMLElement {
       description: fields.namedItem("description").value,
       confidence: event.confidence,
     };
+    const calendarEntity = fields.namedItem("calendar_entity")?.value ||
+      event.calendar_entity || this._detail?.default_calendar || null;
     const generation = this._generation;
     const pendingId = this._selectedId;
     this._saving = true;
     this._editError = null;
     this._refreshButton.disabled = true;
     for (const button of this._content.querySelectorAll("button")) button.disabled = true;
-    for (const tag of ["input", "textarea", "button"]) {
+    for (const tag of ["input", "textarea", "select", "button"]) {
       for (const control of form.querySelectorAll(tag)) control.disabled = true;
     }
     try {
-      await saveEvent(this._hass, pendingId, event, draft);
+      await saveEvent(this._hass, pendingId, event, draft, calendarEntity);
       if (generation !== this._generation) return;
       this._editingId = null;
       this._decisionError = null;
@@ -416,7 +418,7 @@ export class DaylightImportPanel extends HTMLElement {
       message.tabIndex = -1;
       form.prepend(message);
       this._announcement.replaceChildren(element("span", this._editError));
-      for (const tag of ["input", "textarea", "button"]) {
+      for (const tag of ["input", "textarea", "select", "button"]) {
         for (const control of form.querySelectorAll(tag)) control.disabled = false;
       }
       message.focus();
@@ -452,6 +454,26 @@ export class DaylightImportPanel extends HTMLElement {
     start.required = end.required = true;
     field("location", "Location", event.location);
     field("description", "Description and meeting join details", event.description, "textarea");
+    const selectedCalendar = event.calendar_entity || this._detail?.default_calendar || "";
+    const calendars = [...new Set([
+      ...(this._detail?.allowed_calendars || []),
+      selectedCalendar,
+    ].filter(Boolean))];
+    if (calendars.length) {
+      const label = element("label", "Calendar");
+      const select = document.createElement("select");
+      select.name = "calendar_entity";
+      for (const calendar of calendars) {
+        const option = document.createElement("option");
+        option.value = calendar;
+        const friendly = this._hass?.states?.[calendar]?.attributes?.friendly_name;
+        option.textContent = friendly ? `${friendly} (${calendar})` : calendar;
+        select.append(option);
+      }
+      select.value = selectedCalendar || calendars[0];
+      label.append(select);
+      form.append(label);
+    }
     const actions = element("div", "", "actions");
     const save = element("button", "Save");
     save.type = "submit";
