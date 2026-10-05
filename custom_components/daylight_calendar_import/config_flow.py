@@ -74,7 +74,7 @@ def _calendar_selector(*, multiple: bool = False) -> selector.EntitySelector:
     )
 
 
-def _core_options(
+def _effective_core_options(
     entry: config_entries.ConfigEntry,
 ) -> tuple[str, str, list[str]]:
     """Return effective post-setup editable options."""
@@ -154,7 +154,7 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
     ) -> FlowResult:
         """Configure core runtime choices and enable or disable email ingestion."""
         current = self.config_entry.options
-        ai_task_entity, default_calendar, allowed_calendars = _core_options(
+        ai_task_entity, default_calendar, allowed_calendars = _effective_core_options(
             self.config_entry
         )
         errors: dict[str, str] = {}
@@ -165,7 +165,7 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
             if user_input[CONF_CALENDAR_ENTITY] not in selected_allowed:
                 errors[CONF_CALENDAR_ENTITY] = "default_not_allowed"
             else:
-                self._core_options = {
+                self._pending_core_options = {
                     CONF_AI_TASK_ENTITY: user_input[CONF_AI_TASK_ENTITY],
                     CONF_CALENDAR_ENTITY: user_input[CONF_CALENDAR_ENTITY],
                     CONF_CALENDAR_ENTITIES: selected_allowed,
@@ -174,7 +174,7 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
                     return self.async_create_entry(
                         data={
                             **current,
-                            **self._core_options,
+                            **self._pending_core_options,
                             CONF_EMAIL_ENABLED: False,
                         }
                     )
@@ -215,9 +215,9 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
     ) -> FlowResult:
         """Validate and save Direct IMAP connection options."""
         current = self.config_entry.options
-        core_options = getattr(self, "_core_options", None)
+        core_options = getattr(self, "_pending_core_options", None)
         if core_options is None:
-            ai_task_entity, default_calendar, allowed_calendars = _core_options(
+            ai_task_entity, default_calendar, allowed_calendars = _effective_core_options(
                 self.config_entry
             )
             core_options = {
