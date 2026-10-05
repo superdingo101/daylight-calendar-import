@@ -15,11 +15,6 @@ PANEL_ASSETS_URL = f"/{DOMAIN}/static"
 _STATIC_REGISTERED = f"{DOMAIN}_panel_static_registered"
 
 
-def _supports_handle_safe_area() -> bool:
-    """Return whether this Home Assistant version supports panel safe-area opt-out."""
-    return hasattr(panel_custom, "CONF_HANDLE_SAFE_AREA")
-
-
 async def async_register_review_panel(hass: HomeAssistant) -> None:
     """Serve a bundled panel and expose it in the Home Assistant sidebar."""
     if frontend.async_panel_exists(hass, PANEL_PATH):
@@ -29,16 +24,13 @@ async def async_register_review_panel(hass: HomeAssistant) -> None:
             StaticPathConfig(PANEL_ASSETS_URL, str(Path(__file__).with_name("frontend")), cache_headers=False)
         ])
         hass.data[_STATIC_REGISTERED] = True
-    panel_kwargs = {
-        "frontend_url_path": PANEL_PATH,
-        "webcomponent_name": "daylight-import-panel",
-        "module_url": f"{PANEL_ASSETS_URL}/panel.js",
-        "sidebar_title": "Daylight imports",
-        "sidebar_icon": "mdi:calendar-import",
-    }
-    if _supports_handle_safe_area():
-        panel_kwargs["handle_safe_area"] = True
-    await panel_custom.async_register_panel(hass, **panel_kwargs)
+    await panel_custom.async_register_panel(
+        hass, frontend_url_path=PANEL_PATH,
+        webcomponent_name="daylight-import-panel",
+        module_url=f"{PANEL_ASSETS_URL}/panel.js",
+        sidebar_title="Daylight imports",
+        sidebar_icon="mdi:calendar-import",
+    )
 
 
 def async_remove_review_panel(hass: HomeAssistant) -> None:
