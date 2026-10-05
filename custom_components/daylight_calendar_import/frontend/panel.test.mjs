@@ -89,13 +89,15 @@ test("mobile toolbar exposes Home Assistant sidebar navigation", async () => {
   assert.equal(menu.hidden, false);
   assert.equal("data-own-safe-area" in panel.attributes, true);
 
-  panel.hass = {
-    ...hass,
-    config: {version: "2026.8.0"},
-    auth: {external: {config: {hasSidebar: true}}},
-  };
-  assert.equal(menu.hidden, false);
-  assert.equal("data-own-safe-area" in panel.attributes, false);
+  for (const version of ["2026.8.0", "2026.8.1", "2026.8.2", "2026.9.0"]) {
+    panel.hass = {
+      ...hass,
+      config: {version},
+      auth: {external: {config: {hasSidebar: true}}},
+    };
+    assert.equal(menu.hidden, false);
+    assert.equal("data-own-safe-area" in panel.attributes, false);
+  }
 
   panel.hass = {
     ...hass,
