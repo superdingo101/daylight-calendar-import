@@ -36,6 +36,48 @@ from .email_runtime import (
 )
 
 
+_EMAIL_OPTION_KEYS = (
+    CONF_EMAIL_HOST,
+    CONF_EMAIL_PORT,
+    CONF_EMAIL_USERNAME,
+    CONF_EMAIL_MAILBOX,
+    CONF_EMAIL_VERIFY_SSL,
+)
+
+
+def _calendar_selector() -> selector.EntitySelector:
+    """Select one writable calendar entity."""
+    return selector.EntitySelector(
+        selector.EntitySelectorConfig(
+            filter={
+                "domain": "calendar",
+                "supported_features": [
+                    "calendar.CalendarEntityFeature.CREATE_EVENT"
+                ],
+            }
+        )
+    )
+
+
+def _calendar_options(
+    entry: config_entries.ConfigEntry,
+    selected_default: str | None = None,
+) -> tuple[str, list[str]]:
+    """Return the effective default and allowed calendar options."""
+    current = entry.options
+    default = selected_default or current.get(
+        CONF_CALENDAR_ENTITY,
+        entry.data[CONF_CALENDAR_ENTITY],
+    )
+    allowed = list(
+        current.get(
+            CONF_CALENDAR_ENTITIES,
+            entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]]),
+        )
+    )
+    return default, list(dict.fromkeys((*allowed, default)))
+
+
 class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Configure Daylight Calendar Import."""
 
@@ -45,7 +87,7 @@ class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
-        """Create the Direct IMAP options flow."""
+        """Create the integration options flow."""
         del config_entry
         return DaylightCalendarImportOptionsFlow()
 
@@ -77,16 +119,7 @@ class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                         }
                     )
                 ),
-                vol.Required(CONF_CALENDAR_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        filter={
-                            "domain": "calendar",
-                            "supported_features": [
-                                "calendar.CalendarEntityFeature.CREATE_EVENT"
-                            ],
-                        }
-                    )
-                ),
+                vol.Required(CONF_CALENDAR_ENTITY): _calendar_selector(),
                 vol.Required(CONF_CALENDAR_ENTITIES): selector.EntitySelector(
                     selector.EntitySelectorConfig(
                         multiple=True,
@@ -105,32 +138,49 @@ class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
 
 class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
-    """Configure optional self-hosted Direct IMAP ingestion."""
+    """Configure the default calendar and optional Direct IMAP ingestion."""
 
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> FlowResult:
-        """Enable or disable email ingestion."""
+        """Configure the default calendar and enable or disable email ingestion."""
         current = self.config_entry.options
+        default_calendar, allowed_calendars = _calendar_options(self.config_entry)
         if user_input is not None:
+            default_calendar, allowed_calendars = _calendar_options(
+                self.config_entry,
+                user_input[CONF_CALENDAR_ENTITY],
+            )
+            self._calendar_options = {
+                CONF_CALENDAR_ENTITY: default_calendar,
+                CONF_CALENDAR_ENTITIES: allowed_calendars,
+            }
             if not user_input[CONF_EMAIL_ENABLED]:
                 return self.async_create_entry(
-                    data={**current, CONF_EMAIL_ENABLED: False}
+                    data={
+                        **current,
+                        **self._calendar_options,
+                        CONF_EMAIL_ENABLED: False,
+                    }
                 )
             return await self.async_step_email()
 
         schema = vol.Schema(
             {
-                vol.Required(
-                    CONF_EMAIL_ENABLED,
-                    default=current.get(CONF_EMAIL_ENABLED, False),
-                ): selector.BooleanSelector(),
+                vol.Required(CONF_CALENDAR_ENTITY): _calendar_selector(),
+                vol.Required(CONF_EMAIL_ENABLED): selector.BooleanSelector(),
             }
         )
         return self.async_show_form(
             step_id="init",
-            data_schema=schema,
+            data_schema=self.add_suggested_values_to_schema(
+                schema,
+                {
+                    CONF_CALENDAR_ENTITY: default_calendar,
+                    CONF_EMAIL_ENABLED: current.get(CONF_EMAIL_ENABLED, False),
+                },
+            ),
         )
 
     async def async_step_email(
@@ -139,6 +189,13 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
     ) -> FlowResult:
         """Validate and save Direct IMAP connection options."""
         current = self.config_entry.options
+        calendar_options = getattr(self, "_calendar_options", None)
+        if calendar_options is None:
+            default_calendar, allowed_calendars = _calendar_options(self.config_entry)
+            calendar_options = {
+                CONF_CALENDAR_ENTITY: default_calendar,
+                CONF_CALENDAR_ENTITIES: allowed_calendars,
+            }
         errors: dict[str, str] = {}
         if user_input is not None:
             port = user_input.get(CONF_EMAIL_PORT)
@@ -152,6 +209,8 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
                 or current.get(CONF_EMAIL_PASSWORD, "")
             )
             options = {
+                **current,
+                **calendar_options,
                 CONF_EMAIL_ENABLED: True,
                 **user_input,
                 CONF_EMAIL_PASSWORD: password,
@@ -177,9 +236,9 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
             user_input
             if user_input is not None
             else {
-                key: value
-                for key, value in current.items()
-                if key != CONF_EMAIL_PASSWORD
+                key: current[key]
+                for key in _EMAIL_OPTION_KEYS
+                if key in current
             }
         )
         schema = vol.Schema(

@@ -50,12 +50,14 @@ export async function loadActivityDetail(hass, id) {
   return activity;
 }
 
-export async function saveEvent(hass, pendingId, original, draft) {
+export async function saveEvent(hass, pendingId, original, draft, calendarEntity = null) {
+  const serviceData = {pending_id: pendingId, event_id: original.id, event: draft,
+    expected_event: original};
+  if (calendarEntity) serviceData.calendar_entity = calendarEntity;
   const result = await hass.callWS({
     type: "call_service", domain: "daylight_calendar_import",
     service: "edit_pending_event",
-    service_data: {pending_id: pendingId, event_id: original.id, event: draft,
-      expected_event: original},
+    service_data: serviceData,
     return_response: true,
   });
   if (result?.response?.pending_id !== pendingId ||

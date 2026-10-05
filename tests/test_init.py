@@ -24,6 +24,7 @@ from custom_components.daylight_calendar_import import (
     _async_check_entity_control_permission,
     _async_create_calendar_event,
     _async_parse_source,
+    _calendar_configuration,
     _expected_event,
     _parse_for_entry,
     async_remove_entry,
@@ -1910,3 +1911,31 @@ async def test_setup_email_runtime_reuses_parser_store_and_default_calendar(
 
     assert await async_unload_entry(hass, config_entry) is True
     runtime.async_stop.assert_awaited_once_with()
+
+
+
+def test_calendar_configuration_prefers_options_and_preserves_allowed_calendars():
+    entry = SimpleNamespace(
+        data={
+            CONF_CALENDAR_ENTITY: "calendar.family",
+            CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
+        },
+        options={CONF_CALENDAR_ENTITY: "calendar.new"},
+    )
+
+    assert _calendar_configuration(entry) == (
+        "calendar.new",
+        ("calendar.family", "calendar.work", "calendar.new"),
+    )
+
+
+def test_calendar_configuration_falls_back_to_entry_data():
+    entry = SimpleNamespace(
+        data={CONF_CALENDAR_ENTITY: "calendar.family"},
+        options={},
+    )
+
+    assert _calendar_configuration(entry) == (
+        "calendar.family",
+        ("calendar.family",),
+    )

@@ -21,7 +21,8 @@ class FakeNode {
     return [this, ...this.children.flatMap(child => child.querySelectorAll(tag))]
       .filter(node => tag.startsWith(".") ? node.className === tag.slice(1) : node.tag === tag);
   }
-  get elements() { return {namedItem: name => this.querySelectorAll("input").concat(this.querySelectorAll("textarea"))
+  get elements() { return {namedItem: name => this.querySelectorAll("input")
+    .concat(this.querySelectorAll("textarea"), this.querySelectorAll("select"))
     .find(node => node.name === name)}; }
   focus() { globalThis.focusedNode = this; }
   addEventListener(name, callback) { this[name] = callback; }
@@ -316,9 +317,12 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
     requests.push(request);
     if (request.service === "list_pending") return {response: {imports: []}};
     if (request.service === "get_pending") return {response: {pending: {id: "one",
-      default_calendar: "calendar.family", events: [event, sibling]}}};
+      default_calendar: "calendar.family",
+      allowed_calendars: ["calendar.legacy", "calendar.family"],
+      events: [event, sibling]}}};
     if (stale) throw {message: "Event changed since it was loaded; refresh before editing"};
-    event = {...event, ...request.service_data.event};
+    event = {...event, ...request.service_data.event,
+      calendar_entity: request.service_data.calendar_entity ?? event.calendar_entity};
     return {response: {pending_id: "one", event}};
   }};
   await flush();
@@ -330,7 +334,12 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   const form = find(panel._content, "form");
   assert.equal(form.elements.namedItem("description").value, description);
   assert.equal(form.elements.namedItem("start").value, event.start);
-  assert.equal(form.querySelectorAll("select").length, 0);
+  assert.equal(form.querySelectorAll("select").length, 1);
+  const calendar = form.elements.namedItem("calendar_entity");
+  assert.equal(calendar.value, "calendar.legacy");
+  assert.deepEqual(calendar.children.map(option => option.value),
+    ["calendar.legacy", "calendar.family"]);
+  calendar.value = "calendar.family";
   assert.equal(panel._content.querySelectorAll("button")[0].disabled, true);
   assert.equal(panel._content.querySelectorAll("button").some(button => button.dataset.eventId === "sibling"), false);
   siblingEdit.click();
@@ -340,13 +349,14 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   assert.equal(globalThis.focusedNode.dataset.eventId, "event");
   globalThis.focusedNode.click();
   const activeForm = find(panel._content, "form");
+  activeForm.elements.namedItem("calendar_entity").value = "calendar.family";
   await panel.saveEdit(event, activeForm);
   assert.match(find(activeForm, "p").textContent, /refresh before editing/);
   assert.equal(globalThis.focusedNode, find(activeForm, "p"));
   assert.equal(panel._content.querySelectorAll("button")[0].disabled, true);
   assert.equal(panel._editingId, "event");
   assert.deepEqual(requests.at(-1).service_data.expected_event, event);
-  assert.equal(Object.hasOwn(requests.at(-1).service_data, "calendar_entity"), false);
+  assert.equal(requests.at(-1).service_data.calendar_entity, "calendar.family");
   stale = false;
   let release;
   const realCallWS = panel._hass.callWS;
@@ -354,6 +364,7 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
     new Promise(resolve => {release = () => resolve(realCallWS(request));}) : realCallWS(request);
   const saving = panel.saveEdit(event, activeForm);
   assert.equal(activeForm.elements.namedItem("description").disabled, true);
+  assert.equal(activeForm.elements.namedItem("calendar_entity").disabled, true);
   assert.equal(panel._refreshButton.disabled, true);
   siblingEdit.click();
   assert.equal(panel._editingId, "event");
@@ -361,6 +372,7 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   await saving;
   assert.equal(panel._editingId, null);
   assert.equal(panel._detail.events[0].description, description);
+  assert.equal(panel._detail.events[0].calendar_entity, "calendar.family");
   assert.equal(requests.at(-1).service, "get_pending");
   assert.equal(globalThis.focusedNode.dataset.eventId, "event");
 });
