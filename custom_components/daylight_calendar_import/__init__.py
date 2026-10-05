@@ -171,7 +171,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def parse_submission(source: SourceDocument, activity_id: str) -> Any:
         """Finish a stopped parser without obscuring its original error."""
         try:
-            return await _async_parse_source(hass, entry, source)
+            return await _async_parse_source(hass, source, ai_task_entity)
         except (asyncio.CancelledError, Exception):
             try:
                 await pending_store.async_record_parse_failure(activity_id)
@@ -185,7 +185,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ) -> None:
         """Send one normalized email through the existing review pipeline."""
         # Email polling owns retry/terminal classification for parser failures.
-        outcome = await _async_parse_source(hass, entry, source)
+        outcome = await _async_parse_source(hass, source, ai_task_entity)
         await pending_store.async_add(
             source_text=email_review_source_text(source),
             events=outcome.events,
@@ -719,11 +719,13 @@ async def _parse_for_entry(
     ai_task_entity = _ai_task_configuration(entry)
     await _async_check_entity_control_permission(hass, ai_task_entity, context)
     source = TextSourceAdapter().create(text)
-    return await _async_parse_source(hass, entry, source)
+    return await _async_parse_source(hass, source, ai_task_entity)
 
 
 async def _async_parse_source(
-    hass: HomeAssistant, entry: ConfigEntry, source: SourceDocument
+    hass: HomeAssistant,
+    source: SourceDocument,
+    ai_task_entity: str,
 ) -> ParseOutcome:
     """Feed a normalized source into the current text parser boundary."""
     if source.text is None and not source.attachments:
@@ -734,7 +736,7 @@ async def _async_parse_source(
     return await parse_source_with_provider(
         hass,
         source=source,
-        ai_task_entity=_ai_task_configuration(entry),
+        ai_task_entity=ai_task_entity,
     )
 
 
