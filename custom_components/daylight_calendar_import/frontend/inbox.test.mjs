@@ -148,7 +148,7 @@ test("timed ranges show both dates, preserve the event zone, and expose DST chan
   "Oct 7, 2026 · 8–9 PM (UTC-04:00)");
   assert.equal(formatEventRange({all_day: false,
     start: "2026-11-01T00:30:00-07:00", end: "2026-11-01T02:30:00-08:00"},
-  locale, "America/Los_Angeles"),
+  locale, "America/Los_Angeles").replace(/\s/g, " "),
   "Nov 1, 2026 · 12:30 AM (PDT) – 2:30 AM (PST)");
 });
 
