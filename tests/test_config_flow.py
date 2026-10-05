@@ -221,7 +221,7 @@ async def test_options_flow_routes_enabled_email_to_connection_step():
 
     assert result is expected
     email_step.assert_awaited_once_with()
-    assert flow._core_options == {
+    assert flow._pending_core_options == {
         CONF_AI_TASK_ENTITY: "ai_task.updated",
         CONF_CALENDAR_ENTITY: "calendar.family",
         CONF_CALENDAR_ENTITIES: ["calendar.family"],
@@ -230,7 +230,7 @@ async def test_options_flow_routes_enabled_email_to_connection_step():
 
 async def test_options_flow_validates_and_saves_direct_imap():
     flow = DaylightCalendarImportOptionsFlow()
-    flow._core_options = {
+    flow._pending_core_options = {
         CONF_AI_TASK_ENTITY: "ai_task.new",
         CONF_CALENDAR_ENTITY: "calendar.new",
         CONF_CALENDAR_ENTITIES: ["calendar.new", "calendar.work"],
