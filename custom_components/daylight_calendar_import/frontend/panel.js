@@ -5,6 +5,12 @@ const css = `
     display: block;
     color: var(--primary-text-color);
     font-family: var(--paper-font-body1_-_font-family, sans-serif);
+    --daylight-safe-top: 0px;
+    --daylight-safe-right: 0px;
+    --daylight-safe-bottom: 0px;
+    --daylight-safe-left: 0px;
+  }
+  :host([data-own-safe-area]) {
     --daylight-safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
     --daylight-safe-right: var(
       --safe-area-content-inset-right,
@@ -109,9 +115,27 @@ function menuButton() {
   return button;
 }
 
+function coreVersionParts(hass) {
+  const match = /^(\d{4})\.(\d{1,2})/.exec(hass?.config?.version || "");
+  return match ? [Number(match[1]), Number(match[2])] : null;
+}
+
+function coreVersionAtLeast(hass, year, month) {
+  const parts = coreVersionParts(hass);
+  return Boolean(parts && (parts[0] > year || (parts[0] === year && parts[1] >= month)));
+}
+
+function panelOwnsSafeArea(hass) {
+  const parts = coreVersionParts(hass);
+  return Boolean(parts && !coreVersionAtLeast(hass, 2026, 8));
+}
+
 function shouldShowMenuButton(narrow, hass) {
   if (hass?.kioskMode !== false) return false;
-  if (hass?.auth?.external?.config?.hasSidebar === true) return false;
+  const externalSidebarOwnsToggle =
+    coreVersionAtLeast(hass, 2026, 10) &&
+    hass?.auth?.external?.config?.hasSidebar === true;
+  if (externalSidebarOwnsToggle) return false;
   return Boolean(narrow) || hass?.dockedSidebar === "always_hidden";
 }
 
@@ -196,6 +220,8 @@ export class DaylightImportPanel extends HTMLElement {
     const label = this._hass?.localize?.("ui.sidebar.sidebar_toggle") || "Toggle sidebar";
     this._menuButton.setAttribute("aria-label", label);
     this._menuButton.title = label;
+    if (panelOwnsSafeArea(this._hass)) this.setAttribute("data-own-safe-area", "");
+    else this.removeAttribute("data-own-safe-area");
   }
 
   set hass(value) {
