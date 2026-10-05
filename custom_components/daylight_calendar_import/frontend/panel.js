@@ -1,12 +1,69 @@
 import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 
 const css = `
-  :host { display: block; color: var(--primary-text-color); font-family: var(--paper-font-body1_-_font-family, sans-serif); }
-  main { box-sizing: border-box; width: 100%; max-width: 820px; min-width: 0; margin: 0 auto; padding: 20px; }
-  header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-  h1 { min-width: 0; font-size: 1.65rem; line-height: 1.25; overflow-wrap: anywhere; }
+  :host {
+    display: block;
+    color: var(--primary-text-color);
+    font-family: var(--paper-font-body1_-_font-family, sans-serif);
+    --daylight-safe-top: 0px;
+    --daylight-safe-right: 0px;
+    --daylight-safe-bottom: 0px;
+    --daylight-safe-left: 0px;
+  }
+  :host([data-own-safe-area]) {
+    --daylight-safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+    --daylight-safe-right: var(
+      --safe-area-content-inset-right,
+      var(--safe-area-inset-right, env(safe-area-inset-right, 0px))
+    );
+    --daylight-safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+    --daylight-safe-left: var(
+      --safe-area-content-inset-left,
+      var(--safe-area-inset-left, env(safe-area-inset-left, 0px))
+    );
+  }
+  .topbar {
+    box-sizing: border-box;
+    min-height: calc(var(--header-height, 56px) + var(--daylight-safe-top));
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-top: var(--daylight-safe-top);
+    padding-right: max(16px, var(--daylight-safe-right));
+    padding-left: max(16px, var(--daylight-safe-left));
+    background: var(--app-header-background-color, var(--primary-background-color));
+    color: var(--app-header-text-color, var(--primary-text-color));
+    border-bottom: var(--app-header-border-bottom, 1px solid var(--divider-color));
+  }
+  .topbar h1 { flex: 1; min-width: 0; margin: 0; font-size: 20px; font-weight: 400; line-height: 1.25; overflow-wrap: anywhere; }
+  main {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 820px;
+    min-width: 0;
+    margin: 0 auto;
+    padding: 20px;
+    padding-right: max(20px, var(--daylight-safe-right));
+    padding-bottom: max(20px, var(--daylight-safe-bottom));
+    padding-left: max(20px, var(--daylight-safe-left));
+  }
   button { box-sizing: border-box; min-height: 44px; max-width: 100%; overflow-wrap: anywhere; cursor: pointer; border: 1px solid var(--divider-color); border-radius: 8px; background: var(--card-background-color); color: inherit; padding: 10px 14px; font: inherit; }
   button:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 2px; }
+  .topbar button { background: transparent; color: inherit; border-color: currentColor; }
+  .topbar button:focus-visible { outline-color: currentColor; }
+  .menu-button {
+    flex: 0 0 auto;
+    width: 44px;
+    min-width: 44px;
+    padding: 10px;
+    border-color: transparent;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .menu-button[hidden] { display: none; }
+  .menu-button svg { width: 24px; height: 24px; fill: currentColor; }
   ul { list-style: none; padding: 0; display: grid; gap: 12px; }
   li { min-width: 0; border: 1px solid var(--divider-color); border-radius: 12px; padding: 16px; background: var(--card-background-color); overflow-wrap: anywhere; }
   h2 { font-size: 1.15rem; margin: 0 0 8px; overflow-wrap: anywhere; }
@@ -21,8 +78,16 @@ const css = `
   textarea { min-height: 10rem; resize: vertical; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
   @media (max-width: 480px) {
-    main { padding: 12px; }
-    h1 { font-size: 1.35rem; }
+    .topbar {
+      padding-right: max(8px, var(--daylight-safe-right));
+      padding-left: max(8px, var(--daylight-safe-left));
+    }
+    main {
+      padding: 12px;
+      padding-right: max(12px, var(--daylight-safe-right));
+      padding-bottom: max(12px, var(--daylight-safe-bottom));
+      padding-left: max(12px, var(--daylight-safe-left));
+    }
     li { padding: 12px; }
     .actions button, .detail-event > button { flex: 1 1 100%; width: 100%; }
   }
@@ -33,6 +98,45 @@ function element(tag, text, className) {
   node.textContent = text;
   if (className) node.className = className;
   return node;
+}
+
+function menuButton() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "menu-button";
+  button.hidden = true;
+  const icon = document.createElement("svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("aria-hidden", "true");
+  const path = document.createElement("path");
+  path.setAttribute("d", "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z");
+  icon.append(path);
+  button.append(icon);
+  return button;
+}
+
+function coreVersionParts(hass) {
+  const match = /^(\d{4})\.(\d{1,2})/.exec(hass?.config?.version || "");
+  return match ? [Number(match[1]), Number(match[2])] : null;
+}
+
+function coreVersionAtLeast(hass, year, month) {
+  const parts = coreVersionParts(hass);
+  return Boolean(parts && (parts[0] > year || (parts[0] === year && parts[1] >= month)));
+}
+
+function panelOwnsSafeArea(hass) {
+  const parts = coreVersionParts(hass);
+  return Boolean(parts && !coreVersionAtLeast(hass, 2026, 8));
+}
+
+function shouldShowMenuButton(narrow, hass) {
+  if (hass?.kioskMode !== false) return false;
+  const externalSidebarOwnsToggle =
+    coreVersionAtLeast(hass, 2026, 10) &&
+    hass?.auth?.external?.config?.hasSidebar === true;
+  if (externalSidebarOwnsToggle) return false;
+  return Boolean(narrow) || hass?.dockedSidebar === "always_hidden";
 }
 
 function eventRange(event, hass) {
@@ -77,10 +181,15 @@ export class DaylightImportPanel extends HTMLElement {
     this._activityId = null;
     this._activityDetail = null;
     const style = element("style", css);
-    const main = document.createElement("main");
     const header = document.createElement("header");
-    header.append(element("h1", "Daylight imports"));
-    const refresh = element("button", "Refresh");
+    header.className = "topbar";
+    const menu = menuButton();
+    this._menuButton = menu;
+    menu.addEventListener("click", () => {
+      this.dispatchEvent(new Event("hass-toggle-menu", {bubbles: true, composed: true}));
+    });
+    header.append(menu, element("h1", "Daylight imports"));
+    const refresh = element("button", "Refresh", "toolbar-refresh");
     this._refreshButton = refresh;
     refresh.type = "button";
     refresh.addEventListener("click", () => {
@@ -92,12 +201,32 @@ export class DaylightImportPanel extends HTMLElement {
     this._content = document.createElement("div");
     this._announcement = document.createElement("div");
     this._announcement.setAttribute("aria-live", "polite");
-    main.append(header, this._announcement, this._content);
-    this.shadowRoot.append(style, main);
+    const main = document.createElement("main");
+    main.append(this._announcement, this._content);
+    this.shadowRoot.append(style, header, main);
+  }
+
+  set narrow(value) {
+    this._narrow = Boolean(value);
+    this._syncMenuButton();
+  }
+
+  get narrow() {
+    return Boolean(this._narrow);
+  }
+
+  _syncMenuButton() {
+    this._menuButton.hidden = !shouldShowMenuButton(this._narrow, this._hass);
+    const label = this._hass?.localize?.("ui.sidebar.sidebar_toggle") || "Toggle sidebar";
+    this._menuButton.setAttribute("aria-label", label);
+    this._menuButton.title = label;
+    if (panelOwnsSafeArea(this._hass)) this.setAttribute("data-own-safe-area", "");
+    else this.removeAttribute("data-own-safe-area");
   }
 
   set hass(value) {
     this._hass = value;
+    this._syncMenuButton();
     if (!this._loaded) {
       this._loaded = true;
       void this.refresh();

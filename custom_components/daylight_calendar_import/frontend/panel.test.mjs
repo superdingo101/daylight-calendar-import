@@ -12,6 +12,7 @@ class FakeNode {
   prepend(...children) { this.children.unshift(...children); }
   replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
+  removeAttribute(name) { delete this.attributes[name]; }
   querySelector(tag) { return this.querySelectorAll(tag)[0] || null; }
   querySelectorAll(tag) {
     if (tag.includes(" ")) {
@@ -26,9 +27,11 @@ class FakeNode {
     .find(node => node.name === name)}; }
   focus() { globalThis.focusedNode = this; }
   addEventListener(name, callback) { this[name] = callback; }
+  dispatchEvent(event) { globalThis.dispatchedEvents.push({node: this, event}); return true; }
   attachShadow() { this.shadowRoot = new FakeNode("shadow"); return this.shadowRoot; }
 }
 globalThis.HTMLElement = FakeNode;
+globalThis.dispatchedEvents = [];
 globalThis.document = {
   createElement: (tag) => new FakeNode(tag),
   createDocumentFragment: () => new FakeNode(),
@@ -37,6 +40,77 @@ globalThis.customElements = {define: () => {}};
 const {DaylightImportPanel} = await import("./panel.js");
 const find = (node, tag) => node.tag === tag ? node : node.children.map(child => find(child, tag)).find(Boolean);
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test("mobile toolbar exposes Home Assistant sidebar navigation", async () => {
+  globalThis.dispatchedEvents = [];
+  const panel = new DaylightImportPanel();
+  panel.narrow = true;
+  const hass = {
+    kioskMode: false,
+    dockedSidebar: "auto",
+    config: {version: "2026.7.4"},
+    localize: key => key === "ui.sidebar.sidebar_toggle" ? "Open sidebar" : key,
+    callWS: async () => ({response: {imports: []}}),
+  };
+  panel.hass = hass;
+  await flush();
+
+  const header = find(panel.shadowRoot, "header");
+  const menu = panel._menuButton;
+  assert.equal(header.className, "topbar");
+  assert.equal(find(header, "h1").textContent, "Daylight imports");
+  assert.equal(panel._refreshButton.className, "toolbar-refresh");
+  assert.equal(menu.tag, "button");
+  assert.equal(menu.hidden, false);
+  assert.equal(menu.attributes["aria-label"], "Open sidebar");
+  assert.equal(find(menu, "svg").attributes["aria-hidden"], "true");
+  assert.equal(find(menu, "path").attributes.d,
+    "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z");
+
+  menu.click();
+  const [{node, event}] = globalThis.dispatchedEvents;
+  assert.equal(node, panel);
+  assert.equal(event.type, "hass-toggle-menu");
+  assert.equal(event.bubbles, true);
+  assert.equal(event.composed, true);
+
+  panel.narrow = false;
+  assert.equal(panel.narrow, false);
+  assert.equal(menu.hidden, true);
+
+  panel.hass = {...hass, dockedSidebar: "always_hidden"};
+  assert.equal(menu.hidden, false);
+
+  panel.hass = {...hass, kioskMode: true, dockedSidebar: "always_hidden"};
+  assert.equal(menu.hidden, true);
+
+  panel.narrow = true;
+  panel.hass = {...hass, auth: {external: {config: {hasSidebar: true}}}};
+  assert.equal(menu.hidden, false);
+  assert.equal("data-own-safe-area" in panel.attributes, true);
+
+  for (const version of ["2026.8.0", "2026.8.1", "2026.8.2", "2026.9.0"]) {
+    panel.hass = {
+      ...hass,
+      config: {version},
+      auth: {external: {config: {hasSidebar: true}}},
+    };
+    assert.equal(menu.hidden, false);
+    assert.equal("data-own-safe-area" in panel.attributes, false);
+  }
+
+  panel.hass = {
+    ...hass,
+    config: {version: "2026.10.0"},
+    auth: {external: {config: {hasSidebar: true}}},
+  };
+  assert.equal(menu.hidden, true);
+
+  const styles = find(panel.shadowRoot, "style").textContent;
+  assert.match(styles, /--safe-area-content-inset-left/);
+  assert.match(styles, /--safe-area-content-inset-right/);
+  assert.match(styles, /\.topbar button:focus-visible \{ outline-color: currentColor; \}/);
+});
 
 test("uncertain recovery requires confirmation, retains errors, and restores review", async () => {
   const panel = new DaylightImportPanel();
