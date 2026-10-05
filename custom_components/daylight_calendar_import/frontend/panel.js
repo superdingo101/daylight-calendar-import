@@ -51,7 +51,7 @@ const css = `
   button:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 2px; }
   .topbar button { background: transparent; color: inherit; border-color: currentColor; }
   .topbar button:focus-visible { outline-color: currentColor; }
-  .menu-button {
+  .topbar .menu-button {
     flex: 0 0 auto;
     width: 44px;
     min-width: 44px;
@@ -105,10 +105,11 @@ function menuButton() {
   button.type = "button";
   button.className = "menu-button";
   button.hidden = true;
-  const icon = document.createElement("svg");
+  const svgNamespace = "http://www.w3.org/2000/svg";
+  const icon = document.createElementNS(svgNamespace, "svg");
   icon.setAttribute("viewBox", "0 0 24 24");
   icon.setAttribute("aria-hidden", "true");
-  const path = document.createElement("path");
+  const path = document.createElementNS(svgNamespace, "path");
   path.setAttribute("d", "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z");
   icon.append(path);
   button.append(icon);
