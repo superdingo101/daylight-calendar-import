@@ -30,7 +30,7 @@
       },
       "email": {
         "title": "Direct IMAP",
-        "description": "Connect a mailbox for Daylight to poll every five minutes. Messages are marked seen only after durable local handling.",
+        "description": "⚠️ **Mailbox privacy:** Daylight can read the full contents and supported attachments of every unread, undeleted message in the configured mailbox. We strongly recommend using a dedicated email address or folder used only for calendar imports. [Learn more about mailbox access and privacy](https://github.com/superdingo101/daylight-calendar-import/blob/main/docs/direct-imap.md#mailbox-privacy-and-access)\n\nConnect a mailbox for Daylight to poll every five minutes. Messages are marked seen only after durable local handling.",
         "data": {
           "email_host": "IMAP host",
           "email_port": "IMAP port",
