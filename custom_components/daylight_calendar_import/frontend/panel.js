@@ -6,9 +6,15 @@ const css = `
     color: var(--primary-text-color);
     font-family: var(--paper-font-body1_-_font-family, sans-serif);
     --daylight-safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
-    --daylight-safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+    --daylight-safe-right: var(
+      --safe-area-content-inset-right,
+      var(--safe-area-inset-right, env(safe-area-inset-right, 0px))
+    );
     --daylight-safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
-    --daylight-safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+    --daylight-safe-left: var(
+      --safe-area-content-inset-left,
+      var(--safe-area-inset-left, env(safe-area-inset-left, 0px))
+    );
   }
   .topbar {
     box-sizing: border-box;
@@ -103,6 +109,12 @@ function menuButton() {
   return button;
 }
 
+function shouldShowMenuButton(narrow, hass) {
+  if (hass?.kioskMode !== false) return false;
+  if (hass?.auth?.external?.config?.hasSidebar === true) return false;
+  return Boolean(narrow) || hass?.dockedSidebar === "always_hidden";
+}
+
 function eventRange(event, hass) {
   return formatEventRange(event, hass?.locale, hass?.config?.time_zone);
 }
@@ -180,7 +192,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   _syncMenuButton() {
-    this._menuButton.hidden = !this._narrow;
+    this._menuButton.hidden = !shouldShowMenuButton(this._narrow, this._hass);
     const label = this._hass?.localize?.("ui.sidebar.sidebar_toggle") || "Toggle sidebar";
     this._menuButton.setAttribute("aria-label", label);
     this._menuButton.title = label;
