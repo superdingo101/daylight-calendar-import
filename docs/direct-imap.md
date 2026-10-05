@@ -4,6 +4,16 @@ Direct IMAP is the self-hosted email-ingestion path introduced in Daylight Calen
 
 This guide documents the intentionally bounded v0.5.0 behavior, how to enable it safely, and how recovery works when a poll, parse, storage operation, or upstream acknowledgement fails.
 
+## Mailbox privacy and access
+
+**Direct IMAP gives Daylight access to the contents of every unread, undeleted message in the configured mailbox that matches the fixed v0.5 search.** Daylight fetches those messages so it can normalize their body text and supported attachments for calendar-event extraction.
+
+For that reason, **we strongly recommend using a dedicated email address or dedicated mailbox/folder used only for Daylight calendar imports**, rather than pointing Direct IMAP at a personal inbox. This both limits the private mail Daylight can access and reduces the chance that an unrelated unread message is processed unexpectedly.
+
+Processable message body text and supported attachments may be sent to the **Home Assistant AI Task entity/provider you configured**. That provider's privacy, retention, network, and billing policies apply to the content it receives. Direct IMAP v0.5 does not provide a sender allowlist, so mailbox separation is the primary way to constrain what can enter the ingestion pipeline.
+
+The first poll runs immediately after Direct IMAP is enabled, so any unread, undeleted backlog already present in the configured mailbox is eligible immediately. Review or clear that backlog before enabling the integration if you are not using a dedicated mailbox or folder.
+
 ## What v0.5 Direct IMAP does
 
 For one configured mailbox, Daylight:
