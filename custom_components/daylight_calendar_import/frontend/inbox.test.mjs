@@ -144,7 +144,7 @@ test("timed ranges show both dates, preserve the event zone, and expose DST chan
   "Oct 7, 2026, 11 PM – Oct 8, 2026, 1 AM (PDT)");
   assert.equal(formatEventRange({all_day: false,
     start: "2026-10-07T20:00:00-04:00", end: "2026-10-07T21:00:00-04:00"},
-  locale, "America/Los_Angeles"),
+  locale, "America/Los_Angeles").replace(/\s/g, " "),
   "Oct 7, 2026 · 8–9 PM (UTC-04:00)");
   assert.equal(formatEventRange({all_day: false,
     start: "2026-11-01T00:30:00-07:00", end: "2026-11-01T02:30:00-08:00"},
