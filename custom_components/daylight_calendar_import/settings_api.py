@@ -37,8 +37,17 @@ WS_UPDATE_EMAIL_SETTINGS = f"{DOMAIN}/settings/email/update"
 
 
 def _entry_for_message(hass: HomeAssistant, msg: dict[str, Any]) -> ConfigEntry:
-    """Return the Daylight entry addressed by a settings command."""
-    entry = hass.config_entries.async_get_entry(msg["entry_id"])
+    """Return the addressed entry, or the sole Daylight entry for panel reads."""
+    entry_id = msg.get("entry_id")
+    if entry_id is None:
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if len(entries) != 1:
+            raise SettingsValidationError(
+                "entry_not_found", "Daylight Calendar Import configuration was not found."
+            )
+        return entries[0]
+
+    entry = hass.config_entries.async_get_entry(entry_id)
     if entry is None or entry.domain != DOMAIN:
         raise SettingsValidationError(
             "entry_not_found", "Daylight Calendar Import configuration was not found."
@@ -66,12 +75,7 @@ def _send_validation_error(
 
 
 @websocket_api.require_admin
-@websocket_api.websocket_command(
-    {
-        "type": WS_GET_SETTINGS,
-        vol.Required("entry_id"): cv.string,
-    }
-)
+@websocket_api.websocket_command({"type": WS_GET_SETTINGS})
 @websocket_api.async_response
 async def websocket_get_settings(
     hass: HomeAssistant,
