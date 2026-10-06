@@ -14,12 +14,13 @@ Request:
 
 ```json
 {
-  "type": "daylight_calendar_import/settings/get",
-  "entry_id": "<config entry id>"
+  "type": "daylight_calendar_import/settings/get"
 }
 ```
 
-The response contains the effective AI Task entity, default calendar, writable
+Because Daylight currently permits one config entry, the panel read command discovers
+that sole entry automatically. The response includes its `entry_id` for subsequent
+update commands, plus the effective AI Task entity, default calendar, writable
 calendar list, and Direct IMAP settings. The saved IMAP password is never
 returned. The response exposes only `password_configured: true|false`.
 
