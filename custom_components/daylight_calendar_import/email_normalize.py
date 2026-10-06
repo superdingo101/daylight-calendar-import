@@ -242,11 +242,15 @@ def _extract_body(part: Message) -> tuple[bool, str]:
         return _extract_body(_related_root(part, children))
 
     if subtype == "alternative":
+        supported_alternative = False
         for child in reversed(children):
             supported, text = _extract_body(child)
-            if supported:
+            if not supported:
+                continue
+            supported_alternative = True
+            if text:
                 return True, text
-        return False, ""
+        return supported_alternative, ""
 
     supported = False
     texts: list[str] = []
