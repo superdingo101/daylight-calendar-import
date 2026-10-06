@@ -23,25 +23,13 @@ from .const import (
     CONF_EMAIL_VERIFY_SSL,
     DOMAIN,
 )
-from .direct_imap import (
-    DirectImapAuthenticationError,
-    DirectImapError,
-    DirectImapMailboxError,
-    DirectImapSource,
-)
-from .email_runtime import (
-    DEFAULT_EMAIL_MAILBOX,
-    DEFAULT_EMAIL_PORT,
-    direct_imap_settings_from_options,
-)
-
-
-_EMAIL_OPTION_KEYS = (
-    CONF_EMAIL_HOST,
-    CONF_EMAIL_PORT,
-    CONF_EMAIL_USERNAME,
-    CONF_EMAIL_MAILBOX,
-    CONF_EMAIL_VERIFY_SSL,
+from .email_runtime import DEFAULT_EMAIL_MAILBOX, DEFAULT_EMAIL_PORT
+from .settings import (
+    EMAIL_OPTION_KEYS,
+    SettingsValidationError,
+    async_validate_email_options,
+    effective_core_options,
+    normalize_core_options,
 )
 
 
@@ -74,35 +62,6 @@ def _calendar_selector(*, multiple: bool = False) -> selector.EntitySelector:
     )
 
 
-def _effective_core_options(
-    entry: config_entries.ConfigEntry,
-) -> tuple[str, str, list[str]]:
-    """Return effective post-setup editable options."""
-    current = entry.options
-    ai_task_entity = current.get(
-        CONF_AI_TASK_ENTITY,
-        entry.data[CONF_AI_TASK_ENTITY],
-    )
-    default_calendar = current.get(
-        CONF_CALENDAR_ENTITY,
-        entry.data[CONF_CALENDAR_ENTITY],
-    )
-    allowed_calendars = list(
-        current.get(
-            CONF_CALENDAR_ENTITIES,
-            entry.data.get(
-                CONF_CALENDAR_ENTITIES,
-                [entry.data[CONF_CALENDAR_ENTITY]],
-            ),
-        )
-    )
-    return (
-        ai_task_entity,
-        default_calendar,
-        list(dict.fromkeys((*allowed_calendars, default_calendar))),
-    )
-
-
 class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Configure Daylight Calendar Import."""
 
@@ -122,14 +81,20 @@ class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
         """Handle the initial setup step."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            if user_input[CONF_CALENDAR_ENTITY] not in user_input[CONF_CALENDAR_ENTITIES]:
-                errors[CONF_CALENDAR_ENTITY] = "default_not_allowed"
+            try:
+                core_options = normalize_core_options(
+                    user_input[CONF_AI_TASK_ENTITY],
+                    user_input[CONF_CALENDAR_ENTITY],
+                    user_input[CONF_CALENDAR_ENTITIES],
+                )
+            except SettingsValidationError as err:
+                errors[CONF_CALENDAR_ENTITY] = err.code
             else:
                 await self.async_set_unique_id(DOMAIN)
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title="Daylight Calendar Import",
-                    data=user_input,
+                    data=core_options,
                 )
 
         schema = vol.Schema(
@@ -154,22 +119,20 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
     ) -> FlowResult:
         """Configure core runtime choices and enable or disable email ingestion."""
         current = self.config_entry.options
-        ai_task_entity, default_calendar, allowed_calendars = _effective_core_options(
+        ai_task_entity, default_calendar, allowed_calendars = effective_core_options(
             self.config_entry
         )
         errors: dict[str, str] = {}
         if user_input is not None:
-            selected_allowed = list(
-                dict.fromkeys(user_input[CONF_CALENDAR_ENTITIES])
-            )
-            if user_input[CONF_CALENDAR_ENTITY] not in selected_allowed:
-                errors[CONF_CALENDAR_ENTITY] = "default_not_allowed"
+            try:
+                self._pending_core_options = normalize_core_options(
+                    user_input[CONF_AI_TASK_ENTITY],
+                    user_input[CONF_CALENDAR_ENTITY],
+                    user_input[CONF_CALENDAR_ENTITIES],
+                )
+            except SettingsValidationError as err:
+                errors[CONF_CALENDAR_ENTITY] = err.code
             else:
-                self._pending_core_options = {
-                    CONF_AI_TASK_ENTITY: user_input[CONF_AI_TASK_ENTITY],
-                    CONF_CALENDAR_ENTITY: user_input[CONF_CALENDAR_ENTITY],
-                    CONF_CALENDAR_ENTITIES: selected_allowed,
-                }
                 if not user_input[CONF_EMAIL_ENABLED]:
                     return self.async_create_entry(
                         data={
@@ -217,7 +180,7 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
         current = self.config_entry.options
         core_options = getattr(self, "_pending_core_options", None)
         if core_options is None:
-            ai_task_entity, default_calendar, allowed_calendars = _effective_core_options(
+            ai_task_entity, default_calendar, allowed_calendars = effective_core_options(
                 self.config_entry
             )
             core_options = {
@@ -227,37 +190,14 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
             }
         errors: dict[str, str] = {}
         if user_input is not None:
-            port = user_input.get(CONF_EMAIL_PORT)
-            if isinstance(port, float) and port.is_integer():
-                user_input = {
-                    **user_input,
-                    CONF_EMAIL_PORT: int(port),
-                }
-            password = (
-                user_input.get(CONF_EMAIL_PASSWORD)
-                or current.get(CONF_EMAIL_PASSWORD, "")
-            )
-            options = {
-                **current,
-                **core_options,
-                CONF_EMAIL_ENABLED: True,
-                **user_input,
-                CONF_EMAIL_PASSWORD: password,
-            }
             try:
-                settings = direct_imap_settings_from_options(
+                options = await async_validate_email_options(
                     self.config_entry.entry_id,
-                    options,
+                    {**current, **core_options},
+                    user_input,
                 )
-                await DirectImapSource(settings).async_validate()
-            except DirectImapAuthenticationError:
-                errors["base"] = "invalid_auth"
-            except DirectImapMailboxError:
-                errors["base"] = "invalid_mailbox"
-            except ValueError:
-                errors["base"] = "invalid_email_config"
-            except DirectImapError:
-                errors["base"] = "cannot_connect"
+            except SettingsValidationError as err:
+                errors["base"] = err.code
             else:
                 return self.async_create_entry(data=options)
 
@@ -266,7 +206,7 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
             if user_input is not None
             else {
                 key: current[key]
-                for key in _EMAIL_OPTION_KEYS
+                for key in EMAIL_OPTION_KEYS
                 if key in current
             }
         )
