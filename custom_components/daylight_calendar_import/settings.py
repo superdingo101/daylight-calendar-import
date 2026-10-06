@@ -159,14 +159,16 @@ async def async_validate_email_options(
         normalized.get(CONF_EMAIL_PASSWORD)
         or current.get(CONF_EMAIL_PASSWORD, "")
     )
-    options = {
-        **current,
+    email_patch = {
         CONF_EMAIL_ENABLED: True,
         **normalized,
         CONF_EMAIL_PASSWORD: password,
     }
     try:
-        settings = direct_imap_settings_from_options(entry_id, options)
+        settings = direct_imap_settings_from_options(
+            entry_id,
+            {**current, **email_patch},
+        )
         await DirectImapSource(settings).async_validate()
     except DirectImapAuthenticationError as err:
         raise SettingsValidationError(
@@ -184,4 +186,4 @@ async def async_validate_email_options(
         raise SettingsValidationError(
             "cannot_connect", "Could not connect to the Direct IMAP mailbox."
         ) from err
-    return options
+    return email_patch
