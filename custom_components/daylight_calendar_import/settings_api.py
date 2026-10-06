@@ -191,7 +191,7 @@ async def websocket_update_email_settings(
     try:
         entry = _entry_for_message(hass, msg)
         if not msg["enabled"]:
-            options = {**entry.options, CONF_EMAIL_ENABLED: False}
+            options = {CONF_EMAIL_ENABLED: False}
         else:
             field_map = {
                 "host": CONF_EMAIL_HOST,
