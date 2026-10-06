@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -58,12 +59,21 @@ class FakeConfigEntries:
         self.entry = config_entry
         self.reloads = []
         self.updates = []
+        self.reload_result = True
 
     def async_get_entry(self, entry_id):
-        return self.entry if self.entry is not None and entry_id == self.entry.entry_id else None
+        return (
+            self.entry
+            if self.entry is not None and entry_id == self.entry.entry_id
+            else None
+        )
 
     def async_entries(self, domain):
-        return [self.entry] if self.entry is not None and self.entry.domain == domain else []
+        return (
+            [self.entry]
+            if self.entry is not None and self.entry.domain == domain
+            else []
+        )
 
     def async_update_entry(self, config_entry, *, options):
         assert config_entry is self.entry
@@ -72,6 +82,7 @@ class FakeConfigEntries:
 
     async def async_reload(self, entry_id):
         self.reloads.append(entry_id)
+        return self.reload_result
 
 
 class FakeConnection:
@@ -88,7 +99,10 @@ class FakeConnection:
 
 
 def hass_for(config_entry):
-    return SimpleNamespace(config_entries=FakeConfigEntries(config_entry))
+    return SimpleNamespace(
+        config_entries=FakeConfigEntries(config_entry),
+        data={},
+    )
 
 
 async def invoke(handler, hass, connection, msg):
@@ -338,6 +352,91 @@ async def test_core_update_saves_reloads_and_returns_settings():
 
 
 @pytest.mark.asyncio
+async def test_core_update_can_patch_ai_without_reverting_calendars():
+    config_entry = entry(options={
+        CONF_AI_TASK_ENTITY: "ai_task.old",
+        CONF_CALENDAR_ENTITY: "calendar.work",
+        CONF_CALENDAR_ENTITIES: ["calendar.work"],
+    })
+    hass = hass_for(config_entry)
+    connection = FakeConnection()
+
+    await invoke(
+        settings_api.websocket_update_core_settings,
+        hass,
+        connection,
+        {
+            "id": 41,
+            "type": settings_api.WS_UPDATE_CORE_SETTINGS,
+            "entry_id": "entry-1",
+            CONF_AI_TASK_ENTITY: "ai_task.updated",
+        },
+    )
+
+    assert connection.errors == []
+    assert config_entry.options == {
+        CONF_AI_TASK_ENTITY: "ai_task.updated",
+        CONF_CALENDAR_ENTITY: "calendar.work",
+        CONF_CALENDAR_ENTITIES: ["calendar.work"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_core_update_can_patch_calendars_without_reverting_ai():
+    config_entry = entry(options={
+        CONF_AI_TASK_ENTITY: "ai_task.current",
+        CONF_CALENDAR_ENTITY: "calendar.family",
+        CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
+    })
+    hass = hass_for(config_entry)
+    connection = FakeConnection()
+
+    await invoke(
+        settings_api.websocket_update_core_settings,
+        hass,
+        connection,
+        {
+            "id": 42,
+            "type": settings_api.WS_UPDATE_CORE_SETTINGS,
+            "entry_id": "entry-1",
+            CONF_CALENDAR_ENTITY: "calendar.work",
+            CONF_CALENDAR_ENTITIES: ["calendar.work"],
+        },
+    )
+
+    assert connection.errors == []
+    assert config_entry.options == {
+        CONF_AI_TASK_ENTITY: "ai_task.current",
+        CONF_CALENDAR_ENTITY: "calendar.work",
+        CONF_CALENDAR_ENTITIES: ["calendar.work"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_core_update_requires_at_least_one_setting():
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    connection = FakeConnection()
+
+    await invoke(
+        settings_api.websocket_update_core_settings,
+        hass,
+        connection,
+        {
+            "id": 43,
+            "type": settings_api.WS_UPDATE_CORE_SETTINGS,
+            "entry_id": "entry-1",
+        },
+    )
+
+    assert connection.errors == [
+        (43, "invalid_settings", "At least one core setting must be provided.")
+    ]
+    assert hass.config_entries.updates == []
+    assert hass.config_entries.reloads == []
+
+
+@pytest.mark.asyncio
 async def test_core_update_returns_validation_error_without_saving():
     config_entry = entry()
     hass = hass_for(config_entry)
@@ -455,6 +554,112 @@ async def test_email_update_returns_validation_error_without_reload():
     assert connection.errors == [(8, "cannot_connect", "Could not connect.")]
     assert hass.config_entries.updates == []
     assert hass.config_entries.reloads == []
+
+
+@pytest.mark.asyncio
+async def test_email_validation_does_not_overwrite_concurrent_core_update():
+    config_entry = entry(options={
+        CONF_AI_TASK_ENTITY: "ai_task.old",
+        CONF_CALENDAR_ENTITY: "calendar.family",
+        CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        CONF_EMAIL_ENABLED: False,
+        CONF_EMAIL_PASSWORD: "saved",
+    })
+    hass = hass_for(config_entry)
+    email_connection = FakeConnection()
+    core_connection = FakeConnection()
+    validation_started = asyncio.Event()
+    validation_continue = asyncio.Event()
+
+    async def validate_email(_entry_id, current, user_input):
+        stale = {
+            **current,
+            CONF_EMAIL_ENABLED: True,
+            **user_input,
+            CONF_EMAIL_PASSWORD: current[CONF_EMAIL_PASSWORD],
+        }
+        validation_started.set()
+        await validation_continue.wait()
+        return stale
+
+    with patch(
+        "custom_components.daylight_calendar_import.settings_api.async_validate_email_options",
+        side_effect=validate_email,
+    ):
+        email_task = asyncio.create_task(
+            invoke(
+                settings_api.websocket_update_email_settings,
+                hass,
+                email_connection,
+                {
+                    "id": 81,
+                    "type": settings_api.WS_UPDATE_EMAIL_SETTINGS,
+                    "entry_id": "entry-1",
+                    "enabled": True,
+                    "host": "imap.example.test",
+                    "port": 993.0,
+                    "username": "calendar@example.test",
+                    "password": "",
+                    "mailbox": "INBOX",
+                    "verify_ssl": True,
+                },
+            )
+        )
+        await validation_started.wait()
+
+        await invoke(
+            settings_api.websocket_update_core_settings,
+            hass,
+            core_connection,
+            {
+                "id": 82,
+                "type": settings_api.WS_UPDATE_CORE_SETTINGS,
+                "entry_id": "entry-1",
+                CONF_AI_TASK_ENTITY: "ai_task.new",
+            },
+        )
+        validation_continue.set()
+        await email_task
+
+    assert core_connection.errors == []
+    assert email_connection.errors == []
+    assert config_entry.options[CONF_AI_TASK_ENTITY] == "ai_task.new"
+    assert config_entry.options[CONF_EMAIL_ENABLED] is True
+    assert config_entry.options[CONF_EMAIL_HOST] == "imap.example.test"
+    assert config_entry.options[CONF_EMAIL_PASSWORD] == "saved"
+    assert hass.config_entries.reloads == ["entry-1", "entry-1"]
+
+
+@pytest.mark.asyncio
+async def test_reload_failure_is_reported_after_options_are_saved():
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    hass.config_entries.reload_result = False
+    connection = FakeConnection()
+
+    await invoke(
+        settings_api.websocket_update_core_settings,
+        hass,
+        connection,
+        {
+            "id": 83,
+            "type": settings_api.WS_UPDATE_CORE_SETTINGS,
+            "entry_id": "entry-1",
+            CONF_AI_TASK_ENTITY: "ai_task.updated",
+        },
+    )
+
+    assert connection.results == []
+    assert connection.errors == [
+        (
+            83,
+            "reload_failed",
+            "Settings were saved, but Daylight could not reload. "
+            "Restart Home Assistant before relying on the new settings.",
+        )
+    ]
+    assert config_entry.options[CONF_AI_TASK_ENTITY] == "ai_task.updated"
+    assert hass.config_entries.reloads == ["entry-1"]
 
 
 def test_settings_commands_require_admin():
