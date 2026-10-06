@@ -559,7 +559,7 @@ async def test_email_update_returns_validation_error_without_reload():
 
 
 @pytest.mark.asyncio
-async def test_email_validation_does_not_overwrite_concurrent_core_update():
+async def test_slow_email_validation_serializes_concurrent_core_update():
     config_entry = entry(options={
         CONF_AI_TASK_ENTITY: "ai_task.old",
         CONF_CALENDAR_ENTITY: "calendar.family",
@@ -608,19 +608,25 @@ async def test_email_validation_does_not_overwrite_concurrent_core_update():
         )
         await validation_started.wait()
 
-        await invoke(
-            settings_api.websocket_update_core_settings,
-            hass,
-            core_connection,
-            {
-                "id": 82,
-                "type": settings_api.WS_UPDATE_CORE_SETTINGS,
-                "entry_id": "entry-1",
-                CONF_AI_TASK_ENTITY: "ai_task.new",
-            },
+        core_task = asyncio.create_task(
+            invoke(
+                settings_api.websocket_update_core_settings,
+                hass,
+                core_connection,
+                {
+                    "id": 82,
+                    "type": settings_api.WS_UPDATE_CORE_SETTINGS,
+                    "entry_id": "entry-1",
+                    CONF_AI_TASK_ENTITY: "ai_task.new",
+                },
+            )
         )
+        await asyncio.sleep(0)
+        assert not core_task.done()
+        assert config_entry.options[CONF_AI_TASK_ENTITY] == "ai_task.old"
+
         validation_continue.set()
-        await email_task
+        await asyncio.gather(email_task, core_task)
 
     assert core_connection.errors == []
     assert email_connection.errors == []
@@ -628,6 +634,85 @@ async def test_email_validation_does_not_overwrite_concurrent_core_update():
     assert config_entry.options[CONF_EMAIL_ENABLED] is True
     assert config_entry.options[CONF_EMAIL_HOST] == "imap.example.test"
     assert config_entry.options[CONF_EMAIL_PASSWORD] == "saved"
+    assert hass.config_entries.reloads == ["entry-1", "entry-1"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_email_updates_reuse_latest_committed_password():
+    config_entry = entry(options={
+        CONF_EMAIL_ENABLED: True,
+        CONF_EMAIL_HOST: "imap.old.test",
+        CONF_EMAIL_PASSWORD: "old-secret",
+    })
+    hass = hass_for(config_entry)
+    first_connection = FakeConnection()
+    second_connection = FakeConnection()
+    validation_started = asyncio.Event()
+    validation_continue = asyncio.Event()
+    validation_currents = []
+
+    async def validate_email(_entry_id, current, user_input):
+        validation_currents.append(dict(current))
+        if len(validation_currents) == 1:
+            validation_started.set()
+            await validation_continue.wait()
+        return {
+            CONF_EMAIL_ENABLED: True,
+            **user_input,
+            CONF_EMAIL_PASSWORD: (
+                user_input.get(CONF_EMAIL_PASSWORD)
+                or current[CONF_EMAIL_PASSWORD]
+            ),
+        }
+
+    with patch(
+        "custom_components.daylight_calendar_import.settings_api.async_validate_email_options",
+        side_effect=validate_email,
+    ):
+        first_task = asyncio.create_task(
+            invoke(
+                settings_api.websocket_update_email_settings,
+                hass,
+                first_connection,
+                {
+                    "id": 84,
+                    "type": settings_api.WS_UPDATE_EMAIL_SETTINGS,
+                    "entry_id": "entry-1",
+                    "enabled": True,
+                    "host": "imap.first.test",
+                    "password": "new-secret",
+                },
+            )
+        )
+        await validation_started.wait()
+
+        second_task = asyncio.create_task(
+            invoke(
+                settings_api.websocket_update_email_settings,
+                hass,
+                second_connection,
+                {
+                    "id": 85,
+                    "type": settings_api.WS_UPDATE_EMAIL_SETTINGS,
+                    "entry_id": "entry-1",
+                    "enabled": True,
+                    "host": "imap.second.test",
+                    "password": "",
+                },
+            )
+        )
+        await asyncio.sleep(0)
+        assert len(validation_currents) == 1
+        assert not second_task.done()
+
+        validation_continue.set()
+        await asyncio.gather(first_task, second_task)
+
+    assert first_connection.errors == []
+    assert second_connection.errors == []
+    assert validation_currents[1][CONF_EMAIL_PASSWORD] == "new-secret"
+    assert config_entry.options[CONF_EMAIL_HOST] == "imap.second.test"
+    assert config_entry.options[CONF_EMAIL_PASSWORD] == "new-secret"
     assert hass.config_entries.reloads == ["entry-1", "entry-1"]
 
 
