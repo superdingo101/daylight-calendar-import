@@ -27,7 +27,6 @@ from .const import (
 )
 from .settings import (
     SettingsValidationError,
-    EMAIL_OPTION_KEYS,
     async_validate_email_options,
     effective_core_options,
     normalize_core_options,
@@ -206,21 +205,11 @@ async def websocket_update_email_settings(
                 for api_key, option_key in field_map.items()
                 if api_key in msg
             }
-            validated = await async_validate_email_options(
+            options = await async_validate_email_options(
                 entry.entry_id,
                 entry.options,
                 email_input,
             )
-            email_keys = (
-                CONF_EMAIL_ENABLED,
-                *EMAIL_OPTION_KEYS,
-                CONF_EMAIL_PASSWORD,
-            )
-            options = {
-                key: validated[key]
-                for key in email_keys
-                if key in validated
-            }
         await _async_save_option_patch(hass, entry, options)
     except SettingsValidationError as err:
         _send_validation_error(connection, msg, err)
