@@ -122,6 +122,7 @@ class PendingImport:
     source_fingerprint: str | None = None
     source_kind: str = "manual_text"
     source_title: str | None = None
+    source_sender: str | None = None
     warnings: tuple[str, ...] = ()
     duplicate_events: int = 0
 
@@ -135,6 +136,7 @@ class PendingImport:
         calendar_entity: str | None = None,
         source_kind: str = "manual_text",
         source_title: str | None = None,
+        source_sender: str | None = None,
         warnings: Iterable[str] = (),
         duplicate_events: int = 0,
         activity_id: str | None = None,
@@ -157,6 +159,7 @@ class PendingImport:
             source_fingerprint=source_fingerprint,
             source_kind=source_kind,
             source_title=source_title,
+            source_sender=source_sender,
             warnings=tuple(warnings),
             duplicate_events=duplicate_events,
         )
@@ -172,6 +175,7 @@ class PendingImport:
             source_fingerprint=raw.get("source_fingerprint"),
             source_kind=raw.get("source_kind", "manual_text"),
             source_title=raw.get("source_title"),
+            source_sender=raw.get("source_sender"),
             warnings=tuple(raw.get("warnings", ())),
             duplicate_events=raw.get("duplicate_events", 0),
         )
@@ -188,6 +192,8 @@ class PendingImport:
             result["source_kind"] = self.source_kind
         if self.source_title is not None:
             result["source_title"] = self.source_title
+        if self.source_sender is not None:
+            result["source_sender"] = self.source_sender
         if self.warnings:
             result["warnings"] = list(self.warnings)
         if self.duplicate_events:
@@ -199,8 +205,13 @@ class PendingImport:
     def as_service_dict(self) -> dict[str, Any]:
         """Keep the existing submit response fields while exposing event IDs."""
         result = self.as_dict()
-        result.update(source_kind=self.source_kind, source_title=self.source_title,
-                      warnings=list(self.warnings), duplicate_events=self.duplicate_events)
+        result.update(
+            source_kind=self.source_kind,
+            source_title=self.source_title,
+            source_sender=self.source_sender,
+            warnings=list(self.warnings),
+            duplicate_events=self.duplicate_events,
+        )
         result["events"] = [event.as_service_dict() for event in self.events]
         result["approval_in_flight"] = self.approval_in_flight
         return result
@@ -840,6 +851,7 @@ class PendingImportStore:
         calendar_entity: str | None = None,
         source_kind: str = "manual_text",
         source_title: str | None = None,
+        source_sender: str | None = None,
         warnings: Iterable[str] = (),
         activity_id: str | None = None,
     ) -> PendingImportAddResult:
@@ -852,6 +864,7 @@ class PendingImportStore:
                 calendar_entity=calendar_entity,
                 source_kind=source_kind,
                 source_title=source_title,
+                source_sender=source_sender,
                 warnings=warnings,
                 activity_id=activity_id,
             )
@@ -869,6 +882,7 @@ class PendingImportStore:
         calendar_entity: str | None = None,
         source_kind: str = "manual_text",
         source_title: str | None = None,
+        source_sender: str | None = None,
         warnings: Iterable[str] = (),
         activity_id: str | None = None,
     ) -> PendingImportAddResult:
@@ -984,6 +998,7 @@ class PendingImportStore:
                 calendar_entity=calendar_entity,
                 source_kind=source_kind,
                 source_title=source_title,
+                source_sender=source_sender,
                 warnings=warnings,
                 duplicate_events=duplicate_events,
                 activity_id=activity_id,
