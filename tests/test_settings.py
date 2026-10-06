@@ -10,6 +10,7 @@ import pytest
 
 from homeassistant.exceptions import Unauthorized
 
+from custom_components.daylight_calendar_import import async_setup
 from custom_components.daylight_calendar_import.const import (
     CONF_AI_TASK_ENTITY,
     CONF_CALENDAR_ENTITIES,
@@ -474,3 +475,16 @@ def test_register_settings_api_registers_all_commands(monkeypatch):
         (hass, settings_api.websocket_update_core_settings),
         (hass, settings_api.websocket_update_email_settings),
     ]
+
+
+@pytest.mark.asyncio
+async def test_integration_setup_registers_settings_api(monkeypatch):
+    register = Mock()
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_register_settings_api",
+        register,
+    )
+    hass = SimpleNamespace()
+
+    assert await async_setup(hass, {}) is True
+    register.assert_called_once_with(hass)
