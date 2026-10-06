@@ -1923,6 +1923,7 @@ async def test_setup_email_runtime_reuses_parser_store_and_default_calendar(
         received_at=datetime(2026, 10, 3, 12, 0, tzinfo=UTC),
         text="Friday at 5",
         title="School notice",
+        metadata={"sender": "Teacher <teacher@example.test>"},
         upstream_source_id="<school@example.test>",
     )
     await captured["processor"](document, "email-activity")
@@ -1939,6 +1940,7 @@ async def test_setup_email_runtime_reuses_parser_store_and_default_calendar(
         calendar_entity="calendar.family",
         source_kind="email",
         source_title="School notice",
+        source_sender="Teacher <teacher@example.test>",
         warnings=["Review time"],
         activity_id="email-activity",
     )
