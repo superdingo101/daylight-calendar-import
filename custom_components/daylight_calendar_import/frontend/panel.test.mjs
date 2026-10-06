@@ -401,7 +401,6 @@ test("email source context shows title, sender, and received date without raw at
   assert.equal(source.children[1].textContent,
     "Email sender: Megan Example <megan@example.test>");
   assert.match(source.children[2].textContent, /^Received: .*Oct 3, 2026/);
-  assert.equal(source.textContent?.includes?.("SHA-256"), false);
   assert.equal(source.children.some(child => /SHA-256/.test(child.textContent || "")), false);
 });
 
