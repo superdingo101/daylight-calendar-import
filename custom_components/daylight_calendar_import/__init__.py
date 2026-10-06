@@ -51,6 +51,8 @@ from .parser import ParseOutcome, async_parse_source as parse_source_with_provid
 from .pdfs import async_pdf_source
 from .providers import SourceValidationError
 from .review_panel import async_register_review_panel, async_remove_review_panel
+from .settings import effective_core_options
+from .settings_api import async_register_settings_api
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .uploads import async_image_source
 from .storage import (
@@ -135,27 +137,22 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 def _calendar_configuration(entry: ConfigEntry) -> tuple[str, tuple[str, ...]]:
-    """Return effective calendar settings, preferring post-setup options."""
-    options = getattr(entry, "options", {})
-    default_calendar = options.get(
-        CONF_CALENDAR_ENTITY,
-        entry.data[CONF_CALENDAR_ENTITY],
-    )
-    allowed = list(
-        options.get(
-            CONF_CALENDAR_ENTITIES,
-            entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]]),
-        )
-    )
-    return default_calendar, tuple(dict.fromkeys((*allowed, default_calendar)))
+    """Return effective calendar settings."""
+    _, default_calendar, allowed_calendars = effective_core_options(entry)
+    return default_calendar, tuple(allowed_calendars)
 
 
 def _ai_task_configuration(entry: ConfigEntry) -> str:
-    """Return the effective AI Task entity, preferring post-setup options."""
-    return getattr(entry, "options", {}).get(
-        CONF_AI_TASK_ENTITY,
-        entry.data[CONF_AI_TASK_ENTITY],
-    )
+    """Return the effective AI Task entity."""
+    ai_task_entity, _, _ = effective_core_options(entry)
+    return ai_task_entity
+
+
+async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
+    """Set up integration-wide APIs that survive config-entry reloads."""
+    del config
+    async_register_settings_api(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
