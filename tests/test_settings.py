@@ -60,7 +60,10 @@ class FakeConfigEntries:
         self.updates = []
 
     def async_get_entry(self, entry_id):
-        return self.entry if entry_id == self.entry.entry_id else None
+        return self.entry if self.entry is not None and entry_id == self.entry.entry_id else None
+
+    def async_entries(self, domain):
+        return [self.entry] if self.entry is not None and self.entry.domain == domain else []
 
     def async_update_entry(self, config_entry, *, options):
         assert config_entry is self.entry
@@ -278,18 +281,19 @@ async def test_settings_get_is_secret_safe_and_reports_missing_entry():
         settings_api.websocket_get_settings,
         hass,
         connection,
-        {"id": 1, "type": settings_api.WS_GET_SETTINGS, "entry_id": "entry-1"},
+        {"id": 1, "type": settings_api.WS_GET_SETTINGS},
     )
     assert connection.errors == []
     assert connection.results[0][0] == 1
     assert connection.results[0][1]["email"]["password_configured"] is True
     assert "hidden" not in str(connection.results)
 
+    hass.config_entries.entry = None
     await invoke(
         settings_api.websocket_get_settings,
         hass,
         connection,
-        {"id": 2, "type": settings_api.WS_GET_SETTINGS, "entry_id": "missing"},
+        {"id": 2, "type": settings_api.WS_GET_SETTINGS},
     )
     assert connection.errors[-1][0:2] == (2, "entry_not_found")
 
@@ -459,7 +463,7 @@ def test_settings_commands_require_admin():
         settings_api.websocket_get_settings(
             hass_for(entry()),
             connection,
-            {"id": 9, "type": settings_api.WS_GET_SETTINGS, "entry_id": "entry-1"},
+            {"id": 9, "type": settings_api.WS_GET_SETTINGS},
         )
 
 
