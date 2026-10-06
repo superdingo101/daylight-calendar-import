@@ -81,7 +81,18 @@ def normalize_core_options(
     allowed_calendars: list[str],
 ) -> dict[str, Any]:
     """Normalize one core-settings submission."""
+    if not ai_task_entity.startswith("ai_task."):
+        raise SettingsValidationError(
+            "invalid_ai_task", "The selected AI Task entity is invalid."
+        )
     allowed = list(dict.fromkeys(allowed_calendars))
+    if (
+        not default_calendar.startswith("calendar.")
+        or any(not entity.startswith("calendar.") for entity in allowed)
+    ):
+        raise SettingsValidationError(
+            "invalid_calendar", "Writable calendars must be calendar entities."
+        )
     if default_calendar not in allowed:
         raise SettingsValidationError(
             "default_not_allowed",
