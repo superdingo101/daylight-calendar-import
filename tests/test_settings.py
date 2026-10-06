@@ -206,6 +206,7 @@ def test_email_and_complete_settings_snapshots_hide_secret():
 @pytest.mark.asyncio
 async def test_email_validation_normalizes_port_and_preserves_saved_password():
     current = {
+        CONF_AI_TASK_ENTITY: "ai_task.current",
         CONF_EMAIL_PASSWORD: "saved",
         CONF_EMAIL_HOST: "old.example.test",
     }
@@ -229,6 +230,7 @@ async def test_email_validation_normalizes_port_and_preserves_saved_password():
     assert options[CONF_EMAIL_PORT] == 993
     assert options[CONF_EMAIL_PASSWORD] == "saved"
     assert options[CONF_EMAIL_ENABLED] is True
+    assert CONF_AI_TASK_ENTITY not in options
     validate.assert_awaited_once_with()
 
 
@@ -572,15 +574,14 @@ async def test_email_validation_does_not_overwrite_concurrent_core_update():
     validation_continue = asyncio.Event()
 
     async def validate_email(_entry_id, current, user_input):
-        stale = {
-            **current,
+        assert current[CONF_AI_TASK_ENTITY] == "ai_task.old"
+        validation_started.set()
+        await validation_continue.wait()
+        return {
             CONF_EMAIL_ENABLED: True,
             **user_input,
             CONF_EMAIL_PASSWORD: current[CONF_EMAIL_PASSWORD],
         }
-        validation_started.set()
-        await validation_continue.wait()
-        return stale
 
     with patch(
         "custom_components.daylight_calendar_import.settings_api.async_validate_email_options",
