@@ -196,7 +196,7 @@ def test_review_metadata_round_trip_and_legacy_defaults():
     assert legacy.warnings == ()
     assert legacy.duplicate_events == 0
     assert legacy.as_service_dict()["source_title"] is None
-    assert legacy.as_service_dict()["source_sender"] is None
+    assert "source_sender" not in legacy.as_service_dict()
     assert legacy.as_service_dict()["duplicate_events"] == 0
 
 
