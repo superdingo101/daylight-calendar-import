@@ -67,11 +67,13 @@ existing Home Assistant Configure/options flow and the Daylight panel therefore
 share the same settings model and validation helpers instead of maintaining
 parallel configuration stores.
 
-Settings writes are serialized per config entry at the commit/reload boundary.
-Direct IMAP connection validation happens before that short critical section;
-only validated email fields are then merged into the latest options. This keeps
-a slow mailbox check from blocking unrelated core edits while preventing its
-older options snapshot from reverting a newer core change.
+Native settings mutations are serialized per config entry for the complete
+validate/update/reload transaction. In particular, a second Direct IMAP save
+waits for an in-progress mailbox validation to finish before it resolves blank
+or omitted fields such as the password. This prevents concurrent email saves
+from combining or restoring stale connection values that were never validated
+together. A slow mailbox validation can briefly delay another Daylight settings
+save, but it does not block unrelated Home Assistant runtime work.
 
 If Home Assistant cannot reload the config entry after the options are saved,
 the API returns `reload_failed` instead of reporting success. The options remain
