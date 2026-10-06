@@ -51,7 +51,7 @@ from .parser import ParseOutcome, async_parse_source as parse_source_with_provid
 from .pdfs import async_pdf_source
 from .providers import SourceValidationError
 from .review_panel import async_register_review_panel, async_remove_review_panel
-from .settings import effective_core_options
+from .settings import effective_ai_task_entity, effective_calendar_options
 from .settings_api import async_register_settings_api
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .uploads import async_image_source
@@ -138,14 +138,13 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 def _calendar_configuration(entry: ConfigEntry) -> tuple[str, tuple[str, ...]]:
     """Return effective calendar settings."""
-    _, default_calendar, allowed_calendars = effective_core_options(entry)
+    default_calendar, allowed_calendars = effective_calendar_options(entry)
     return default_calendar, tuple(allowed_calendars)
 
 
 def _ai_task_configuration(entry: ConfigEntry) -> str:
     """Return the effective AI Task entity."""
-    ai_task_entity, _, _ = effective_core_options(entry)
-    return ai_task_entity
+    return effective_ai_task_entity(entry)
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
