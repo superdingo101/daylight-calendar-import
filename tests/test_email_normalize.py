@@ -504,6 +504,30 @@ def test_missing_subject_becomes_none() -> None:
     ).title is None
 
 
+def test_sender_header_is_preserved_as_review_metadata() -> None:
+    raw = _raw_message(
+        extra_headers=b"From: Megan Example <megan@example.test>"
+    )
+
+    source = normalize_email(
+        _envelope(raw),
+        document_id_factory=lambda: "doc",
+    )
+
+    assert source.metadata == {
+        "sender": "Megan Example <megan@example.test>"
+    }
+
+
+def test_missing_sender_keeps_metadata_empty() -> None:
+    source = normalize_email(
+        _envelope(_raw_message()),
+        document_id_factory=lambda: "doc",
+    )
+
+    assert source.metadata == {}
+
+
 def test_inline_style_helper_is_explicitly_bounded() -> None:
     assert not email_normalize._inline_style_hides("display:block")
     assert not email_normalize._inline_style_hides("visibility:visible")
