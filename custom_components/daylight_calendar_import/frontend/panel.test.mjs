@@ -370,6 +370,41 @@ test("opens detail, renders source and events as text, and returns to inbox", as
   assert.equal(globalThis.focusedNode.textContent, "Picnic");
 });
 
+test("email source context shows title, sender, and received date without raw attachment hashes", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Birthday",
+    start: "2026-12-05T18:00:00-08:00", end: "2026-12-05T20:00:00-08:00",
+    all_day: false, status: "pending", confidence: 1};
+  panel.hass = {
+    locale: {language: "en-US", time_format: "12"},
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => request.service === "list_pending" ?
+      {response: {imports: []}} : {response: {pending: {
+        id: "one",
+        created_at: "2026-10-03T19:00:00+00:00",
+        source_kind: "email",
+        source_title: "Mel's 40th Birthday",
+        source_sender: "Megan Example <megan@example.test>",
+        source_text: "Email attachment: 3491.png (SHA-256: secret-hash)",
+        warnings: [],
+        events: [event],
+      }}},
+  };
+  await flush();
+  await panel.showImport("one");
+
+  const source = panel._content.querySelector(".source");
+  assert.equal(source.tag, "div");
+  assert.equal(source.attributes.role, "region");
+  assert.equal(source.attributes["aria-label"], "Email source details");
+  assert.equal(source.children[0].textContent, "Email title: Mel's 40th Birthday");
+  assert.equal(source.children[1].textContent,
+    "Email sender: Megan Example <megan@example.test>");
+  assert.match(source.children[2].textContent, /^Received: .*Oct 3, 2026/);
+  assert.equal(source.textContent?.includes?.("SHA-256"), false);
+  assert.equal(source.children.some(child => /SHA-256/.test(child.textContent || "")), false);
+});
+
 test("detail renders timed events with the Home Assistant time preference", async () => {
   const panel = new DaylightImportPanel();
   const event = {id: "event", title: "Soccer Practice",
