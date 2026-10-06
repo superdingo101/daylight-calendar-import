@@ -72,6 +72,8 @@ An email must normalize to at least one usable parser input:
 - nonblank `text/plain` or `text/html` body text from the **outer message**; or
 - at least one direct supported leaf attachment: JPEG, PNG, WebP, or PDF.
 
+For `multipart/alternative`, Daylight prefers the last supported representation that renders to nonblank text. If a preferred HTML/plain alternative renders empty, it falls back to an earlier usable supported alternative instead of discarding otherwise valid body text.
+
 Daylight intentionally does **not** descend into attached/encapsulated `message/*` parts such as `message/rfc822`. Body text and files nested inside an attached email do not become parser input.
 
 Direct supported inline images, such as logos, are attachment input too. If any direct supported attachment is present, the selected AI Task entity must advertise attachment support even when you only care about the email body.
