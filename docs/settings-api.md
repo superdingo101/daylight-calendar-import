@@ -28,9 +28,14 @@ returned. The response exposes only `password_configured: true|false`.
 
 `daylight_calendar_import/settings/core/update`
 
-The request contains `entry_id`, `ai_task_entity`, `calendar_entity`, and
-`calendar_entities`. The default calendar must be present in the writable
-calendar list. Saving updates config-entry options and reloads the entry.
+The request contains `entry_id` plus at least one core setting. AI Task and
+calendar settings can be patched independently, so a General-settings save does
+not overwrite a newer Calendars-settings save (and vice versa). When calendars
+are supplied, the effective default calendar must remain present in the
+effective writable-calendar list.
+
+Saving merges the validated patch into the latest config-entry options and then
+reloads the entry.
 
 ## Update Direct IMAP settings
 
@@ -54,8 +59,21 @@ Validation failures use stable WebSocket error codes:
 - `invalid_ai_task`
 - `invalid_calendar`
 - `entry_not_found`
+- `invalid_settings`
+- `reload_failed`
 
 The API intentionally keeps config-entry options as the source of truth. The
 existing Home Assistant Configure/options flow and the Daylight panel therefore
 share the same settings model and validation helpers instead of maintaining
 parallel configuration stores.
+
+Settings writes are serialized per config entry at the commit/reload boundary.
+Direct IMAP connection validation happens before that short critical section;
+only validated email fields are then merged into the latest options. This keeps
+a slow mailbox check from blocking unrelated core edits while preventing its
+older options snapshot from reverting a newer core change.
+
+If Home Assistant cannot reload the config entry after the options are saved,
+the API returns `reload_failed` instead of reporting success. The options remain
+persisted, so the user is told to restart Home Assistant before relying on the
+new runtime settings.
