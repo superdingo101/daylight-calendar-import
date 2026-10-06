@@ -191,15 +191,21 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                options = await async_validate_email_options(
+                email_patch = await async_validate_email_options(
                     self.config_entry.entry_id,
-                    {**current, **core_options},
+                    current,
                     user_input,
                 )
             except SettingsValidationError as err:
                 errors["base"] = err.code
             else:
-                return self.async_create_entry(data=options)
+                return self.async_create_entry(
+                    data={
+                        **current,
+                        **core_options,
+                        **email_patch,
+                    }
+                )
 
         suggested_values = (
             user_input
