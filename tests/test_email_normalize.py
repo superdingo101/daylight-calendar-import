@@ -292,7 +292,7 @@ def test_multipart_alternative_selects_last_supported_representation() -> None:
     assert source.text == "Preferred HTML"
 
 
-def test_empty_final_multipart_alternative_remains_authoritative() -> None:
+def test_empty_preferred_multipart_alternative_falls_back_to_usable_text() -> None:
     raw = (
         b"Subject: Alternative\r\n"
         b"Content-Type: multipart/alternative; boundary=alt\r\n\r\n"
@@ -306,7 +306,42 @@ def test_empty_final_multipart_alternative_remains_authoritative() -> None:
         document_id_factory=lambda: "doc",
     )
 
-    assert source.text is None
+    assert source.text == "Older text"
+
+
+def test_blank_preferred_html_alternative_falls_back_to_plain_text() -> None:
+    raw = (
+        b"Subject: Alternative\r\n"
+        b"Content-Type: multipart/alternative; boundary=alt\r\n\r\n"
+        b"--alt\r\nContent-Type: text/plain\r\n\r\n"
+        b"Usable plain text\r\n"
+        b"--alt\r\nContent-Type: text/html\r\n\r\n"
+        b"<div hidden>Only hidden HTML</div>\r\n"
+        b"--alt--\r\n"
+    )
+
+    source = normalize_email(
+        _envelope(raw),
+        document_id_factory=lambda: "doc",
+    )
+
+    assert source.text == "Usable plain text"
+
+
+def test_all_empty_supported_multipart_alternatives_remain_empty() -> None:
+    raw = (
+        b"Subject: Alternative\r\n"
+        b"Content-Type: multipart/alternative; boundary=alt\r\n\r\n"
+        b"--alt\r\nContent-Type: text/plain\r\n\r\n"
+        b"--alt\r\nContent-Type: text/html\r\n\r\n"
+        b"<style>hidden</style>\r\n"
+        b"--alt--\r\n"
+    )
+
+    assert normalize_email(
+        _envelope(raw),
+        document_id_factory=lambda: "doc",
+    ).text is None
 
 
 def test_multipart_alternative_without_supported_representation_is_empty() -> None:
@@ -843,6 +878,17 @@ def test_extract_body_reports_alternative_support_flag() -> None:
     alternative.attach(preferred)
 
     assert email_normalize._extract_body(alternative) == (True, "Preferred")
+
+
+def test_extract_body_reports_empty_supported_alternative_flag() -> None:
+    alternative = EmailMessage()
+    alternative.make_alternative()
+
+    empty = EmailMessage()
+    empty.set_content("")
+    alternative.attach(empty)
+
+    assert email_normalize._extract_body(alternative) == (True, "")
 
 
 def test_extract_body_reports_unsupported_alternative_flag() -> None:
