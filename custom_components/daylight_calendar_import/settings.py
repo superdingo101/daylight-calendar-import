@@ -149,7 +149,7 @@ async def async_validate_email_options(
     current: Mapping[str, Any],
     user_input: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Build and validate enabled Direct IMAP options."""
+    """Build and validate an enabled Direct IMAP option patch."""
     normalized = dict(user_input)
     port = normalized.get(CONF_EMAIL_PORT)
     if isinstance(port, float) and port.is_integer():
