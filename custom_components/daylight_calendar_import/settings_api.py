@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import voluptuous as vol
@@ -26,7 +27,9 @@ from .const import (
 )
 from .settings import (
     SettingsValidationError,
+    EMAIL_OPTION_KEYS,
     async_validate_email_options,
+    effective_core_options,
     normalize_core_options,
     settings_snapshot,
 )
@@ -34,6 +37,13 @@ from .settings import (
 WS_GET_SETTINGS = f"{DOMAIN}/settings/get"
 WS_UPDATE_CORE_SETTINGS = f"{DOMAIN}/settings/core/update"
 WS_UPDATE_EMAIL_SETTINGS = f"{DOMAIN}/settings/email/update"
+_SETTINGS_LOCKS = f"{DOMAIN}_settings_locks"
+
+
+def _settings_lock(hass: HomeAssistant, entry_id: str) -> asyncio.Lock:
+    """Return the per-entry lock serializing option writes and reloads."""
+    locks = hass.data.setdefault(_SETTINGS_LOCKS, {})
+    return locks.setdefault(entry_id, asyncio.Lock())
 
 
 def _entry_for_message(hass: HomeAssistant, msg: dict[str, Any]) -> ConfigEntry:
@@ -55,14 +65,23 @@ def _entry_for_message(hass: HomeAssistant, msg: dict[str, Any]) -> ConfigEntry:
     return entry
 
 
-async def _async_save_options(
+async def _async_save_option_patch(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    options: dict[str, Any],
+    patch: dict[str, Any],
 ) -> None:
-    """Persist options and reload the entry so runtime settings take effect."""
-    hass.config_entries.async_update_entry(entry, options=options)
-    await hass.config_entries.async_reload(entry.entry_id)
+    """Merge an option patch with the latest state, then reload atomically."""
+    async with _settings_lock(hass, entry.entry_id):
+        hass.config_entries.async_update_entry(
+            entry,
+            options={**entry.options, **patch},
+        )
+        if not await hass.config_entries.async_reload(entry.entry_id):
+            raise SettingsValidationError(
+                "reload_failed",
+                "Settings were saved, but Daylight could not reload. "
+                "Restart Home Assistant before relying on the new settings.",
+            )
 
 
 def _send_validation_error(
@@ -96,9 +115,9 @@ async def websocket_get_settings(
     {
         "type": WS_UPDATE_CORE_SETTINGS,
         vol.Required("entry_id"): cv.string,
-        vol.Required(CONF_AI_TASK_ENTITY): cv.entity_id,
-        vol.Required(CONF_CALENDAR_ENTITY): cv.entity_id,
-        vol.Required(CONF_CALENDAR_ENTITIES): vol.All(
+        vol.Optional(CONF_AI_TASK_ENTITY): cv.entity_id,
+        vol.Optional(CONF_CALENDAR_ENTITY): cv.entity_id,
+        vol.Optional(CONF_CALENDAR_ENTITIES): vol.All(
             [cv.entity_id],
             vol.Length(min=1),
         ),
@@ -113,16 +132,38 @@ async def websocket_update_core_settings(
     """Update AI and writable-calendar settings."""
     try:
         entry = _entry_for_message(hass, msg)
-        core = normalize_core_options(
-            msg[CONF_AI_TASK_ENTITY],
-            msg[CONF_CALENDAR_ENTITY],
-            msg[CONF_CALENDAR_ENTITIES],
+        if not any(
+            key in msg
+            for key in (
+                CONF_AI_TASK_ENTITY,
+                CONF_CALENDAR_ENTITY,
+                CONF_CALENDAR_ENTITIES,
+            )
+        ):
+            raise SettingsValidationError(
+                "invalid_settings", "At least one core setting must be provided."
+            )
+
+        current_ai, current_default, current_allowed = effective_core_options(entry)
+        normalized = normalize_core_options(
+            msg.get(CONF_AI_TASK_ENTITY, current_ai),
+            msg.get(CONF_CALENDAR_ENTITY, current_default),
+            msg.get(CONF_CALENDAR_ENTITIES, current_allowed),
         )
+        patch: dict[str, Any] = {}
+        if CONF_AI_TASK_ENTITY in msg:
+            patch[CONF_AI_TASK_ENTITY] = normalized[CONF_AI_TASK_ENTITY]
+        if (
+            CONF_CALENDAR_ENTITY in msg
+            or CONF_CALENDAR_ENTITIES in msg
+        ):
+            patch[CONF_CALENDAR_ENTITY] = normalized[CONF_CALENDAR_ENTITY]
+            patch[CONF_CALENDAR_ENTITIES] = normalized[CONF_CALENDAR_ENTITIES]
+        await _async_save_option_patch(hass, entry, patch)
     except SettingsValidationError as err:
         _send_validation_error(connection, msg, err)
         return
 
-    await _async_save_options(hass, entry, {**entry.options, **core})
     connection.send_result(msg["id"], settings_snapshot(entry))
 
 
@@ -165,16 +206,26 @@ async def websocket_update_email_settings(
                 for api_key, option_key in field_map.items()
                 if api_key in msg
             }
-            options = await async_validate_email_options(
+            validated = await async_validate_email_options(
                 entry.entry_id,
                 entry.options,
                 email_input,
             )
+            email_keys = (
+                CONF_EMAIL_ENABLED,
+                *EMAIL_OPTION_KEYS,
+                CONF_EMAIL_PASSWORD,
+            )
+            options = {
+                key: validated[key]
+                for key in email_keys
+                if key in validated
+            }
+        await _async_save_option_patch(hass, entry, options)
     except SettingsValidationError as err:
         _send_validation_error(connection, msg, err)
         return
 
-    await _async_save_options(hass, entry, options)
     connection.send_result(msg["id"], settings_snapshot(entry))
 
 
