@@ -208,7 +208,6 @@ class PendingImport:
         result.update(
             source_kind=self.source_kind,
             source_title=self.source_title,
-            source_sender=self.source_sender,
             warnings=list(self.warnings),
             duplicate_events=self.duplicate_events,
         )
