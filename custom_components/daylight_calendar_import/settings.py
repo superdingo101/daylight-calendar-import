@@ -48,13 +48,18 @@ class SettingsValidationError(ValueError):
         self.code = code
 
 
-def effective_core_options(entry: ConfigEntry) -> tuple[str, str, list[str]]:
-    """Return effective AI and writable-calendar settings."""
-    current = entry.options
-    ai_task_entity = current.get(
+def effective_ai_task_entity(entry: ConfigEntry) -> str:
+    """Return the effective AI Task entity."""
+    current = getattr(entry, "options", {})
+    return current.get(
         CONF_AI_TASK_ENTITY,
         entry.data[CONF_AI_TASK_ENTITY],
     )
+
+
+def effective_calendar_options(entry: ConfigEntry) -> tuple[str, list[str]]:
+    """Return the effective default and writable calendars."""
+    current = getattr(entry, "options", {})
     default_calendar = current.get(
         CONF_CALENDAR_ENTITY,
         entry.data[CONF_CALENDAR_ENTITY],
@@ -69,9 +74,18 @@ def effective_core_options(entry: ConfigEntry) -> tuple[str, str, list[str]]:
         )
     )
     return (
-        ai_task_entity,
         default_calendar,
         list(dict.fromkeys((*allowed_calendars, default_calendar))),
+    )
+
+
+def effective_core_options(entry: ConfigEntry) -> tuple[str, str, list[str]]:
+    """Return effective AI and writable-calendar settings."""
+    default_calendar, allowed_calendars = effective_calendar_options(entry)
+    return (
+        effective_ai_task_entity(entry),
+        default_calendar,
+        allowed_calendars,
     )
 
 
