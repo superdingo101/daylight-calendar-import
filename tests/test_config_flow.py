@@ -256,7 +256,7 @@ async def test_options_flow_validates_and_saves_direct_imap():
             return_value=entry,
         ),
         patch(
-            "custom_components.daylight_calendar_import.config_flow.DirectImapSource",
+            "custom_components.daylight_calendar_import.settings.DirectImapSource",
             Mock(return_value=source),
         ) as source_factory,
         patch.object(
@@ -306,7 +306,7 @@ async def test_options_flow_normalizes_number_selector_port_to_int():
             return_value=entry,
         ),
         patch(
-            "custom_components.daylight_calendar_import.config_flow.DirectImapSource",
+            "custom_components.daylight_calendar_import.settings.DirectImapSource",
             Mock(return_value=source),
         ) as source_factory,
         patch.object(
@@ -355,7 +355,7 @@ async def test_options_flow_rejects_fractional_number_selector_port():
             return_value=entry,
         ),
         patch(
-            "custom_components.daylight_calendar_import.config_flow.DirectImapSource",
+            "custom_components.daylight_calendar_import.settings.DirectImapSource",
             Mock(),
         ) as source_factory,
         patch.object(
@@ -399,7 +399,7 @@ async def test_options_flow_reports_invalid_imap_credentials():
             return_value=entry,
         ),
         patch(
-            "custom_components.daylight_calendar_import.config_flow.DirectImapSource",
+            "custom_components.daylight_calendar_import.settings.DirectImapSource",
             Mock(return_value=source),
         ),
         patch.object(
@@ -680,7 +680,7 @@ async def test_options_flow_reports_direct_imap_validation_errors(
             return_value=entry,
         ),
         patch(
-            "custom_components.daylight_calendar_import.config_flow.DirectImapSource",
+            "custom_components.daylight_calendar_import.settings.DirectImapSource",
             Mock(return_value=source),
         ),
         patch.object(
@@ -771,7 +771,7 @@ async def test_options_flow_preserves_attempted_values_after_validation_error(
             return_value=entry,
         ),
         patch(
-            "custom_components.daylight_calendar_import.config_flow.DirectImapSource",
+            "custom_components.daylight_calendar_import.settings.DirectImapSource",
             Mock(return_value=source),
         ),
         patch.object(
@@ -907,7 +907,7 @@ async def test_options_flow_rejects_blank_password_on_first_enable():
             return_value=entry,
         ),
         patch(
-            "custom_components.daylight_calendar_import.config_flow.DirectImapSource",
+            "custom_components.daylight_calendar_import.settings.DirectImapSource",
             Mock(),
         ) as source_factory,
         patch.object(
@@ -956,7 +956,7 @@ async def test_options_flow_reuses_saved_password_when_edit_form_is_blank():
             return_value=entry,
         ),
         patch(
-            "custom_components.daylight_calendar_import.config_flow.DirectImapSource",
+            "custom_components.daylight_calendar_import.settings.DirectImapSource",
             Mock(return_value=source),
         ) as source_factory,
         patch.object(
