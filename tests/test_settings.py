@@ -433,7 +433,7 @@ async def test_email_update_returns_validation_error_without_reload():
     hass = hass_for(config_entry)
     connection = FakeConnection()
     with patch(
-        "custom_components.daylight_calendar_import.settings.async_validate_email_options",
+        "custom_components.daylight_calendar_import.settings_api.async_validate_email_options",
         AsyncMock(
             side_effect=SettingsValidationError(
                 "cannot_connect", "Could not connect."
