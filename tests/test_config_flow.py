@@ -225,7 +225,7 @@ async def test_options_flow_routes_enabled_email_to_connection_step():
 
     assert result is expected
     email_step.assert_awaited_once_with()
-    assert flow._pending_core_options == {
+    assert flow._pending_core_patch == {
         CONF_AI_TASK_ENTITY: "ai_task.updated",
         CONF_CALENDAR_ENTITY: "calendar.family",
         CONF_CALENDAR_ENTITIES: ["calendar.family"],
@@ -235,7 +235,7 @@ async def test_options_flow_routes_enabled_email_to_connection_step():
 async def test_options_flow_validates_and_saves_direct_imap():
     flow = DaylightCalendarImportOptionsFlow()
     flow.hass = SimpleNamespace(data={})
-    flow._pending_core_options = {
+    flow._pending_core_patch = {
         CONF_AI_TASK_ENTITY: "ai_task.new",
         CONF_CALENDAR_ENTITY: "calendar.new",
         CONF_CALENDAR_ENTITIES: ["calendar.new", "calendar.work"],
@@ -1072,3 +1072,136 @@ async def test_options_flow_email_serializes_with_native_settings_updates():
     saved = create_entry.call_args.kwargs["data"]
     assert saved[CONF_AI_TASK_ENTITY] == "ai_task.new"
     assert saved[CONF_EMAIL_PASSWORD] == "new-secret"
+
+
+async def test_options_flow_preserves_concurrent_core_change_after_init_step():
+    flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
+    entry = _options_entry({
+        CONF_AI_TASK_ENTITY: "ai_task.old",
+        CONF_CALENDAR_ENTITY: "calendar.family",
+        CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
+        CONF_EMAIL_ENABLED: False,
+    })
+    form = {"type": "form"}
+    email_input = {
+        CONF_EMAIL_HOST: "imap.example.test",
+        CONF_EMAIL_PORT: 993,
+        CONF_EMAIL_USERNAME: "calendar@example.test",
+        CONF_EMAIL_PASSWORD: "secret",
+        CONF_EMAIL_MAILBOX: "INBOX",
+        CONF_EMAIL_VERIFY_SSL: True,
+    }
+    source = SimpleNamespace(async_validate=AsyncMock())
+
+    with (
+        patch.object(
+            DaylightCalendarImportOptionsFlow,
+            "config_entry",
+            new_callable=PropertyMock,
+            return_value=entry,
+        ),
+        patch.object(
+            flow,
+            "async_step_email",
+            AsyncMock(return_value=form),
+        ),
+    ):
+        result = await flow.async_step_init({
+            CONF_AI_TASK_ENTITY: "ai_task.old",
+            CONF_CALENDAR_ENTITY: "calendar.work",
+            CONF_CALENDAR_ENTITIES: ["calendar.work"],
+            CONF_EMAIL_ENABLED: True,
+        })
+
+    assert result is form
+    assert flow._pending_core_patch == {
+        CONF_CALENDAR_ENTITY: "calendar.work",
+        CONF_CALENDAR_ENTITIES: ["calendar.work"],
+    }
+
+    entry.options = {
+        **entry.options,
+        CONF_AI_TASK_ENTITY: "ai_task.concurrent",
+    }
+    expected = {"type": "create_entry"}
+    with (
+        patch.object(
+            DaylightCalendarImportOptionsFlow,
+            "config_entry",
+            new_callable=PropertyMock,
+            return_value=entry,
+        ),
+        patch(
+            "custom_components.daylight_calendar_import.settings.DirectImapSource",
+            Mock(return_value=source),
+        ),
+        patch.object(
+            flow,
+            "async_create_entry",
+            Mock(return_value=expected),
+        ) as create_entry,
+    ):
+        result = await flow.async_step_email(email_input)
+
+    assert result is expected
+    saved = create_entry.call_args.kwargs["data"]
+    assert saved[CONF_AI_TASK_ENTITY] == "ai_task.concurrent"
+    assert saved[CONF_CALENDAR_ENTITY] == "calendar.work"
+    assert saved[CONF_CALENDAR_ENTITIES] == ["calendar.work"]
+
+
+async def test_options_flow_uses_form_baseline_to_ignore_stale_unchanged_fields():
+    flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
+    entry = _options_entry({
+        CONF_AI_TASK_ENTITY: "ai_task.old",
+        CONF_CALENDAR_ENTITY: "calendar.family",
+        CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        CONF_EMAIL_ENABLED: False,
+    })
+    form = {"type": "form"}
+
+    with (
+        patch.object(
+            DaylightCalendarImportOptionsFlow,
+            "config_entry",
+            new_callable=PropertyMock,
+            return_value=entry,
+        ),
+        patch.object(
+            flow,
+            "async_show_form",
+            Mock(return_value=form),
+        ),
+    ):
+        assert await flow.async_step_init() is form
+
+    entry.options = {
+        **entry.options,
+        CONF_AI_TASK_ENTITY: "ai_task.concurrent",
+    }
+    expected = {"type": "create_entry"}
+    with (
+        patch.object(
+            DaylightCalendarImportOptionsFlow,
+            "config_entry",
+            new_callable=PropertyMock,
+            return_value=entry,
+        ),
+        patch.object(
+            flow,
+            "async_create_entry",
+            Mock(return_value=expected),
+        ) as create_entry,
+    ):
+        result = await flow.async_step_init({
+            CONF_AI_TASK_ENTITY: "ai_task.old",
+            CONF_CALENDAR_ENTITY: "calendar.family",
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+            CONF_EMAIL_ENABLED: False,
+        })
+
+    assert result is expected
+    saved = create_entry.call_args.kwargs["data"]
+    assert saved[CONF_AI_TASK_ENTITY] == "ai_task.concurrent"
