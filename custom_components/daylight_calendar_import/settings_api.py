@@ -27,8 +27,8 @@ from .const import (
 from .settings import (
     SettingsValidationError,
     async_validate_email_options,
+    core_option_patch,
     effective_core_options,
-    normalize_core_options,
     settings_lock,
     settings_snapshot,
 )
@@ -136,22 +136,12 @@ async def websocket_update_core_settings(
                     "invalid_settings", "At least one core setting must be provided."
                 )
 
-            current_ai, current_default, current_allowed = effective_core_options(entry)
-            normalized = normalize_core_options(
-                msg.get(CONF_AI_TASK_ENTITY, current_ai),
-                msg.get(CONF_CALENDAR_ENTITY, current_default),
-                msg.get(CONF_CALENDAR_ENTITIES, current_allowed),
+            patch = core_option_patch(
+                effective_core_options(entry),
+                msg,
             )
-            patch: dict[str, Any] = {}
-            if CONF_AI_TASK_ENTITY in msg:
-                patch[CONF_AI_TASK_ENTITY] = normalized[CONF_AI_TASK_ENTITY]
-            if (
-                CONF_CALENDAR_ENTITY in msg
-                or CONF_CALENDAR_ENTITIES in msg
-            ):
-                patch[CONF_CALENDAR_ENTITY] = normalized[CONF_CALENDAR_ENTITY]
-                patch[CONF_CALENDAR_ENTITIES] = normalized[CONF_CALENDAR_ENTITIES]
-            await _async_save_option_patch(hass, entry, patch)
+            if patch:
+                await _async_save_option_patch(hass, entry, patch)
     except SettingsValidationError as err:
         _send_validation_error(connection, msg, err)
         return
