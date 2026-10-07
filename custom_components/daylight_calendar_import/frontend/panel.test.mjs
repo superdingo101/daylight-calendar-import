@@ -618,7 +618,10 @@ test("all-day toggles carry the currently edited range in both directions", asyn
       }
       return {response: {
         pending_id: "one",
-        event: {...request.service_data.event},
+        event: {
+          ...request.service_data.expected_event,
+          ...request.service_data.event,
+        },
       }};
     },
   };
