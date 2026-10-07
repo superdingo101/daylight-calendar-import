@@ -980,6 +980,11 @@ test("settings forms freeze every editable control while a save is pending", asy
   assert.equal(busyForm.attributes["aria-busy"], "true");
   assert.equal(busyForm.elements.namedItem("ai_task_entity").disabled, true);
   assert.equal(find(busyForm, "button").disabled, true);
+  assert.equal(
+    panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+      .every(button => button.disabled === true),
+    true,
+  );
 
   resolveSave({...snapshot, ai_task_entity: "ai_task.google"});
   await saving;
