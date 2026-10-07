@@ -101,6 +101,35 @@ def effective_core_options(entry: ConfigEntry) -> tuple[str, str, list[str]]:
     )
 
 
+def core_option_patch(
+    baseline: tuple[str, str, list[str]],
+    submitted: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return only intentionally changed core options, normalized as atomic groups."""
+    baseline_ai, baseline_default, baseline_allowed = baseline
+    normalized = normalize_core_options(
+        submitted.get(CONF_AI_TASK_ENTITY, baseline_ai),
+        submitted.get(CONF_CALENDAR_ENTITY, baseline_default),
+        list(submitted.get(CONF_CALENDAR_ENTITIES, baseline_allowed)),
+    )
+    patch: dict[str, Any] = {}
+    if (
+        CONF_AI_TASK_ENTITY in submitted
+        and normalized[CONF_AI_TASK_ENTITY] != baseline_ai
+    ):
+        patch[CONF_AI_TASK_ENTITY] = normalized[CONF_AI_TASK_ENTITY]
+    if (
+        CONF_CALENDAR_ENTITY in submitted
+        or CONF_CALENDAR_ENTITIES in submitted
+    ) and (
+        normalized[CONF_CALENDAR_ENTITY] != baseline_default
+        or normalized[CONF_CALENDAR_ENTITIES] != baseline_allowed
+    ):
+        patch[CONF_CALENDAR_ENTITY] = normalized[CONF_CALENDAR_ENTITY]
+        patch[CONF_CALENDAR_ENTITIES] = normalized[CONF_CALENDAR_ENTITIES]
+    return patch
+
+
 def normalize_core_options(
     ai_task_entity: str,
     default_calendar: str,
