@@ -1,4 +1,4 @@
-import {allDayEditToTimedRange, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
+import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
 import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, settingsErrorMessage} from "./settings.js";
 
@@ -231,12 +231,13 @@ function activityLabel(type) {
 }
 
 function syncTimedDuration(start, end, event, timeZone) {
+  const model = classifyEventTimeModel(event.start, event.end, timeZone);
   const readDuration = () => {
     const startIso = editDateTimeIso(
-      start.value, event.start, timeZone, start._daylightInstantHint || null
+      start.value, event.start, timeZone, start._daylightInstantHint || null, model
     );
     const endIso = editDateTimeIso(
-      end.value, event.end, timeZone, end._daylightInstantHint || null
+      end.value, event.end, timeZone, end._daylightInstantHint || null, model
     );
     if (!startIso || !endIso) return null;
     const startValue = new Date(startIso);
@@ -250,14 +251,14 @@ function syncTimedDuration(start, end, event, timeZone) {
   };
   start.addEventListener("change", () => {
     start._daylightInstantHint = null;
-    const startIso = editDateTimeIso(start.value, event.start, timeZone);
+    const startIso = editDateTimeIso(start.value, event.start, timeZone, null, model);
     if (!startIso || duration === null) return;
     const nextStart = new Date(startIso);
     if (Number.isNaN(nextStart.getTime())) return;
     const nextEnd = new Date(nextStart.getTime() + duration);
-    end.value = instantEditDateTimeValue(nextEnd, event.end, timeZone);
+    end.value = instantEditDateTimeValue(nextEnd, event.end, timeZone, model);
     end._daylightInstantHint = instantEditDateTimeIso(
-      nextEnd, event.end, timeZone
+      nextEnd, event.end, timeZone, model
     );
   });
   end.addEventListener("change", () => {
