@@ -143,7 +143,11 @@ export function editDateTimeValue(value, timeZone) {
 export function editDateTimeIso(value, original, timeZone, instantHint = null) {
   if (wallUtcMilliseconds(value) === null) return null;
   if (instantHint && editDateTimeValue(instantHint, timeZone) === value) {
-    return instantHint;
+    const hintedDate = new Date(instantHint);
+    if (!Number.isNaN(hintedDate.getTime()) &&
+        instantEditDateTimeIso(hintedDate, original, timeZone) === instantHint) {
+      return instantHint;
+    }
   }
   if (value === editDateTimeValue(original, timeZone)) return original;
 
