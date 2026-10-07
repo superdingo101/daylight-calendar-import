@@ -446,7 +446,9 @@ export class DaylightImportPanel extends HTMLElement {
     }
 
     this._status = "loading";
+    this._announcement.replaceChildren(element("span", "Loading settings…"));
     this.render();
+    this._content.querySelector("[data-settings-loading]")?.focus();
     try {
       const settings = await loadSettings(this._hass);
       if (generation !== this._generation) return;
@@ -459,6 +461,7 @@ export class DaylightImportPanel extends HTMLElement {
       this._status = typeof error?.message === "string" ?
         error.message : "Could not load settings. Try again.";
     }
+    this._announcement.replaceChildren();
     this.render();
     const settingsLoadError = this._content.querySelector("[data-settings-load-error]");
     (settingsLoadError || this._content.querySelector("h2") || this._refreshButton)?.focus();
@@ -474,6 +477,7 @@ export class DaylightImportPanel extends HTMLElement {
     });
     this._settingsSaving = true;
     this._settingsError = null;
+    this._announcement.replaceChildren(element("span", "Saving settings…"));
     this.render();
     this._content.querySelector("[data-settings-saving]")?.focus();
     try {
@@ -482,6 +486,7 @@ export class DaylightImportPanel extends HTMLElement {
       if (changesPersistedSettings) this._settingsReloadWarning = null;
       this._announcement.replaceChildren(element("span", successMessage));
     } catch (error) {
+      this._announcement.replaceChildren();
       const message = settingsErrorMessage(error, fallbackMessage);
       if (isSettingsErrorCode(error, "reload_failed")) {
         this._settingsReloadWarning = message;
@@ -535,9 +540,9 @@ export class DaylightImportPanel extends HTMLElement {
     this._settingsDraft = {tab: "calendars", ...patch};
     if (!allowed.includes(defaultCalendar)) {
       this._settingsError = "The default calendar must also be selected as writable.";
+      this._announcement.replaceChildren();
       this.render();
-      const alert = this._content.querySelector(".error");
-      if (alert) { alert.tabIndex = -1; alert.focus(); }
+      this._content.querySelector("[data-settings-save-error]")?.focus();
       return;
     }
 
@@ -999,7 +1004,11 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._view === "settings") {
       content.append(navigation);
       if (this._status === "loading") {
-        content.append(element("p", "Loading settings…", "status"));
+        const loading = element("p", "Loading settings…", "status");
+        loading.setAttribute("role", "status");
+        loading.setAttribute("data-settings-loading", "");
+        loading.tabIndex = -1;
+        content.append(loading);
       } else if (this._status !== "ready" || !this._settings) {
         const error = element("p", this._status, "error");
         error.setAttribute("role", "alert");
