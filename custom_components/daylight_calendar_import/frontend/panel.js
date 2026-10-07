@@ -440,6 +440,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._settingsError = null;
     if (this._settings && !reload) {
       this._status = "ready";
+      this._announcement.replaceChildren();
       this.render();
       this._content.querySelector("h2")?.focus();
       return;
@@ -568,6 +569,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._settingsTab = tab;
         this._settingsError = null;
         this._settingsDraft = null;
+        this._announcement.replaceChildren();
         this.render();
         this._content.querySelector("h2")?.focus();
       });
