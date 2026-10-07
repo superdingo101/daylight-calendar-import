@@ -386,6 +386,30 @@ async def test_core_update_saves_reloads_and_returns_settings():
 
 
 @pytest.mark.asyncio
+async def test_core_update_noop_returns_snapshot_without_reload():
+    config_entry = entry(options={CONF_AI_TASK_ENTITY: "ai_task.current"})
+    hass = hass_for(config_entry)
+    connection = FakeConnection()
+
+    await invoke(
+        settings_api.websocket_update_core_settings,
+        hass,
+        connection,
+        {
+            "id": 40,
+            "type": settings_api.WS_UPDATE_CORE_SETTINGS,
+            "entry_id": "entry-1",
+            CONF_AI_TASK_ENTITY: "ai_task.current",
+        },
+    )
+
+    assert connection.errors == []
+    assert connection.results[-1][1]["ai_task_entity"] == "ai_task.current"
+    assert hass.config_entries.updates == []
+    assert hass.config_entries.reloads == []
+
+
+@pytest.mark.asyncio
 async def test_core_update_can_patch_ai_without_reverting_calendars():
     config_entry = entry(options={
         CONF_AI_TASK_ENTITY: "ai_task.old",
