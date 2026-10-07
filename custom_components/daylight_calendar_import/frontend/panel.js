@@ -1436,11 +1436,18 @@ export class DaylightImportPanel extends HTMLElement {
     allDay.addEventListener("change", () => {
       if (allDay.checked) {
         const range = timedEditToAllDayRange(start.value, end.value);
-        if (range) {
-          startDate.value = range.startDate;
-          endDate.value = range.endDate;
-          dateSync.refresh();
+        if (!range) {
+          allDay.checked = false;
+          setEditDateMode(form, false);
+          const message = "Fix the start and end times before switching to all day.";
+          this._editError = message;
+          this._announcement.replaceChildren(element("span", message));
+          showEditError(form, message);
+          return;
         }
+        startDate.value = range.startDate;
+        endDate.value = range.endDate;
+        dateSync.refresh();
       } else {
         const range = allDayEditToTimedRange(
           startDate.value,
@@ -1449,15 +1456,24 @@ export class DaylightImportPanel extends HTMLElement {
           end.value,
           preserveTimedTimes,
         );
-        if (range) {
-          start.value = range.startDateTime;
-          end.value = range.endDateTime;
-          start._daylightInstantHint = null;
-          end._daylightInstantHint = null;
-          timedSync.refresh();
-          preserveTimedTimes = true;
+        if (!range) {
+          allDay.checked = true;
+          setEditDateMode(form, true);
+          const message = "Fix the start and end dates before switching to timed.";
+          this._editError = message;
+          this._announcement.replaceChildren(element("span", message));
+          showEditError(form, message);
+          return;
         }
+        start.value = range.startDateTime;
+        end.value = range.endDateTime;
+        start._daylightInstantHint = null;
+        end._daylightInstantHint = null;
+        timedSync.refresh();
+        preserveTimedTimes = true;
       }
+      this._editError = null;
+      clearEditError(form);
       setEditDateMode(form, allDay.checked);
     });
 
