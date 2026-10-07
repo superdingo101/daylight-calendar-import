@@ -633,11 +633,11 @@ export class DaylightImportPanel extends HTMLElement {
     const label = element("label", "AI Task entity");
     const select = document.createElement("select");
     select.name = "ai_task_entity";
-    const choices = entityChoices(
-      this._hass, "ai_task", 1, [this._settings.ai_task_entity],
-    );
     const selectedAi = this._settingsDrafts.general?.ai_task_entity ??
       this._settings.ai_task_entity;
+    const choices = entityChoices(
+      this._hass, "ai_task", 1, [this._settings.ai_task_entity, selectedAi],
+    );
     appendOptions(select, choices, selectedAi);
     select.addEventListener("change", () => {
       this._setSettingsDraft("general", {ai_task_entity: select.value});
@@ -709,7 +709,8 @@ export class DaylightImportPanel extends HTMLElement {
     form.append(fieldset);
     const save = element("button", this._settingsSaving ? "Saving…" : "Save calendar settings");
     save.type = "submit";
-    save.disabled = this._settingsSaving || choices.length === 0;
+    save.disabled = this._settingsSaving ||
+      defaultChoices.length === 0 || writableChoices.length === 0;
     form.append(save);
     form.addEventListener("submit", event => {
       event.preventDefault();
