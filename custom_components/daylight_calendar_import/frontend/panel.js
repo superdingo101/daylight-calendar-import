@@ -1,5 +1,5 @@
 import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
-import {loadSettings, saveCoreSettings} from "./settings.js";
+import {isSettingsErrorCode, loadSettings, saveCoreSettings, settingsErrorMessage} from "./settings.js";
 
 const css = `
   :host {
@@ -269,6 +269,14 @@ function appendOptions(select, choices, selected) {
   select.value = selected || choices[0]?.id || "";
 }
 
+function setSettingsFormBusy(form, busy) {
+  if (!busy) return;
+  form.setAttribute("aria-busy", "true");
+  for (const tag of ["input", "select", "button"]) {
+    for (const control of form.querySelectorAll(tag)) control.disabled = true;
+  }
+}
+
 export class DaylightImportPanel extends HTMLElement {
   constructor() {
     super();
@@ -296,6 +304,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._settings = null;
     this._settingsTab = "general";
     this._settingsError = null;
+    this._settingsReloadWarning = null;
     this._settingsDraft = null;
     this._settingsSaving = false;
     const style = element("style", css);
@@ -455,29 +464,51 @@ export class DaylightImportPanel extends HTMLElement {
     (settingsLoadError || this._content.querySelector("h2") || this._refreshButton)?.focus();
   }
 
-  async saveGeneralSettings(form) {
-    if (this._settingsSaving || !this._settings) return;
-    const aiTaskEntity = form.elements.namedItem("ai_task_entity").value;
-    this._settingsDraft = {tab: "general", ai_task_entity: aiTaskEntity};
+  async _saveSettings(save, successMessage, fallbackMessage) {
     this._settingsSaving = true;
     this._settingsError = null;
     this.render();
     try {
-      this._settings = await saveCoreSettings(this._hass, {
-        entry_id: this._settings.entry_id,
-        ai_task_entity: aiTaskEntity,
-      });
+      this._settings = await save();
       this._settingsDraft = null;
-      this._announcement.replaceChildren(element("span", "General settings saved"));
+      this._announcement.replaceChildren(element("span", successMessage));
     } catch (error) {
-      this._settingsError = typeof error?.message === "string" ?
-        error.message : "Could not save general settings.";
+      const message = settingsErrorMessage(error, fallbackMessage);
+      if (isSettingsErrorCode(error, "reload_failed")) {
+        this._settingsReloadWarning = message;
+        try {
+          this._settings = await loadSettings(this._hass);
+          this._settingsDraft = null;
+        } catch (refreshError) {
+          this._settingsError = settingsErrorMessage(
+            refreshError,
+            "The saved settings could not be refreshed. Try again after restarting Home Assistant.",
+          );
+        }
+      } else {
+        this._settingsError = message;
+      }
     } finally {
       this._settingsSaving = false;
       this.render();
       (this._content.querySelector(".error") ||
         this._content.querySelector("h2") || this._refreshButton)?.focus();
     }
+  }
+
+  async saveGeneralSettings(form) {
+    if (this._settingsSaving || !this._settings) return;
+    const aiTaskEntity = form.elements.namedItem("ai_task_entity").value;
+    const entryId = this._settings.entry_id;
+    this._settingsDraft = {tab: "general", ai_task_entity: aiTaskEntity};
+    await this._saveSettings(
+      () => saveCoreSettings(this._hass, {
+        entry_id: entryId,
+        ai_task_entity: aiTaskEntity,
+      }),
+      "General settings saved",
+      "Could not save general settings.",
+    );
   }
 
   async saveCalendarSettings(form) {
@@ -500,26 +531,16 @@ export class DaylightImportPanel extends HTMLElement {
       return;
     }
 
-    this._settingsSaving = true;
-    this._settingsError = null;
-    this.render();
-    try {
-      this._settings = await saveCoreSettings(this._hass, {
-        entry_id: this._settings.entry_id,
+    const entryId = this._settings.entry_id;
+    await this._saveSettings(
+      () => saveCoreSettings(this._hass, {
+        entry_id: entryId,
         calendar_entity: defaultCalendar,
         calendar_entities: allowed,
-      });
-      this._settingsDraft = null;
-      this._announcement.replaceChildren(element("span", "Calendar settings saved"));
-    } catch (error) {
-      this._settingsError = typeof error?.message === "string" ?
-        error.message : "Could not save calendar settings.";
-    } finally {
-      this._settingsSaving = false;
-      this.render();
-      (this._content.querySelector(".error") ||
-        this._content.querySelector("h2") || this._refreshButton)?.focus();
-    }
+      }),
+      "Calendar settings saved",
+      "Could not save calendar settings.",
+    );
   }
 
   settingsSubnav() {
@@ -569,6 +590,7 @@ export class DaylightImportPanel extends HTMLElement {
       event.preventDefault();
       void this.saveGeneralSettings(form);
     });
+    setSettingsFormBusy(form, this._settingsSaving);
     section.append(form);
     return section;
   }
@@ -619,6 +641,7 @@ export class DaylightImportPanel extends HTMLElement {
       event.preventDefault();
       void this.saveCalendarSettings(form);
     });
+    setSettingsFormBusy(form, this._settingsSaving);
     section.append(form);
     return section;
   }
@@ -977,6 +1000,13 @@ export class DaylightImportPanel extends HTMLElement {
         content.append(error);
       } else {
         content.append(this.settingsSubnav());
+        if (this._settingsReloadWarning) {
+          const warning = element("p", this._settingsReloadWarning, "error");
+          warning.setAttribute("role", "alert");
+          warning.setAttribute("data-settings-reload-warning", "");
+          warning.tabIndex = -1;
+          content.append(warning);
+        }
         if (this._settingsError) {
           const error = element("p", this._settingsError, "error");
           error.setAttribute("role", "alert");
