@@ -675,6 +675,67 @@ test("all-day toggles carry the currently edited range in both directions", asyn
   assert.equal(editCall.service_data.event.end, "2026-12-28T00:00:00-08:00");
 });
 
+test("invalid active ranges block mode switches instead of exposing stale values", async () => {
+  const panel = new DaylightImportPanel();
+  const timed = {
+    id: "timed-invalid",
+    title: "Timed",
+    start: "2026-12-05T18:00:00-08:00",
+    end: "2026-12-05T20:00:00-08:00",
+    all_day: false,
+    status: "pending",
+    confidence: 1,
+  };
+  const allDayEvent = {
+    id: "all-day-invalid",
+    title: "All day",
+    start: "2026-12-10",
+    end: "2026-12-13",
+    all_day: true,
+    status: "pending",
+    confidence: 1,
+  };
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      if (request.service === "list_pending") return {response: {imports: []}};
+      return {response: {pending: {id: "one", events: [timed, allDayEvent]}}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "timed-invalid").click();
+  let form = find(panel._content, "form");
+  form.elements.namedItem("start").value = "2026-12-05T21:00";
+  form.elements.namedItem("end").value = "2026-12-05T20:00";
+  let allDay = form.elements.namedItem("all_day");
+  allDay.checked = true;
+  allDay.change();
+
+  assert.equal(allDay.checked, false);
+  assert.equal(form.querySelector(".timed-event-fields").hidden, false);
+  assert.equal(form.querySelector(".all-day-event-fields").hidden, true);
+  assert.match(find(form, "p").textContent, /after start/i);
+
+  panel._editingId = null;
+  panel.render();
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "all-day-invalid").click();
+  form = find(panel._content, "form");
+  form.elements.namedItem("start_date").value = "2026-12-26";
+  form.elements.namedItem("end_date").value = "2026-12-24";
+  allDay = form.elements.namedItem("all_day");
+  allDay.checked = false;
+  allDay.change();
+
+  assert.equal(allDay.checked, true);
+  assert.equal(form.querySelector(".timed-event-fields").hidden, true);
+  assert.equal(form.querySelector(".all-day-event-fields").hidden, false);
+  assert.match(find(form, "p").textContent, /fix the start and end dates/i);
+});
+
 test("timed editor preserves original offsets and follows the Home Assistant zone after edits", async () => {
   const panel = new DaylightImportPanel();
   let current = {id: "event", title: "DST test",
