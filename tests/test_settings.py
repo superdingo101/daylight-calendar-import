@@ -33,6 +33,7 @@ from custom_components.daylight_calendar_import.direct_imap import (
 from custom_components.daylight_calendar_import.settings import (
     SettingsValidationError,
     async_validate_email_options,
+    core_option_patch,
     effective_core_options,
     email_settings_snapshot,
     normalize_core_options,
@@ -130,6 +131,37 @@ def test_effective_core_options_prefers_options_and_deduplicates():
         "calendar.family",
         ["calendar.family", "calendar.work"],
     )
+
+
+def test_core_option_patch_returns_only_changed_atomic_groups():
+    baseline = (
+        "ai_task.old",
+        "calendar.family",
+        ["calendar.family", "calendar.work"],
+    )
+
+    assert core_option_patch(
+        baseline,
+        {CONF_AI_TASK_ENTITY: "ai_task.new"},
+    ) == {CONF_AI_TASK_ENTITY: "ai_task.new"}
+    assert core_option_patch(
+        baseline,
+        {
+            CONF_CALENDAR_ENTITY: "calendar.work",
+            CONF_CALENDAR_ENTITIES: ["calendar.work"],
+        },
+    ) == {
+        CONF_CALENDAR_ENTITY: "calendar.work",
+        CONF_CALENDAR_ENTITIES: ["calendar.work"],
+    }
+    assert core_option_patch(
+        baseline,
+        {
+            CONF_AI_TASK_ENTITY: "ai_task.old",
+            CONF_CALENDAR_ENTITY: "calendar.family",
+            CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
+        },
+    ) == {}
 
 
 def test_normalize_core_options_validates_and_deduplicates():
