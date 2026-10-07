@@ -124,6 +124,26 @@ function validIsoDate(value) {
     date.getUTCDate() === day;
 }
 
+/** One time model for an entire event, never a separate choice per endpoint. */
+export function classifyEventTimeModel(start, end, timeZone) {
+  const endpoints = [start, end].map(value => ({
+    offset: isoOffsetMinutes(value),
+    date: new Date(value),
+  }));
+  const hasOffsets = endpoints.every(({offset, date}) =>
+    offset !== null && !Number.isNaN(date.getTime())
+  );
+  const named = Boolean(timeZone && hasOffsets && endpoints.every(({offset, date}) =>
+    namedZoneOffsetMinutes(date, timeZone) === offset
+  ));
+  // Offsetless timestamps are interpreted in the configured zone when available.
+  const floating = endpoints.every(({offset}) => offset === null);
+  return {
+    kind: named || (floating && timeZone) ? "named" :
+      hasOffsets || !floating ? "fixed" : "local",
+  };
+}
+
 export function editDateTimeValue(value, timeZone) {
   const date = new Date(value);
   const offset = isoOffsetMinutes(value);
@@ -140,48 +160,45 @@ export function editDateTimeValue(value, timeZone) {
   return "";
 }
 
-export function editDateTimeIso(value, original, timeZone, instantHint = null) {
+export function editDateTimeIso(
+  value, original, timeZone, instantHint = null,
+  model = classifyEventTimeModel(original, original, timeZone),
+) {
   if (wallUtcMilliseconds(value) === null) return null;
   if (instantHint && editDateTimeValue(instantHint, timeZone) === value) {
     const hintedDate = new Date(instantHint);
     if (!Number.isNaN(hintedDate.getTime()) &&
-        instantEditDateTimeIso(hintedDate, original, timeZone) === instantHint) {
+        instantEditDateTimeIso(hintedDate, original, timeZone, model) === instantHint) {
       return instantHint;
     }
   }
   if (value === editDateTimeValue(original, timeZone)) return original;
 
-  const originalDate = new Date(original);
   const originalOffset = isoOffsetMinutes(original);
-  const originalUsesNamedZone = Boolean(
-    timeZone && originalOffset !== null && !Number.isNaN(originalDate.getTime()) &&
-    namedZoneOffsetMinutes(originalDate, timeZone) === originalOffset
-  );
-
-  if (originalUsesNamedZone || originalOffset === null) {
-    const preferredOffset = originalUsesNamedZone ? originalOffset : null;
-    const zoneOffset = wallZoneOffsetMinutes(value, timeZone, preferredOffset);
+  if (model.kind === "named" && timeZone) {
+    const zoneOffset = wallZoneOffsetMinutes(value, timeZone, originalOffset);
     if (zoneOffset !== null) return value + ":00" + formatOffset(zoneOffset);
-    if (timeZone) return null;
+    return null;
   }
 
   if (originalOffset !== null) return value + ":00" + formatOffset(originalOffset);
+  if (timeZone) {
+    const zoneOffset = wallZoneOffsetMinutes(value, timeZone);
+    return zoneOffset !== null ? value + ":00" + formatOffset(zoneOffset) : null;
+  }
 
   const local = new Date(value + ":00");
   if (Number.isNaN(local.getTime())) return null;
   return value + ":00" + formatOffset(-local.getTimezoneOffset());
 }
 
-export function instantEditDateTimeIso(date, original, timeZone) {
+export function instantEditDateTimeIso(
+  date, original, timeZone,
+  model = classifyEventTimeModel(original, original, timeZone),
+) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
-  const originalDate = new Date(original);
   const originalOffset = isoOffsetMinutes(original);
-  const originalUsesNamedZone = Boolean(
-    timeZone && originalOffset !== null && !Number.isNaN(originalDate.getTime()) &&
-    namedZoneOffsetMinutes(originalDate, timeZone) === originalOffset
-  );
-
-  if (originalUsesNamedZone) {
+  if (model.kind === "named" && timeZone) {
     const wall = formatDateTimeParts(date, timeZone);
     const offset = namedZoneOffsetMinutes(date, timeZone);
     return wall && offset !== null ? wall + ":00" + formatOffset(offset) : null;
@@ -207,8 +224,11 @@ export function instantEditDateTimeIso(date, original, timeZone) {
   return wall + ":00" + formatOffset(-date.getTimezoneOffset());
 }
 
-export function instantEditDateTimeValue(date, original, timeZone) {
-  const iso = instantEditDateTimeIso(date, original, timeZone);
+export function instantEditDateTimeValue(
+  date, original, timeZone,
+  model = classifyEventTimeModel(original, original, timeZone),
+) {
+  const iso = instantEditDateTimeIso(date, original, timeZone, model);
   return iso ? editDateTimeValue(iso, timeZone) : "";
 }
 
@@ -309,11 +329,12 @@ export function normalizeEventTemporalEdit({
   if (!startDateTime || !endDateTime) {
     return {valid: false, error: "Start and end times are required."};
   }
+  const model = classifyEventTimeModel(originalStart, originalEnd, timeZone);
   const start = editDateTimeIso(
-    startDateTime, originalStart, timeZone, startInstantHint
+    startDateTime, originalStart, timeZone, startInstantHint, model
   );
   const end = editDateTimeIso(
-    endDateTime, originalEnd, timeZone, endInstantHint
+    endDateTime, originalEnd, timeZone, endInstantHint, model
   );
   if (!start || !end) {
     return {
