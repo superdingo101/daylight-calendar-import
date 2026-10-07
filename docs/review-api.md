@@ -9,12 +9,14 @@ each mutation; it must not silently overwrite stale state.
 
 `list_pending` returns `imports`. Each summary has `id`, `created_at`,
 `event_count`, `title` (the first event title), `approval_in_flight`,
-`source_kind` (`manual_text`, `image`, or `pdf`), `source_title` (nullable),
+`source_kind` (`manual_text`, `image`, `pdf`, or `email`), `source_title` (nullable),
 `warnings` (strings), and `duplicate_events` (a count of exact candidates
 skipped when the import was created). It does not return source text.
 
 `get_pending` returns the pending source text and event drafts, plus the same
-source metadata and warnings. Its events have stable IDs, statuses, destination
+source metadata and warnings. Email imports may additionally include `source_sender`,
+the normalized first `From` header; the field is omitted when no sender was available.
+Its events have stable IDs, statuses, destination
 calendars, and editable draft fields. A write-uncertain event must be resolved
 with `resolve_pending_event` before it can be edited, rejected, or retried.
 Recovery controls send the loaded `expected_event` snapshot. The backend
@@ -43,7 +45,7 @@ lock before any calendar write or rejection; stale decisions fail with a refresh
 message. Existing action callers may omit the snapshot for compatibility.
 
 Existing stored imports without source metadata load as `manual_text` with no
-source title, warnings, or skipped duplicate count. Upload bytes, temporary
+source title or sender, warnings, or skipped duplicate count. Upload bytes, temporary
 media paths, upstream source IDs, and source fingerprints are not exposed by
 the read actions.
 

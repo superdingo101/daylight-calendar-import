@@ -189,6 +189,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             calendar_entity=default_calendar,
             source_kind=source.kind.value,
             source_title=source.title,
+            source_sender=source.metadata.get("sender"),
             warnings=outcome.warnings,
             activity_id=activity_id,
         )

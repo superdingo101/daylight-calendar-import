@@ -156,6 +156,7 @@ def normalize_email(
         )
         _, text = _extract_body(message)
         title = _first_header(message, "subject")
+        sender = _first_header(message, "from")
     except Exception as exc:
         raise EmailNormalizationError(
             "Email message could not be normalized"
@@ -168,6 +169,7 @@ def normalize_email(
         received_at=envelope.received_at,
         text=text or None,
         title=title or None,
+        metadata={"sender": sender} if sender else {},
         upstream_source_id=identity,
     )
 

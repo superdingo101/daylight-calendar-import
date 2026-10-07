@@ -175,23 +175,28 @@ def test_pending_import_create_and_round_trip():
 
 def test_review_metadata_round_trip_and_legacy_defaults():
     item = PendingImport.create(
-        source_text="Extracted schedule", events=[draft()], source_kind="pdf",
-        source_title="schedule.pdf", warnings=["Event 2 had no date"], duplicate_events=2,
+        source_text="Extracted schedule", events=[draft()], source_kind="email",
+        source_title="School schedule", source_sender="Teacher <teacher@example.test>",
+        warnings=["Event 2 had no date"], duplicate_events=2,
     )
     assert PendingImport.from_dict(item.as_dict()) == item
-    assert item.source_kind == "pdf"
+    assert item.source_kind == "email"
     assert item.as_service_dict()["warnings"] == ["Event 2 had no date"]
     assert item.as_service_dict()["duplicate_events"] == 2
-    assert item.as_dict()["source_title"] == "schedule.pdf"
+    assert item.as_dict()["source_title"] == "School schedule"
+    assert item.as_dict()["source_sender"] == "Teacher <teacher@example.test>"
+    assert item.as_service_dict()["source_sender"] == "Teacher <teacher@example.test>"
     legacy = PendingImport.from_dict({
         "id": item.id, "created_at": item.created_at, "source_text": item.source_text,
         "events": [event.as_dict() for event in item.events],
     })
     assert legacy.source_kind == "manual_text"
     assert legacy.source_title is None
+    assert legacy.source_sender is None
     assert legacy.warnings == ()
     assert legacy.duplicate_events == 0
     assert legacy.as_service_dict()["source_title"] is None
+    assert "source_sender" not in legacy.as_service_dict()
     assert legacy.as_service_dict()["duplicate_events"] == 0
 
 

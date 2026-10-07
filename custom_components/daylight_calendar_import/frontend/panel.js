@@ -725,11 +725,24 @@ export class DaylightImportPanel extends HTMLElement {
       for (const warning of detail.warnings || []) content.append(element("p", `Warning: ${warning}`));
       if (detail.duplicate_events) content.append(element("p", `${detail.duplicate_events} duplicates skipped`));
       content.append(element("h2", "Source context"));
-      const source = element("p", detail.source_text || "No source text available.", "source");
-      source.tabIndex = 0;
-      source.setAttribute("role", "region");
-      source.setAttribute("aria-label", "Source text");
-      content.append(source);
+      if (detail.source_kind === "email") {
+        const source = element("div", "", "source");
+        source.tabIndex = 0;
+        source.setAttribute("role", "region");
+        source.setAttribute("aria-label", "Email source details");
+        source.append(
+          element("p", `Email title: ${detail.source_title || "No subject"}`),
+          element("p", `Email sender: ${detail.source_sender || "Unknown sender"}`),
+          element("p", `Received: ${activityTime(detail.created_at, this._hass)}`),
+        );
+        content.append(source);
+      } else {
+        const source = element("p", detail.source_text || "No source text available.", "source");
+        source.tabIndex = 0;
+        source.setAttribute("role", "region");
+        source.setAttribute("aria-label", "Source text");
+        content.append(source);
+      }
       content.append(element("h2", "Events"));
       const ready = detail.events.filter(event => event.status === "pending");
       if (ready.length > 1 && !this._editingId && !this._decision && !this._resolution) {
