@@ -1111,3 +1111,245 @@ test("reload_failed refreshes persisted settings and keeps restart warning", asy
   await panel.saveGeneralSettings(form);
   assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
 });
+
+
+test("settings pending save exposes and focuses a busy status", async () => {
+  let resolveSave;
+  const pending = new Promise(resolve => { resolveSave = resolve; });
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "daylight_calendar_import/settings/core/update") return pending;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  const form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  const saving = panel.saveGeneralSettings(form);
+  await flush();
+
+  const status = panel._content.querySelector("[data-settings-saving]");
+  assert.ok(status);
+  assert.equal(status.attributes.role, "status");
+  assert.equal(status.tabIndex, -1);
+  assert.equal(globalThis.focusedNode, status);
+
+  resolveSave({...snapshot, ai_task_entity: "ai_task.google"});
+  await saving;
+});
+
+test("reload_failed keeps submitted patch when reconciliation also fails", async () => {
+  let getCount = 0;
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        getCount += 1;
+        if (getCount === 1) return snapshot;
+        throw new Error("Transient settings refresh failure");
+      }
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        throw {
+          code: "reload_failed",
+          message: "Settings were saved, but Daylight could not reload. Restart Home Assistant.",
+        };
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+
+  assert.equal(panel._settings.ai_task_entity, "ai_task.google");
+  assert.equal(panel._settingsDraft, null);
+  assert.match(panel._settingsError, /Transient settings refresh failure/);
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("ai_task_entity").value, "ai_task.google");
+});
+
+test("new save error receives focus ahead of an older reload warning", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let updateCount = 0;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        return {...snapshot, ai_task_entity: "ai_task.google"};
+      }
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        updateCount += 1;
+        if (updateCount === 1) {
+          throw {
+            code: "reload_failed",
+            message: "Settings were saved, but Daylight could not reload. Restart Home Assistant.",
+          };
+        }
+        throw new Error("Network failed");
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+  assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
+
+  form = find(panel._content, "form");
+  await panel.saveGeneralSettings(form);
+
+  const currentError = panel._content.querySelector("[data-settings-save-error]");
+  const oldWarning = panel._content.querySelector("[data-settings-reload-warning]");
+  assert.ok(currentError);
+  assert.ok(oldWarning);
+  assert.equal(globalThis.focusedNode, currentError);
+});
+
+test("successful changed save clears restart warning but no-op save preserves it", async () => {
+  let current = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let updateCount = 0;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return current;
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        updateCount += 1;
+        current = {...current, ai_task_entity: message.ai_task_entity};
+        if (updateCount === 1) {
+          throw {
+            code: "reload_failed",
+            message: "Settings were saved, but Daylight could not reload. Restart Home Assistant.",
+          };
+        }
+        return current;
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+  assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
+
+  form = find(panel._content, "form");
+  await panel.saveGeneralSettings(form);
+  assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
+
+  form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.openai";
+  await panel.saveGeneralSettings(form);
+  assert.equal(panel._settingsReloadWarning, null);
+});
