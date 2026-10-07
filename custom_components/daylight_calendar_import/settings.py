@@ -185,6 +185,24 @@ def settings_snapshot(entry: ConfigEntry) -> dict[str, Any]:
     }
 
 
+async def async_save_option_patch(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    patch: Mapping[str, Any],
+) -> None:
+    """Merge an option patch into the latest state and reload the entry."""
+    hass.config_entries.async_update_entry(
+        entry,
+        options={**entry.options, **patch},
+    )
+    if not await hass.config_entries.async_reload(entry.entry_id):
+        raise SettingsValidationError(
+            "reload_failed",
+            "Settings were saved, but Daylight could not reload. "
+            "Restart Home Assistant before relying on the new settings.",
+        )
+
+
 async def async_validate_email_options(
     entry_id: str,
     current: Mapping[str, Any],
