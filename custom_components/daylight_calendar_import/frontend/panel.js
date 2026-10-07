@@ -1,5 +1,5 @@
 import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
-import {isSettingsErrorCode, loadSettings, saveCoreSettings, settingsErrorMessage} from "./settings.js";
+import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, settingsErrorMessage} from "./settings.js";
 
 const css = `
   :host {
@@ -287,6 +287,29 @@ function settingsPatchMatches(settings, patch) {
   });
 }
 
+function emailDraftMatches(settings, draft) {
+  const email = settings?.email;
+  if (!email || !draft) return false;
+  if (draft.password) return false;
+  return Object.entries(draft).every(([key, value]) =>
+    key === "password" || value === email[key]);
+}
+
+function settingsDraftMatches(settings, tab, draft) {
+  return tab === "email" ?
+    emailDraftMatches(settings, draft) :
+    settingsPatchMatches(settings, draft);
+}
+
+function emailSaveConfirmed(previousEmail, reconciledEmail, draft) {
+  if (!emailDraftMatches({email: reconciledEmail}, {...draft, password: ""})) {
+    return false;
+  }
+  if (!draft.enabled || !draft.password) return true;
+  return previousEmail?.password_configured !== true &&
+    reconciledEmail?.password_configured === true;
+}
+
 function isDefinitiveSettingsError(error) {
   return typeof error === "object" && error !== null &&
     typeof error.code === "string" && typeof error.message === "string";
@@ -325,7 +348,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._settingsTab = "general";
     this._settingsError = null;
     this._settingsReloadWarning = null;
-    this._settingsDrafts = {general: null, calendars: null};
+    this._settingsDrafts = {general: null, calendars: null, email: null};
     this._settingsSaving = false;
     const style = element("style", css);
     const header = document.createElement("header");
@@ -474,9 +497,9 @@ export class DaylightImportPanel extends HTMLElement {
       const settings = await loadSettings(this._hass);
       if (generation !== this._generation) return;
       this._settings = settings;
-      for (const tab of ["general", "calendars"]) {
+      for (const tab of ["general", "calendars", "email"]) {
         if (this._settingsDrafts[tab] &&
-            settingsPatchMatches(settings, this._settingsDrafts[tab])) {
+            settingsDraftMatches(settings, tab, this._settingsDrafts[tab])) {
           this._settingsDrafts[tab] = null;
         }
       }
@@ -552,7 +575,7 @@ export class DaylightImportPanel extends HTMLElement {
 
   _setSettingsDraft(tab, patch) {
     this._settingsDrafts[tab] =
-      settingsPatchMatches(this._settings, patch) ? null : patch;
+      settingsDraftMatches(this._settings, tab, patch) ? null : patch;
   }
 
   async saveGeneralSettings(form) {
@@ -603,7 +626,11 @@ export class DaylightImportPanel extends HTMLElement {
   settingsSubnav() {
     const nav = element("nav", "", "settings-tabs");
     nav.setAttribute("aria-label", "Settings sections");
-    for (const [tab, label] of [["general", "General"], ["calendars", "Calendars"]]) {
+    for (const [tab, label] of [
+      ["general", "General"],
+      ["calendars", "Calendars"],
+      ["email", "Email"],
+    ]) {
       const button = element("button", label);
       button.type = "button";
       button.disabled = this._settingsSaving;
@@ -715,6 +742,225 @@ export class DaylightImportPanel extends HTMLElement {
     form.addEventListener("submit", event => {
       event.preventDefault();
       void this.saveCalendarSettings(form);
+    });
+    setSettingsFormBusy(form, this._settingsSaving);
+    section.append(form);
+    return section;
+  }
+
+  _emailDraftFromForm(form) {
+    const fields = form.elements;
+    return {
+      enabled: fields.namedItem("email_enabled").checked,
+      host: fields.namedItem("email_host").value.trim(),
+      port: Number(fields.namedItem("email_port").value),
+      username: fields.namedItem("email_username").value.trim(),
+      password: fields.namedItem("email_password").value,
+      mailbox: fields.namedItem("email_mailbox").value.trim(),
+      verify_ssl: fields.namedItem("email_verify_ssl").checked,
+    };
+  }
+
+  async saveEmailSettingsForm(form) {
+    if (this._settingsSaving || !this._settings) return;
+    const draft = this._emailDraftFromForm(form);
+    this._setSettingsDraft("email", draft);
+    const entryId = this._settings.entry_id;
+    const previousEmail = this._settings.email;
+    const payload = {entry_id: entryId, enabled: draft.enabled};
+    if (draft.enabled) {
+      Object.assign(payload, {
+        host: draft.host,
+        port: draft.port,
+        username: draft.username,
+        password: draft.password,
+        mailbox: draft.mailbox,
+        verify_ssl: draft.verify_ssl,
+      });
+    }
+
+    this._settingsSaving = true;
+    this._settingsError = null;
+    this._announcement.replaceChildren(element("span", "Saving settings…"));
+    this.render();
+    this._content.querySelector("[data-settings-saving]")?.focus();
+    try {
+      this._settings = await saveEmailSettings(this._hass, payload);
+      this._settingsDrafts.email = null;
+      this._settingsReloadWarning = null;
+      this._announcement.replaceChildren(element(
+        "span",
+        draft.enabled ? "Direct IMAP settings saved" : "Direct IMAP disabled",
+      ));
+    } catch (error) {
+      this._announcement.replaceChildren();
+      const message = settingsErrorMessage(
+        error, "Could not save Direct IMAP settings.",
+      );
+      if (isSettingsErrorCode(error, "reload_failed")) {
+        this._settingsReloadWarning = message;
+        const visibleEmail = draft.enabled ? {
+          enabled: true,
+          host: draft.host,
+          port: draft.port,
+          username: draft.username,
+          mailbox: draft.mailbox,
+          verify_ssl: draft.verify_ssl,
+          password_configured:
+            previousEmail.password_configured || Boolean(draft.password),
+        } : {enabled: false};
+        this._settings = {
+          ...this._settings,
+          email: {...this._settings.email, ...visibleEmail},
+        };
+        this._settingsDrafts.email = null;
+        try {
+          this._settings = await loadSettings(this._hass);
+        } catch (refreshError) {
+          this._settingsError = settingsErrorMessage(
+            refreshError,
+            "The saved settings could not be refreshed. Try again after restarting Home Assistant.",
+          );
+        }
+      } else if (isDefinitiveSettingsError(error)) {
+        this._settingsError = message;
+      } else {
+        try {
+          const reconciled = await loadSettings(this._hass);
+          this._settings = reconciled;
+          if (emailSaveConfirmed(previousEmail, reconciled.email, draft)) {
+            this._settingsDrafts.email = null;
+            this._settingsReloadWarning = SETTINGS_RUNTIME_UNCERTAIN_WARNING;
+            this._announcement.replaceChildren(element(
+              "span",
+              draft.enabled ? "Direct IMAP settings saved" : "Direct IMAP disabled",
+            ));
+          } else {
+            this._settingsError = message;
+          }
+        } catch {
+          this._settingsError =
+            `${message} Daylight could not confirm whether the change was saved. ` +
+            "The submitted values are being kept until settings can be refreshed.";
+        }
+      }
+    } finally {
+      this._settingsSaving = false;
+      this.render();
+      (this._content.querySelector("[data-settings-save-error]") ||
+        this._content.querySelector("[data-settings-reload-warning]") ||
+        this._content.querySelector("h2") || this._refreshButton)?.focus();
+    }
+  }
+
+  emailSettingsView() {
+    const section = element("section", "", "settings-card");
+    const heading = element("h2", "Email");
+    heading.tabIndex = -1;
+    section.append(
+      heading,
+      element(
+        "p",
+        "Configure optional Direct IMAP ingestion. Daylight reads every unread message in the configured mailbox, so a dedicated address or folder is recommended.",
+        "settings-help",
+      ),
+    );
+
+    const form = document.createElement("form");
+    const email = this._settings.email;
+    const draft = this._settingsDrafts.email;
+    const value = (key, fallback) => draft?.[key] ?? fallback;
+
+    const enabledLabel = document.createElement("label");
+    const enabled = document.createElement("input");
+    enabled.type = "checkbox";
+    enabled.name = "email_enabled";
+    enabled.checked = value("enabled", email.enabled);
+    enabledLabel.append(enabled, element("span", "Enable Direct IMAP ingestion"));
+    form.append(enabledLabel);
+
+    const connection = document.createElement("fieldset");
+    connection.append(element("legend", "Connection"));
+    connection.disabled = !enabled.checked;
+    form.append(connection);
+
+    const textField = (name, labelText, field, fallback, type = "text") => {
+      const label = element("label", labelText);
+      const input = document.createElement("input");
+      input.type = type;
+      input.name = name;
+      input.value = value(field, fallback) ?? "";
+      label.append(input);
+      connection.append(label);
+      return input;
+    };
+
+    const host = textField("email_host", "IMAP host", "host", email.host);
+    host.autocomplete = "off";
+
+    const port = textField(
+      "email_port", "IMAP port", "port", email.port ?? 993, "number",
+    );
+    port.min = "1";
+    port.max = "65535";
+    port.step = "1";
+
+    const username = textField(
+      "email_username", "Username", "username", email.username,
+    );
+    username.autocomplete = "username";
+
+    const password = textField(
+      "email_password", "Password / app password", "password", "", "password",
+    );
+    password.autocomplete = "new-password";
+    password.placeholder = email.password_configured ?
+      "Configured — leave blank to keep existing password" :
+      "Enter password or app password";
+
+    textField(
+      "email_mailbox", "Mailbox / folder", "mailbox", email.mailbox ?? "INBOX",
+    );
+
+    const sslLabel = document.createElement("label");
+    const verifySsl = document.createElement("input");
+    verifySsl.type = "checkbox";
+    verifySsl.name = "email_verify_ssl";
+    verifySsl.checked = value("verify_ssl", email.verify_ssl) !== false;
+    sslLabel.append(verifySsl, element("span", "Verify TLS certificate"));
+    connection.append(sslLabel);
+
+    const updateDraft = () => {
+      connection.disabled = !enabled.checked;
+      this._setSettingsDraft("email", this._emailDraftFromForm(form));
+    };
+    enabled.addEventListener("change", updateDraft);
+    verifySsl.addEventListener("change", updateDraft);
+    for (const input of [host, port, username, password,
+      form.elements.namedItem("email_mailbox")]) {
+      input.addEventListener("input", updateDraft);
+    }
+
+    if (email.password_configured) {
+      connection.append(element(
+        "p",
+        "A password is stored securely in the Home Assistant config entry. Leave the field blank to keep it.",
+        "settings-help",
+      ));
+    }
+
+    const save = element(
+      "button",
+      this._settingsSaving && enabled.checked ?
+        "Validating and saving…" :
+        this._settingsSaving ? "Saving…" : "Save email settings",
+    );
+    save.type = "submit";
+    save.disabled = this._settingsSaving;
+    form.append(save);
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      void this.saveEmailSettingsForm(form);
     });
     setSettingsFormBusy(form, this._settingsSaving);
     section.append(form);
@@ -1102,7 +1348,9 @@ export class DaylightImportPanel extends HTMLElement {
         }
         content.append(
           this._settingsTab === "calendars" ?
-            this.calendarSettingsView() : this.generalSettingsView(),
+            this.calendarSettingsView() :
+            this._settingsTab === "email" ?
+              this.emailSettingsView() : this.generalSettingsView(),
         );
       }
       this._content.replaceChildren(content);

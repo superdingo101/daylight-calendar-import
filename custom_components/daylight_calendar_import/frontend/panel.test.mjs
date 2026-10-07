@@ -2207,3 +2207,467 @@ test("unsaved AI draft remains visible if the selected entity becomes unavailabl
     true,
   );
 });
+
+
+test("admin can configure and disable Direct IMAP from native Email settings", async () => {
+  const calls = [];
+  let current = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {
+      enabled: true,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      calls.push(message);
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return current;
+      if (message.type === "daylight_calendar_import/settings/email/update") {
+        current = {
+          ...current,
+          email: {
+            ...current.email,
+            enabled: message.enabled,
+            ...(message.enabled ? {
+              host: message.host,
+              port: message.port,
+              username: message.username,
+              password_configured:
+                current.email.password_configured || Boolean(message.password),
+              mailbox: message.mailbox,
+              verify_ssl: message.verify_ssl,
+            } : {}),
+          },
+        };
+        return current;
+      }
+      throw new Error(`Unexpected call: ${message.type}`);
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  assert.equal(find(panel._content, "h2").textContent, "Email");
+  assert.equal(
+    panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+      .some(button => button.textContent === "Email"),
+    true,
+  );
+
+  let form = find(panel._content, "form");
+  let fields = form.elements;
+  assert.equal(fields.namedItem("email_password").value, "");
+  assert.match(fields.namedItem("email_password").placeholder, /Configured/);
+  assert.equal(find(form, "fieldset").disabled, false);
+
+  fields.namedItem("email_host").value = "imap.new.test";
+  fields.namedItem("email_port").value = "1993";
+  fields.namedItem("email_username").value = "new@example.test";
+  fields.namedItem("email_mailbox").value = "Calendar";
+  fields.namedItem("email_verify_ssl").checked = false;
+  await panel.saveEmailSettingsForm(form);
+
+  const saved = calls.filter(call =>
+    call.type === "daylight_calendar_import/settings/email/update").at(-1);
+  assert.deepEqual(saved, {
+    type: "daylight_calendar_import/settings/email/update",
+    entry_id: "entry-1",
+    enabled: true,
+    host: "imap.new.test",
+    port: 1993,
+    username: "new@example.test",
+    password: "",
+    mailbox: "Calendar",
+    verify_ssl: false,
+  });
+  assert.equal(panel._settings.email.host, "imap.new.test");
+  assert.equal(panel._settingsDrafts.email, null);
+
+  form = find(panel._content, "form");
+  fields = form.elements;
+  const enabled = fields.namedItem("email_enabled");
+  enabled.checked = false;
+  enabled.change();
+  assert.equal(find(form, "fieldset").disabled, true);
+  await panel.saveEmailSettingsForm(form);
+
+  const disabled = calls.filter(call =>
+    call.type === "daylight_calendar_import/settings/email/update").at(-1);
+  assert.deepEqual(disabled, {
+    type: "daylight_calendar_import/settings/email/update",
+    entry_id: "entry-1",
+    enabled: false,
+  });
+  assert.equal(panel._settings.email.enabled, false);
+  assert.equal(panel._settingsDrafts.email, null);
+});
+
+test("Email validation failure preserves enabled submitted values and replacement password", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {
+      enabled: false,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "daylight_calendar_import/settings/email/update") {
+        throw {
+          code: "invalid_auth",
+          message: "The IMAP server rejected the supplied credentials.",
+        };
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  let form = find(panel._content, "form");
+  let fields = form.elements;
+  fields.namedItem("email_enabled").checked = true;
+  fields.namedItem("email_enabled").change();
+  fields.namedItem("email_host").value = "imap.retry.test";
+  fields.namedItem("email_host").input();
+  fields.namedItem("email_port").value = "1993";
+  fields.namedItem("email_port").input();
+  fields.namedItem("email_username").value = "retry@example.test";
+  fields.namedItem("email_username").input();
+  fields.namedItem("email_password").value = "new-secret";
+  fields.namedItem("email_password").input();
+  fields.namedItem("email_mailbox").value = "Calendar";
+  fields.namedItem("email_mailbox").input();
+  fields.namedItem("email_verify_ssl").checked = false;
+  fields.namedItem("email_verify_ssl").change();
+
+  await panel.saveEmailSettingsForm(form);
+
+  assert.match(panel._settingsError, /rejected/);
+  assert.ok(panel._settingsDrafts.email);
+  form = find(panel._content, "form");
+  fields = form.elements;
+  assert.equal(fields.namedItem("email_enabled").checked, true);
+  assert.equal(find(form, "fieldset").disabled, false);
+  assert.equal(fields.namedItem("email_host").value, "imap.retry.test");
+  assert.equal(fields.namedItem("email_port").value, 1993);
+  assert.equal(fields.namedItem("email_username").value, "retry@example.test");
+  assert.equal(fields.namedItem("email_password").value, "new-secret");
+  assert.equal(fields.namedItem("email_mailbox").value, "Calendar");
+  assert.equal(fields.namedItem("email_verify_ssl").checked, false);
+  assert.equal(
+    globalThis.focusedNode,
+    panel._content.querySelector("[data-settings-save-error]"),
+  );
+});
+
+test("unsaved Email edits survive tab switches and settings refresh", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {
+      enabled: false,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  let form = find(panel._content, "form");
+  let fields = form.elements;
+  fields.namedItem("email_enabled").checked = true;
+  fields.namedItem("email_enabled").change();
+  fields.namedItem("email_host").value = "imap.unsaved.test";
+  fields.namedItem("email_host").input();
+  fields.namedItem("email_password").value = "unsaved-secret";
+  fields.namedItem("email_password").input();
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Email").click();
+
+  form = find(panel._content, "form");
+  fields = form.elements;
+  assert.equal(fields.namedItem("email_enabled").checked, true);
+  assert.equal(fields.namedItem("email_host").value, "imap.unsaved.test");
+  assert.equal(fields.namedItem("email_password").value, "unsaved-secret");
+
+  await panel.showSettings("email", true);
+  form = find(panel._content, "form");
+  fields = form.elements;
+  assert.equal(fields.namedItem("email_enabled").checked, true);
+  assert.equal(fields.namedItem("email_host").value, "imap.unsaved.test");
+  assert.equal(fields.namedItem("email_password").value, "unsaved-secret");
+});
+
+test("Email reload failure reflects persisted settings and clears replacement password draft", async () => {
+  let persisted = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {
+      enabled: true,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: false,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  let updateAttempted = false;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return persisted;
+      if (message.type === "daylight_calendar_import/settings/email/update") {
+        updateAttempted = true;
+        persisted = {
+          ...persisted,
+          email: {
+            enabled: true,
+            host: message.host,
+            port: message.port,
+            username: message.username,
+            password_configured: true,
+            mailbox: message.mailbox,
+            verify_ssl: message.verify_ssl,
+          },
+        };
+        throw {
+          code: "reload_failed",
+          message: "Settings were saved, but Daylight could not reload. Restart Home Assistant.",
+        };
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("email_host").value = "imap.saved.test";
+  form.elements.namedItem("email_password").value = "saved-secret";
+  await panel.saveEmailSettingsForm(form);
+
+  assert.equal(updateAttempted, true);
+  assert.equal(panel._settings.email.host, "imap.saved.test");
+  assert.equal(panel._settings.email.password_configured, true);
+  assert.equal(panel._settingsDrafts.email, null);
+  assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("email_password").value, "");
+});
+
+test("ambiguous Email password replacement remains retryable when prior password existed", async () => {
+  let getCount = 0;
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {
+      enabled: true,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  let reconciled = snapshot;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        getCount += 1;
+        return getCount === 1 ? snapshot : reconciled;
+      }
+      if (message.type === "daylight_calendar_import/settings/email/update") {
+        reconciled = {
+          ...snapshot,
+          email: {
+            ...snapshot.email,
+            host: message.host,
+            username: message.username,
+          },
+        };
+        throw 3;
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("email_host").value = "imap.maybe.test";
+  form.elements.namedItem("email_username").value = "maybe@example.test";
+  form.elements.namedItem("email_password").value = "replacement-secret";
+  await panel.saveEmailSettingsForm(form);
+
+  assert.equal(getCount, 2);
+  assert.match(panel._settingsError, /Could not save Direct IMAP settings/);
+  assert.ok(panel._settingsDrafts.email);
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("email_host").value, "imap.maybe.test");
+  assert.equal(form.elements.namedItem("email_password").value, "replacement-secret");
+});
+
+test("Email controls and settings subnav freeze while save is pending", async () => {
+  let resolveSave;
+  const pending = new Promise(resolve => { resolveSave = resolve; });
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {
+      enabled: true,
+      host: "imap.example.test",
+      port: 993,
+      username: "user@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "daylight_calendar_import/settings/email/update") return pending;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  const form = find(panel._content, "form");
+  const saving = panel.saveEmailSettingsForm(form);
+  await flush();
+
+  const busyForm = find(panel._content, "form");
+  assert.equal(busyForm.attributes["aria-busy"], "true");
+  assert.equal(
+    busyForm.querySelectorAll("input").every(input => input.disabled === true),
+    true,
+  );
+  assert.equal(find(busyForm, "button").disabled, true);
+  assert.equal(
+    panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+      .every(button => button.disabled === true),
+    true,
+  );
+
+  resolveSave(snapshot);
+  await saving;
+});
