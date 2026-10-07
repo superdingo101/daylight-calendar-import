@@ -6,6 +6,7 @@ import {
   editDateTimeIso,
   editDateTimeValue,
   exclusiveAllDayEnd,
+  instantEditDateTimeIso,
   instantEditDateTimeValue,
   normalizeEventTemporalEdit,
   visibleAllDayEnd,
@@ -42,6 +43,27 @@ test("ambiguous fall-back wall times prefer the original named-zone offset", () 
   assert.equal(
     editDateTimeIso("2026-11-01T01:30", "2026-11-01T02:30:00-08:00", zone),
     "2026-11-01T01:30:00-08:00",
+  );
+});
+
+test("generated fold hints preserve the exact duration-synced occurrence", () => {
+  const zone = "America/Los_Angeles";
+  const originalEnd = "2026-11-01T01:30:00-08:00";
+  const firstFoldInstant = new Date("2026-11-01T08:30:00Z");
+  const hint = instantEditDateTimeIso(firstFoldInstant, originalEnd, zone);
+
+  assert.equal(hint, "2026-11-01T01:30:00-07:00");
+  assert.equal(
+    instantEditDateTimeValue(firstFoldInstant, originalEnd, zone),
+    "2026-11-01T01:30",
+  );
+  assert.equal(
+    editDateTimeIso("2026-11-01T01:30", originalEnd, zone, hint),
+    "2026-11-01T01:30:00-07:00",
+  );
+  assert.equal(
+    editDateTimeIso("2026-11-01T01:45", originalEnd, zone, hint),
+    "2026-11-01T01:45:00-08:00",
   );
 });
 
@@ -108,6 +130,25 @@ test("temporal normalization follows card-style range validation", () => {
       timeZone: "America/Los_Angeles",
     }),
     {valid: false, error: "End time must be after start time."},
+  );
+});
+
+test("temporal normalization honors an exact generated fold hint", () => {
+  assert.deepEqual(
+    normalizeEventTemporalEdit({
+      allDay: false,
+      startDateTime: "2026-11-01T00:30",
+      endDateTime: "2026-11-01T01:30",
+      originalStart: "2026-11-01T01:30:00-07:00",
+      originalEnd: "2026-11-01T01:30:00-08:00",
+      timeZone: "America/Los_Angeles",
+      endInstantHint: "2026-11-01T01:30:00-07:00",
+    }),
+    {
+      valid: true,
+      start: "2026-11-01T00:30:00-07:00",
+      end: "2026-11-01T01:30:00-07:00",
+    },
   );
 });
 
