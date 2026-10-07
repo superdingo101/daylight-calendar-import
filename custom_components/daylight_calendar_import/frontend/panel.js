@@ -464,10 +464,11 @@ export class DaylightImportPanel extends HTMLElement {
     (settingsLoadError || this._content.querySelector("h2") || this._refreshButton)?.focus();
   }
 
-  async _saveSettings(save, successMessage, fallbackMessage) {
+  async _saveSettings(patch, save, successMessage, fallbackMessage) {
     this._settingsSaving = true;
     this._settingsError = null;
     this.render();
+    this._content.querySelector("[data-settings-saving]")?.focus();
     try {
       this._settings = await save();
       this._settingsDraft = null;
@@ -476,9 +477,10 @@ export class DaylightImportPanel extends HTMLElement {
       const message = settingsErrorMessage(error, fallbackMessage);
       if (isSettingsErrorCode(error, "reload_failed")) {
         this._settingsReloadWarning = message;
+        this._settings = {...this._settings, ...patch};
+        this._settingsDraft = null;
         try {
           this._settings = await loadSettings(this._hass);
-          this._settingsDraft = null;
         } catch (refreshError) {
           this._settingsError = settingsErrorMessage(
             refreshError,
@@ -491,7 +493,8 @@ export class DaylightImportPanel extends HTMLElement {
     } finally {
       this._settingsSaving = false;
       this.render();
-      (this._content.querySelector(".error") ||
+      (this._content.querySelector("[data-settings-save-error]") ||
+        this._content.querySelector("[data-settings-reload-warning]") ||
         this._content.querySelector("h2") || this._refreshButton)?.focus();
     }
   }
@@ -500,12 +503,11 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._settingsSaving || !this._settings) return;
     const aiTaskEntity = form.elements.namedItem("ai_task_entity").value;
     const entryId = this._settings.entry_id;
-    this._settingsDraft = {tab: "general", ai_task_entity: aiTaskEntity};
+    const patch = {ai_task_entity: aiTaskEntity};
+    this._settingsDraft = {tab: "general", ...patch};
     await this._saveSettings(
-      () => saveCoreSettings(this._hass, {
-        entry_id: entryId,
-        ai_task_entity: aiTaskEntity,
-      }),
+      patch,
+      () => saveCoreSettings(this._hass, {entry_id: entryId, ...patch}),
       "General settings saved",
       "Could not save general settings.",
     );
@@ -518,11 +520,11 @@ export class DaylightImportPanel extends HTMLElement {
       .filter(input => input.type === "checkbox" && input.checked)
       .map(input => input.value);
     const defaultCalendar = fields.namedItem("calendar_entity").value;
-    this._settingsDraft = {
-      tab: "calendars",
+    const patch = {
       calendar_entity: defaultCalendar,
       calendar_entities: allowed,
     };
+    this._settingsDraft = {tab: "calendars", ...patch};
     if (!allowed.includes(defaultCalendar)) {
       this._settingsError = "The default calendar must also be selected as writable.";
       this.render();
@@ -533,11 +535,8 @@ export class DaylightImportPanel extends HTMLElement {
 
     const entryId = this._settings.entry_id;
     await this._saveSettings(
-      () => saveCoreSettings(this._hass, {
-        entry_id: entryId,
-        calendar_entity: defaultCalendar,
-        calendar_entities: allowed,
-      }),
+      patch,
+      () => saveCoreSettings(this._hass, {entry_id: entryId, ...patch}),
       "Calendar settings saved",
       "Could not save calendar settings.",
     );
@@ -1000,6 +999,13 @@ export class DaylightImportPanel extends HTMLElement {
         content.append(error);
       } else {
         content.append(this.settingsSubnav());
+        if (this._settingsSaving) {
+          const saving = element("p", "Saving settings…", "status");
+          saving.setAttribute("role", "status");
+          saving.setAttribute("data-settings-saving", "");
+          saving.tabIndex = -1;
+          content.append(saving);
+        }
         if (this._settingsReloadWarning) {
           const warning = element("p", this._settingsReloadWarning, "error");
           warning.setAttribute("role", "alert");
@@ -1010,6 +1016,7 @@ export class DaylightImportPanel extends HTMLElement {
         if (this._settingsError) {
           const error = element("p", this._settingsError, "error");
           error.setAttribute("role", "alert");
+          error.setAttribute("data-settings-save-error", "");
           error.tabIndex = -1;
           content.append(error);
         }
