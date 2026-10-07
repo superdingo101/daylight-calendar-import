@@ -231,6 +231,55 @@ export function dateOnlyFromTimed(value, timeZone) {
   return local ? local.slice(0, 10) : "";
 }
 
+export function timedEditToAllDayRange(startDateTime, endDateTime) {
+  if (wallUtcMilliseconds(startDateTime) === null ||
+      wallUtcMilliseconds(endDateTime) === null) return null;
+  const startDate = startDateTime.slice(0, 10);
+  const endDate = endDateTime.slice(0, 10);
+  const endTime = endDateTime.slice(11);
+  const visibleEnd = endTime === "00:00" && endDate > startDate ?
+    shiftIsoDate(endDate, -1) : endDate;
+  if (!visibleEnd || visibleEnd < startDate) return null;
+  return {startDate, endDate: visibleEnd};
+}
+
+export function allDayEditToTimedRange(
+  startDate,
+  endDate,
+  previousStartDateTime = "",
+  previousEndDateTime = "",
+  preserveTimes = false,
+) {
+  if (!validIsoDate(startDate) || !validIsoDate(endDate) || endDate < startDate) {
+    return null;
+  }
+
+  const previousStartValid = wallUtcMilliseconds(previousStartDateTime) !== null;
+  const previousEndValid = wallUtcMilliseconds(previousEndDateTime) !== null;
+  if (preserveTimes && previousStartValid && previousEndValid) {
+    const startTime = previousStartDateTime.slice(11);
+    const endTime = previousEndDateTime.slice(11);
+    const previousStartDate = previousStartDateTime.slice(0, 10);
+    const previousEndDate = previousEndDateTime.slice(0, 10);
+    const endAtExclusiveMidnight =
+      endTime === "00:00" && previousEndDate > previousStartDate;
+    const timedEndDate = endAtExclusiveMidnight ?
+      exclusiveAllDayEnd(endDate) : endDate;
+    if (!timedEndDate) return null;
+    return {
+      startDateTime: startDate + "T" + startTime,
+      endDateTime: timedEndDate + "T" + endTime,
+    };
+  }
+
+  const exclusiveEnd = exclusiveAllDayEnd(endDate);
+  if (!exclusiveEnd) return null;
+  return {
+    startDateTime: startDate + "T00:00",
+    endDateTime: exclusiveEnd + "T00:00",
+  };
+}
+
 export function normalizeEventTemporalEdit({
   allDay,
   startDate,
