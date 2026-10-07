@@ -9,7 +9,8 @@ on:
     - cron: "0 0 * * *"
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   validate-hacs:
@@ -19,6 +20,12 @@ jobs:
         uses: "hacs/action@main"
         with:
           category: "integration"
-          # These checks read repository/default-branch metadata, so an
-          # unmerged PR cannot satisfy them even when it adds the license.
-          ignore: ${{ github.event_name == 'pull_request' && 'license topics' || '' }}
+          comment: false
+
+  validate-hassfest:
+    name: Hassfest validation
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Hassfest validation
+        uses: home-assistant/actions/hassfest@master
