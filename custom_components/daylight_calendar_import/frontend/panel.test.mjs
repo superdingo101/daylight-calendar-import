@@ -812,6 +812,16 @@ test("duration sync preserves the generated occurrence inside a fall-back fold",
   start.change();
   assert.equal(end.value, "2026-11-01T01:30");
 
+  const allDay = form.elements.namedItem("all_day");
+  allDay.checked = true;
+  allDay.change();
+  assert.equal(form.elements.namedItem("start_date").value, "2026-11-01");
+  assert.equal(form.elements.namedItem("end_date").value, "2026-11-01");
+  allDay.checked = false;
+  allDay.change();
+  assert.equal(start.value, "2026-11-01T00:30");
+  assert.equal(end.value, "2026-11-01T01:30");
+
   await panel.saveEdit(current, form);
 
   const editCall = calls.findLast(call => call.service === "edit_pending_event");
