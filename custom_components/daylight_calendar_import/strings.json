@@ -48,7 +48,8 @@
       "invalid_mailbox": "The configured mailbox could not be selected or explicitly disallows the required \\Seen flag change.",
       "invalid_email_config": "The email configuration is invalid.",
       "cannot_connect": "Unable to connect to the IMAP server.",
-      "default_not_allowed": "The default calendar must be included in the allowed calendars."
+      "default_not_allowed": "The default calendar must be included in the allowed calendars.",
+      "reload_failed": "Settings were saved, but Daylight could not reload. Restart Home Assistant before relying on the new settings."
     }
   }
 }
