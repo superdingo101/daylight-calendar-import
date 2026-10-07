@@ -67,6 +67,19 @@ test("generated fold hints preserve the exact duration-synced occurrence", () =>
   );
 });
 
+test("noncanonical fold hints cannot override the event time model", () => {
+  const zone = "America/Los_Angeles";
+  assert.equal(
+    editDateTimeIso(
+      "2026-11-01T01:30",
+      "2026-11-01T01:30:00-08:00",
+      zone,
+      "2026-11-01T01:30:00-06:00",
+    ),
+    "2026-11-01T01:30:00-08:00",
+  );
+});
+
 test("fixed-offset events keep their fixed offset when it does not match the HA zone", () => {
   assert.equal(
     editDateTimeIso(
