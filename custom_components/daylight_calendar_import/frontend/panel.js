@@ -1435,11 +1435,24 @@ export class DaylightImportPanel extends HTMLElement {
     let preserveTimedTimes = !event.all_day;
     allDay.addEventListener("change", () => {
       if (allDay.checked) {
-        const range = timedEditToAllDayRange(start.value, end.value);
+        const temporal = normalizeEventTemporalEdit({
+          allDay: false,
+          startDateTime: start.value,
+          endDateTime: end.value,
+          originalStart: event.start,
+          originalEnd: event.end,
+          timeZone,
+          startInstantHint: start._daylightInstantHint || null,
+          endInstantHint: end._daylightInstantHint || null,
+        });
+        const range = temporal.valid ?
+          timedEditToAllDayRange(start.value, end.value) : null;
         if (!range) {
           allDay.checked = false;
           setEditDateMode(form, false);
-          const message = "Fix the start and end times before switching to all day.";
+          const message = temporal.valid ?
+            "Fix the start and end times before switching to all day." :
+            temporal.error;
           this._editError = message;
           this._announcement.replaceChildren(element("span", message));
           showEditError(form, message);
