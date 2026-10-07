@@ -277,6 +277,21 @@ function setSettingsFormBusy(form, busy) {
   }
 }
 
+function settingsPatchMatches(settings, patch) {
+  return Object.entries(patch).every(([key, value]) => {
+    const current = settings?.[key];
+    return Array.isArray(value) ?
+      Array.isArray(current) && value.length === current.length &&
+        value.every((item, index) => item === current[index]) :
+      value === current;
+  });
+}
+
+function isDefinitiveSettingsError(error) {
+  return typeof error === "object" && error !== null &&
+    typeof error.code === "string" && typeof error.message === "string";
+}
+
 export class DaylightImportPanel extends HTMLElement {
   constructor() {
     super();
@@ -305,7 +320,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._settingsTab = "general";
     this._settingsError = null;
     this._settingsReloadWarning = null;
-    this._settingsDraft = null;
+    this._settingsDrafts = {general: null, calendars: null};
     this._settingsSaving = false;
     const style = element("style", css);
     const header = document.createElement("header");
@@ -454,7 +469,7 @@ export class DaylightImportPanel extends HTMLElement {
       const settings = await loadSettings(this._hass);
       if (generation !== this._generation) return;
       this._settings = settings;
-      this._settingsDraft = null;
+      this._settingsDrafts = {general: null, calendars: null};
       this._status = "ready";
     } catch (error) {
       if (generation !== this._generation) return;
@@ -468,7 +483,7 @@ export class DaylightImportPanel extends HTMLElement {
     (settingsLoadError || this._content.querySelector("h2") || this._refreshButton)?.focus();
   }
 
-  async _saveSettings(patch, save, successMessage, fallbackMessage) {
+  async _saveSettings(tab, patch, save, successMessage, fallbackMessage) {
     const changesPersistedSettings = Object.entries(patch).some(([key, value]) => {
       const current = this._settings[key];
       return Array.isArray(value) ?
@@ -483,7 +498,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._content.querySelector("[data-settings-saving]")?.focus();
     try {
       this._settings = await save();
-      this._settingsDraft = null;
+      this._settingsDrafts[tab] = null;
       if (changesPersistedSettings) this._settingsReloadWarning = null;
       this._announcement.replaceChildren(element("span", successMessage));
     } catch (error) {
@@ -492,7 +507,7 @@ export class DaylightImportPanel extends HTMLElement {
       if (isSettingsErrorCode(error, "reload_failed")) {
         this._settingsReloadWarning = message;
         this._settings = {...this._settings, ...patch};
-        this._settingsDraft = null;
+        this._settingsDrafts[tab] = null;
         try {
           this._settings = await loadSettings(this._hass);
         } catch (refreshError) {
@@ -501,8 +516,24 @@ export class DaylightImportPanel extends HTMLElement {
             "The saved settings could not be refreshed. Try again after restarting Home Assistant.",
           );
         }
-      } else {
+      } else if (isDefinitiveSettingsError(error)) {
         this._settingsError = message;
+      } else {
+        try {
+          const reconciled = await loadSettings(this._hass);
+          this._settings = reconciled;
+          if (settingsPatchMatches(reconciled, patch)) {
+            this._settingsDrafts[tab] = null;
+            if (changesPersistedSettings) this._settingsReloadWarning = null;
+            this._announcement.replaceChildren(element("span", successMessage));
+          } else {
+            this._settingsError = message;
+          }
+        } catch {
+          this._settingsError =
+            `${message} Daylight could not confirm whether the change was saved. ` +
+            "The submitted values are being kept until settings can be refreshed.";
+        }
       }
     } finally {
       this._settingsSaving = false;
@@ -518,8 +549,9 @@ export class DaylightImportPanel extends HTMLElement {
     const aiTaskEntity = form.elements.namedItem("ai_task_entity").value;
     const entryId = this._settings.entry_id;
     const patch = {ai_task_entity: aiTaskEntity};
-    this._settingsDraft = {tab: "general", ...patch};
+    this._settingsDrafts.general = patch;
     await this._saveSettings(
+      "general",
       patch,
       () => saveCoreSettings(this._hass, {entry_id: entryId, ...patch}),
       "General settings saved",
@@ -538,7 +570,7 @@ export class DaylightImportPanel extends HTMLElement {
       calendar_entity: defaultCalendar,
       calendar_entities: allowed,
     };
-    this._settingsDraft = {tab: "calendars", ...patch};
+    this._settingsDrafts.calendars = patch;
     if (!allowed.includes(defaultCalendar)) {
       this._settingsError = "The default calendar must also be selected as writable.";
       this._announcement.replaceChildren();
@@ -549,6 +581,7 @@ export class DaylightImportPanel extends HTMLElement {
 
     const entryId = this._settings.entry_id;
     await this._saveSettings(
+      "calendars",
       patch,
       () => saveCoreSettings(this._hass, {entry_id: entryId, ...patch}),
       "Calendar settings saved",
@@ -568,7 +601,6 @@ export class DaylightImportPanel extends HTMLElement {
         if (this._settingsSaving || this._settingsTab === tab) return;
         this._settingsTab = tab;
         this._settingsError = null;
-        this._settingsDraft = null;
         this._announcement.replaceChildren();
         this.render();
         this._content.querySelector("h2")?.focus();
@@ -593,8 +625,8 @@ export class DaylightImportPanel extends HTMLElement {
     const choices = entityChoices(
       this._hass, "ai_task", 1, [this._settings.ai_task_entity],
     );
-    const selectedAi = this._settingsDraft?.tab === "general" ?
-      this._settingsDraft.ai_task_entity : this._settings.ai_task_entity;
+    const selectedAi = this._settingsDrafts.general?.ai_task_entity ??
+      this._settings.ai_task_entity;
     appendOptions(select, choices, selectedAi);
     label.append(select);
     const save = element("button", this._settingsSaving ? "Saving…" : "Save general settings");
@@ -619,7 +651,7 @@ export class DaylightImportPanel extends HTMLElement {
       element("p", "Choose the default destination and the calendars available during review.", "settings-help"),
     );
     const form = document.createElement("form");
-    const draft = this._settingsDraft?.tab === "calendars" ? this._settingsDraft : null;
+    const draft = this._settingsDrafts.calendars;
     const selectedDefault = draft?.calendar_entity || this._settings.calendar_entity;
     const selectedAllowed = draft?.calendar_entities || this._settings.calendar_entities;
     const configured = [
