@@ -776,6 +776,51 @@ test("timed editor preserves original offsets and follows the Home Assistant zon
   assert.equal(editCall.service_data.event.end, "2026-03-08T05:30:00-07:00");
 });
 
+test("fixed-offset events preserve the entire range model during duration sync", async () => {
+  const panel = new DaylightImportPanel();
+  let current = {
+    id: "fixed",
+    title: "Fixed offset across DST",
+    start: "2026-03-07T10:00:00-08:00",
+    end: "2026-03-09T10:00:00-08:00",
+    all_day: false,
+    status: "pending",
+    confidence: 1,
+  };
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") {
+        return {response: {pending: {id: "one", events: [current]}}};
+      }
+      current = {...current, ...request.service_data.event};
+      return {response: {pending_id: "one", event: current}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "fixed").click();
+  const form = find(panel._content, "form");
+  const start = form.elements.namedItem("start");
+  const end = form.elements.namedItem("end");
+  start.value = "2026-03-09T10:00";
+  start.change();
+  assert.equal(end.value, "2026-03-11T10:00");
+
+  await panel.saveEdit(current, form);
+  const call = calls.findLast(request => request.service === "edit_pending_event");
+  assert.equal(call.service_data.event.start, "2026-03-09T10:00:00-08:00");
+  assert.equal(call.service_data.event.end, "2026-03-11T10:00:00-08:00");
+  assert.equal(
+    new Date(call.service_data.event.end) - new Date(call.service_data.event.start),
+    48 * 60 * 60 * 1000,
+  );
+});
+
 test("duration sync preserves the generated occurrence inside a fall-back fold", async () => {
   const panel = new DaylightImportPanel();
   let current = {
