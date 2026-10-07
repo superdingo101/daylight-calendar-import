@@ -2736,3 +2736,127 @@ test("ambiguous IMAP disable confirms from enabled state only", async () => {
   assert.equal(panel._settingsError, null);
   assert.match(panel._settingsReloadWarning, /could not confirm that the integration reloaded/i);
 });
+
+
+test("leaving Settings scrubs replacement passwords but keeps non-secret Email edits", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {
+      enabled: true,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "call_service") {
+        return message.service === "list_activity" ?
+          {response: {activity: []}} :
+          {response: {imports: []}};
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("email_host").value = "imap.unsaved.test";
+  form.elements.namedItem("email_host").input();
+  form.elements.namedItem("email_password").value = "activity-secret";
+  form.elements.namedItem("email_password").input();
+
+  await panel.showActivity();
+
+  assert.equal(panel._settingsDrafts.email.host, "imap.unsaved.test");
+  assert.equal(panel._settingsDrafts.email.password, "");
+
+  await panel.showSettings("email");
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("email_host").value, "imap.unsaved.test");
+  assert.equal(form.elements.namedItem("email_password").value, "");
+
+  form.elements.namedItem("email_password").value = "review-secret";
+  form.elements.namedItem("email_password").input();
+  await panel.showReview();
+
+  assert.equal(panel._settingsDrafts.email.host, "imap.unsaved.test");
+  assert.equal(panel._settingsDrafts.email.password, "");
+
+  await panel.showSettings("email");
+  form = find(panel._content, "form");
+  form.elements.namedItem("email_password").value = "disconnect-secret";
+  form.elements.namedItem("email_password").input();
+  panel.disconnectedCallback();
+
+  assert.equal(panel._settingsDrafts.email.host, "imap.unsaved.test");
+  assert.equal(panel._settingsDrafts.email.password, "");
+});
+
+test("leaving Settings drops an Email draft when password was the only edit", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {
+      enabled: true,
+      host: "imap.example.test",
+      port: 993,
+      username: "user@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "call_service") return {response: {activity: []}};
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  const form = find(panel._content, "form");
+  form.elements.namedItem("email_password").value = "abandoned-secret";
+  form.elements.namedItem("email_password").input();
+  assert.ok(panel._settingsDrafts.email);
+
+  await panel.showActivity();
+
+  assert.equal(panel._settingsDrafts.email, null);
+});
