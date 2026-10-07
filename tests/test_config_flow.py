@@ -608,6 +608,12 @@ async def test_options_flow_shows_email_form_with_all_fields():
     assert result is expected
     assert show_form.call_args.kwargs["step_id"] == "email"
     assert show_form.call_args.kwargs["errors"] == {}
+    assert show_form.call_args.kwargs["description_placeholders"] == {
+        "privacy_url": (
+            "https://github.com/superdingo101/daylight-calendar-import/"
+            "blob/main/docs/direct-imap.md#mailbox-privacy-and-access"
+        )
+    }
     schema = show_form.call_args.kwargs["data_schema"]
     fields = {
         marker.schema: (marker, field_selector)
