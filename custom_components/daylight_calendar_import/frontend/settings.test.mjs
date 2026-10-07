@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {loadSettings, saveCoreSettings, saveEmailSettings} from "./settings.js";
+import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, settingsErrorMessage} from "./settings.js";
 
 const snapshot = {
   entry_id: "entry-1",
@@ -93,4 +93,16 @@ test("settings client rejects malformed responses", async () => {
     () => loadSettings(hass),
     /unexpected response/,
   );
+});
+
+
+test("settings client recognizes Home Assistant websocket errors", () => {
+  const error = {code: "reload_failed", message: "Saved, but reload failed."};
+  assert.equal(isSettingsErrorCode(error, "reload_failed"), true);
+  assert.equal(isSettingsErrorCode(error, "cannot_connect"), false);
+  assert.equal(isSettingsErrorCode(new Error("reload_failed"), "reload_failed"), false);
+  assert.equal(settingsErrorMessage(error, "fallback"), "Saved, but reload failed.");
+  assert.equal(settingsErrorMessage(new Error("Network failed"), "fallback"), "Network failed");
+  assert.equal(settingsErrorMessage("Disconnected", "fallback"), "Disconnected");
+  assert.equal(settingsErrorMessage(null, "fallback"), "fallback");
 });
