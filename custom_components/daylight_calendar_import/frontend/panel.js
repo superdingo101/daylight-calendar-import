@@ -582,6 +582,10 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   _clearEmailDraftPassword() {
+    const passwordInput = Array.from(this._content.querySelectorAll("input"))
+      .find(input => input.name === "email_password");
+    if (passwordInput) passwordInput.value = "";
+
     const draft = this._settingsDrafts.email;
     if (!draft?.password) return;
     const sanitized = {...draft, password: ""};
