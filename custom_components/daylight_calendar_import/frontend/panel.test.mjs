@@ -624,6 +624,57 @@ test("timed editor preserves original offsets and follows the Home Assistant zon
   assert.equal(editCall.service_data.event.end, "2026-03-08T05:30:00-07:00");
 });
 
+test("duration sync preserves the generated occurrence inside a fall-back fold", async () => {
+  const panel = new DaylightImportPanel();
+  let current = {
+    id: "event",
+    title: "Fold event",
+    start: "2026-11-01T01:30:00-07:00",
+    end: "2026-11-01T01:30:00-08:00",
+    all_day: false,
+    status: "pending",
+    confidence: 1,
+  };
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") {
+        return {response: {pending: {id: "one", events: [current]}}};
+      }
+      current = {...current, ...request.service_data.event};
+      return {response: {pending_id: "one", event: current}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event").click();
+
+  const form = find(panel._content, "form");
+  const start = form.elements.namedItem("start");
+  const end = form.elements.namedItem("end");
+  assert.equal(start.value, "2026-11-01T01:30");
+  assert.equal(end.value, "2026-11-01T01:30");
+
+  start.value = "2026-11-01T00:30";
+  start.change();
+  assert.equal(end.value, "2026-11-01T01:30");
+
+  await panel.saveEdit(current, form);
+
+  const editCall = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(editCall.service_data.event.start, "2026-11-01T00:30:00-07:00");
+  assert.equal(editCall.service_data.event.end, "2026-11-01T01:30:00-07:00");
+  assert.equal(
+    new Date(editCall.service_data.event.end).getTime() -
+      new Date(editCall.service_data.event.start).getTime(),
+    60 * 60 * 1000,
+  );
+});
+
 test("editor rejects nonexistent local DST times before sending a save request", async () => {
   const panel = new DaylightImportPanel();
   const event = {id: "event", title: "DST gap",
@@ -657,6 +708,12 @@ test("editor rejects nonexistent local DST times before sending a save request",
   assert.equal(error.attributes.role, "alert");
   assert.equal(globalThis.focusedNode, error);
   assert.equal(panel._saving, false);
+
+  form.elements.namedItem("start").value = "2026-03-08T04:30";
+  form.elements.namedItem("end").value = "2026-03-08T05:30";
+  const retry = panel.saveEdit(event, form);
+  assert.equal(form.querySelector(".error"), null);
+  await retry;
 });
 
 test("focus falls back to the detail heading if the saved event disappears", async () => {
