@@ -212,7 +212,6 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
                 suggested_values,
             ),
             errors=errors,
-            description_placeholders={"privacy_url": _MAILBOX_PRIVACY_URL},
         )
 
     async def async_step_email(
@@ -316,4 +315,5 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
                 suggested_values,
             ),
             errors=errors,
+            description_placeholders={"privacy_url": _MAILBOX_PRIVACY_URL},
         )
