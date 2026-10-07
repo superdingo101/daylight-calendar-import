@@ -587,6 +587,94 @@ test("editor matches the card default date/time picker and preserves duration", 
   assert.equal(form.elements.namedItem("start_date").disabled, false);
 });
 
+test("all-day toggles carry the currently edited range in both directions", async () => {
+  const panel = new DaylightImportPanel();
+  const timed = {
+    id: "timed-toggle",
+    title: "Dinner",
+    start: "2026-12-05T18:00:00-08:00",
+    end: "2026-12-05T20:00:00-08:00",
+    all_day: false,
+    status: "pending",
+    confidence: 0.9,
+  };
+  const allDayEvent = {
+    id: "all-day-toggle",
+    title: "Trip",
+    start: "2026-12-10",
+    end: "2026-12-13",
+    all_day: true,
+    status: "pending",
+    confidence: 0.8,
+  };
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") {
+        return {response: {pending: {id: "one", events: [timed, allDayEvent]}}};
+      }
+      return {response: {
+        pending_id: "one",
+        event: {...request.service_data.event},
+      }};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "timed-toggle").click();
+  let form = find(panel._content, "form");
+  let start = form.elements.namedItem("start");
+  let end = form.elements.namedItem("end");
+  let allDay = form.elements.namedItem("all_day");
+  start.value = "2026-12-24T19:30";
+  start.change();
+  assert.equal(end.value, "2026-12-24T21:30");
+
+  allDay.checked = true;
+  allDay.change();
+  assert.equal(form.elements.namedItem("start_date").value, "2026-12-24");
+  assert.equal(form.elements.namedItem("end_date").value, "2026-12-24");
+  await panel.saveEdit(timed, form);
+
+  let editCall = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(editCall.service_data.event.all_day, true);
+  assert.equal(editCall.service_data.event.start, "2026-12-24");
+  assert.equal(editCall.service_data.event.end, "2026-12-25");
+
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "all-day-toggle").click();
+  form = find(panel._content, "form");
+  const startDate = form.elements.namedItem("start_date");
+  const endDate = form.elements.namedItem("end_date");
+  startDate.value = "2026-12-24";
+  startDate.change();
+  assert.equal(endDate.value, "2026-12-26");
+
+  allDay = form.elements.namedItem("all_day");
+  allDay.checked = false;
+  allDay.change();
+  start = form.elements.namedItem("start");
+  end = form.elements.namedItem("end");
+  assert.equal(start.value, "2026-12-24T00:00");
+  assert.equal(end.value, "2026-12-27T00:00");
+
+  start.value = "2026-12-25T00:00";
+  start.change();
+  assert.equal(end.value, "2026-12-28T00:00");
+  await panel.saveEdit(allDayEvent, form);
+
+  editCall = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(editCall.service_data.event.all_day, false);
+  assert.equal(editCall.service_data.event.start, "2026-12-25T00:00:00-08:00");
+  assert.equal(editCall.service_data.event.end, "2026-12-28T00:00:00-08:00");
+});
+
 test("timed editor preserves original offsets and follows the Home Assistant zone after edits", async () => {
   const panel = new DaylightImportPanel();
   let current = {id: "event", title: "DST test",
