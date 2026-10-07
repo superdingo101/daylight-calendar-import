@@ -1097,7 +1097,7 @@ test("reload_failed refreshes persisted settings and keeps restart warning", asy
 
   assert.equal(panel._settings.ai_task_entity, "ai_task.google");
   assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
-  assert.equal(panel._settingsDraft, null);
+  assert.equal(panel._settingsDrafts.general, null);
   form = find(panel._content, "form");
   assert.equal(form.elements.namedItem("ai_task_entity").value, "ai_task.google");
   assert.equal(
@@ -1227,7 +1227,7 @@ test("reload_failed keeps submitted patch when reconciliation also fails", async
   await panel.saveGeneralSettings(form);
 
   assert.equal(panel._settings.ai_task_entity, "ai_task.google");
-  assert.equal(panel._settingsDraft, null);
+  assert.equal(panel._settingsDrafts.general, null);
   assert.match(panel._settingsError, /Transient settings refresh failure/);
 
   panel._content.querySelector(".settings-tabs").querySelectorAll("button")
@@ -1536,4 +1536,231 @@ test("cached settings entry clears stale announcements without reloading", async
   assert.deepEqual(panel._announcement.children, []);
   assert.equal(find(panel._content, "h2").textContent, "General");
   assert.equal(globalThis.focusedNode, find(panel._content, "h2"));
+});
+
+
+test("ambiguous connection loss reconciles a persisted settings patch", async () => {
+  let current = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let getCount = 0;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        getCount += 1;
+        return current;
+      }
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        current = {...current, ai_task_entity: message.ai_task_entity};
+        throw 3; // home-assistant-js-websocket ERR_CONNECTION_LOST
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  const form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+
+  assert.equal(getCount, 2);
+  assert.equal(panel._settings.ai_task_entity, "ai_task.google");
+  assert.equal(panel._settingsDrafts.general, null);
+  assert.equal(panel._settingsError, null);
+  assert.equal(panel._announcement.children[0].textContent, "General settings saved");
+});
+
+test("ambiguous connection loss keeps draft when server confirms no write", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family", "calendar.work"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.work": {
+        entity_id: "calendar.work", state: "off",
+        attributes: {friendly_name: "Work", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "daylight_calendar_import/settings/core/update") throw 3;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+
+  assert.equal(panel._settings.ai_task_entity, "ai_task.openai");
+  assert.deepEqual(panel._settingsDrafts.general, {ai_task_entity: "ai_task.google"});
+  assert.match(panel._settingsError, /Could not save general settings/);
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+  form = find(panel._content, "form");
+  form.elements.namedItem("calendar_entity").value = "calendar.family";
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.work";
+  }
+  await panel.saveCalendarSettings(form);
+  assert.ok(panel._settingsDrafts.calendars);
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("ai_task_entity").value, "ai_task.google");
+  assert.deepEqual(panel._settingsDrafts.general, {ai_task_entity: "ai_task.google"});
+});
+
+test("ambiguous connection loss retains draft when reconciliation also fails", async () => {
+  let getCount = 0;
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        getCount += 1;
+        if (getCount === 1) return snapshot;
+        throw 3;
+      }
+      if (message.type === "daylight_calendar_import/settings/core/update") throw 3;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+
+  assert.deepEqual(panel._settingsDrafts.general, {ai_task_entity: "ai_task.google"});
+  assert.match(panel._settingsError, /could not confirm whether the change was saved/i);
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("ai_task_entity").value, "ai_task.google");
+});
+
+test("coded Core save errors are definitive and skip reconciliation", async () => {
+  let getCount = 0;
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        getCount += 1;
+        return snapshot;
+      }
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        throw {code: "invalid_format", message: "Rejected by Home Assistant"};
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  const form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+
+  assert.equal(getCount, 1);
+  assert.match(panel._settingsError, /Rejected by Home Assistant/);
+  assert.deepEqual(panel._settingsDrafts.general, {ai_task_entity: "ai_task.google"});
 });
