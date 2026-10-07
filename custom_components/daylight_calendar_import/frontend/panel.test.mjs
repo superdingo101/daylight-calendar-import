@@ -456,7 +456,9 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   edit.click();
   const form = find(panel._content, "form");
   assert.equal(form.elements.namedItem("description").value, description);
-  assert.equal(form.elements.namedItem("start").value, event.start);
+  assert.equal(form.elements.namedItem("start").value, "2026-10-01T10:00");
+  assert.equal(form.elements.namedItem("start").type, "datetime-local");
+  assert.equal(form.elements.namedItem("end").type, "datetime-local");
   assert.equal(form.querySelectorAll("select").length, 1);
   const calendar = form.elements.namedItem("calendar_entity");
   assert.equal(calendar.value, "calendar.legacy");
@@ -478,6 +480,10 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   assert.equal(globalThis.focusedNode, find(activeForm, "p"));
   assert.equal(panel._content.querySelectorAll("button")[0].disabled, true);
   assert.equal(panel._editingId, "event");
+  assert.equal(activeForm.elements.namedItem("start").disabled, false);
+  assert.equal(activeForm.elements.namedItem("start").required, true);
+  assert.equal(activeForm.elements.namedItem("start_date").disabled, true);
+  assert.equal(activeForm.elements.namedItem("start_date").required, false);
   assert.deepEqual(requests.at(-1).service_data.expected_event, event);
   assert.equal(requests.at(-1).service_data.calendar_entity, "calendar.family");
   stale = false;
@@ -498,6 +504,159 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   assert.equal(panel._detail.events[0].calendar_entity, "calendar.family");
   assert.equal(requests.at(-1).service, "get_pending");
   assert.equal(globalThis.focusedNode.dataset.eventId, "event");
+});
+
+test("editor matches the card default date/time picker and preserves duration", async () => {
+  const panel = new DaylightImportPanel();
+  const timed = {id: "timed", title: "Dinner",
+    start: "2026-12-05T18:00:00-08:00", end: "2026-12-05T20:00:00-08:00",
+    all_day: false, status: "pending", confidence: 0.9};
+  const allDayEvent = {id: "all-day", title: "Trip",
+    start: "2026-12-10", end: "2026-12-13",
+    all_day: true, status: "pending", confidence: 0.8};
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    locale: {language: "en-US", time_format: "12"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") return {response: {pending: {
+        id: "one", events: [timed, allDayEvent],
+      }}};
+      return {response: {
+        pending_id: "one",
+        event: {...timed, ...request.service_data.event},
+      }};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "timed").click();
+  let form = find(panel._content, "form");
+  const start = form.elements.namedItem("start");
+  const end = form.elements.namedItem("end");
+  const startDate = form.elements.namedItem("start_date");
+  const endDate = form.elements.namedItem("end_date");
+  assert.equal(start.type, "datetime-local");
+  assert.equal(end.type, "datetime-local");
+  assert.equal(start.step, "60");
+  assert.equal(end.step, "60");
+  assert.equal(start.value, "2026-12-05T18:00");
+  assert.equal(end.value, "2026-12-05T20:00");
+  assert.equal(start.required, true);
+  assert.equal(end.required, true);
+  assert.equal(start.disabled, false);
+  assert.equal(startDate.type, "date");
+  assert.equal(endDate.type, "date");
+  assert.equal(startDate.required, false);
+  assert.equal(startDate.disabled, true);
+  assert.equal(form.querySelector(".timed-event-fields").hidden, false);
+  assert.equal(form.querySelector(".all-day-event-fields").hidden, true);
+
+  start.value = "2026-12-05T19:30";
+  start.change();
+  assert.equal(end.value, "2026-12-05T21:30");
+
+  const allDay = form.elements.namedItem("all_day");
+  allDay.checked = true;
+  allDay.change();
+  assert.equal(form.querySelector(".timed-event-fields").hidden, true);
+  assert.equal(form.querySelector(".all-day-event-fields").hidden, false);
+  assert.equal(start.disabled, true);
+  assert.equal(start.required, false);
+  assert.equal(startDate.disabled, false);
+  assert.equal(startDate.required, true);
+  form.elements.namedItem("start_date").value = "2026-12-24";
+  form.elements.namedItem("end_date").value = "2026-12-26";
+  await panel.saveEdit(timed, form);
+  const editCall = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(editCall.service_data.event.all_day, true);
+  assert.equal(editCall.service_data.event.start, "2026-12-24");
+  assert.equal(editCall.service_data.event.end, "2026-12-27");
+
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "all-day").click();
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("start_date").value, "2026-12-10");
+  assert.equal(form.elements.namedItem("end_date").value, "2026-12-12");
+  assert.equal(form.elements.namedItem("start").disabled, true);
+  assert.equal(form.elements.namedItem("start_date").disabled, false);
+});
+
+test("timed editor preserves original offsets and follows the Home Assistant zone after edits", async () => {
+  const panel = new DaylightImportPanel();
+  let current = {id: "event", title: "DST test",
+    start: "2026-03-08T01:30:00-08:00", end: "2026-03-08T03:30:00-07:00",
+    all_day: false, status: "pending", confidence: 1};
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") return {response: {pending: {id: "one", events: [current]}}};
+      current = {...current, ...request.service_data.event};
+      return {response: {pending_id: "one", event: current}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event").click();
+  let form = find(panel._content, "form");
+  await panel.saveEdit(current, form);
+  let editCall = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(editCall.service_data.event.start, "2026-03-08T01:30:00-08:00");
+  assert.equal(editCall.service_data.event.end, "2026-03-08T03:30:00-07:00");
+
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event").click();
+  form = find(panel._content, "form");
+  form.elements.namedItem("start").value = "2026-03-08T04:30";
+  form.elements.namedItem("end").value = "2026-03-08T05:30";
+  await panel.saveEdit(current, form);
+  editCall = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(editCall.service_data.event.start, "2026-03-08T04:30:00-07:00");
+  assert.equal(editCall.service_data.event.end, "2026-03-08T05:30:00-07:00");
+});
+
+test("editor rejects nonexistent local DST times before sending a save request", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "DST gap",
+    start: "2026-03-08T01:30:00-08:00", end: "2026-03-08T03:30:00-07:00",
+    all_day: false, status: "pending", confidence: 1};
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      return {response: {pending: {id: "one", events: [event]}}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event").click();
+  const form = find(panel._content, "form");
+  form.elements.namedItem("start").value = "2026-03-08T02:30";
+  form.elements.namedItem("end").value = "2026-03-08T04:30";
+
+  await panel.saveEdit(event, form);
+
+  assert.equal(
+    calls.filter(call => call.service === "edit_pending_event").length,
+    0,
+  );
+  const error = find(form, "p");
+  assert.match(error.textContent, /does not exist/);
+  assert.equal(error.attributes.role, "alert");
+  assert.equal(globalThis.focusedNode, error);
+  assert.equal(panel._saving, false);
 });
 
 test("focus falls back to the detail heading if the saved event disappears", async () => {
