@@ -1,4 +1,4 @@
-import {dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeValue, normalizeEventTemporalEdit, visibleAllDayEnd} from "./event_datetime.js";
+import {dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, visibleAllDayEnd} from "./event_datetime.js";
 import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, settingsErrorMessage} from "./settings.js";
 
@@ -246,11 +246,14 @@ function syncTimedDuration(start, end, event, timeZone) {
     if (!startIso || duration === null) return;
     const nextStart = new Date(startIso);
     if (Number.isNaN(nextStart.getTime())) return;
-    end.value = instantEditDateTimeValue(
-      new Date(nextStart.getTime() + duration), event.end, timeZone
+    const nextEnd = new Date(nextStart.getTime() + duration);
+    end.value = instantEditDateTimeValue(nextEnd, event.end, timeZone);
+    end._daylightInstantHint = instantEditDateTimeIso(
+      nextEnd, event.end, timeZone
     );
   });
   end.addEventListener("change", () => {
+    end._daylightInstantHint = null;
     const next = readDuration();
     if (next !== null) duration = next;
   });
@@ -1276,6 +1279,8 @@ export class DaylightImportPanel extends HTMLElement {
       originalStart: event.start,
       originalEnd: event.end,
       timeZone: this._hass?.config?.time_zone,
+      startInstantHint: fields.namedItem("start")._daylightInstantHint || null,
+      endInstantHint: fields.namedItem("end")._daylightInstantHint || null,
     });
     if (!temporal.valid) {
       this._editError = temporal.error;
@@ -1284,6 +1289,7 @@ export class DaylightImportPanel extends HTMLElement {
       return;
     }
 
+    form.querySelector(".error")?.remove();
     const draft = {
       title: fields.namedItem("title").value,
       start: temporal.start,
