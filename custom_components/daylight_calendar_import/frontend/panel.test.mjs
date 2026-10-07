@@ -2112,3 +2112,63 @@ test("unavailable current default remains preservable in the default picker", as
     true,
   );
 });
+
+
+test("unsaved AI draft remains visible if the selected entity becomes unavailable", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  const states = {
+    "ai_task.openai": {
+      entity_id: "ai_task.openai", state: "idle",
+      attributes: {friendly_name: "OpenAI", supported_features: 1},
+    },
+    "ai_task.google": {
+      entity_id: "ai_task.google", state: "idle",
+      attributes: {friendly_name: "Google", supported_features: 1},
+    },
+    "calendar.family": {
+      entity_id: "calendar.family", state: "off",
+      attributes: {friendly_name: "Family", supported_features: 1},
+    },
+  };
+  panel.hass = {
+    user: {is_admin: true},
+    states,
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  const ai = form.elements.namedItem("ai_task_entity");
+  ai.value = "ai_task.google";
+  ai.change();
+
+  states["ai_task.google"] = {
+    ...states["ai_task.google"],
+    state: "unavailable",
+  };
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+
+  form = find(panel._content, "form");
+  const restored = form.elements.namedItem("ai_task_entity");
+  assert.equal(restored.value, "ai_task.google");
+  assert.equal(
+    restored.children.some(option => option.value === "ai_task.google"),
+    true,
+  );
+});
