@@ -395,6 +395,7 @@ test("email source context shows title, sender, and received date without raw at
 
   const source = panel._content.querySelector(".source");
   assert.equal(source.tag, "div");
+  assert.equal(source.tabIndex, 0);
   assert.equal(source.attributes.role, "region");
   assert.equal(source.attributes["aria-label"], "Email source details");
   assert.equal(source.children[0].textContent, "Email title: Mel's 40th Birthday");
