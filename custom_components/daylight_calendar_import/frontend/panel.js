@@ -556,6 +556,7 @@ export class DaylightImportPanel extends HTMLElement {
     for (const [tab, label] of [["general", "General"], ["calendars", "Calendars"]]) {
       const button = element("button", label);
       button.type = "button";
+      button.disabled = this._settingsSaving;
       if (this._settingsTab === tab) button.setAttribute("aria-current", "page");
       button.addEventListener("click", () => {
         if (this._settingsSaving || this._settingsTab === tab) return;
