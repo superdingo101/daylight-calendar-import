@@ -292,6 +292,11 @@ function isDefinitiveSettingsError(error) {
     typeof error.code === "string" && typeof error.message === "string";
 }
 
+const SETTINGS_RUNTIME_UNCERTAIN_WARNING =
+  "Settings were saved, but Daylight could not confirm that the integration " +
+  "reloaded after the connection was lost. Restart Home Assistant before " +
+  "relying on the new settings.";
+
 export class DaylightImportPanel extends HTMLElement {
   constructor() {
     super();
@@ -469,7 +474,12 @@ export class DaylightImportPanel extends HTMLElement {
       const settings = await loadSettings(this._hass);
       if (generation !== this._generation) return;
       this._settings = settings;
-      this._settingsDrafts = {general: null, calendars: null};
+      for (const tab of ["general", "calendars"]) {
+        if (this._settingsDrafts[tab] &&
+            settingsPatchMatches(settings, this._settingsDrafts[tab])) {
+          this._settingsDrafts[tab] = null;
+        }
+      }
       this._status = "ready";
     } catch (error) {
       if (generation !== this._generation) return;
@@ -518,7 +528,9 @@ export class DaylightImportPanel extends HTMLElement {
           this._settings = reconciled;
           if (settingsPatchMatches(reconciled, patch)) {
             this._settingsDrafts[tab] = null;
-            if (changesPersistedSettings) this._settingsReloadWarning = null;
+            if (changesPersistedSettings) {
+              this._settingsReloadWarning = SETTINGS_RUNTIME_UNCERTAIN_WARNING;
+            }
             this._announcement.replaceChildren(element("span", successMessage));
           } else {
             this._settingsError = message;
@@ -538,12 +550,17 @@ export class DaylightImportPanel extends HTMLElement {
     }
   }
 
+  _setSettingsDraft(tab, patch) {
+    this._settingsDrafts[tab] =
+      settingsPatchMatches(this._settings, patch) ? null : patch;
+  }
+
   async saveGeneralSettings(form) {
     if (this._settingsSaving || !this._settings) return;
     const aiTaskEntity = form.elements.namedItem("ai_task_entity").value;
     const entryId = this._settings.entry_id;
     const patch = {ai_task_entity: aiTaskEntity};
-    this._settingsDrafts.general = patch;
+    this._setSettingsDraft("general", patch);
     await this._saveSettings(
       "general",
       patch,
@@ -564,7 +581,7 @@ export class DaylightImportPanel extends HTMLElement {
       calendar_entity: defaultCalendar,
       calendar_entities: allowed,
     };
-    this._settingsDrafts.calendars = patch;
+    this._setSettingsDraft("calendars", patch);
     if (!allowed.includes(defaultCalendar)) {
       this._settingsError = "The default calendar must also be selected as writable.";
       this._announcement.replaceChildren();
@@ -622,6 +639,9 @@ export class DaylightImportPanel extends HTMLElement {
     const selectedAi = this._settingsDrafts.general?.ai_task_entity ??
       this._settings.ai_task_entity;
     appendOptions(select, choices, selectedAi);
+    select.addEventListener("change", () => {
+      this._setSettingsDraft("general", {ai_task_entity: select.value});
+    });
     label.append(select);
     const save = element("button", this._settingsSaving ? "Saving…" : "Save general settings");
     save.type = "submit";
@@ -648,28 +668,41 @@ export class DaylightImportPanel extends HTMLElement {
     const draft = this._settingsDrafts.calendars;
     const selectedDefault = draft?.calendar_entity || this._settings.calendar_entity;
     const selectedAllowed = draft?.calendar_entities || this._settings.calendar_entities;
-    const configured = [
-      ...selectedAllowed,
-      selectedDefault,
-    ];
-    const choices = entityChoices(this._hass, "calendar", 1, configured);
+    const defaultChoices = entityChoices(
+      this._hass, "calendar", 1, [selectedDefault],
+    );
+    const writableChoices = entityChoices(
+      this._hass, "calendar", 1, [...selectedAllowed, selectedDefault],
+    );
+
+    const updateCalendarDraft = () => {
+      const allowed = Array.from(form.querySelectorAll("input"))
+        .filter(input => input.type === "checkbox" && input.checked)
+        .map(input => input.value);
+      this._setSettingsDraft("calendars", {
+        calendar_entity: defaultSelect.value,
+        calendar_entities: allowed,
+      });
+    };
 
     const defaultLabel = element("label", "Default calendar");
     const defaultSelect = document.createElement("select");
     defaultSelect.name = "calendar_entity";
-    appendOptions(defaultSelect, choices, selectedDefault);
+    appendOptions(defaultSelect, defaultChoices, selectedDefault);
+    defaultSelect.addEventListener("change", updateCalendarDraft);
     defaultLabel.append(defaultSelect);
     form.append(defaultLabel);
 
     const fieldset = document.createElement("fieldset");
     fieldset.append(element("legend", "Writable calendars"));
-    for (const choice of choices) {
+    for (const choice of writableChoices) {
       const label = document.createElement("label");
       const input = document.createElement("input");
       input.type = "checkbox";
       input.name = "calendar_entities";
       input.value = choice.id;
       input.checked = selectedAllowed.includes(choice.id);
+      input.addEventListener("change", updateCalendarDraft);
       label.append(input, element("span", choice.label));
       fieldset.append(label);
     }
