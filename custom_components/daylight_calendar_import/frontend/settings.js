@@ -15,6 +15,18 @@ function validateSettings(result) {
   return result;
 }
 
+export function isSettingsErrorCode(error, code) {
+  return typeof error === "object" && error !== null &&
+    typeof error.code === "string" && error.code === code;
+}
+
+export function settingsErrorMessage(error, fallback) {
+  return typeof error === "object" && error !== null &&
+    typeof error.message === "string" ? error.message :
+    error instanceof Error ? error.message :
+      typeof error === "string" && error ? error : fallback;
+}
+
 export async function loadSettings(hass) {
   return validateSettings(await hass.callWS({type: SETTINGS_GET}));
 }
