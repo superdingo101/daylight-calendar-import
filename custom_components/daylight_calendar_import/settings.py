@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_AI_TASK_ENTITY,
@@ -18,6 +20,7 @@ from .const import (
     CONF_EMAIL_PORT,
     CONF_EMAIL_USERNAME,
     CONF_EMAIL_VERIFY_SSL,
+    DOMAIN,
 )
 from .direct_imap import (
     DirectImapAuthenticationError,
@@ -31,6 +34,9 @@ from .email_runtime import (
     direct_imap_settings_from_options,
 )
 
+_SETTINGS_LOCKS = f"{DOMAIN}_settings_locks"
+
+
 EMAIL_OPTION_KEYS = (
     CONF_EMAIL_HOST,
     CONF_EMAIL_PORT,
@@ -38,6 +44,12 @@ EMAIL_OPTION_KEYS = (
     CONF_EMAIL_MAILBOX,
     CONF_EMAIL_VERIFY_SSL,
 )
+
+
+def settings_lock(hass: HomeAssistant, entry_id: str) -> asyncio.Lock:
+    """Return the per-entry lock serializing settings transactions."""
+    locks = hass.data.setdefault(_SETTINGS_LOCKS, {})
+    return locks.setdefault(entry_id, asyncio.Lock())
 
 
 class SettingsValidationError(ValueError):
