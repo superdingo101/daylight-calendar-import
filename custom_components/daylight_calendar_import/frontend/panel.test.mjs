@@ -2805,10 +2805,12 @@ test("leaving Settings scrubs replacement passwords but keeps non-secret Email e
 
   await panel.showSettings("email");
   form = find(panel._content, "form");
-  form.elements.namedItem("email_password").value = "disconnect-secret";
-  form.elements.namedItem("email_password").input();
+  const renderedPassword = form.elements.namedItem("email_password");
+  renderedPassword.value = "disconnect-secret";
+  renderedPassword.input();
   panel.disconnectedCallback();
 
+  assert.equal(renderedPassword.value, "");
   assert.equal(panel._settingsDrafts.email.host, "imap.unsaved.test");
   assert.equal(panel._settingsDrafts.email.password, "");
 });
