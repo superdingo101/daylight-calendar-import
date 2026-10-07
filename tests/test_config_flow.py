@@ -201,18 +201,18 @@ async def test_options_flow_can_disable_email_ingestion():
         )
 
     assert result is expected
-    create_entry.assert_called_once_with(
-        data={
-            CONF_EMAIL_ENABLED: False,
-            CONF_EMAIL_HOST: "imap.example.test",
-            CONF_EMAIL_USERNAME: "calendar@example.test",
-            CONF_EMAIL_PASSWORD: "app-secret",
-            CONF_EMAIL_MAILBOX: "Calendar",
-            CONF_AI_TASK_ENTITY: "ai_task.new",
-            CONF_CALENDAR_ENTITY: "calendar.new",
-            CONF_CALENDAR_ENTITIES: ["calendar.new"],
-        }
-    )
+    create_entry.assert_called_once_with(data=None)
+    assert entry.options == {
+        CONF_EMAIL_ENABLED: False,
+        CONF_EMAIL_HOST: "imap.example.test",
+        CONF_EMAIL_USERNAME: "calendar@example.test",
+        CONF_EMAIL_PASSWORD: "app-secret",
+        CONF_EMAIL_MAILBOX: "Calendar",
+        CONF_AI_TASK_ENTITY: "ai_task.new",
+        CONF_CALENDAR_ENTITY: "calendar.new",
+        CONF_CALENDAR_ENTITIES: ["calendar.new"],
+    }
+    assert flow.hass.config_entries.reloads == ["test-entry"]
 
 
 async def test_options_flow_routes_enabled_email_to_connection_step():
@@ -297,15 +297,15 @@ async def test_options_flow_validates_and_saves_direct_imap():
     settings = source_factory.call_args.args[0]
     assert settings.source_id == "test-entry:direct-imap"
     assert settings.sender_allowlist == ()
-    create_entry.assert_called_once_with(
-        data={
-            CONF_AI_TASK_ENTITY: "ai_task.new",
-            CONF_CALENDAR_ENTITY: "calendar.new",
-            CONF_CALENDAR_ENTITIES: ["calendar.new", "calendar.work"],
-            CONF_EMAIL_ENABLED: True,
-            **user_input,
-        }
-    )
+    create_entry.assert_called_once_with(data=None)
+    assert entry.options == {
+        CONF_AI_TASK_ENTITY: "ai_task.new",
+        CONF_CALENDAR_ENTITY: "calendar.new",
+        CONF_CALENDAR_ENTITIES: ["calendar.new", "calendar.work"],
+        CONF_EMAIL_ENABLED: True,
+        **user_input,
+    }
+    assert flow.hass.config_entries.reloads == ["test-entry"]
 
 
 async def test_options_flow_normalizes_number_selector_port_to_int():
@@ -348,16 +348,13 @@ async def test_options_flow_normalizes_number_selector_port_to_int():
     settings = source_factory.call_args.args[0]
     assert settings.port == 993
     assert type(settings.port) is int
-    create_entry.assert_called_once_with(
-        data={
-            CONF_AI_TASK_ENTITY: "ai_task.test",
-            CONF_CALENDAR_ENTITY: "calendar.family",
-            CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
-            CONF_EMAIL_ENABLED: True,
-            **user_input,
-            CONF_EMAIL_PORT: 993,
-        }
-    )
+    create_entry.assert_called_once_with(data=None)
+    assert entry.options == {
+        CONF_EMAIL_ENABLED: True,
+        **user_input,
+        CONF_EMAIL_PORT: 993,
+    }
+    assert flow.hass.config_entries.reloads == ["test-entry"]
 
 
 async def test_options_flow_rejects_fractional_number_selector_port():
@@ -609,12 +606,14 @@ async def test_options_flow_can_remove_allowed_calendars_and_change_ai():
         })
 
     assert result is expected
-    create_entry.assert_called_once_with(data={
+    create_entry.assert_called_once_with(data=None)
+    assert entry.options == {
         CONF_AI_TASK_ENTITY: "ai_task.new",
         CONF_CALENDAR_ENTITY: "calendar.family",
         CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
         CONF_EMAIL_ENABLED: False,
-    })
+    }
+    assert flow.hass.config_entries.reloads == ["test-entry"]
 
 
 async def test_options_flow_shows_email_form_with_all_fields():
@@ -1010,16 +1009,13 @@ async def test_options_flow_reuses_saved_password_when_edit_form_is_blank():
     assert result is expected
     validate.assert_awaited_once_with()
     assert source_factory.call_args.args[0].password == "saved-secret"
-    create_entry.assert_called_once_with(
-        data={
-            CONF_AI_TASK_ENTITY: "ai_task.test",
-            CONF_CALENDAR_ENTITY: "calendar.family",
-            CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
-            CONF_EMAIL_ENABLED: True,
-            **user_input,
-            CONF_EMAIL_PASSWORD: "saved-secret",
-        }
-    )
+    create_entry.assert_called_once_with(data=None)
+    assert entry.options == {
+        CONF_EMAIL_ENABLED: True,
+        **user_input,
+        CONF_EMAIL_PASSWORD: "saved-secret",
+    }
+    assert flow.hass.config_entries.reloads == ["test-entry"]
 
 
 async def test_options_flow_email_serializes_with_native_settings_updates():
@@ -1088,10 +1084,10 @@ async def test_options_flow_email_serializes_with_native_settings_updates():
 
     assert result is expected
     assert source_factory.call_args.args[0].password == "new-secret"
-    create_entry.assert_called_once()
-    saved = create_entry.call_args.kwargs["data"]
-    assert saved[CONF_AI_TASK_ENTITY] == "ai_task.new"
-    assert saved[CONF_EMAIL_PASSWORD] == "new-secret"
+    create_entry.assert_called_once_with(data=None)
+    assert entry.options[CONF_AI_TASK_ENTITY] == "ai_task.new"
+    assert entry.options[CONF_EMAIL_PASSWORD] == "new-secret"
+    assert hass.config_entries.reloads == ["test-entry"]
 
 
 async def test_options_flow_preserves_concurrent_core_change_after_init_step():
@@ -1165,10 +1161,11 @@ async def test_options_flow_preserves_concurrent_core_change_after_init_step():
         result = await flow.async_step_email(email_input)
 
     assert result is expected
-    saved = create_entry.call_args.kwargs["data"]
-    assert saved[CONF_AI_TASK_ENTITY] == "ai_task.concurrent"
-    assert saved[CONF_CALENDAR_ENTITY] == "calendar.work"
-    assert saved[CONF_CALENDAR_ENTITIES] == ["calendar.work"]
+    create_entry.assert_called_once_with(data=None)
+    assert entry.options[CONF_AI_TASK_ENTITY] == "ai_task.concurrent"
+    assert entry.options[CONF_CALENDAR_ENTITY] == "calendar.work"
+    assert entry.options[CONF_CALENDAR_ENTITIES] == ["calendar.work"]
+    assert flow.hass.config_entries.reloads == ["test-entry"]
 
 
 async def test_options_flow_uses_form_baseline_to_ignore_stale_unchanged_fields():
@@ -1223,5 +1220,39 @@ async def test_options_flow_uses_form_baseline_to_ignore_stale_unchanged_fields(
         })
 
     assert result is expected
-    saved = create_entry.call_args.kwargs["data"]
-    assert saved[CONF_AI_TASK_ENTITY] == "ai_task.concurrent"
+    create_entry.assert_called_once_with(data=None)
+    assert entry.options[CONF_AI_TASK_ENTITY] == "ai_task.concurrent"
+    assert flow.hass.config_entries.reloads == ["test-entry"]
+
+
+async def test_options_flow_reports_reload_failure_after_disabled_save():
+    flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = _options_hass()
+    flow.hass.config_entries.reload_result = False
+    entry = _options_entry({CONF_EMAIL_ENABLED: True})
+    expected = {"type": "form"}
+
+    with (
+        patch.object(
+            DaylightCalendarImportOptionsFlow,
+            "config_entry",
+            new_callable=PropertyMock,
+            return_value=entry,
+        ),
+        patch.object(
+            flow,
+            "async_show_form",
+            Mock(return_value=expected),
+        ) as show_form,
+    ):
+        result = await flow.async_step_init({
+            CONF_AI_TASK_ENTITY: "ai_task.test",
+            CONF_CALENDAR_ENTITY: "calendar.family",
+            CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
+            CONF_EMAIL_ENABLED: False,
+        })
+
+    assert result is expected
+    assert entry.options[CONF_EMAIL_ENABLED] is False
+    assert flow.hass.config_entries.reloads == ["test-entry"]
+    assert show_form.call_args.kwargs["errors"] == {"base": "reload_failed"}
