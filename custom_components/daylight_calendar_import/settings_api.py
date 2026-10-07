@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import voluptuous as vol
@@ -30,19 +29,13 @@ from .settings import (
     async_validate_email_options,
     effective_core_options,
     normalize_core_options,
+    settings_lock,
     settings_snapshot,
 )
 
 WS_GET_SETTINGS = f"{DOMAIN}/settings/get"
 WS_UPDATE_CORE_SETTINGS = f"{DOMAIN}/settings/core/update"
 WS_UPDATE_EMAIL_SETTINGS = f"{DOMAIN}/settings/email/update"
-_SETTINGS_LOCKS = f"{DOMAIN}_settings_locks"
-
-
-def _settings_lock(hass: HomeAssistant, entry_id: str) -> asyncio.Lock:
-    """Return the per-entry lock serializing option writes and reloads."""
-    locks = hass.data.setdefault(_SETTINGS_LOCKS, {})
-    return locks.setdefault(entry_id, asyncio.Lock())
 
 
 def _entry_for_message(hass: HomeAssistant, msg: dict[str, Any]) -> ConfigEntry:
@@ -130,7 +123,7 @@ async def websocket_update_core_settings(
     """Update AI and writable-calendar settings."""
     try:
         entry = _entry_for_message(hass, msg)
-        async with _settings_lock(hass, entry.entry_id):
+        async with settings_lock(hass, entry.entry_id):
             if not any(
                 key in msg
                 for key in (
@@ -189,7 +182,7 @@ async def websocket_update_email_settings(
     """Update Direct IMAP settings without exposing the stored password."""
     try:
         entry = _entry_for_message(hass, msg)
-        async with _settings_lock(hass, entry.entry_id):
+        async with settings_lock(hass, entry.entry_id):
             if not msg["enabled"]:
                 options = {CONF_EMAIL_ENABLED: False}
             else:
