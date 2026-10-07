@@ -439,6 +439,7 @@ export class DaylightImportPanel extends HTMLElement {
 
   async showActivity(id = null) {
     if (this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
+    this._clearEmailDraftPassword();
     const generation = ++this._generation;
     this._view = "activity";
     this._activityId = id;
@@ -461,6 +462,7 @@ export class DaylightImportPanel extends HTMLElement {
 
   async showReview() {
     if (this._saving || this._settingsSaving) return;
+    this._clearEmailDraftPassword();
     this._view = "inbox";
     this._selectedId = null;
     this._detail = null;
@@ -577,6 +579,19 @@ export class DaylightImportPanel extends HTMLElement {
   _setSettingsDraft(tab, patch) {
     this._settingsDrafts[tab] =
       settingsDraftMatches(this._settings, tab, patch) ? null : patch;
+  }
+
+  _clearEmailDraftPassword() {
+    const draft = this._settingsDrafts.email;
+    if (!draft?.password) return;
+    const sanitized = {...draft, password: ""};
+    this._settingsDrafts.email =
+      settingsDraftMatches(this._settings, "email", sanitized) ?
+        null : sanitized;
+  }
+
+  disconnectedCallback() {
+    this._clearEmailDraftPassword();
   }
 
   async saveGeneralSettings(form) {
@@ -970,6 +985,7 @@ export class DaylightImportPanel extends HTMLElement {
 
   async showImport(id) {
     if (this._saving || this._editingId || this._batchAction || this._resolution) return;
+    this._clearEmailDraftPassword();
     const generation = ++this._generation;
     this._selectedId = id;
     this._detail = null;
@@ -999,6 +1015,7 @@ export class DaylightImportPanel extends HTMLElement {
 
   showInbox() {
     if (this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
+    this._clearEmailDraftPassword();
     this._batchResults = [];
     this._batchContext = null;
     this._returnFocusId = this._selectedId;
