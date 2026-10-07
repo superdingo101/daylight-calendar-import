@@ -20,8 +20,13 @@ class FakeNode {
       const [parent, child] = tag.split(" ");
       return this.querySelectorAll(parent).flatMap(node => node.querySelectorAll(child));
     }
-    return [this, ...this.children.flatMap(child => child.querySelectorAll(tag))]
-      .filter(node => tag.startsWith(".") ? node.className === tag.slice(1) : node.tag === tag);
+    const nodes = [this, ...this.children.flatMap(child => child.querySelectorAll(tag))];
+    if (tag.startsWith("[") && tag.endsWith("]")) {
+      const attribute = tag.slice(1, -1);
+      return nodes.filter(node => attribute in node.attributes);
+    }
+    return nodes.filter(node =>
+      tag.startsWith(".") ? node.className === tag.slice(1) : node.tag === tag);
   }
   get elements() { return {namedItem: name => this.querySelectorAll("input")
     .concat(this.querySelectorAll("textarea"), this.querySelectorAll("select"))
