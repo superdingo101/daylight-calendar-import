@@ -2671,3 +2671,68 @@ test("Email controls and settings subnav freeze while save is pending", async ()
   resolveSave(snapshot);
   await saving;
 });
+
+
+test("ambiguous IMAP disable confirms from enabled state only", async () => {
+  let getCount = 0;
+  const initial = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {
+      enabled: true,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const reconciled = {
+    ...initial,
+    email: {...initial.email, enabled: false},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        getCount += 1;
+        return getCount === 1 ? initial : reconciled;
+      }
+      if (message.type === "daylight_calendar_import/settings/email/update") {
+        throw 3;
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  const form = find(panel._content, "form");
+  const fields = form.elements;
+  fields.namedItem("email_host").value = "imap.unsent.test";
+  fields.namedItem("email_host").input();
+  fields.namedItem("email_enabled").checked = false;
+  fields.namedItem("email_enabled").change();
+  await panel.saveEmailSettingsForm(form);
+
+  assert.equal(getCount, 2);
+  assert.equal(panel._settings.email.enabled, false);
+  assert.equal(panel._settingsDrafts.email, null);
+  assert.equal(panel._settingsError, null);
+  assert.match(panel._settingsReloadWarning, /could not confirm that the integration reloaded/i);
+});
