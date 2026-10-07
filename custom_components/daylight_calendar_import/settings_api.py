@@ -26,6 +26,7 @@ from .const import (
 )
 from .settings import (
     SettingsValidationError,
+    async_save_option_patch,
     async_validate_email_options,
     core_option_patch,
     effective_core_options,
@@ -55,24 +56,6 @@ def _entry_for_message(hass: HomeAssistant, msg: dict[str, Any]) -> ConfigEntry:
             "entry_not_found", "Daylight Calendar Import configuration was not found."
         )
     return entry
-
-
-async def _async_save_option_patch(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    patch: dict[str, Any],
-) -> None:
-    """Merge an option patch into the latest state and reload the entry."""
-    hass.config_entries.async_update_entry(
-        entry,
-        options={**entry.options, **patch},
-    )
-    if not await hass.config_entries.async_reload(entry.entry_id):
-        raise SettingsValidationError(
-            "reload_failed",
-            "Settings were saved, but Daylight could not reload. "
-            "Restart Home Assistant before relying on the new settings.",
-        )
 
 
 def _send_validation_error(
@@ -141,7 +124,7 @@ async def websocket_update_core_settings(
                 msg,
             )
             if patch:
-                await _async_save_option_patch(hass, entry, patch)
+                await async_save_option_patch(hass, entry, patch)
     except SettingsValidationError as err:
         _send_validation_error(connection, msg, err)
         return
@@ -194,7 +177,7 @@ async def websocket_update_email_settings(
                     entry.options,
                     email_input,
                 )
-            await _async_save_option_patch(hass, entry, options)
+            await async_save_option_patch(hass, entry, options)
     except SettingsValidationError as err:
         _send_validation_error(connection, msg, err)
         return
