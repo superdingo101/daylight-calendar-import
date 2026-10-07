@@ -38,6 +38,7 @@ from custom_components.daylight_calendar_import.settings import (
     email_settings_snapshot,
     normalize_core_options,
     settings_snapshot,
+    settings_lock,
 )
 from custom_components.daylight_calendar_import import settings_api
 
@@ -110,6 +111,22 @@ async def invoke(handler, hass, connection, msg):
     await inspect.unwrap(handler)(hass, connection, msg)
 
 
+def test_settings_lock_is_namespaced_and_keyed_per_entry():
+    hass = SimpleNamespace(data={})
+
+    first = settings_lock(hass, "entry-1")
+    same = settings_lock(hass, "entry-1")
+    second = settings_lock(hass, "entry-2")
+
+    assert first is same
+    assert first is not second
+    assert list(hass.data) == [f"{DOMAIN}_settings_locks"]
+    assert hass.data[f"{DOMAIN}_settings_locks"] == {
+        "entry-1": first,
+        "entry-2": second,
+    }
+
+
 def test_effective_core_options_prefers_options_and_deduplicates():
     config_entry = entry(options={
         CONF_AI_TASK_ENTITY: "ai_task.updated",
@@ -162,6 +179,20 @@ def test_core_option_patch_returns_only_changed_atomic_groups():
             CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
         },
     ) == {}
+    assert core_option_patch(
+        baseline,
+        {CONF_CALENDAR_ENTITY: "calendar.work"},
+    ) == {
+        CONF_CALENDAR_ENTITY: "calendar.work",
+        CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
+    }
+    assert core_option_patch(
+        baseline,
+        {CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+    ) == {
+        CONF_CALENDAR_ENTITY: "calendar.family",
+        CONF_CALENDAR_ENTITIES: ["calendar.family"],
+    }
 
 
 def test_normalize_core_options_validates_and_deduplicates():
@@ -182,6 +213,7 @@ def test_normalize_core_options_validates_and_deduplicates():
             ["calendar.family"],
         )
     assert err.value.code == "invalid_ai_task"
+    assert str(err.value) == "The selected AI Task entity is invalid."
 
     with pytest.raises(SettingsValidationError, match="calendar entities") as err:
         normalize_core_options(
@@ -190,6 +222,16 @@ def test_normalize_core_options_validates_and_deduplicates():
             ["sensor.not_calendar"],
         )
     assert err.value.code == "invalid_calendar"
+    assert str(err.value) == "Writable calendars must be calendar entities."
+
+    with pytest.raises(SettingsValidationError) as err:
+        normalize_core_options(
+            "ai_task.updated",
+            "sensor.not_calendar",
+            ["calendar.family"],
+        )
+    assert err.value.code == "invalid_calendar"
+    assert str(err.value) == "Writable calendars must be calendar entities."
 
     with pytest.raises(SettingsValidationError, match="included") as err:
         normalize_core_options(
@@ -198,6 +240,7 @@ def test_normalize_core_options_validates_and_deduplicates():
             ["calendar.work"],
         )
     assert err.value.code == "default_not_allowed"
+    assert str(err.value) == "The default calendar must be included in the allowed calendars."
 
 
 def test_email_and_complete_settings_snapshots_hide_secret():
@@ -223,15 +266,24 @@ def test_email_and_complete_settings_snapshots_hide_secret():
     assert "super-secret" not in str(email)
 
     default_email = email_settings_snapshot({})
-    assert default_email["enabled"] is False
-    assert default_email["port"] == 993
-    assert default_email["mailbox"] == "INBOX"
-    assert default_email["verify_ssl"] is True
-    assert default_email["password_configured"] is False
+    assert default_email == {
+        "enabled": False,
+        "host": "",
+        "port": 993,
+        "username": "",
+        "password_configured": False,
+        "mailbox": "INBOX",
+        "verify_ssl": True,
+    }
 
     snapshot = settings_snapshot(entry(options=options))
-    assert snapshot["entry_id"] == "entry-1"
-    assert snapshot["email"] == email
+    assert snapshot == {
+        "entry_id": "entry-1",
+        "ai_task_entity": "ai_task.initial",
+        "calendar_entity": "calendar.family",
+        "calendar_entities": ["calendar.family", "calendar.work"],
+        "email": email,
+    }
     assert CONF_EMAIL_PASSWORD not in snapshot
 
 
@@ -268,14 +320,26 @@ async def test_email_validation_normalizes_port_and_preserves_saved_password():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("failure", "code"),
+    ("failure", "code", "message"),
     [
-        (DirectImapAuthenticationError(), "invalid_auth"),
-        (DirectImapMailboxError(), "invalid_mailbox"),
-        (DirectImapConnectionError(), "cannot_connect"),
+        (
+            DirectImapAuthenticationError(),
+            "invalid_auth",
+            "The IMAP server rejected the supplied credentials.",
+        ),
+        (
+            DirectImapMailboxError(),
+            "invalid_mailbox",
+            "The configured IMAP mailbox could not be selected.",
+        ),
+        (
+            DirectImapConnectionError(),
+            "cannot_connect",
+            "Could not connect to the Direct IMAP mailbox.",
+        ),
     ],
 )
-async def test_email_validation_maps_transport_errors(failure, code):
+async def test_email_validation_maps_transport_errors(failure, code, message):
     validate = AsyncMock(side_effect=failure)
     with patch(
         "custom_components.daylight_calendar_import.settings.DirectImapSource",
@@ -295,6 +359,7 @@ async def test_email_validation_maps_transport_errors(failure, code):
                 },
             )
     assert err.value.code == code
+    assert str(err.value) == message
 
 
 @pytest.mark.asyncio
@@ -302,6 +367,7 @@ async def test_email_validation_maps_incomplete_and_invalid_settings():
     with pytest.raises(SettingsValidationError) as err:
         await async_validate_email_options("entry-1", {}, {})
     assert err.value.code == "invalid_email_config"
+    assert str(err.value) == "The Direct IMAP settings are incomplete or invalid."
 
     with pytest.raises(SettingsValidationError) as err:
         await async_validate_email_options(
@@ -317,6 +383,7 @@ async def test_email_validation_maps_incomplete_and_invalid_settings():
             },
         )
     assert err.value.code == "invalid_email_config"
+    assert str(err.value) == "The Direct IMAP settings are incomplete or invalid."
 
 
 @pytest.mark.asyncio
@@ -343,7 +410,11 @@ async def test_settings_get_is_secret_safe_and_reports_missing_entry():
         connection,
         {"id": 2, "type": settings_api.WS_GET_SETTINGS},
     )
-    assert connection.errors[-1][0:2] == (2, "entry_not_found")
+    assert connection.errors[-1] == (
+        2,
+        "entry_not_found",
+        "Daylight Calendar Import configuration was not found.",
+    )
 
     hass.config_entries.entry = entry(domain="other_domain")
     await invoke(
@@ -352,7 +423,32 @@ async def test_settings_get_is_secret_safe_and_reports_missing_entry():
         connection,
         {"id": 3, "type": settings_api.WS_GET_SETTINGS, "entry_id": "entry-1"},
     )
-    assert connection.errors[-1][0:2] == (3, "entry_not_found")
+    assert connection.errors[-1] == (
+        3,
+        "entry_not_found",
+        "Daylight Calendar Import configuration was not found.",
+    )
+
+
+def test_settings_entry_lookup_honors_explicit_entry_id():
+    first = entry()
+    first.entry_id = "entry-1"
+    second = entry()
+    second.entry_id = "entry-2"
+
+    class MultipleConfigEntries:
+        def async_entries(self, domain):
+            assert domain == DOMAIN
+            return [first, second]
+
+        def async_get_entry(self, entry_id):
+            return {"entry-1": first, "entry-2": second}.get(entry_id)
+
+    hass = SimpleNamespace(config_entries=MultipleConfigEntries())
+
+    assert settings_api._entry_for_message(
+        hass, {"entry_id": "entry-2"}
+    ) is second
 
 
 @pytest.mark.asyncio
