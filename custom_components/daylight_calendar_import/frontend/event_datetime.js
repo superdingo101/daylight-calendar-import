@@ -140,8 +140,11 @@ export function editDateTimeValue(value, timeZone) {
   return "";
 }
 
-export function editDateTimeIso(value, original, timeZone) {
+export function editDateTimeIso(value, original, timeZone, instantHint = null) {
   if (wallUtcMilliseconds(value) === null) return null;
+  if (instantHint && editDateTimeValue(instantHint, timeZone) === value) {
+    return instantHint;
+  }
   if (value === editDateTimeValue(original, timeZone)) return original;
 
   const originalDate = new Date(original);
@@ -165,21 +168,44 @@ export function editDateTimeIso(value, original, timeZone) {
   return value + ":00" + formatOffset(-local.getTimezoneOffset());
 }
 
-export function instantEditDateTimeValue(date, original, timeZone) {
+export function instantEditDateTimeIso(date, original, timeZone) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
   const originalDate = new Date(original);
   const originalOffset = isoOffsetMinutes(original);
-  if (timeZone && originalOffset !== null && !Number.isNaN(originalDate.getTime()) &&
-      namedZoneOffsetMinutes(originalDate, timeZone) === originalOffset) {
-    return formatDateTimeParts(date, timeZone);
+  const originalUsesNamedZone = Boolean(
+    timeZone && originalOffset !== null && !Number.isNaN(originalDate.getTime()) &&
+    namedZoneOffsetMinutes(originalDate, timeZone) === originalOffset
+  );
+
+  if (originalUsesNamedZone) {
+    const wall = formatDateTimeParts(date, timeZone);
+    const offset = namedZoneOffsetMinutes(date, timeZone);
+    return wall && offset !== null ? wall + ":00" + formatOffset(offset) : null;
   }
-  if (originalOffset !== null) return fixedOffsetDateTimeParts(date, originalOffset);
-  if (timeZone) return formatDateTimeParts(date, timeZone);
+
+  if (originalOffset !== null) {
+    const wall = fixedOffsetDateTimeParts(date, originalOffset);
+    return wall ? wall + ":00" + formatOffset(originalOffset) : null;
+  }
+
+  if (timeZone) {
+    const wall = formatDateTimeParts(date, timeZone);
+    const offset = namedZoneOffsetMinutes(date, timeZone);
+    return wall && offset !== null ? wall + ":00" + formatOffset(offset) : null;
+  }
+
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   const hour = String(date.getHours()).padStart(2, "0");
   const minute = String(date.getMinutes()).padStart(2, "0");
-  return year + "-" + month + "-" + day + "T" + hour + ":" + minute;
+  const wall = year + "-" + month + "-" + day + "T" + hour + ":" + minute;
+  return wall + ":00" + formatOffset(-date.getTimezoneOffset());
+}
+
+export function instantEditDateTimeValue(date, original, timeZone) {
+  const iso = instantEditDateTimeIso(date, original, timeZone);
+  return iso ? editDateTimeValue(iso, timeZone) : "";
 }
 
 function shiftIsoDate(value, days) {
@@ -210,6 +236,8 @@ export function normalizeEventTemporalEdit({
   originalStart,
   originalEnd,
   timeZone,
+  startInstantHint = null,
+  endInstantHint = null,
 }) {
   if (allDay) {
     if (!validIsoDate(startDate) || !validIsoDate(endDate)) {
@@ -228,8 +256,12 @@ export function normalizeEventTemporalEdit({
   if (!startDateTime || !endDateTime) {
     return {valid: false, error: "Start and end times are required."};
   }
-  const start = editDateTimeIso(startDateTime, originalStart, timeZone);
-  const end = editDateTimeIso(endDateTime, originalEnd, timeZone);
+  const start = editDateTimeIso(
+    startDateTime, originalStart, timeZone, startInstantHint
+  );
+  const end = editDateTimeIso(
+    endDateTime, originalEnd, timeZone, endInstantHint
+  );
   if (!start || !end) {
     return {
       valid: false,
