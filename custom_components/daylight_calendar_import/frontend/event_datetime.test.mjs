@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   allDayEditToTimedRange,
+  classifyEventTimeModel,
   dateOnlyFromTimed,
   editDateTimeIso,
   editDateTimeValue,
@@ -90,6 +91,45 @@ test("fixed-offset events keep their fixed offset when it does not match the HA 
       "America/Los_Angeles",
     ),
     "2026-10-01T11:15:00-04:00",
+  );
+});
+
+test("both event endpoints determine the named-zone versus fixed-offset model", () => {
+  const zone = "America/Los_Angeles";
+  const fixedStart = "2026-03-07T10:00:00-08:00";
+  const fixedEnd = "2026-03-09T10:00:00-08:00";
+  const model = classifyEventTimeModel(fixedStart, fixedEnd, zone);
+  assert.deepEqual(model, {kind: "fixed"});
+  assert.deepEqual(
+    classifyEventTimeModel(
+      fixedStart, "2026-03-09T10:00:00-07:00", zone
+    ),
+    {kind: "named"},
+  );
+  assert.equal(
+    editDateTimeIso("2026-03-09T10:00", fixedStart, zone, null, model),
+    "2026-03-09T10:00:00-08:00",
+  );
+  assert.equal(
+    instantEditDateTimeIso(
+      new Date("2026-03-11T18:00:00Z"), fixedEnd, zone, model
+    ),
+    "2026-03-11T10:00:00-08:00",
+  );
+  assert.deepEqual(
+    normalizeEventTemporalEdit({
+      allDay: false,
+      startDateTime: "2026-03-09T10:00",
+      endDateTime: "2026-03-11T10:00",
+      originalStart: fixedStart,
+      originalEnd: fixedEnd,
+      timeZone: zone,
+    }),
+    {
+      valid: true,
+      start: "2026-03-09T10:00:00-08:00",
+      end: "2026-03-11T10:00:00-08:00",
+    },
   );
 });
 
