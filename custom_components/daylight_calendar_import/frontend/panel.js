@@ -465,6 +465,13 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async _saveSettings(patch, save, successMessage, fallbackMessage) {
+    const changesPersistedSettings = Object.entries(patch).some(([key, value]) => {
+      const current = this._settings[key];
+      return Array.isArray(value) ?
+        !Array.isArray(current) || value.length !== current.length ||
+          value.some((item, index) => item !== current[index]) :
+        value !== current;
+    });
     this._settingsSaving = true;
     this._settingsError = null;
     this.render();
@@ -472,6 +479,7 @@ export class DaylightImportPanel extends HTMLElement {
     try {
       this._settings = await save();
       this._settingsDraft = null;
+      if (changesPersistedSettings) this._settingsReloadWarning = null;
       this._announcement.replaceChildren(element("span", successMessage));
     } catch (error) {
       const message = settingsErrorMessage(error, fallbackMessage);
