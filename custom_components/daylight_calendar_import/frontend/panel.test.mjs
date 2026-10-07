@@ -984,6 +984,45 @@ test("settings forms freeze every editable control while a save is pending", asy
   assert.notEqual(savedForm.elements.namedItem("ai_task_entity").disabled, true);
 });
 
+test("calendar settings freeze select and checkboxes while saving", async () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {
+    states: {
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.work": {
+        entity_id: "calendar.work", state: "off",
+        attributes: {friendly_name: "Work", supported_features: 1},
+      },
+    },
+  };
+  panel._settings = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family", "calendar.work"],
+    email: {},
+  };
+  panel._settingsTab = "calendars";
+  panel._settingsSaving = true;
+  panel._status = "ready";
+  panel._view = "settings";
+  panel.render();
+
+  const form = find(panel._content, "form");
+  assert.equal(form.attributes["aria-busy"], "true");
+  assert.equal(form.elements.namedItem("calendar_entity").disabled, true);
+  assert.equal(
+    form.querySelectorAll("input")
+      .filter(input => input.type === "checkbox")
+      .every(input => input.disabled === true),
+    true,
+  );
+  assert.equal(find(form, "button").disabled, true);
+});
+
 test("reload_failed refreshes persisted settings and keeps restart warning", async () => {
   let persisted = {
     entry_id: "entry-1",
@@ -1049,8 +1088,7 @@ test("reload_failed refreshes persisted settings and keeps restart warning", asy
   assert.equal(panel._settings.ai_task_entity, "ai_task.google");
   assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
   assert.equal(panel._settingsDraft, null);
-  assert.equal(form = find(panel._content, "form"),
-    find(panel._content, "form"));
+  form = find(panel._content, "form");
   assert.equal(form.elements.namedItem("ai_task_entity").value, "ai_task.google");
   assert.equal(
     panel._content.querySelectorAll("p")
