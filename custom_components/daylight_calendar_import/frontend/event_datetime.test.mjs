@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  allDayEditToTimedRange,
   dateOnlyFromTimed,
   editDateTimeIso,
   editDateTimeValue,
@@ -9,6 +10,7 @@ import {
   instantEditDateTimeIso,
   instantEditDateTimeValue,
   normalizeEventTemporalEdit,
+  timedEditToAllDayRange,
   visibleAllDayEnd,
 } from "./event_datetime.js";
 
@@ -113,6 +115,55 @@ test("timed values provide a date for timed-to-all-day conversion", () => {
   assert.equal(
     dateOnlyFromTimed("2026-12-05T23:30:00-08:00", "America/Los_Angeles"),
     "2026-12-05",
+  );
+});
+
+test("mode conversion transfers the current range with all-day end semantics", () => {
+  assert.deepEqual(
+    timedEditToAllDayRange("2026-12-24T19:30", "2026-12-24T21:30"),
+    {startDate: "2026-12-24", endDate: "2026-12-24"},
+  );
+  assert.deepEqual(
+    timedEditToAllDayRange("2026-12-24T19:30", "2026-12-25T00:00"),
+    {startDate: "2026-12-24", endDate: "2026-12-24"},
+  );
+  assert.deepEqual(
+    timedEditToAllDayRange("2026-12-24T19:30", "2026-12-25T01:00"),
+    {startDate: "2026-12-24", endDate: "2026-12-25"},
+  );
+
+  assert.deepEqual(
+    allDayEditToTimedRange(
+      "2026-12-24",
+      "2026-12-26",
+      "2026-12-05T19:30",
+      "2026-12-05T21:30",
+      true,
+    ),
+    {
+      startDateTime: "2026-12-24T19:30",
+      endDateTime: "2026-12-26T21:30",
+    },
+  );
+  assert.deepEqual(
+    allDayEditToTimedRange(
+      "2026-12-24",
+      "2026-12-26",
+      "2026-12-10T00:00",
+      "2026-12-13T00:00",
+      true,
+    ),
+    {
+      startDateTime: "2026-12-24T00:00",
+      endDateTime: "2026-12-27T00:00",
+    },
+  );
+  assert.deepEqual(
+    allDayEditToTimedRange("2026-12-24", "2026-12-26"),
+    {
+      startDateTime: "2026-12-24T00:00",
+      endDateTime: "2026-12-27T00:00",
+    },
   );
 });
 
