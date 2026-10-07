@@ -131,6 +131,10 @@ test("mode conversion transfers the current range with all-day end semantics", (
     timedEditToAllDayRange("2026-12-24T19:30", "2026-12-25T01:00"),
     {startDate: "2026-12-24", endDate: "2026-12-25"},
   );
+  assert.deepEqual(
+    timedEditToAllDayRange("2026-11-01T01:30", "2026-11-01T01:30"),
+    {startDate: "2026-11-01", endDate: "2026-11-01"},
+  );
 
   assert.deepEqual(
     allDayEditToTimedRange(
@@ -164,6 +168,10 @@ test("mode conversion transfers the current range with all-day end semantics", (
       startDateTime: "2026-12-24T00:00",
       endDateTime: "2026-12-27T00:00",
     },
+  );
+  assert.equal(
+    allDayEditToTimedRange("2026-12-26", "2026-12-24"),
+    null,
   );
 });
 
