@@ -30,6 +30,7 @@ from .settings import (
     async_validate_email_options,
     effective_core_options,
     normalize_core_options,
+    settings_lock,
 )
 
 
@@ -134,13 +135,17 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
                 errors[CONF_CALENDAR_ENTITY] = err.code
             else:
                 if not user_input[CONF_EMAIL_ENABLED]:
-                    return self.async_create_entry(
-                        data={
-                            **current,
-                            **self._pending_core_options,
-                            CONF_EMAIL_ENABLED: False,
-                        }
-                    )
+                    async with settings_lock(
+                        self.hass, self.config_entry.entry_id
+                    ):
+                        current = self.config_entry.options
+                        return self.async_create_entry(
+                            data={
+                                **current,
+                                **self._pending_core_options,
+                                CONF_EMAIL_ENABLED: False,
+                            }
+                        )
                 return await self.async_step_email()
 
         schema = vol.Schema(
@@ -190,22 +195,33 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
             }
         errors: dict[str, str] = {}
         if user_input is not None:
-            try:
-                email_patch = await async_validate_email_options(
-                    self.config_entry.entry_id,
-                    current,
-                    user_input,
-                )
-            except SettingsValidationError as err:
-                errors["base"] = err.code
-            else:
-                return self.async_create_entry(
-                    data={
-                        **current,
-                        **core_options,
-                        **email_patch,
+            async with settings_lock(self.hass, self.config_entry.entry_id):
+                current = self.config_entry.options
+                if getattr(self, "_pending_core_options", None) is None:
+                    ai_task_entity, default_calendar, allowed_calendars = (
+                        effective_core_options(self.config_entry)
+                    )
+                    core_options = {
+                        CONF_AI_TASK_ENTITY: ai_task_entity,
+                        CONF_CALENDAR_ENTITY: default_calendar,
+                        CONF_CALENDAR_ENTITIES: allowed_calendars,
                     }
-                )
+                try:
+                    email_patch = await async_validate_email_options(
+                        self.config_entry.entry_id,
+                        current,
+                        user_input,
+                    )
+                except SettingsValidationError as err:
+                    errors["base"] = err.code
+                else:
+                    return self.async_create_entry(
+                        data={
+                            **current,
+                            **core_options,
+                            **email_patch,
+                        }
+                    )
 
         suggested_values = (
             user_input
