@@ -724,3 +724,194 @@ test("activity renders email discovery processing duplicate and failure labels",
   assert.match(detail, /Processing/);
   assert.match(detail, /Failed/);
 });
+
+
+test("admin can manage AI and calendars from native settings tabs", async () => {
+  const calls = [];
+  let current = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family", "calendar.work"],
+    email: {
+      enabled: false,
+      host: "",
+      port: 993,
+      username: "",
+      password_configured: false,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.work": {
+        entity_id: "calendar.work", state: "off",
+        attributes: {friendly_name: "Work", supported_features: 1},
+      },
+      "calendar.read_only": {
+        entity_id: "calendar.read_only", state: "off",
+        attributes: {friendly_name: "Read only", supported_features: 0},
+      },
+    },
+    callWS: async message => {
+      calls.push(message);
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return current;
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        current = {
+          ...current,
+          ...Object.fromEntries(
+            ["ai_task_entity", "calendar_entity", "calendar_entities"]
+              .filter(key => message[key] !== undefined)
+              .map(key => [key, message[key]]),
+          ),
+        };
+        return current;
+      }
+      throw new Error(`Unexpected call: ${message.type}`);
+    },
+  };
+
+  const panel = new DaylightImportPanel();
+  panel.hass = hass;
+  await flush();
+  const settingsButton = panel._content.querySelectorAll("button")
+    .find(button => button.textContent === "Settings");
+  assert.ok(settingsButton);
+  settingsButton.click();
+  await flush();
+
+  assert.equal(find(panel._content, "h2").textContent, "General");
+  assert.equal(panel._content.querySelectorAll("nav")[0].querySelectorAll("button")[2]
+    .attributes["aria-current"], "page");
+  const generalForm = find(panel._content, "form");
+  const aiSelect = generalForm.elements.namedItem("ai_task_entity");
+  assert.equal(aiSelect.value, "ai_task.openai");
+  assert.deepEqual(aiSelect.children.map(option => option.value), [
+    "ai_task.google", "ai_task.openai",
+  ]);
+  aiSelect.value = "ai_task.google";
+  generalForm.submit({preventDefault() {}});
+  await flush();
+  assert.equal(current.ai_task_entity, "ai_task.google");
+  assert.equal(panel._settingsError, null);
+  assert.equal(panel._settings.calendar_entity, "calendar.family");
+  assert.deepEqual(panel._settings.calendar_entities, ["calendar.family", "calendar.work"]);
+  assert.equal(calls.at(-1).type, "daylight_calendar_import/settings/core/update");
+
+  const settingsTabs = panel._content.querySelector(".settings-tabs");
+  settingsTabs.querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+  assert.equal(find(panel._content, "h2").textContent, "Calendars");
+  const calendarForm = find(panel._content, "form");
+  const defaultSelect = calendarForm.elements.namedItem("calendar_entity");
+  assert.equal(defaultSelect.value, "calendar.family");
+  assert.equal(
+    defaultSelect.children.some(option => option.value === "calendar.read_only"),
+    false,
+  );
+  defaultSelect.value = "calendar.work";
+  for (const input of calendarForm.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.work";
+  }
+  calendarForm.submit({preventDefault() {}});
+  await flush();
+  assert.equal(current.calendar_entity, "calendar.work");
+  assert.deepEqual(current.calendar_entities, ["calendar.work"]);
+  assert.equal(current.ai_task_entity, "ai_task.google");
+  assert.equal(panel._settingsError, null);
+  assert.equal(find(panel._content, "h2").textContent, "Calendars");
+});
+
+test("non-admin panel does not expose native settings navigation", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: false},
+    callWS: async () => ({response: {imports: []}}),
+  };
+  await flush();
+
+  assert.equal(
+    panel._content.querySelectorAll("button")
+      .some(button => button.textContent === "Settings"),
+    false,
+  );
+});
+
+
+test("settings save failures focus an alert that is programmatically focusable", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {
+      enabled: false,
+      host: "",
+      port: 993,
+      username: "",
+      password_configured: false,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        throw new Error("Save rejected");
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  const form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+
+  const alert = panel._content.querySelector(".error");
+  assert.equal(alert.attributes.role, "alert");
+  assert.equal(alert.tabIndex, -1);
+  assert.equal(globalThis.focusedNode, alert);
+});
+
+test("settings calendar labels can shrink and wrap on narrow panels", () => {
+  const panel = new DaylightImportPanel();
+  const styles = find(panel.shadowRoot, "style").textContent;
+  assert.match(styles, /\.settings-card fieldset \{[\s\S]*?min-width: 0/);
+  assert.match(styles,
+    /\.settings-card fieldset label span \{[\s\S]*?min-width: 0;[\s\S]*?overflow-wrap: anywhere;/);
+});

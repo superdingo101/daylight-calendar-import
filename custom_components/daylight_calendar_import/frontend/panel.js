@@ -1,4 +1,5 @@
 import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {loadSettings, saveCoreSettings} from "./settings.js";
 
 const css = `
   :host {
@@ -77,6 +78,73 @@ const css = `
   input[type=checkbox] { width: auto; }
   textarea { min-height: 10rem; resize: vertical; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  nav[aria-label="Daylight views"] {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 0;
+    margin: -4px 0 20px;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--divider-color);
+  }
+  nav[aria-label="Daylight views"] button {
+    position: relative;
+    min-height: 48px;
+    padding: 10px 16px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    white-space: nowrap;
+  }
+  nav[aria-label="Daylight views"] button[aria-current="page"] {
+    color: var(--primary-color);
+    font-weight: 500;
+  }
+  nav[aria-label="Daylight views"] button[aria-current="page"]::after {
+    content: "";
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: 0;
+    height: 2px;
+    background: currentColor;
+  }
+  .settings-tabs {
+    display: flex;
+    gap: 8px;
+    margin: 0 0 16px;
+    flex-wrap: wrap;
+  }
+  .settings-tabs button[aria-current="page"] {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+  }
+  .settings-card {
+    border: 1px solid var(--divider-color);
+    border-radius: 12px;
+    padding: 16px;
+    background: var(--card-background-color);
+  }
+  .settings-card + .settings-card { margin-top: 16px; }
+  .settings-card fieldset {
+    min-width: 0;
+    margin: 12px 0;
+    padding: 12px;
+    border: 1px solid var(--divider-color);
+    border-radius: 8px;
+  }
+  .settings-card fieldset label {
+    min-width: 0;
+    display: flex;
+    grid-template-columns: none;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+  }
+  .settings-card fieldset label span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .settings-help { color: var(--secondary-text-color); }
   @media (max-width: 480px) {
     .topbar {
       padding-right: max(8px, var(--daylight-safe-right));
@@ -90,6 +158,10 @@ const css = `
     }
     li { padding: 12px; }
     .actions button, .detail-event > button { flex: 1 1 100%; width: 100%; }
+    nav[aria-label="Daylight views"] button {
+      flex: 0 0 auto;
+      width: auto;
+    }
   }
 `;
 
@@ -157,6 +229,46 @@ function activityLabel(type) {
     mixed: "Mixed event outcomes"})[type] || type.replaceAll("_", " ");
 }
 
+function entityChoices(hass, domain, requiredFeature, configured = []) {
+  const configuredIds = new Set(configured);
+  const byId = new Map();
+  for (const state of Object.values(hass?.states || {})) {
+    if (!state?.entity_id?.startsWith(`${domain}.`)) continue;
+    const supported = Number(state.attributes?.supported_features || 0);
+    if ((supported & requiredFeature) !== requiredFeature) continue;
+    const available = state.state !== "unavailable";
+    if (!available && !configuredIds.has(state.entity_id)) continue;
+    const friendly = state.attributes?.friendly_name;
+    byId.set(state.entity_id, {
+      id: state.entity_id,
+      label: friendly ? `${friendly} (${state.entity_id})` : state.entity_id,
+      available,
+    });
+  }
+  for (const entityId of configuredIds) {
+    if (!byId.has(entityId)) {
+      byId.set(entityId, {
+        id: entityId,
+        label: `${entityId} (configured, currently unavailable)`,
+        available: false,
+      });
+    }
+  }
+  return [...byId.values()].sort((left, right) =>
+    left.label.localeCompare(right.label));
+}
+
+function appendOptions(select, choices, selected) {
+  for (const choice of choices) {
+    const option = document.createElement("option");
+    option.value = choice.id;
+    option.textContent = choice.label;
+    option.selected = choice.id === selected;
+    select.append(option);
+  }
+  select.value = selected || choices[0]?.id || "";
+}
+
 export class DaylightImportPanel extends HTMLElement {
   constructor() {
     super();
@@ -181,6 +293,11 @@ export class DaylightImportPanel extends HTMLElement {
     this._activity = [];
     this._activityId = null;
     this._activityDetail = null;
+    this._settings = null;
+    this._settingsTab = "general";
+    this._settingsError = null;
+    this._settingsDraft = null;
+    this._settingsSaving = false;
     const style = element("style", css);
     const header = document.createElement("header");
     header.className = "topbar";
@@ -194,9 +311,11 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton = refresh;
     refresh.type = "button";
     refresh.addEventListener("click", () => {
-      if (!this._saving && !this._editingId && !this._batchAction && !this._resolution) void (
-        this._view === "activity" ? this.showActivity(this._activityId) :
-          this._selectedId ? this.showImport(this._selectedId) : this.refresh());
+      if (!this._saving && !this._settingsSaving && !this._editingId &&
+          !this._batchAction && !this._resolution) void (
+        this._view === "settings" ? this.showSettings(this._settingsTab, true) :
+          this._view === "activity" ? this.showActivity(this._activityId) :
+            this._selectedId ? this.showImport(this._selectedId) : this.refresh());
     });
     header.append(refresh);
     this._content = document.createElement("div");
@@ -266,7 +385,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async showActivity(id = null) {
-    if (this._saving || this._editingId || this._decision || this._batchAction || this._resolution) return;
+    if (this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
     const generation = ++this._generation;
     this._view = "activity";
     this._activityId = id;
@@ -288,7 +407,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async showReview() {
-    if (this._saving) return;
+    if (this._saving || this._settingsSaving) return;
     this._view = "inbox";
     this._selectedId = null;
     this._detail = null;
@@ -297,6 +416,211 @@ export class DaylightImportPanel extends HTMLElement {
     const refresh = this.refresh();
     this._refreshButton.focus();
     await refresh;
+  }
+
+  async showSettings(tab = this._settingsTab, reload = false) {
+    if (this._saving || this._settingsSaving || this._editingId ||
+        this._decision || this._batchAction || this._resolution) return;
+    const generation = ++this._generation;
+    this._view = "settings";
+    this._settingsTab = tab;
+    this._selectedId = null;
+    this._detail = null;
+    this._activityId = null;
+    this._activityDetail = null;
+    this._settingsError = null;
+    if (this._settings && !reload) {
+      this._status = "ready";
+      this.render();
+      this._content.querySelector("h2")?.focus();
+      return;
+    }
+
+    this._status = "loading";
+    this.render();
+    try {
+      const settings = await loadSettings(this._hass);
+      if (generation !== this._generation) return;
+      this._settings = settings;
+      this._settingsDraft = null;
+      this._status = "ready";
+    } catch (error) {
+      if (generation !== this._generation) return;
+      this._settings = null;
+      this._status = typeof error?.message === "string" ?
+        error.message : "Could not load settings. Try again.";
+    }
+    this.render();
+    const settingsLoadError = this._content.querySelector("[data-settings-load-error]");
+    (settingsLoadError || this._content.querySelector("h2") || this._refreshButton)?.focus();
+  }
+
+  async saveGeneralSettings(form) {
+    if (this._settingsSaving || !this._settings) return;
+    const aiTaskEntity = form.elements.namedItem("ai_task_entity").value;
+    this._settingsDraft = {tab: "general", ai_task_entity: aiTaskEntity};
+    this._settingsSaving = true;
+    this._settingsError = null;
+    this.render();
+    try {
+      this._settings = await saveCoreSettings(this._hass, {
+        entry_id: this._settings.entry_id,
+        ai_task_entity: aiTaskEntity,
+      });
+      this._settingsDraft = null;
+      this._announcement.replaceChildren(element("span", "General settings saved"));
+    } catch (error) {
+      this._settingsError = typeof error?.message === "string" ?
+        error.message : "Could not save general settings.";
+    } finally {
+      this._settingsSaving = false;
+      this.render();
+      (this._content.querySelector(".error") ||
+        this._content.querySelector("h2") || this._refreshButton)?.focus();
+    }
+  }
+
+  async saveCalendarSettings(form) {
+    if (this._settingsSaving || !this._settings) return;
+    const fields = form.elements;
+    const allowed = Array.from(form.querySelectorAll("input"))
+      .filter(input => input.type === "checkbox" && input.checked)
+      .map(input => input.value);
+    const defaultCalendar = fields.namedItem("calendar_entity").value;
+    this._settingsDraft = {
+      tab: "calendars",
+      calendar_entity: defaultCalendar,
+      calendar_entities: allowed,
+    };
+    if (!allowed.includes(defaultCalendar)) {
+      this._settingsError = "The default calendar must also be selected as writable.";
+      this.render();
+      const alert = this._content.querySelector(".error");
+      if (alert) { alert.tabIndex = -1; alert.focus(); }
+      return;
+    }
+
+    this._settingsSaving = true;
+    this._settingsError = null;
+    this.render();
+    try {
+      this._settings = await saveCoreSettings(this._hass, {
+        entry_id: this._settings.entry_id,
+        calendar_entity: defaultCalendar,
+        calendar_entities: allowed,
+      });
+      this._settingsDraft = null;
+      this._announcement.replaceChildren(element("span", "Calendar settings saved"));
+    } catch (error) {
+      this._settingsError = typeof error?.message === "string" ?
+        error.message : "Could not save calendar settings.";
+    } finally {
+      this._settingsSaving = false;
+      this.render();
+      (this._content.querySelector(".error") ||
+        this._content.querySelector("h2") || this._refreshButton)?.focus();
+    }
+  }
+
+  settingsSubnav() {
+    const nav = element("nav", "", "settings-tabs");
+    nav.setAttribute("aria-label", "Settings sections");
+    for (const [tab, label] of [["general", "General"], ["calendars", "Calendars"]]) {
+      const button = element("button", label);
+      button.type = "button";
+      if (this._settingsTab === tab) button.setAttribute("aria-current", "page");
+      button.addEventListener("click", () => {
+        if (this._settingsSaving || this._settingsTab === tab) return;
+        this._settingsTab = tab;
+        this._settingsError = null;
+        this._settingsDraft = null;
+        this.render();
+        this._content.querySelector("h2")?.focus();
+      });
+      nav.append(button);
+    }
+    return nav;
+  }
+
+  generalSettingsView() {
+    const section = element("section", "", "settings-card");
+    const heading = element("h2", "General");
+    heading.tabIndex = -1;
+    section.append(
+      heading,
+      element("p", "Choose the AI Task entity Daylight uses to extract calendar events.", "settings-help"),
+    );
+    const form = document.createElement("form");
+    const label = element("label", "AI Task entity");
+    const select = document.createElement("select");
+    select.name = "ai_task_entity";
+    const choices = entityChoices(
+      this._hass, "ai_task", 1, [this._settings.ai_task_entity],
+    );
+    const selectedAi = this._settingsDraft?.tab === "general" ?
+      this._settingsDraft.ai_task_entity : this._settings.ai_task_entity;
+    appendOptions(select, choices, selectedAi);
+    label.append(select);
+    const save = element("button", this._settingsSaving ? "Saving…" : "Save general settings");
+    save.type = "submit";
+    save.disabled = this._settingsSaving || choices.length === 0;
+    form.append(label, save);
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      void this.saveGeneralSettings(form);
+    });
+    section.append(form);
+    return section;
+  }
+
+  calendarSettingsView() {
+    const section = element("section", "", "settings-card");
+    const heading = element("h2", "Calendars");
+    heading.tabIndex = -1;
+    section.append(
+      heading,
+      element("p", "Choose the default destination and the calendars available during review.", "settings-help"),
+    );
+    const form = document.createElement("form");
+    const draft = this._settingsDraft?.tab === "calendars" ? this._settingsDraft : null;
+    const selectedDefault = draft?.calendar_entity || this._settings.calendar_entity;
+    const selectedAllowed = draft?.calendar_entities || this._settings.calendar_entities;
+    const configured = [
+      ...selectedAllowed,
+      selectedDefault,
+    ];
+    const choices = entityChoices(this._hass, "calendar", 1, configured);
+
+    const defaultLabel = element("label", "Default calendar");
+    const defaultSelect = document.createElement("select");
+    defaultSelect.name = "calendar_entity";
+    appendOptions(defaultSelect, choices, selectedDefault);
+    defaultLabel.append(defaultSelect);
+    form.append(defaultLabel);
+
+    const fieldset = document.createElement("fieldset");
+    fieldset.append(element("legend", "Writable calendars"));
+    for (const choice of choices) {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.name = "calendar_entities";
+      input.value = choice.id;
+      input.checked = selectedAllowed.includes(choice.id);
+      label.append(input, element("span", choice.label));
+      fieldset.append(label);
+    }
+    form.append(fieldset);
+    const save = element("button", this._settingsSaving ? "Saving…" : "Save calendar settings");
+    save.type = "submit";
+    save.disabled = this._settingsSaving || choices.length === 0;
+    form.append(save);
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      void this.saveCalendarSettings(form);
+    });
+    section.append(form);
+    return section;
   }
 
   async showImport(id) {
@@ -329,7 +653,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   showInbox() {
-    if (this._saving || this._editingId || this._decision || this._batchAction || this._resolution) return;
+    if (this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
     this._batchResults = [];
     this._batchContext = null;
     this._returnFocusId = this._selectedId;
@@ -615,21 +939,58 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   render() {
-    this._refreshButton.disabled = this._saving || Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
+    this._refreshButton.disabled = this._saving || this._settingsSaving ||
+      Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     const content = document.createDocumentFragment();
     const navigation = element("nav", "", "actions");
     navigation.setAttribute("aria-label", "Daylight views");
     const review = element("button", "Review inbox");
     review.type = "button";
-    review.disabled = this._view === "inbox" || this._saving;
+    review.disabled = this._view === "inbox" || this._saving || this._settingsSaving;
     if (this._view === "inbox") review.setAttribute("aria-current", "page");
     review.addEventListener("click", () => void this.showReview());
     const activity = element("button", "Recent activity");
     activity.type = "button";
-    activity.disabled = this._view === "activity" || this._saving || Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
+    activity.disabled = this._view === "activity" || this._saving || this._settingsSaving ||
+      Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     if (this._view === "activity") activity.setAttribute("aria-current", "page");
     activity.addEventListener("click", () => void this.showActivity());
     navigation.append(review, activity);
+    if (this._hass?.user?.is_admin === true) {
+      const settings = element("button", "Settings");
+      settings.type = "button";
+      settings.disabled = this._view === "settings" || this._saving || this._settingsSaving ||
+        Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
+      if (this._view === "settings") settings.setAttribute("aria-current", "page");
+      settings.addEventListener("click", () => void this.showSettings());
+      navigation.append(settings);
+    }
+    if (this._view === "settings") {
+      content.append(navigation);
+      if (this._status === "loading") {
+        content.append(element("p", "Loading settings…", "status"));
+      } else if (this._status !== "ready" || !this._settings) {
+        const error = element("p", this._status, "error");
+        error.setAttribute("role", "alert");
+        error.setAttribute("data-settings-load-error", "");
+        error.tabIndex = -1;
+        content.append(error);
+      } else {
+        content.append(this.settingsSubnav());
+        if (this._settingsError) {
+          const error = element("p", this._settingsError, "error");
+          error.setAttribute("role", "alert");
+          error.tabIndex = -1;
+          content.append(error);
+        }
+        content.append(
+          this._settingsTab === "calendars" ?
+            this.calendarSettingsView() : this.generalSettingsView(),
+        );
+      }
+      this._content.replaceChildren(content);
+      return;
+    }
     if (this._view === "activity") {
       content.append(navigation);
       if (this._activityId) {

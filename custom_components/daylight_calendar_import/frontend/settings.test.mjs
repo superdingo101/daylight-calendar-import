@@ -1,0 +1,96 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {loadSettings, saveCoreSettings, saveEmailSettings} from "./settings.js";
+
+const snapshot = {
+  entry_id: "entry-1",
+  ai_task_entity: "ai_task.openai",
+  calendar_entity: "calendar.family",
+  calendar_entities: ["calendar.family"],
+  email: {
+    enabled: false,
+    host: "",
+    port: 993,
+    username: "",
+    password_configured: false,
+    mailbox: "INBOX",
+    verify_ssl: true,
+  },
+};
+
+test("settings client loads secret-safe settings", async () => {
+  const calls = [];
+  const hass = {callWS: async message => {
+    calls.push(message);
+    return snapshot;
+  }};
+
+  assert.deepEqual(await loadSettings(hass), snapshot);
+  assert.deepEqual(calls, [{type: "daylight_calendar_import/settings/get"}]);
+});
+
+test("settings client sends only changed core fields", async () => {
+  const calls = [];
+  const hass = {callWS: async message => {
+    calls.push(message);
+    return message.ai_task_entity ?
+      {...snapshot, ai_task_entity: message.ai_task_entity} :
+      {...snapshot, calendar_entity: message.calendar_entity,
+        calendar_entities: message.calendar_entities};
+  }};
+
+  const general = await saveCoreSettings(hass, {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.google",
+  });
+  const calendars = await saveCoreSettings(hass, {
+    entry_id: "entry-1",
+    calendar_entity: "calendar.work",
+    calendar_entities: ["calendar.work"],
+  });
+
+  assert.equal(general.ai_task_entity, "ai_task.google");
+  assert.equal(calendars.calendar_entity, "calendar.work");
+  assert.deepEqual(calls, [
+    {
+      type: "daylight_calendar_import/settings/core/update",
+      entry_id: "entry-1",
+      ai_task_entity: "ai_task.google",
+    },
+    {
+      type: "daylight_calendar_import/settings/core/update",
+      entry_id: "entry-1",
+      calendar_entity: "calendar.work",
+      calendar_entities: ["calendar.work"],
+    },
+  ]);
+});
+
+test("settings client omits untouched optional email fields", async () => {
+  const calls = [];
+  const hass = {callWS: async message => {
+    calls.push(message);
+    return snapshot;
+  }};
+
+  await saveEmailSettings(hass, {
+    entry_id: "entry-1",
+    enabled: false,
+    password: undefined,
+  });
+
+  assert.deepEqual(calls[0], {
+    type: "daylight_calendar_import/settings/email/update",
+    entry_id: "entry-1",
+    enabled: false,
+  });
+});
+
+test("settings client rejects malformed responses", async () => {
+  const hass = {callWS: async () => ({entry_id: "entry-1"})};
+  await assert.rejects(
+    () => loadSettings(hass),
+    /unexpected response/,
+  );
+});
