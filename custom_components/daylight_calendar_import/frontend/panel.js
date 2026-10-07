@@ -232,8 +232,12 @@ function activityLabel(type) {
 
 function syncTimedDuration(start, end, event, timeZone) {
   const readDuration = () => {
-    const startIso = editDateTimeIso(start.value, event.start, timeZone);
-    const endIso = editDateTimeIso(end.value, event.end, timeZone);
+    const startIso = editDateTimeIso(
+      start.value, event.start, timeZone, start._daylightInstantHint || null
+    );
+    const endIso = editDateTimeIso(
+      end.value, event.end, timeZone, end._daylightInstantHint || null
+    );
     if (!startIso || !endIso) return null;
     const startValue = new Date(startIso);
     const endValue = new Date(endIso);
@@ -245,6 +249,7 @@ function syncTimedDuration(start, end, event, timeZone) {
     duration = readDuration();
   };
   start.addEventListener("change", () => {
+    start._daylightInstantHint = null;
     const startIso = editDateTimeIso(start.value, event.start, timeZone);
     if (!startIso || duration === null) return;
     const nextStart = new Date(startIso);
@@ -1433,6 +1438,7 @@ export class DaylightImportPanel extends HTMLElement {
     setEditDateMode(form, allDay.checked);
 
     let preserveTimedTimes = !event.all_day;
+    let preservedTimedRange = null;
     allDay.addEventListener("change", () => {
       if (allDay.checked) {
         const temporal = normalizeEventTemporalEdit({
@@ -1458,6 +1464,12 @@ export class DaylightImportPanel extends HTMLElement {
           showEditError(form, message);
           return;
         }
+        preservedTimedRange = {
+          startDateTime: start.value,
+          endDateTime: end.value,
+          startInstant: temporal.start,
+          endInstant: temporal.end,
+        };
         startDate.value = range.startDate;
         endDate.value = range.endDate;
         dateSync.refresh();
@@ -1480,8 +1492,13 @@ export class DaylightImportPanel extends HTMLElement {
         }
         start.value = range.startDateTime;
         end.value = range.endDateTime;
-        start._daylightInstantHint = null;
-        end._daylightInstantHint = null;
+        const restoresPreservedRange = preservedTimedRange &&
+          preservedTimedRange.startDateTime === range.startDateTime &&
+          preservedTimedRange.endDateTime === range.endDateTime;
+        start._daylightInstantHint = restoresPreservedRange ?
+          preservedTimedRange.startInstant : null;
+        end._daylightInstantHint = restoresPreservedRange ?
+          preservedTimedRange.endInstant : null;
         timedSync.refresh();
         preserveTimedTimes = true;
       }
