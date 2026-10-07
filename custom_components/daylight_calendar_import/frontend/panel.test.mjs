@@ -1279,7 +1279,7 @@ test("new save error receives focus ahead of an older reload warning", async () 
             message: "Settings were saved, but Daylight could not reload. Restart Home Assistant.",
           };
         }
-        throw new Error("Network failed");
+        throw {code: "invalid_format", message: "Save rejected"};
       }
       throw new Error("Unexpected request");
     },
