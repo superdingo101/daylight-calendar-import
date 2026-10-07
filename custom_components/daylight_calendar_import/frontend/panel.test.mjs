@@ -1515,3 +1515,25 @@ test("calendar validation focuses current error ahead of restart warning", async
   assert.equal(globalThis.focusedNode, currentError);
   assert.deepEqual(panel._announcement.children, []);
 });
+
+
+test("cached settings entry clears stale announcements without reloading", async () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {}};
+  panel._settings = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    email: {},
+  };
+  panel._announcement.replaceChildren(Object.assign(new FakeNode("span"), {
+    textContent: "Inbox loaded",
+  }));
+
+  await panel.showSettings();
+
+  assert.deepEqual(panel._announcement.children, []);
+  assert.equal(find(panel._content, "h2").textContent, "General");
+  assert.equal(globalThis.focusedNode, find(panel._content, "h2"));
+});
