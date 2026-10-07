@@ -1,4 +1,4 @@
-import {dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, visibleAllDayEnd} from "./event_datetime.js";
+import {allDayEditToTimedRange, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
 import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, settingsErrorMessage} from "./settings.js";
 
@@ -241,6 +241,9 @@ function syncTimedDuration(start, end, event, timeZone) {
     return endValue.getTime() - startValue.getTime();
   };
   let duration = readDuration();
+  const refresh = () => {
+    duration = readDuration();
+  };
   start.addEventListener("change", () => {
     const startIso = editDateTimeIso(start.value, event.start, timeZone);
     if (!startIso || duration === null) return;
@@ -254,9 +257,9 @@ function syncTimedDuration(start, end, event, timeZone) {
   });
   end.addEventListener("change", () => {
     end._daylightInstantHint = null;
-    const next = readDuration();
-    if (next !== null) duration = next;
+    refresh();
   });
+  return {refresh};
 }
 
 function syncDateDuration(start, end) {
@@ -276,15 +279,16 @@ function syncDateDuration(start, end) {
     return startValue === null || endValue === null ? null : endValue - startValue;
   };
   let duration = readDuration();
+  const refresh = () => {
+    duration = readDuration();
+  };
   start.addEventListener("change", () => {
     const nextStart = dayValue(start.value);
     if (duration === null || nextStart === null) return;
     end.value = new Date(nextStart + duration).toISOString().slice(0, 10);
   });
-  end.addEventListener("change", () => {
-    const next = readDuration();
-    if (next !== null) duration = next;
-  });
+  end.addEventListener("change", refresh);
+  return {refresh};
 }
 
 function setEditDateMode(form, allDay) {
@@ -1400,7 +1404,7 @@ export class DaylightImportPanel extends HTMLElement {
       "End",
       event.all_day ? event.end + "T00:00" : editDateTimeValue(event.end, timeZone),
     );
-    syncTimedDuration(start, end, event, timeZone);
+    const timedSync = syncTimedDuration(start, end, event, timeZone);
 
     const allDayFields = document.createElement("div");
     allDayFields.className = "all-day-event-fields";
@@ -1424,10 +1428,38 @@ export class DaylightImportPanel extends HTMLElement {
       "End date",
       event.all_day ? visibleAllDayEnd(event.end) : dateOnlyFromTimed(event.end, timeZone),
     );
-    syncDateDuration(startDate, endDate);
+    const dateSync = syncDateDuration(startDate, endDate);
     form.append(timedFields, allDayFields);
     setEditDateMode(form, allDay.checked);
-    allDay.addEventListener("change", () => setEditDateMode(form, allDay.checked));
+
+    let preserveTimedTimes = !event.all_day;
+    allDay.addEventListener("change", () => {
+      if (allDay.checked) {
+        const range = timedEditToAllDayRange(start.value, end.value);
+        if (range) {
+          startDate.value = range.startDate;
+          endDate.value = range.endDate;
+          dateSync.refresh();
+        }
+      } else {
+        const range = allDayEditToTimedRange(
+          startDate.value,
+          endDate.value,
+          start.value,
+          end.value,
+          preserveTimedTimes,
+        );
+        if (range) {
+          start.value = range.startDateTime;
+          end.value = range.endDateTime;
+          start._daylightInstantHint = null;
+          end._daylightInstantHint = null;
+          timedSync.refresh();
+          preserveTimedTimes = true;
+        }
+      }
+      setEditDateMode(form, allDay.checked);
+    });
 
     field("location", "Location", event.location);
     field("description", "Description and meeting join details", event.description, "textarea");
