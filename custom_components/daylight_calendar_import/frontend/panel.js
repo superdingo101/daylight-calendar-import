@@ -484,13 +484,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async _saveSettings(tab, patch, save, successMessage, fallbackMessage) {
-    const changesPersistedSettings = Object.entries(patch).some(([key, value]) => {
-      const current = this._settings[key];
-      return Array.isArray(value) ?
-        !Array.isArray(current) || value.length !== current.length ||
-          value.some((item, index) => item !== current[index]) :
-        value !== current;
-    });
+    const changesPersistedSettings = !settingsPatchMatches(this._settings, patch);
     this._settingsSaving = true;
     this._settingsError = null;
     this._announcement.replaceChildren(element("span", "Saving settings…"));
