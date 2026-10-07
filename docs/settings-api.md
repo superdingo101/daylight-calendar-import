@@ -64,16 +64,22 @@ Validation failures use stable WebSocket error codes:
 
 The API intentionally keeps config-entry options as the source of truth. The
 existing Home Assistant Configure/options flow and the Daylight panel therefore
-share the same settings model and validation helpers instead of maintaining
-parallel configuration stores.
+share the same settings model, field-scoped patch semantics, persistence helper,
+and validation helpers instead of maintaining parallel configuration stores.
 
-Native settings mutations are serialized per config entry for the complete
-validate/update/reload transaction. In particular, a second Direct IMAP save
-waits for an in-progress mailbox validation to finish before it resolves blank
-or omitted fields such as the password. This prevents concurrent email saves
-from combining or restoring stale connection values that were never validated
-together. A slow mailbox validation can briefly delay another Daylight settings
-save, but it does not block unrelated Home Assistant runtime work.
+All settings mutations are serialized per config entry for the complete
+validate/update/reload transaction. The legacy Home Assistant options flow
+persists its patch explicitly inside that transaction and completes without
+returning a second options payload for Home Assistant to write afterward. This
+prevents a stale full-flow snapshot from overwriting a concurrent native
+settings change.
+
+In particular, a second Direct IMAP save waits for an in-progress mailbox
+validation to finish before it resolves blank or omitted fields such as the
+password. This prevents concurrent email saves from combining or restoring stale
+connection values that were never validated together. A slow mailbox validation
+can briefly delay another Daylight settings save, but it does not block unrelated
+Home Assistant runtime work.
 
 If Home Assistant cannot reload the config entry after the options are saved,
 the API returns `reload_failed` instead of reporting success. The options remain
