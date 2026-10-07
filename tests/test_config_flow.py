@@ -148,6 +148,7 @@ def test_config_flow_exposes_options_flow():
 
 async def test_options_flow_can_disable_email_ingestion():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "create_entry"}
     entry = _options_entry({
         CONF_EMAIL_ENABLED: True,
@@ -196,6 +197,7 @@ async def test_options_flow_can_disable_email_ingestion():
 
 async def test_options_flow_routes_enabled_email_to_connection_step():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "form"}
     entry = _options_entry()
 
@@ -232,6 +234,7 @@ async def test_options_flow_routes_enabled_email_to_connection_step():
 
 async def test_options_flow_validates_and_saves_direct_imap():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     flow._pending_core_options = {
         CONF_AI_TASK_ENTITY: "ai_task.new",
         CONF_CALENDAR_ENTITY: "calendar.new",
@@ -287,6 +290,7 @@ async def test_options_flow_validates_and_saves_direct_imap():
 
 async def test_options_flow_normalizes_number_selector_port_to_int():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "create_entry"}
     entry = _options_entry()
     validate = AsyncMock()
@@ -338,6 +342,7 @@ async def test_options_flow_normalizes_number_selector_port_to_int():
 
 async def test_options_flow_rejects_fractional_number_selector_port():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "form"}
     entry = _options_entry()
     user_input = {
@@ -377,6 +382,7 @@ async def test_options_flow_rejects_fractional_number_selector_port():
 
 async def test_options_flow_reports_invalid_imap_credentials():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "form"}
     entry = _options_entry()
     source = SimpleNamespace(
@@ -422,6 +428,7 @@ async def test_options_flow_reports_invalid_imap_credentials():
 
 async def test_options_flow_shows_default_calendar_and_disabled_email_suggestions():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "form"}
     entry = _options_entry()
 
@@ -469,6 +476,7 @@ async def test_options_flow_shows_default_calendar_and_disabled_email_suggestion
 
 async def test_options_flow_prefers_current_default_calendar_option():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "form"}
     entry = _options_entry({
         CONF_AI_TASK_ENTITY: "ai_task.option",
@@ -508,6 +516,7 @@ async def test_options_flow_prefers_current_default_calendar_option():
 
 async def test_options_flow_rejects_default_outside_allowed_calendars():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "form"}
     entry = _options_entry()
 
@@ -546,6 +555,7 @@ async def test_options_flow_rejects_default_outside_allowed_calendars():
 
 async def test_options_flow_can_remove_allowed_calendars_and_change_ai():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "create_entry"}
     entry = _options_entry({
         CONF_AI_TASK_ENTITY: "ai_task.old",
@@ -589,6 +599,7 @@ async def test_options_flow_can_remove_allowed_calendars_and_change_ai():
 
 async def test_options_flow_shows_email_form_with_all_fields():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "form"}
     entry = _options_entry()
 
@@ -660,6 +671,7 @@ async def test_options_flow_reports_direct_imap_validation_errors(
     expected_code,
 ):
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "form"}
     entry = _options_entry()
     source = SimpleNamespace(
@@ -701,6 +713,7 @@ async def test_options_flow_reports_direct_imap_validation_errors(
 
 async def test_options_flow_reports_invalid_email_configuration():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "form"}
     entry = _options_entry()
     user_input = {
@@ -746,6 +759,7 @@ async def test_options_flow_preserves_attempted_values_after_validation_error(
     expected_code,
 ):
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "form"}
     entry = _options_entry({
         CONF_EMAIL_HOST: "old.example.test",
@@ -796,6 +810,7 @@ async def test_options_flow_preserves_attempted_values_after_validation_error(
 
 async def test_options_flow_preserves_attempted_values_after_invalid_configuration():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "form"}
     entry = _options_entry({
         CONF_EMAIL_HOST: "old.example.test",
@@ -843,6 +858,7 @@ async def test_options_flow_preserves_attempted_values_after_invalid_configurati
 
 async def test_options_flow_initial_email_form_uses_persisted_suggestions():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "form"}
     current = {
         CONF_EMAIL_ENABLED: True,
@@ -890,6 +906,7 @@ async def test_options_flow_initial_email_form_uses_persisted_suggestions():
 
 async def test_options_flow_rejects_blank_password_on_first_enable():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "form"}
     entry = _options_entry()
     user_input = {
@@ -929,6 +946,7 @@ async def test_options_flow_rejects_blank_password_on_first_enable():
 
 async def test_options_flow_reuses_saved_password_when_edit_form_is_blank():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "create_entry"}
     entry = _options_entry({
         CONF_EMAIL_ENABLED: True,
@@ -986,6 +1004,7 @@ async def test_options_flow_reuses_saved_password_when_edit_form_is_blank():
 
 async def test_options_flow_email_serializes_with_native_settings_updates():
     flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = SimpleNamespace(data={})
     expected = {"type": "create_entry"}
     entry = _options_entry({
         CONF_AI_TASK_ENTITY: "ai_task.old",
