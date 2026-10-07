@@ -44,6 +44,11 @@ _EMAIL_OPTION_KEYS = (
     CONF_EMAIL_VERIFY_SSL,
 )
 
+_MAILBOX_PRIVACY_URL = (
+    "https://github.com/superdingo101/daylight-calendar-import/"
+    "blob/main/docs/direct-imap.md#mailbox-privacy-and-access"
+)
+
 
 def _ai_task_selector() -> selector.EntitySelector:
     """Select one AI Task entity capable of structured generation."""
@@ -207,6 +212,7 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
                 suggested_values,
             ),
             errors=errors,
+            description_placeholders={"privacy_url": _MAILBOX_PRIVACY_URL},
         )
 
     async def async_step_email(
