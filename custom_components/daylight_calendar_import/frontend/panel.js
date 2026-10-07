@@ -302,10 +302,11 @@ function settingsDraftMatches(settings, tab, draft) {
 }
 
 function emailSaveConfirmed(previousEmail, reconciledEmail, draft) {
+  if (!draft.enabled) return reconciledEmail?.enabled === false;
   if (!emailDraftMatches({email: reconciledEmail}, {...draft, password: ""})) {
     return false;
   }
-  if (!draft.enabled || !draft.password) return true;
+  if (!draft.password) return true;
   return previousEmail?.password_configured !== true &&
     reconciledEmail?.password_configured === true;
 }
