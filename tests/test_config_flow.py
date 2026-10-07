@@ -1,5 +1,6 @@
 """Tests for the config flow."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
@@ -30,6 +31,7 @@ from custom_components.daylight_calendar_import.email_runtime import (
     DEFAULT_EMAIL_MAILBOX,
     DEFAULT_EMAIL_PORT,
 )
+from custom_components.daylight_calendar_import.settings import settings_lock
 
 
 def test_config_flow_version():
@@ -980,3 +982,74 @@ async def test_options_flow_reuses_saved_password_when_edit_form_is_blank():
             CONF_EMAIL_PASSWORD: "saved-secret",
         }
     )
+
+
+async def test_options_flow_email_serializes_with_native_settings_updates():
+    flow = DaylightCalendarImportOptionsFlow()
+    expected = {"type": "create_entry"}
+    entry = _options_entry({
+        CONF_AI_TASK_ENTITY: "ai_task.old",
+        CONF_CALENDAR_ENTITY: "calendar.family",
+        CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        CONF_EMAIL_ENABLED: True,
+        CONF_EMAIL_HOST: "imap.old.test",
+        CONF_EMAIL_PORT: 993,
+        CONF_EMAIL_USERNAME: "old@example.test",
+        CONF_EMAIL_PASSWORD: "old-secret",
+        CONF_EMAIL_MAILBOX: "INBOX",
+        CONF_EMAIL_VERIFY_SSL: True,
+    })
+    hass = SimpleNamespace(data={})
+    flow.hass = hass
+    source = SimpleNamespace(async_validate=AsyncMock())
+    user_input = {
+        CONF_EMAIL_HOST: "imap.new.test",
+        CONF_EMAIL_PORT: 993,
+        CONF_EMAIL_USERNAME: "new@example.test",
+        CONF_EMAIL_PASSWORD: "",
+        CONF_EMAIL_MAILBOX: "Calendar",
+        CONF_EMAIL_VERIFY_SSL: True,
+    }
+
+    lock = settings_lock(hass, entry.entry_id)
+    await lock.acquire()
+    try:
+        with (
+            patch.object(
+                DaylightCalendarImportOptionsFlow,
+                "config_entry",
+                new_callable=PropertyMock,
+                return_value=entry,
+            ),
+            patch(
+                "custom_components.daylight_calendar_import.settings.DirectImapSource",
+                Mock(return_value=source),
+            ) as source_factory,
+            patch.object(
+                flow,
+                "async_create_entry",
+                Mock(return_value=expected),
+            ) as create_entry,
+        ):
+            save_task = asyncio.create_task(flow.async_step_email(user_input))
+            await asyncio.sleep(0)
+            source_factory.assert_not_called()
+
+            entry.options = {
+                **entry.options,
+                CONF_AI_TASK_ENTITY: "ai_task.new",
+                CONF_EMAIL_PASSWORD: "new-secret",
+            }
+            lock.release()
+
+            result = await save_task
+    finally:
+        if lock.locked():
+            lock.release()
+
+    assert result is expected
+    assert source_factory.call_args.args[0].password == "new-secret"
+    create_entry.assert_called_once()
+    saved = create_entry.call_args.kwargs["data"]
+    assert saved[CONF_AI_TASK_ENTITY] == "ai_task.new"
+    assert saved[CONF_EMAIL_PASSWORD] == "new-secret"
