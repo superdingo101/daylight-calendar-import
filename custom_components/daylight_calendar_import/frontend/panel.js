@@ -727,6 +727,7 @@ export class DaylightImportPanel extends HTMLElement {
       content.append(element("h2", "Source context"));
       if (detail.source_kind === "email") {
         const source = element("div", "", "source");
+        source.tabIndex = 0;
         source.setAttribute("role", "region");
         source.setAttribute("aria-label", "Email source details");
         source.append(
