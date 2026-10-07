@@ -303,8 +303,20 @@ function setEditDateMode(form, allDay) {
   }
 }
 
+function clearEditError(form) {
+  const error = form.querySelector(".error");
+  if (!error) return;
+  if (typeof error.remove === "function") {
+    error.remove();
+    return;
+  }
+  form.replaceChildren(
+    ...Array.from(form.children || []).filter(child => child !== error)
+  );
+}
+
 function showEditError(form, message) {
-  form.querySelector(".error")?.remove();
+  clearEditError(form);
   const error = element("p", message, "error");
   error.setAttribute("role", "alert");
   error.tabIndex = -1;
@@ -1289,7 +1301,7 @@ export class DaylightImportPanel extends HTMLElement {
       return;
     }
 
-    form.querySelector(".error")?.remove();
+    clearEditError(form);
     const draft = {
       title: fields.namedItem("title").value,
       start: temporal.start,
