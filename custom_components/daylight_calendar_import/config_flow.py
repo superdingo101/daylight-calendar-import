@@ -27,6 +27,7 @@ from .email_runtime import DEFAULT_EMAIL_MAILBOX, DEFAULT_EMAIL_PORT
 from .settings import (
     EMAIL_OPTION_KEYS,
     SettingsValidationError,
+    async_save_option_patch,
     async_validate_email_options,
     core_option_patch,
     effective_core_options,
@@ -112,7 +113,7 @@ class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
 
 
 
-class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
+class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlow):
     """Configure AI, calendar, and optional Direct IMAP settings."""
 
     async def async_step_init(
@@ -139,18 +140,26 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
                 errors[CONF_CALENDAR_ENTITY] = err.code
             else:
                 if not user_input[CONF_EMAIL_ENABLED]:
-                    async with settings_lock(
-                        self.hass, self.config_entry.entry_id
-                    ):
-                        current = self.config_entry.options
+                    try:
+                        async with settings_lock(
+                            self.hass, self.config_entry.entry_id
+                        ):
+                            await async_save_option_patch(
+                                self.hass,
+                                self.config_entry,
+                                {
+                                    **self._pending_core_patch,
+                                    CONF_EMAIL_ENABLED: False,
+                                },
+                            )
+                    except SettingsValidationError as err:
+                        errors["base"] = err.code
+                    else:
                         return self.async_create_entry(
-                            data={
-                                **current,
-                                **self._pending_core_patch,
-                                CONF_EMAIL_ENABLED: False,
-                            }
+                            data=None  # type: ignore[arg-type]
                         )
-                return await self.async_step_email()
+                else:
+                    return await self.async_step_email()
         else:
             self._core_form_baseline = current_core
 
@@ -192,24 +201,25 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlowWithReload):
         core_patch = getattr(self, "_pending_core_patch", {})
         errors: dict[str, str] = {}
         if user_input is not None:
-            async with settings_lock(self.hass, self.config_entry.entry_id):
-                current = self.config_entry.options
-                try:
+            try:
+                async with settings_lock(self.hass, self.config_entry.entry_id):
+                    current = self.config_entry.options
                     email_patch = await async_validate_email_options(
                         self.config_entry.entry_id,
                         current,
                         user_input,
                     )
-                except SettingsValidationError as err:
-                    errors["base"] = err.code
-                else:
-                    return self.async_create_entry(
-                        data={
-                            **current,
-                            **core_patch,
-                            **email_patch,
-                        }
+                    await async_save_option_patch(
+                        self.hass,
+                        self.config_entry,
+                        {**core_patch, **email_patch},
                     )
+            except SettingsValidationError as err:
+                errors["base"] = err.code
+            else:
+                return self.async_create_entry(
+                    data=None  # type: ignore[arg-type]
+                )
 
         suggested_values = (
             user_input
