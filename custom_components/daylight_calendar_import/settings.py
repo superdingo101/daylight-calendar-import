@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import unicodedata
 from collections.abc import Mapping
 from typing import Any
 
@@ -13,6 +14,8 @@ from .const import (
     CONF_AI_TASK_ENTITY,
     CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
+    CONF_CALENDAR_ALIASES,
+    CONF_CONFLICT_CALENDAR_ENTITIES,
     CONF_EMAIL_ENABLED,
     CONF_EMAIL_HOST,
     CONF_EMAIL_MAILBOX,
@@ -160,6 +163,70 @@ def normalize_core_options(
     }
 
 
+
+def normalize_calendar_aliases(
+    aliases: Mapping[str, str], allowed_calendars: list[str],
+) -> dict[str, str]:
+    """Validate aliases as exact, Unicode-normalized writable-calendar choices."""
+    if not isinstance(aliases, Mapping):
+        raise SettingsValidationError("invalid_aliases", "Calendar aliases must be a mapping.")
+    normalized: dict[str, str] = {}
+    for alias, target in aliases.items():
+        if not isinstance(alias, str) or "\\n" in alias or "\\r" in alias:
+            raise SettingsValidationError("invalid_alias", "Calendar alias is invalid.")
+        key = " ".join(unicodedata.normalize("NFKC", alias).split()).casefold()
+        if not key or len(key) > 64:
+            raise SettingsValidationError("invalid_alias", "Calendar alias is invalid.")
+        if key in normalized:
+            raise SettingsValidationError("duplicate_alias", "Calendar aliases must be unique.")
+        if not isinstance(target, str) or target not in allowed_calendars:
+            raise SettingsValidationError(
+                "alias_target_not_allowed", "Calendar alias targets must be writable calendars."
+            )
+        normalized[key] = target
+    return normalized
+
+
+def normalize_conflict_calendars(calendars: list[str]) -> list[str]:
+    """Preserve an explicitly selected read-only observation scope."""
+    if not isinstance(calendars, list) or any(
+        not isinstance(value, str) or not value.startswith("calendar.")
+        for value in calendars
+    ):
+        raise SettingsValidationError(
+            "invalid_conflict_calendars", "Conflict calendars must be calendar entities."
+        )
+    return list(dict.fromkeys(calendars))
+
+
+def effective_calendar_intelligence(entry: ConfigEntry) -> tuple[dict[str, str], list[str]]:
+    """Read v0.6 settings with safe legacy defaults and no implied write permission."""
+    default_calendar, allowed = effective_calendar_options(entry)
+    return (
+        normalize_calendar_aliases(entry.options.get(CONF_CALENDAR_ALIASES, {}), allowed),
+        normalize_conflict_calendars(
+            entry.options.get(CONF_CONFLICT_CALENDAR_ENTITIES, [default_calendar])
+        ),
+    )
+
+
+def calendar_intelligence_patch(
+    entry: ConfigEntry, submitted: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate only the requested v0.6 fields using the current writable scope."""
+    _, allowed = effective_calendar_options(entry)
+    patch: dict[str, Any] = {}
+    if CONF_CALENDAR_ALIASES in submitted:
+        aliases = normalize_calendar_aliases(submitted[CONF_CALENDAR_ALIASES], allowed)
+        if aliases != effective_calendar_intelligence(entry)[0]:
+            patch[CONF_CALENDAR_ALIASES] = aliases
+    if CONF_CONFLICT_CALENDAR_ENTITIES in submitted:
+        conflicts = normalize_conflict_calendars(submitted[CONF_CONFLICT_CALENDAR_ENTITIES])
+        if conflicts != effective_calendar_intelligence(entry)[1]:
+            patch[CONF_CONFLICT_CALENDAR_ENTITIES] = conflicts
+    return patch
+
+
 def email_settings_snapshot(options: Mapping[str, Any]) -> dict[str, Any]:
     """Return Direct IMAP settings safe to expose to the frontend."""
     return {
@@ -176,8 +243,11 @@ def email_settings_snapshot(options: Mapping[str, Any]) -> dict[str, Any]:
 def settings_snapshot(entry: ConfigEntry) -> dict[str, Any]:
     """Return the complete secret-safe settings view for one entry."""
     ai_task_entity, default_calendar, allowed_calendars = effective_core_options(entry)
+    aliases, conflict_calendars = effective_calendar_intelligence(entry)
     return {
         "entry_id": entry.entry_id,
+        "calendar_aliases": aliases,
+        "conflict_calendar_entities": conflict_calendars,
         "ai_task_entity": ai_task_entity,
         "calendar_entity": default_calendar,
         "calendar_entities": allowed_calendars,
@@ -191,10 +261,33 @@ async def async_save_option_patch(
     patch: Mapping[str, Any],
 ) -> None:
     """Merge an option patch into the latest state and reload the entry."""
-    hass.config_entries.async_update_entry(
-        entry,
-        options={**entry.options, **patch},
+    merged = {**entry.options, **patch}
+    # A writable calendar may not be removed while an existing alias uses it.
+    default, allowed = (
+        merged.get(CONF_CALENDAR_ENTITY, entry.data[CONF_CALENDAR_ENTITY]),
+        merged.get(
+            CONF_CALENDAR_ENTITIES,
+            entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]]),
+        ),
     )
+    normalize_calendar_aliases(merged.get(CONF_CALENDAR_ALIASES, {}), allowed)
+    if default not in allowed:
+        raise SettingsValidationError(
+            "default_not_allowed", "The default calendar must be included in the allowed calendars."
+        )
+    # Pending event destinations are durable; do not silently strand them.
+    if CONF_CALENDAR_ENTITIES in patch:
+        store = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+        if store is not None and any(
+            event.calendar_entity is not None and event.calendar_entity not in allowed
+            for item in store.list()
+            for event in item.events
+        ):
+            raise SettingsValidationError(
+                "pending_calendar_in_use",
+                "A pending event still uses a removed calendar. Reassign it before saving.",
+            )
+    hass.config_entries.async_update_entry(entry, options=merged)
     if not await hass.config_entries.async_reload(entry.entry_id):
         raise SettingsValidationError(
             "reload_failed",
