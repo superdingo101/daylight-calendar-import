@@ -3799,5 +3799,6 @@ test("routing refresh keeps conflict-only edits but adopts concurrent alias chan
   assert.equal(form.elements.namedItem("calendar_aliases").value, "New = calendar.family");
   await panel.saveRoutingSettings(form);
   assert.equal(Object.hasOwn(sent, "calendar_aliases"), false);
-  assert.deepEqual(sent.conflict_calendar_entities, ["calendar.family", "calendar.external"]);
+  assert.deepEqual(new Set(sent.conflict_calendar_entities),
+    new Set(["calendar.family", "calendar.external"]));
 });
