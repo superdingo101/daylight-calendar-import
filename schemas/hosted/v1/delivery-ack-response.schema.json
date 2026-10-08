@@ -16,7 +16,7 @@
     },
     "delivery_id": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9_-]{16,128}$"
+      "pattern": "^[A-Za-z0-9_-]{16,128}(?![\\s\\S])"
     },
     "status": {
       "const": "acknowledged"
