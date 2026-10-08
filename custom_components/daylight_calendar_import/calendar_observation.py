@@ -6,7 +6,7 @@ upon. A missing/failed provider response is not equivalent to an empty agenda.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, tzinfo
+from datetime import date, datetime, time, timezone, tzinfo
 from collections.abc import Sequence
 from typing import Any
 
@@ -28,9 +28,15 @@ def observation_window(
         start = datetime.combine(date.fromisoformat(draft.start), time.min, local_zone)
         end = datetime.combine(date.fromisoformat(draft.end), time.min, local_zone)
     else:
-        start = datetime.fromisoformat(draft.start).astimezone(local_zone)
-        end = datetime.fromisoformat(draft.end).astimezone(local_zone)
-    if end <= start:
+        start_value = datetime.fromisoformat(draft.start)
+        end_value = datetime.fromisoformat(draft.end)
+        if start_value.utcoffset() is None or end_value.utcoffset() is None:
+            raise CalendarObservationError("Timed observations require UTC offsets")
+        start = start_value.astimezone(local_zone)
+        end = end_value.astimezone(local_zone)
+    # Python compares datetimes sharing a tzinfo by wall clock, which is
+    # incorrect across the repeated hour of the autumn DST transition.
+    if end.astimezone(timezone.utc) <= start.astimezone(timezone.utc):
         raise CalendarObservationError("Invalid event interval")
     return start, end
 
