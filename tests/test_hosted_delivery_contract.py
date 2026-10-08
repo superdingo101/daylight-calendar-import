@@ -128,6 +128,7 @@ def test_stale_ack_trace_rejects_old_lease_and_repeated_ack_is_idempotent():
     assert trace["delivery_id"] and trace["source_id"]
     current_token = None
     acknowledged_token = None
+    first_acknowledged_at = None
     seen = set()
     for step in trace["steps"]:
         token = step["token"]
@@ -148,6 +149,9 @@ def test_stale_ack_trace_rejects_old_lease_and_repeated_ack_is_idempotent():
             assert step["status"] == expected
             if valid:
                 assert step["result"] == "acknowledged"
+                if first_acknowledged_at is None:
+                    first_acknowledged_at = step["acknowledged_at"]
+                assert step["acknowledged_at"] == first_acknowledged_at
             else:
                 assert step["code"] == "lease_not_current"
     assert acknowledged_token is not None
