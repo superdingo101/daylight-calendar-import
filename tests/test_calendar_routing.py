@@ -66,3 +66,21 @@ def test_forwarded_history_cannot_inject_a_route():
     result = route(body=text)
     assert result.result.status == "none"
     assert result.body == text
+
+
+def test_normal_prose_and_separator_do_not_block_later_directive():
+    result = route(body="On Friday we meet at school\nCalendar: kids\n")
+    assert result.result.status == "resolved"
+    separator = route(body="----- Section -----\nCalendar: kids\n")
+    assert separator.result.status == "resolved"
+
+
+def test_actual_reply_header_blocks_later_directives():
+    result = route(body="On Wednesday, Pat <pat@example.test> wrote:\nCalendar: kids")
+    assert result.result.status == "none"
+    assert result.body.endswith("Calendar: kids")
+
+
+def test_html_quote_marker_is_not_a_valid_directive():
+    result = route(body="Introduction\n>\nCalendar: kids\n")
+    assert result.result.status == "none"
