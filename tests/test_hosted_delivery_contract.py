@@ -576,6 +576,31 @@ def test_source_and_delivery_ids_cannot_be_reassigned_across_poll_cycles():
         _validate_identity_history([original, reused_delivery])
 
 
+def test_same_source_after_retention_requires_fresh_delivery_identity():
+    """Bounded Cloud retention must not require a permanent upstream mapping."""
+    import copy
+
+    original = _read(FIXTURE_DIR / "valid" / "delivery-page-text.json")["deliveries"][0]
+    reingested = copy.deepcopy(original)
+    reingested["delivery_id"] = "delivery_00000000000000000099"
+    reingested["source_id"] = "source_000000000000000000000099"
+    reingested["source_expires_at"] = "2026-10-23T16:00:00Z"
+    reingested["lease_expires_at"] = "2026-10-16T16:05:00Z"
+    reingested["lease_token"] = "leaseToken_NewClaim1234567890ABCDEFGHIJKLMNOPQRSTUV"
+    _validate_identity_history([original, reingested])
+
+    # The source may also have changed after expiry, but neither old ID
+    # may be reassigned: a fresh delivery and source ID are necessary.
+    changed_after_expiry = copy.deepcopy(reingested)
+    changed_after_expiry["source"]["text"] = "Updated events after the old retention period"
+    _validate_identity_history([original, changed_after_expiry])
+
+    attempted_revival = copy.deepcopy(reingested)
+    attempted_revival["delivery_id"] = original["delivery_id"]
+    with pytest.raises(ValueError, match="delivery identity reassigned"):
+        _validate_identity_history([original, attempted_revival])
+
+
 def test_durable_pending_checkpoint_requires_content_evidence_after_restart():
     import copy
 
