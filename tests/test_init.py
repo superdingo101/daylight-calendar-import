@@ -2081,7 +2081,8 @@ async def test_attachment_review_routing_strips_only_text_directive(
     async def attachment_source(*_args):
         yield replace(
             TextSourceAdapter().create("unused"), kind=SourceKind(kind),
-            text=None, title="Calendar: kids", attachments=(attachment,),
+            text=_args[-1] if kind == "pdf" else None,
+            title="Calendar: kids", attachments=(attachment,),
         )
 
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore",
