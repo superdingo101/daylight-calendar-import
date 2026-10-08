@@ -11,7 +11,7 @@ import re
 import unicodedata
 from collections.abc import Mapping
 
-_DIRECTIVE = re.compile(r"^\\s*calendar\\s*:\\s*(.*?)\\s*$", re.IGNORECASE)
+_DIRECTIVE = re.compile(r"^\s*calendar\s*:\s*(.*?)\s*$", re.IGNORECASE)
 MAX_BODY_LINES = 8
 MAX_HINT_LENGTH = 64
 
@@ -53,7 +53,7 @@ def extract_calendar_route(
         if index >= MAX_BODY_LINES or line.lstrip().startswith((">", "On ", "-----")):
             kept.append(line)
             continue
-        match = _DIRECTIVE.fullmatch(line.rstrip("\\r\\n"))
+        match = _DIRECTIVE.fullmatch(line.rstrip("\r\n"))
         if match:
             hints.append(match.group(1))
         else:
