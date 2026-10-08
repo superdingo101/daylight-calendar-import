@@ -1,5 +1,5 @@
 {
-  "description": "Confirmed ACK remains idempotent through source_expires_at after source bytes removed",
+  "description": "Confirmed ACK remains idempotent strictly before source_expires_at after source bytes removed",
   "delivery_id": "delivery_00000000000000000001",
   "source_expires_at": "2026-10-15T16:00:00Z",
   "steps": [
