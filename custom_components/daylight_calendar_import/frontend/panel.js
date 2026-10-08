@@ -385,7 +385,7 @@ function setSettingsFormBusy(form, busy) {
 
 function normalizedAliasKey(value) {
   // Comparison is advisory: the backend is authoritative for Unicode casefolding.
-  return value.normalize("NFKC").trim().replace(/\\s+/g, " ")
+  return value.normalize("NFKC").trim().replace(/\s+/gu, " ")
     .toLowerCase().replace(/ß/g, "ss").replace(/ς/g, "σ");
 }
 
