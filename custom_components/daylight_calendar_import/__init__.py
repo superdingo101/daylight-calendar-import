@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import replace
 from typing import Any
 
@@ -67,6 +66,32 @@ from .storage import (
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["sensor"]
+
+_ENTRY_SERVICES = (
+    SERVICE_PARSE_TEXT,
+    SERVICE_IMPORT_TEXT,
+    SERVICE_SUBMIT_TEXT,
+    SERVICE_SUBMIT_IMAGE,
+    SERVICE_SUBMIT_PDF,
+    SERVICE_APPROVE_PENDING,
+    SERVICE_REJECT_PENDING,
+    SERVICE_LIST_PENDING,
+    SERVICE_LIST_ACTIVITY,
+    SERVICE_GET_ACTIVITY,
+    SERVICE_GET_PENDING,
+    SERVICE_GET_PENDING_EVENT,
+    SERVICE_EDIT_PENDING_EVENT,
+    SERVICE_REJECT_PENDING_EVENT,
+    SERVICE_APPROVE_PENDING_EVENT,
+    SERVICE_RESOLVE_PENDING_EVENT,
+)
+
+
+def _unregister_entry_services(hass: HomeAssistant) -> None:
+    """Remove each registered service; safe for partial entry setup."""
+    for name in _ENTRY_SERVICES:
+        hass.services.async_remove(DOMAIN, name)
+
 
 
 PARSE_SCHEMA = vol.Schema({vol.Required(ATTR_TEXT): cv.string})
@@ -165,6 +190,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pending_store = PendingImportStore(hass)
     await pending_store.async_load()
     pending_store.active_submissions = set()
+    # Track entry service calls *before* their first await so unload cannot
+    # miss a request waiting for authorization or a source claim.
+    pending_store.active_service_handlers = set()
+    pending_store.accepting_services = True
+    default_calendar, allowed_calendars = _calendar_configuration(entry)
+    ai_task_entity = _ai_task_configuration(entry)
     await async_register_review_panel(hass)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
     def on_review_ready(pending: Any) -> None:
@@ -178,14 +209,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.exception("Pending-added notification could not be published")
 
     pending_store.on_review_ready = on_review_ready
-    try:
-        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    except Exception:
-        async_remove_review_panel(hass)
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-        raise
-    default_calendar, allowed_calendars = _calendar_configuration(entry)
-    ai_task_entity = _ai_task_configuration(entry)
+
+    def tracked(handler):
+        async def invoke(call):
+            if not pending_store.accepting_services:
+                raise ServiceValidationError("Daylight is unloading; retry after reload")
+            task = asyncio.current_task()
+            pending_store.active_service_handlers.add(task)
+            try:
+                return await handler(call)
+            finally:
+                pending_store.active_service_handlers.discard(task)
+
+        return invoke
 
     async def parse_submission(source: SourceDocument, activity_id: str) -> Any:
         """Finish a stopped parser without obscuring its original error."""
@@ -607,124 +643,139 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return {"pending_id": pending_id, "event_id": event_id,
                 "resolution": resolution}
 
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_PARSE_TEXT,
-        handle_parse_text,
-        schema=PARSE_SCHEMA,
-        supports_response=SupportsResponse.ONLY,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_IMPORT_TEXT,
-        handle_import_text,
-        schema=PARSE_SCHEMA,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SUBMIT_TEXT,
-        handle_submit_text,
-        schema=SUBMIT_SCHEMA,
-        supports_response=SupportsResponse.ONLY,
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_SUBMIT_IMAGE, handle_submit_image,
-        schema=SUBMIT_IMAGE_SCHEMA, supports_response=SupportsResponse.ONLY,
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_SUBMIT_PDF, handle_submit_pdf,
-        schema=SUBMIT_PDF_SCHEMA, supports_response=SupportsResponse.ONLY,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_APPROVE_PENDING,
-        handle_approve_pending,
-        schema=PENDING_SCHEMA,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_REJECT_PENDING,
-        handle_reject_pending,
-        schema=PENDING_SCHEMA,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_LIST_PENDING, handle_list_pending,
-        supports_response=SupportsResponse.ONLY,
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_LIST_ACTIVITY, handle_list_activity,
-        supports_response=SupportsResponse.ONLY,
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_GET_ACTIVITY, handle_get_activity,
-        schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_GET_PENDING, handle_get_pending,
-        schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_GET_PENDING_EVENT, handle_get_pending_event,
-        schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_EDIT_PENDING_EVENT, handle_edit_pending_event,
-        schema=EDIT_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_REJECT_PENDING_EVENT, handle_reject_pending_event,
-        schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_APPROVE_PENDING_EVENT, handle_approve_pending_event,
-        schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_RESOLVE_PENDING_EVENT, handle_resolve_pending_event,
-        schema=RESOLVE_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
-    )
-    pending_store.email_runtime = await async_setup_email_runtime(
-        hass,
-        entry,
-        pending_store,
-        process_email_document,
-    )
+    try:
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_PARSE_TEXT,
+            tracked(handle_parse_text),
+            schema=PARSE_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_IMPORT_TEXT,
+            tracked(handle_import_text),
+            schema=PARSE_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SUBMIT_TEXT,
+            tracked(handle_submit_text),
+            schema=SUBMIT_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_SUBMIT_IMAGE, tracked(handle_submit_image),
+            schema=SUBMIT_IMAGE_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_SUBMIT_PDF, tracked(handle_submit_pdf),
+            schema=SUBMIT_PDF_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_APPROVE_PENDING,
+            tracked(handle_approve_pending),
+            schema=PENDING_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REJECT_PENDING,
+            tracked(handle_reject_pending),
+            schema=PENDING_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_LIST_PENDING, tracked(handle_list_pending),
+            supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_LIST_ACTIVITY, tracked(handle_list_activity),
+            supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_GET_ACTIVITY, tracked(handle_get_activity),
+            schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_GET_PENDING, tracked(handle_get_pending),
+            schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_GET_PENDING_EVENT, tracked(handle_get_pending_event),
+            schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_EDIT_PENDING_EVENT, tracked(handle_edit_pending_event),
+            schema=EDIT_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_REJECT_PENDING_EVENT, tracked(handle_reject_pending_event),
+            schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_APPROVE_PENDING_EVENT, tracked(handle_approve_pending_event),
+            schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_RESOLVE_PENDING_EVENT, tracked(handle_resolve_pending_event),
+            schema=RESOLVE_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
+        )
+        pending_store.email_runtime = await async_setup_email_runtime(
+            hass,
+            entry,
+            pending_store,
+            process_email_document,
+        )
+        # Forward last: a failing email configuration cannot strand sensor entities.
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    except (Exception, asyncio.CancelledError):
+        # Forwarding may have partially loaded a platform when it failed.
+        pending_store.accepting_services = False
+        _unregister_entry_services(hass)
+        runtime = getattr(pending_store, "email_runtime", None)
+        if runtime is not None:
+            await runtime.async_stop()
+        try:
+            await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        except Exception:
+            # Propagate the original setup failure, but record cleanup errors.
+            import logging
+            logging.getLogger(__name__).exception("Failed to roll back sensor setup")
+        async_remove_review_panel(hass)
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        raise
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry without dropping services on a failed platform unload."""
-    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        return False
-    async_remove_review_panel(hass)
-    hass.services.async_remove(DOMAIN, SERVICE_PARSE_TEXT)
-    hass.services.async_remove(DOMAIN, SERVICE_IMPORT_TEXT)
-    hass.services.async_remove(DOMAIN, SERVICE_SUBMIT_TEXT)
-    hass.services.async_remove(DOMAIN, SERVICE_SUBMIT_IMAGE)
-    hass.services.async_remove(DOMAIN, SERVICE_SUBMIT_PDF)
-    hass.services.async_remove(DOMAIN, SERVICE_APPROVE_PENDING)
-    hass.services.async_remove(DOMAIN, SERVICE_REJECT_PENDING)
-    hass.services.async_remove(DOMAIN, SERVICE_LIST_PENDING)
-    hass.services.async_remove(DOMAIN, SERVICE_LIST_ACTIVITY)
-    hass.services.async_remove(DOMAIN, SERVICE_GET_ACTIVITY)
-    hass.services.async_remove(DOMAIN, SERVICE_GET_PENDING)
-    hass.services.async_remove(DOMAIN, SERVICE_GET_PENDING_EVENT)
-    hass.services.async_remove(DOMAIN, SERVICE_EDIT_PENDING_EVENT)
-    hass.services.async_remove(DOMAIN, SERVICE_REJECT_PENDING_EVENT)
-    hass.services.async_remove(DOMAIN, SERVICE_APPROVE_PENDING_EVENT)
-    hass.services.async_remove(DOMAIN, SERVICE_RESOLVE_PENDING_EVENT)
+    """Drain accepted calls while rejecting new requests across platform unload."""
     store = hass.data[DOMAIN][entry.entry_id]
+    store.accepting_services = False
+    try:
+        platforms_unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    except BaseException:
+        store.accepting_services = True
+        raise
+    if not platforms_unloaded:
+        store.accepting_services = True
+        return False
+
+    # No new service may enter; existing calls are included even if waiting for
+    # authorization or the first durable source-claim write.
+    _unregister_entry_services(hass)
+    async_remove_review_panel(hass)
     email_runtime = getattr(store, "email_runtime", None)
     if email_runtime is not None:
         await email_runtime.async_stop()
-    if store.active_submissions:
-        await asyncio.gather(*tuple(store.active_submissions), return_exceptions=True)
+    accepted = set(store.active_submissions) | set(getattr(store, "active_service_handlers", ()))
+    if accepted:
+        await asyncio.gather(*accepted, return_exceptions=True)
     hass.data[DOMAIN].pop(entry.entry_id, None)
     return True
-
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Remove persisted data when the config entry is deleted."""
