@@ -28,8 +28,8 @@
       "op": "retry_ack",
       "at": "2026-10-16T16:00:00Z",
       "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
-      "status": 410,
-      "code": "source_expired"
+      "status": 404,
+      "code": "not_found"
     }
   ]
 }
