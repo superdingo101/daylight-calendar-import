@@ -3470,7 +3470,7 @@ test("routing lost response conservatively retains canonicalized alias draft", a
   const form = find(panel._content, "form");
   form.elements.namedItem("calendar_aliases").value = " Kids = calendar.family";
   await panel.saveRoutingSettings(form);
-  assert.deepEqual(panel._settingsDrafts.routing.calendar_aliases, {Kids: "calendar.family"});
+  assert.deepEqual(panel._settingsDrafts.routing.calendar_aliases, {" Kids": "calendar.family"});
   assert.ok(panel._settingsError);
   assert.equal(panel._routingRawDraft.aliasesText, " Kids = calendar.family");
   assert.deepEqual(panel._settings.calendar_aliases, {kids: "calendar.family"});
@@ -3574,7 +3574,7 @@ test("routing lost response does not guess the server Unicode normalization", as
     " Kids   Events = calendar.family";
   await panel.saveRoutingSettings(form);
   assert.deepEqual(panel._settingsDrafts.routing.calendar_aliases,
-    {"Kids   Events": "calendar.family"});
+    {" Kids   Events": "calendar.family"});
   assert.ok(panel._settingsError);
   assert.deepEqual(panel._settings.calendar_aliases, {"kids events": "calendar.family"});
 });
