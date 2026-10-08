@@ -17,21 +17,24 @@ def _key(title: str) -> str:
 def _range(
     start: str, end: str, all_day: bool, local_zone: tzinfo,
 ) -> tuple[datetime, datetime]:
-    """Compare intervals as UTC instants, interpreting all-day dates locally."""
+    """Convert to UTC, rejecting ambiguous or invalid provider intervals."""
     if all_day:
-        return (
-            datetime.combine(date.fromisoformat(start), time.min, local_zone).astimezone(timezone.utc),
-            datetime.combine(date.fromisoformat(end), time.min, local_zone).astimezone(timezone.utc),
-        )
-    start_time = datetime.fromisoformat(start)
-    end_time = datetime.fromisoformat(end)
-    if start_time.utcoffset() is None or end_time.utcoffset() is None:
-        raise ValueError("Timed calendar events must include timezone offsets")
-    return (
-        start_time.astimezone(timezone.utc),
-        end_time.astimezone(timezone.utc),
-    )
-
+        start_utc = datetime.combine(
+            date.fromisoformat(start), time.min, local_zone
+        ).astimezone(timezone.utc)
+        end_utc = datetime.combine(
+            date.fromisoformat(end), time.min, local_zone
+        ).astimezone(timezone.utc)
+    else:
+        start_time = datetime.fromisoformat(start)
+        end_time = datetime.fromisoformat(end)
+        if start_time.utcoffset() is None or end_time.utcoffset() is None:
+            raise ValueError("Timed calendar events must include timezone offsets")
+        start_utc = start_time.astimezone(timezone.utc)
+        end_utc = end_time.astimezone(timezone.utc)
+    if end_utc <= start_utc:
+        raise ValueError("Calendar event end must be after start")
+    return start_utc, end_utc
 
 @dataclass(frozen=True, slots=True)
 class CalendarCandidate:
