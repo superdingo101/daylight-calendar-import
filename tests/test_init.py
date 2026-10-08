@@ -2001,3 +2001,13 @@ def test_calendar_configuration_falls_back_to_entry_data():
         "calendar.family",
         ("calendar.family",),
     )
+
+
+async def test_unload_keeps_store_if_platform_unload_fails():
+    hass = FakeHass()
+    config_entry = entry()
+    store = SimpleNamespace(active_submissions=set(), email_runtime=None)
+    hass.data[DOMAIN] = {config_entry.entry_id: store}
+    hass.config_entries.async_unload_platforms.return_value = False
+    assert await async_unload_entry(hass, config_entry) is False
+    assert hass.data[DOMAIN][config_entry.entry_id] is store
