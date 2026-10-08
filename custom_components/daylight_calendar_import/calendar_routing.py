@@ -49,8 +49,11 @@ def extract_calendar_route(
         if match:
             hints.append(match.group(1))
     kept: list[str] = []
+    quoted_history = False
     for index, line in enumerate((body or "").splitlines(keepends=True)):
-        if index >= MAX_BODY_LINES or line.lstrip().startswith((">", "On ", "-----")):
+        if line.lstrip().startswith((">", "On ", "-----")):
+            quoted_history = True
+        if quoted_history or index >= MAX_BODY_LINES:
             kept.append(line)
             continue
         match = _DIRECTIVE.fullmatch(line.rstrip("\r\n"))
