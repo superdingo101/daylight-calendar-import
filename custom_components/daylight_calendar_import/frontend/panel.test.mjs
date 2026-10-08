@@ -3445,7 +3445,7 @@ test("routing preserves unfinished text and conflict selection across tabs", asy
     .find(input => input.value === "calendar.personal").checked, true);
 });
 
-test("routing ambiguous save reconciles normalized server aliases", async () => {
+test("routing lost response conservatively retains canonicalized alias draft", async () => {
   let current = {
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
@@ -3470,8 +3470,9 @@ test("routing ambiguous save reconciles normalized server aliases", async () => 
   const form = find(panel._content, "form");
   form.elements.namedItem("calendar_aliases").value = " Kids = calendar.family";
   await panel.saveRoutingSettings(form);
-  assert.equal(panel._settingsDrafts.routing, null);
-  assert.equal(panel._settingsError, null);
+  assert.deepEqual(panel._settingsDrafts.routing.calendar_aliases, {Kids: "calendar.family"});
+  assert.ok(panel._settingsError);
+  assert.equal(panel._routingRawDraft.aliasesText, " Kids = calendar.family");
   assert.deepEqual(panel._settings.calendar_aliases, {kids: "calendar.family"});
 });
 
@@ -3546,7 +3547,7 @@ test("routing save patches only changed settings fields and preserves special ke
   assert.equal(calls[1].calendar_aliases.__proto__, "calendar.family");
 });
 
-test("routing reconciles server whitespace-folded aliases after a lost save response", async () => {
+test("routing lost response does not guess the server Unicode normalization", async () => {
   let current = {
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
@@ -3572,7 +3573,104 @@ test("routing reconciles server whitespace-folded aliases after a lost save resp
   form.elements.namedItem("calendar_aliases").value =
     " Kids   Events = calendar.family";
   await panel.saveRoutingSettings(form);
-  assert.equal(panel._settingsDrafts.routing, null);
-  assert.equal(panel._settingsError, null);
+  assert.deepEqual(panel._settingsDrafts.routing.calendar_aliases,
+    {"Kids   Events": "calendar.family"});
+  assert.ok(panel._settingsError);
   assert.deepEqual(panel._settings.calendar_aliases, {"kids events": "calendar.family"});
+});
+
+
+test("routing field scoping treats FEFF and Python-casefold differences as real edits", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {"a b": "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const sent = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent.push(message);
+      current = {...current, calendar_aliases: message.calendar_aliases};
+      return current;
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value = "a\uFEFFb = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].calendar_aliases, {"a\uFEFFb": "calendar.family"});
+
+  current = {...current, calendar_aliases: {"ἀι": "calendar.family"}};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value = "ᾀ = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent[1].calendar_aliases, {"ᾀ": "calendar.family"});
+});
+
+test("routing refresh clears a saved raw draft but retains unfinished text", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let textarea = find(panel._content, "textarea");
+  textarea.value = "Kids = calendar.family";
+  textarea.input();
+  assert.ok(panel._routingRawDraft);
+  current = {...current, calendar_aliases: {Kids: "calendar.family"}};
+  await panel.showSettings("routing", true);
+  assert.equal(panel._routingRawDraft, null);
+  assert.equal(panel._settingsDrafts.routing, null);
+
+  textarea = find(panel._content, "textarea");
+  textarea.value = "Unfinished = ";
+  textarea.input();
+  await panel.showSettings("routing", true);
+  assert.equal(panel._routingRawDraft.aliasesText, "Unfinished = ");
+  assert.equal(find(panel._content, "textarea").value, "Unfinished = ");
+});
+
+test("routing no-op save clears stale definitive error", async () => {
+  const current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let updates = 0;
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) updates++;
+    return current;
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  panel._settingsError = "Previous save rejected";
+  await panel.saveRoutingSettings(find(panel._content, "form"));
+  assert.equal(panel._settingsError, null);
+  assert.equal(updates, 0);
 });
