@@ -1,5 +1,5 @@
 {
-  "description": "A delayed or repeated claim request ID cannot allocate a second batch; after ACK cleanup only a consumed-key error is allowed.",
+  "description": "One claim ID never allocates another batch; a late proxy delivery is rejected after its expiry even if the request marker was purged.",
   "steps": [
     {
       "op": "claim",
@@ -7,7 +7,8 @@
       "parameters": {
         "schema_version": 1,
         "limit": 20,
-        "cursor": null
+        "cursor": null,
+        "claim_request_expires_at": "2026-10-08T15:05:00Z"
       },
       "status": 200,
       "response": {
@@ -18,7 +19,8 @@
           }
         ],
         "next_cursor": "opaqueCursor123_abc"
-      }
+      },
+      "server_at": "2026-10-08T15:00:10Z"
     },
     {
       "op": "retry_same",
@@ -26,7 +28,8 @@
       "parameters": {
         "schema_version": 1,
         "limit": 20,
-        "cursor": null
+        "cursor": null,
+        "claim_request_expires_at": "2026-10-08T15:05:00Z"
       },
       "status": 200,
       "response": {
@@ -38,7 +41,8 @@
         ],
         "next_cursor": "opaqueCursor123_abc"
       },
-      "new_leases_issued": false
+      "new_leases_issued": false,
+      "server_at": "2026-10-08T15:01:00Z"
     },
     {
       "op": "retry_after_cleanup",
@@ -46,11 +50,13 @@
       "parameters": {
         "schema_version": 1,
         "limit": 20,
-        "cursor": null
+        "cursor": null,
+        "claim_request_expires_at": "2026-10-08T15:05:00Z"
       },
       "status": 409,
       "code": "claim_not_replayable",
-      "new_leases_issued": false
+      "new_leases_issued": false,
+      "server_at": "2026-10-08T15:02:00Z"
     },
     {
       "op": "retry_changed_parameters",
@@ -58,10 +64,42 @@
       "parameters": {
         "schema_version": 1,
         "limit": 21,
-        "cursor": null
+        "cursor": null,
+        "claim_request_expires_at": "2026-10-08T15:05:00Z"
       },
       "status": 400,
       "code": "invalid_request",
+      "new_leases_issued": false,
+      "server_at": "2026-10-08T15:03:00Z"
+    },
+    {
+      "op": "expired_after_marker_purge",
+      "request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+      "parameters": {
+        "schema_version": 1,
+        "limit": 20,
+        "cursor": null,
+        "claim_request_expires_at": "2026-10-08T15:05:00Z"
+      },
+      "server_at": "2026-10-15T15:05:01Z",
+      "marker_present": false,
+      "status": 400,
+      "code": "claim_request_expired",
+      "new_leases_issued": false
+    },
+    {
+      "op": "expired_at_boundary",
+      "request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+      "parameters": {
+        "schema_version": 1,
+        "limit": 20,
+        "cursor": null,
+        "claim_request_expires_at": "2026-10-08T15:05:00Z"
+      },
+      "server_at": "2026-10-08T15:05:00Z",
+      "marker_present": true,
+      "status": 400,
+      "code": "claim_request_expired",
       "new_leases_issued": false
     }
   ]
