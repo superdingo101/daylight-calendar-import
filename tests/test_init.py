@@ -2161,7 +2161,7 @@ async def test_forwarding_failure_and_rollback_unload_error_preserves_first_caus
         await async_setup_entry(hass, config_entry)
     assert "Failed to roll back sensor setup" in caplog.text
     assert hass.services.handlers == {}
-    assert config_entry.entry_id not in hass.data[DOMAIN]
+    assert hass.data[DOMAIN][config_entry.entry_id].rollback_pending is True
 
 
 async def test_cancelled_platform_forwarding_does_not_leak_services(monkeypatch):
@@ -2174,3 +2174,128 @@ async def test_cancelled_platform_forwarding_does_not_leak_services(monkeypatch)
     assert hass.services.handlers == {}
     assert config_entry.entry_id not in hass.data[DOMAIN]
     hass.config_entries.async_unload_platforms.assert_awaited_once()
+
+
+
+async def test_failed_sensor_rollback_keeps_store_until_retry_cleanup(monkeypatch, caplog):
+    hass = FakeHass()
+    old_store = _fake_lifecycle_store(monkeypatch)
+    config_entry = entry()
+    hass.config_entries.async_forward_entry_setups.side_effect = RuntimeError("forward interrupted")
+    hass.config_entries.async_unload_platforms.return_value = False
+    with pytest.raises(RuntimeError, match="forward interrupted"):
+        await async_setup_entry(hass, config_entry)
+    assert "Failed to roll back Daylight sensor platform" in caplog.text
+    assert hass.data[DOMAIN][config_entry.entry_id] is old_store
+    assert old_store.rollback_pending is True
+
+    # A failed cleanup on retry must not install a second store.
+    with pytest.raises(RuntimeError, match="rollback is incomplete"):
+        await async_setup_entry(hass, config_entry)
+    assert hass.data[DOMAIN][config_entry.entry_id] is old_store
+
+    # The next successful cleanup allows a fresh entry setup.
+    hass.config_entries.async_unload_platforms.return_value = True
+    hass.config_entries.async_forward_entry_setups.side_effect = None
+    assert await async_setup_entry(hass, config_entry) is True
+    assert hass.data[DOMAIN][config_entry.entry_id] is not old_store
+    assert hass.data[DOMAIN][config_entry.entry_id].accepting_services is True
+
+
+async def test_duplicate_setup_never_discards_live_store(monkeypatch):
+    hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
+    config_entry = entry()
+    await async_setup_entry(hass, config_entry)
+    existing = hass.data[DOMAIN][config_entry.entry_id]
+    with pytest.raises(RuntimeError, match="already initialized"):
+        await async_setup_entry(hass, config_entry)
+    assert hass.data[DOMAIN][config_entry.entry_id] is existing
+
+
+async def test_rollback_email_stop_failure_keeps_runtime_for_retry(monkeypatch, caplog):
+    hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
+    config_entry = entry()
+    runtime = SimpleNamespace(async_stop=AsyncMock(side_effect=RuntimeError("email stop failed")))
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_setup_email_runtime",
+        AsyncMock(return_value=runtime),
+    )
+    hass.config_entries.async_forward_entry_setups.side_effect = RuntimeError("sensor failed")
+    with pytest.raises(RuntimeError, match="sensor failed"):
+        await async_setup_entry(hass, config_entry)
+    assert "Failed to stop email runtime" in caplog.text
+    previous = hass.data[DOMAIN][config_entry.entry_id]
+    assert previous.rollback_pending is True
+    assert previous.email_runtime is runtime
+
+    runtime.async_stop.side_effect = None
+    hass.config_entries.async_forward_entry_setups.side_effect = None
+    await async_setup_entry(hass, config_entry)
+    assert runtime.async_stop.await_count == 2
+    assert hass.data[DOMAIN][config_entry.entry_id] is not previous
+
+
+async def test_cancelled_unload_finishes_draining_without_cancelling_accepted_handler(monkeypatch):
+    hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
+    config_entry = entry()
+    handler_started = asyncio.Event()
+    handler_release = asyncio.Event()
+
+    async def slow_parse(*args, **kwargs):
+        handler_started.set()
+        await handler_release.wait()
+        return ParseOutcome([draft()], [])
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import._parse_text_with_ai_task",
+        slow_parse,
+    )
+    await async_setup_entry(hass, config_entry)
+    handler = hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)][0]
+    call = SimpleNamespace(data={ATTR_TEXT: "Practice"}, context=Context(user_id=None))
+    in_flight = asyncio.create_task(handler(call))
+    await handler_started.wait()
+
+    unload = asyncio.create_task(async_unload_entry(hass, config_entry))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    unload.cancel()
+    await asyncio.sleep(0)
+    assert not in_flight.cancelled()
+    assert not unload.done()
+    assert config_entry.entry_id in hass.data[DOMAIN]
+
+    handler_release.set()
+    assert (await in_flight)["events"][0]["title"] == "Practice"
+    with pytest.raises(asyncio.CancelledError):
+        await unload
+    assert config_entry.entry_id not in hass.data[DOMAIN]
+    assert not hass.services.handlers
+
+
+async def test_cancelled_unload_waiting_for_platform_does_not_orphan_entry(monkeypatch):
+    hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
+    config_entry = entry()
+    await async_setup_entry(hass, config_entry)
+    platform_started = asyncio.Event()
+    platform_release = asyncio.Event()
+
+    async def wait_for_sensor_unload(*args):
+        platform_started.set()
+        await platform_release.wait()
+        return True
+
+    hass.config_entries.async_unload_platforms.side_effect = wait_for_sensor_unload
+    unloading = asyncio.create_task(async_unload_entry(hass, config_entry))
+    await platform_started.wait()
+    unloading.cancel()
+    await asyncio.sleep(0)
+    assert not unloading.done()
+    platform_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await unloading
+    assert config_entry.entry_id not in hass.data[DOMAIN]
