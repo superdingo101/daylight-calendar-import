@@ -28,6 +28,13 @@ SCHEMA_FILES = (
     "parse-request.schema.json",
     "parse-response.schema.json",
     "error.schema.json",
+    "delivery-attachment.schema.json",
+    "delivery-source.schema.json",
+    "delivery-item.schema.json",
+    "delivery-page.schema.json",
+    "delivery-poll-query.schema.json",
+    "delivery-ack-request.schema.json",
+    "delivery-ack-response.schema.json",
 )
 
 VALID_FIXTURES = (
@@ -38,6 +45,10 @@ VALID_FIXTURES = (
     ("parse-response.schema.json", "parse-response-long-description.json"),
     ("parse-response.schema.json", "parse-response-partial.json"),
     ("error.schema.json", "error-provider-rate-limited.json"),
+    ("delivery-page.schema.json", "delivery-page-text.json"),
+    ("delivery-page.schema.json", "delivery-page-attachment.json"),
+    ("delivery-ack-request.schema.json", "delivery-ack-request.json"),
+    ("delivery-ack-response.schema.json", "delivery-ack-response.json"),
 )
 
 INVALID_FIXTURES = (
@@ -45,6 +56,12 @@ INVALID_FIXTURES = (
     ("parse-request.schema.json", "parse-request-unsupported-media.json"),
     ("parse-response.schema.json", "parse-response-invalid-confidence.json"),
     ("error.schema.json", "error-missing-retryable.json"),
+    ("delivery-page.schema.json", "delivery-page-missing-lease-token.json"),
+    ("delivery-page.schema.json", "delivery-page-extra-metadata.json"),
+    ("delivery-page.schema.json", "delivery-page-attachment-missing-sha256.json"),
+    ("delivery-ack-request.schema.json", "delivery-ack-request-missing-token.json"),
+    ("delivery-ack-request.schema.json", "delivery-ack-request-short-token.json"),
+    ("delivery-ack-response.schema.json", "delivery-ack-response-invalid-status.json"),
 )
 
 
