@@ -200,7 +200,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_register_review_panel(hass)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
     def on_review_ready(pending: Any) -> None:
-        """Publish only identifiers and counts, with no source or event content."""
+        """Publish only IDs/counts after a durable review-queue transaction."""
         try:
             hass.bus.async_fire(
                 f"{DOMAIN}_pending_added",

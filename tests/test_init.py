@@ -2029,9 +2029,20 @@ async def test_failed_sensor_forwarding_rolls_back_without_service_leaks(monkeyp
     assert hass.services.handlers == {}
 
 
+def _fake_lifecycle_store(monkeypatch):
+    """Build lightweight storage for service-only Home Assistant fixtures."""
+    store = SimpleNamespace(async_load=AsyncMock())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: store,
+    )
+    return store
+
+
 async def test_unload_blocks_new_service_calls_and_drains_accepted_before_store_removal(monkeypatch):
     """A handler awaiting its first permission check cannot outlive its store."""
     hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
     config_entry = entry()
     parsing = asyncio.Event()
     finish_parsing = asyncio.Event()
@@ -2083,6 +2094,7 @@ async def test_unload_blocks_new_service_calls_and_drains_accepted_before_store_
 
 async def test_email_setup_failure_cleans_registered_services_and_panel(monkeypatch):
     hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
     config_entry = entry()
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.async_setup_email_runtime",
@@ -2104,8 +2116,9 @@ async def test_email_setup_failure_cleans_registered_services_and_panel(monkeypa
     )
 
 
-async def test_unload_platform_exception_restores_service_admission():
+async def test_unload_platform_exception_restores_service_admission(monkeypatch):
     hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
     config_entry = entry()
     await async_setup_entry(hass, config_entry)
     store = hass.data[DOMAIN][config_entry.entry_id]
@@ -2119,6 +2132,7 @@ async def test_unload_platform_exception_restores_service_admission():
 
 async def test_failing_platform_forwarding_unloads_started_email_runtime(monkeypatch):
     hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
     config_entry = entry()
     runtime = SimpleNamespace(async_stop=AsyncMock())
     monkeypatch.setattr(
@@ -2134,3 +2148,30 @@ async def test_failing_platform_forwarding_unloads_started_email_runtime(monkeyp
     hass.config_entries.async_unload_platforms.assert_awaited_once_with(
         config_entry, ["sensor"]
     )
+
+
+async def test_forwarding_failure_and_rollback_unload_error_preserves_first_cause(
+    monkeypatch, caplog,
+):
+    hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
+    config_entry = entry()
+    hass.config_entries.async_forward_entry_setups.side_effect = RuntimeError("forward failed")
+    hass.config_entries.async_unload_platforms.side_effect = RuntimeError("rollback failed")
+    with pytest.raises(RuntimeError, match="forward failed"):
+        await async_setup_entry(hass, config_entry)
+    assert "Failed to roll back sensor setup" in caplog.text
+    assert hass.services.handlers == {}
+    assert config_entry.entry_id not in hass.data[DOMAIN]
+
+
+async def test_cancelled_platform_forwarding_does_not_leak_services(monkeypatch):
+    hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
+    config_entry = entry()
+    hass.config_entries.async_forward_entry_setups.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await async_setup_entry(hass, config_entry)
+    assert hass.services.handlers == {}
+    assert config_entry.entry_id not in hass.data[DOMAIN]
+    hass.config_entries.async_unload_platforms.assert_awaited_once()
