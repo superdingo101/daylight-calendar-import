@@ -259,7 +259,7 @@ async def test_pending_added_bus_failure_does_not_rollback_durable_import(hass, 
     entry = _entry()
     await _setup_entry(hass, entry)
     monkeypatch.setattr(
-        hass.bus, "async_fire", Mock(side_effect=RuntimeError("subscriber disconnected")),
+        type(hass.bus), "async_fire", Mock(side_effect=RuntimeError("subscriber disconnected")),
     )
     response = await hass.services.async_call(
         DOMAIN, SERVICE_SUBMIT_TEXT,
