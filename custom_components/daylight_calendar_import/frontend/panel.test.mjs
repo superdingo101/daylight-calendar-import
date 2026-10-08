@@ -3499,3 +3499,48 @@ test("routing textarea is disabled while settings save is awaiting response", as
   finish(snapshot);
   await started;
 });
+
+test("routing save patches only changed settings fields and preserves special keys", async () => {
+  const snapshot = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: Object.fromEntries([["__proto__", "calendar.family"]]),
+    conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const calls = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off", attributes: {supported_features: 1}},
+    "calendar.readonly": {entity_id: "calendar.readonly", state: "off", attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return snapshot;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      calls.push(message);
+      return {...snapshot, ...message};
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  assert.match(form.elements.namedItem("calendar_aliases").value, /__proto__/);
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.readonly";
+  }
+  await panel.saveRoutingSettings(form);
+  assert.deepEqual(calls[0].conflict_calendar_entities, ["calendar.readonly"]);
+  assert.equal(Object.hasOwn(calls[0], "calendar_aliases"), false);
+
+  panel._settings = snapshot;
+  await panel.showSettings("routing");
+  form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value =
+    "__proto__ = calendar.family\nKids = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.equal(Object.hasOwn(calls[1], "conflict_calendar_entities"), false);
+  assert.equal(Object.hasOwn(calls[1].calendar_aliases, "__proto__"), true);
+  assert.equal(calls[1].calendar_aliases.__proto__, "calendar.family");
+});
