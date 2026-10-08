@@ -180,6 +180,10 @@ class FakeHass:
     def __init__(self) -> None:
         self.services = FakeServices()
         self.data: dict[str, Any] = {}
+        self.config_entries = SimpleNamespace(
+            async_forward_entry_setups=AsyncMock(),
+            async_unload_platforms=AsyncMock(return_value=True),
+        )
 
 
 class PipelineEnvironment:
