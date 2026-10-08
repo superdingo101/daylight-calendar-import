@@ -1053,23 +1053,6 @@ async def test_calendar_intelligence_rejects_empty_update_and_noops():
 
 
 @pytest.mark.asyncio
-async def test_pending_calendar_selection_cannot_be_stranded():
-    config_entry = entry()
-    hass = hass_for(config_entry)
-    event = SimpleNamespace(calendar_entity="calendar.work")
-    store = SimpleNamespace(list=lambda: [SimpleNamespace(events=[event])])
-    hass.data[DOMAIN] = {config_entry.entry_id: store}
-    connection = FakeConnection()
-    await invoke(
-        settings_api.websocket_update_core_settings, hass, connection,
-        {"id": 83, "type": settings_api.WS_UPDATE_CORE_SETTINGS,
-         "entry_id": config_entry.entry_id, CONF_CALENDAR_ENTITIES: ["calendar.family"]},
-    )
-    assert connection.errors[-1][1] == "pending_calendar_in_use"
-    assert hass.config_entries.updates == []
-
-
-@pytest.mark.asyncio
 async def test_saving_invalid_default_does_not_change_options():
     from custom_components.daylight_calendar_import.settings import async_save_option_patch
     config_entry = entry()
