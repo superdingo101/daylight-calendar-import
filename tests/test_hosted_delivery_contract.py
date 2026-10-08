@@ -581,3 +581,49 @@ def test_durable_pending_checkpoint_requires_content_evidence_after_restart():
     del lost["steps"][5]["source_evidence_sha256"]
     with pytest.raises(KeyError):
         _check_checkpoint_evidence(claim, saved, lost["steps"][5])
+
+
+@pytest.mark.parametrize("raw", [
+    '{"schema_version":1,"schema_version":1}',
+    '{"schema_version":NaN}',
+    '{"schema_version":Infinity}',
+    '{"source":{"text":"\\ud800"}}',
+    '{"\\udfff":"value"}',
+])
+def test_h3_strict_json_rejects_invalid_wire_documents(raw):
+    with pytest.raises(ValueError):
+        _decode_strict(raw)
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("delivery_id", "A" * 16 + "\n"),
+    ("source_id", "B" * 16 + "\n"),
+    ("lease_token", "C" * 32 + "\n"),
+])
+def test_h3_identifier_patterns_reject_trailing_newline(field, value, schema_registry):
+    schemas, registry = schema_registry
+    page = _read(FIXTURE_DIR / "valid" / "delivery-page-text.json")
+    page["deliveries"][0][field] = value
+    with pytest.raises(ValidationError):
+        _validate("delivery-page.schema.json", page, schemas, registry)
+
+
+def test_h3_checkpoint_rejects_wrong_namespace_delivery_or_expiry():
+    import copy
+
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-durable-client-trace.json")
+    claim, saved, recovered = trace["steps"][0], trace["steps"][3], trace["steps"][5]
+    _check_checkpoint_evidence(claim, saved, recovered)
+    for key, value in [
+        ("local_config_entry_id", "entry-two"),
+        ("delivery_id", "delivery_00000000000000000099"),
+        ("source_expires_at", "2026-10-12T16:00:00Z"),
+    ]:
+        changed = copy.deepcopy(claim)
+        changed[key] = value
+        with pytest.raises(AssertionError):
+            _check_checkpoint_evidence(changed, saved, recovered)
+    changed = copy.deepcopy(recovered)
+    changed["source_expires_at"] = "2026-10-12T16:00:00Z"
+    with pytest.raises(AssertionError):
+        _check_checkpoint_evidence(claim, saved, changed)
