@@ -164,6 +164,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pending_store.active_submissions = set()
     await async_register_review_panel(hass)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        async_remove_review_panel(hass)
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        raise
     default_calendar, allowed_calendars = _calendar_configuration(entry)
     ai_task_entity = _ai_task_configuration(entry)
 
@@ -672,12 +678,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pending_store,
         process_email_document,
     )
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
+    """Unload a config entry without dropping services on a failed platform unload."""
+    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        return False
     async_remove_review_panel(hass)
     hass.services.async_remove(DOMAIN, SERVICE_PARSE_TEXT)
     hass.services.async_remove(DOMAIN, SERVICE_IMPORT_TEXT)
@@ -701,10 +708,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await email_runtime.async_stop()
     if store.active_submissions:
         await asyncio.gather(*tuple(store.active_submissions), return_exceptions=True)
-    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unloaded:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-    return unloaded
+    hass.data[DOMAIN].pop(entry.entry_id, None)
+    return True
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
