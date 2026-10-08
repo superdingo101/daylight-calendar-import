@@ -1,6 +1,7 @@
 """Transport-neutral deterministic source calendar directive extraction.
 
-Only an entire subject directive and a bounded, unquoted body prefix are control-plane inputs.\nHTML normalizers must preserve quotation boundaries before invoking this resolver.
+Only an entire subject directive and a bounded, unquoted body prefix are control-plane inputs.
+HTML normalizers must preserve quotation boundaries before invoking this resolver.
 No alias interpretation is delegated to the AI parser.
 """
 
@@ -11,9 +12,9 @@ import re
 import unicodedata
 from collections.abc import Mapping
 
-_DIRECTIVE = re.compile(r"^\\s*calendar\\s*:\\s*(.*?)\\s*$", re.IGNORECASE)
+_DIRECTIVE = re.compile(r"^\s*calendar\s*:\s*(.*?)\s*$", re.IGNORECASE)
 _QUOTE_HEADER = re.compile(
-    r"^On\\s+.+\\s+wrote:\\s*$|^-{2,}\\s*(?:forwarded|original)\\s+message\\s*-{2,}\\s*$",
+    r"^On\s+.+\s+wrote:\s*$|^-{2,}\s*(?:forwarded|original)\s+message(?:\s*-{2,})?\s*$",
     re.IGNORECASE,
 )
 MAX_BODY_LINES = 8
