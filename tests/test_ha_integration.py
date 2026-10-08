@@ -212,3 +212,60 @@ async def test_real_remove_entry_deletes_storage_and_runtime_wiring(
     await fresh_store.async_load()
     assert fresh_store.list() == ()
     assert fresh_store.is_source_duplicate("message-delete") is False
+
+
+async def test_pending_added_event_is_private_and_only_fires_after_durable_queue(hass, monkeypatch):
+    from unittest.mock import AsyncMock
+    from custom_components.daylight_calendar_import.parser import ParseOutcome
+
+    parse = AsyncMock(return_value=ParseOutcome([_draft()], []))
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.parse_source_with_provider", parse,
+    )
+    entry = _entry()
+    await _setup_entry(hass, entry)
+    seen = []
+    cancel = hass.bus.async_listen(
+        f"{DOMAIN}_pending_added", lambda event: seen.append(event.data),
+    )
+    try:
+        payload = {ATTR_TEXT: "Bring drinks to the practice", ATTR_SOURCE_ID: "message-private"}
+        result = await hass.services.async_call(
+            DOMAIN, SERVICE_SUBMIT_TEXT, payload, blocking=True, return_response=True,
+        )
+        await hass.async_block_till_done()
+        assert len(seen) == 1
+        assert seen[0] == {"pending_id": result["pending"]["id"], "event_count": 1}
+        assert "drinks" not in str(seen)
+        assert "sender" not in seen[0]
+        duplicate = await hass.services.async_call(
+            DOMAIN, SERVICE_SUBMIT_TEXT, payload, blocking=True, return_response=True,
+        )
+        await hass.async_block_till_done()
+        assert duplicate["duplicate_source"] is True
+        assert len(seen) == 1
+    finally:
+        cancel()
+
+
+async def test_pending_added_bus_failure_does_not_rollback_durable_import(hass, monkeypatch, caplog):
+    from unittest.mock import Mock
+    from custom_components.daylight_calendar_import.parser import ParseOutcome
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.parse_source_with_provider",
+        AsyncMock(return_value=ParseOutcome([_draft()], [])),
+    )
+    entry = _entry()
+    await _setup_entry(hass, entry)
+    monkeypatch.setattr(
+        type(hass.bus), "async_fire", Mock(side_effect=RuntimeError("subscriber disconnected")),
+    )
+    response = await hass.services.async_call(
+        DOMAIN, SERVICE_SUBMIT_TEXT,
+        {ATTR_TEXT: "Another practice", ATTR_SOURCE_ID: "source-for-bus-failure"},
+        blocking=True, return_response=True,
+    )
+    assert response["pending"] is not None
+    assert len(hass.data[DOMAIN][entry.entry_id].list()) == 1
+    assert "notification could not be published" in caplog.text

@@ -212,6 +212,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ai_task_entity = _ai_task_configuration(entry)
     await async_register_review_panel(hass)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
+    def on_review_ready(pending: Any) -> None:
+        """Publish only IDs/counts after a durable review-queue transaction."""
+        try:
+            hass.bus.async_fire(
+                f"{DOMAIN}_pending_added",
+                {"pending_id": pending.id, "event_count": len(pending.events)},
+            )
+        except Exception:
+            _LOGGER.exception("Pending-added notification could not be published")
+
+    pending_store.on_review_ready = on_review_ready
 
     def tracked(handler):
         async def invoke(call):

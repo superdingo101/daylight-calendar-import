@@ -180,6 +180,7 @@ class FakeHass:
     def __init__(self) -> None:
         self.services = FakeServices()
         self.data: dict[str, Any] = {}
+        self.bus = SimpleNamespace(async_fire=lambda *_args, **_kwargs: None)
         self.config_entries = SimpleNamespace(
             async_forward_entry_setups=AsyncMock(),
             async_unload_platforms=AsyncMock(return_value=True),
