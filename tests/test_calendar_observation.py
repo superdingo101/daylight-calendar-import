@@ -250,3 +250,29 @@ def test_invalid_timed_draft_is_rejected_as_observation_error():
     )
     with pytest.raises(CalendarObservationError, match="Invalid timed observation"):
         observation_window(broken_end, local_zone=ZONE)
+
+
+async def test_all_day_provider_events_still_reach_classifier():
+    fake = hass({"calendar.work": {"events": [
+        {"summary": "Practice", "start": "2026-10-31", "end": "2026-11-02"},
+        {"summary": "Next holiday", "start": "2026-11-02", "end": "2026-11-03"},
+    ]}})
+    matches = await async_classify_conflicts(
+        fake, draft(all_day=True),
+        observed_calendars=["calendar.work"], local_zone=ZONE,
+    )
+    assert [(match.kind, match.existing_title) for match in matches] == [
+        ("exact_duplicate", "Practice")
+    ]
+
+
+async def test_valid_timed_provider_interval_crosses_repeated_dst_hour():
+    fake = hass({"calendar.work": {"events": [
+        existing(start="2026-11-01T01:30:00-07:00",
+                 end="2026-11-01T01:15:00-08:00"),
+    ]}})
+    observed = await async_observe_candidates(
+        fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
+    )
+    assert len(observed) == 1
+    assert observed[0].start == "2026-11-01T01:30:00-07:00"
