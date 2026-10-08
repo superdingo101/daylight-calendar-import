@@ -3802,3 +3802,124 @@ test("routing refresh keeps conflict-only edits but adopts concurrent alias chan
   assert.deepEqual(new Set(sent.conflict_calendar_entities),
     new Set(["calendar.family", "calendar.external"]));
 });
+
+
+test("routing reverted alias edit adopts newer remote aliases on refresh", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {Kids: "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const sent = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+        sent.push(message);
+        current = {...current, ...message};
+        return current;
+      }
+      throw Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  let input = form.elements.namedItem("calendar_aliases");
+  input.value = "Different = calendar.family";
+  input.input();
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+  input.value = "Kids = calendar.family";
+  input.input();
+  assert.equal(panel._routingRawDraft.aliasesDirty, false);
+
+  current = {...current, calendar_aliases: {Remote: "calendar.family"}};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value,
+    "Remote = calendar.family");
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 0);
+  assert.equal(panel._routingRawDraft, null);
+});
+
+test("routing reverted conflict selection adopts newer remote scope on refresh", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const sent = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent.push(message);
+      return {...current, ...message};
+    }
+    throw Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const extra = form.querySelectorAll("input").find(
+    input => input.value === "calendar.external");
+  extra.checked = true;
+  extra.change();
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+  extra.checked = false;
+  extra.change();
+  assert.equal(panel._routingRawDraft.conflictsDirty, false);
+
+  current = {...current, conflict_calendar_entities: ["calendar.external"]};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  const refreshed = form.querySelectorAll("input").find(
+    input => input.value === "calendar.external");
+  assert.equal(refreshed.checked, true);
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 0);
+});
+
+test("invalid routing alias text stays dirty even after an edit is reverted", async () => {
+  const current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      throw Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  let field = find(panel._content, "textarea");
+  field.value = "Kids = calendar.family";
+  field.input();
+  field.value = "Incomplete = ";
+  field.input();
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+  await panel.showSettings("routing", true);
+  field = find(panel._content, "textarea");
+  assert.equal(field.value, "Incomplete = ");
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+});
