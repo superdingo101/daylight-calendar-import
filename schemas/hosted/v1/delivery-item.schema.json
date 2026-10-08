@@ -15,15 +15,15 @@
   "properties": {
     "delivery_id": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9_-]{16,128}$"
+      "pattern": "^[A-Za-z0-9_-]{16,128}(?![\\s\\S])"
     },
     "source_id": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9_-]{16,128}$"
+      "pattern": "^[A-Za-z0-9_-]{16,128}(?![\\s\\S])"
     },
     "lease_token": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9_-]{32,256}$"
+      "pattern": "^[A-Za-z0-9_-]{32,256}(?![\\s\\S])"
     },
     "lease_expires_at": {
       "type": "string",
