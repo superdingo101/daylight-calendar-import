@@ -282,6 +282,8 @@ def test_email_and_complete_settings_snapshots_hide_secret():
         "ai_task_entity": "ai_task.initial",
         "calendar_entity": "calendar.family",
         "calendar_entities": ["calendar.family", "calendar.work"],
+        "calendar_aliases": {},
+        "conflict_calendar_entities": ["calendar.family"],
         "email": email,
     }
     assert CONF_EMAIL_PASSWORD not in snapshot
@@ -921,6 +923,7 @@ def test_register_settings_api_registers_all_commands(monkeypatch):
         (hass, settings_api.websocket_get_settings),
         (hass, settings_api.websocket_update_core_settings),
         (hass, settings_api.websocket_update_email_settings),
+        (hass, settings_api.websocket_update_calendar_intelligence),
     ]
 
 
