@@ -6,7 +6,7 @@ They do not pretend to exercise the private cloud server or a live HA adapter.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -274,9 +274,9 @@ def test_ack_must_follow_durable_checkpoint_even_after_client_restart():
 
 
 @pytest.mark.parametrize("claim", [
-    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"},
-    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "limit": 1},
-    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "limit": 50, "cursor": "nextPageAbc123_-"},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "claim_request_expires_at": "2026-10-08T15:05:00Z"},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "claim_request_expires_at": "2026-10-08T15:05:00Z", "limit": 1},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "claim_request_expires_at": "2026-10-08T15:05:00Z", "limit": 50, "cursor": "nextPageAbc123_-"},
 ])
 def test_h3_bounded_claim_request_schema_accepts_valid_json(claim, schema_registry):
     schemas, registry = schema_registry
@@ -284,13 +284,13 @@ def test_h3_bounded_claim_request_schema_accepts_valid_json(claim, schema_regist
 
 
 @pytest.mark.parametrize("claim", [
-    {}, {"schema_version": 1}, {"schema_version": 2, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"}, {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "limit": 0},
-    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "limit": 51}, {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "limit": "20"},
-    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "limit": -1}, {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "cursor": ""},
-    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "cursor": "../other-installation"},
-    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "cursor": "!"},
-    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "cursor": "x" * 1025},
-    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "installation_id": "another-tenant"},
+    {}, {"schema_version": 1}, {"schema_version": 2, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "claim_request_expires_at": "2026-10-08T15:05:00Z"}, {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "claim_request_expires_at": "2026-10-08T15:05:00Z", "limit": 0},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "claim_request_expires_at": "2026-10-08T15:05:00Z", "limit": 51}, {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "claim_request_expires_at": "2026-10-08T15:05:00Z", "limit": "20"},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "claim_request_expires_at": "2026-10-08T15:05:00Z", "limit": -1}, {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "claim_request_expires_at": "2026-10-08T15:05:00Z", "cursor": ""},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "claim_request_expires_at": "2026-10-08T15:05:00Z", "cursor": "../other-installation"},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "claim_request_expires_at": "2026-10-08T15:05:00Z", "cursor": "!"},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "claim_request_expires_at": "2026-10-08T15:05:00Z", "cursor": "x" * 1025},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "claim_request_expires_at": "2026-10-08T15:05:00Z", "installation_id": "another-tenant"},
 ])
 def test_h3_bounded_claim_request_rejects_invalid_or_tenant_scoped_input(claim, schema_registry):
     schemas, registry = schema_registry
@@ -646,7 +646,7 @@ def test_claim_identity_rejects_missing_weak_and_trailing_newline(request_id, sc
     with pytest.raises(ValidationError):
         _validate(
             "delivery-claim-request.schema.json",
-            {"schema_version": 1, "claim_request_id": request_id},
+            {"schema_version": 1, "claim_request_id": request_id, "claim_request_expires_at": "2026-10-08T15:05:00Z"},
             schemas, registry,
         )
 
@@ -657,7 +657,20 @@ def _check_claim_idempotency_trace(trace: dict) -> None:
     for step in trace["steps"]:
         request_id = step["request_id"]
         parameters = step["parameters"]
+        now = datetime.fromisoformat(step["server_at"])
+        deadline = datetime.fromisoformat(parameters["claim_request_expires_at"])
+        assert deadline.utcoffset() is not None
+        if step["op"] in ("expired_after_marker_purge", "expired_at_boundary"):
+            # Check expiry BEFORE checking a persisted consumed-ID marker.
+            assert now >= deadline
+            assert request_id in originals
+            assert step["status"] == 400
+            assert step["code"] == "claim_request_expired"
+            assert step["new_leases_issued"] is False
+            continue
+        assert now < deadline
         if step["op"] == "claim":
+            assert deadline <= now + timedelta(minutes=5)
             assert request_id not in originals
             assert step["status"] == 200
             originals[request_id] = (parameters, step["response"])
