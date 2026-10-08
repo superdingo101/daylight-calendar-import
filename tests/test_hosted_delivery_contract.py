@@ -710,6 +710,34 @@ def test_claim_replays_do_not_allocate_second_batch():
     changed_params["steps"][3]["parameters"]["limit"] = 20
     with pytest.raises(AssertionError):
         _check_claim_idempotency_trace(changed_params)
+    late_replay_claimed = copy.deepcopy(trace)
+    late_replay_claimed["steps"][4]["status"] = 200
+    late_replay_claimed["steps"][4]["new_leases_issued"] = True
+    with pytest.raises(AssertionError):
+        _check_claim_idempotency_trace(late_replay_claimed)
+    boundary_before_expiry = copy.deepcopy(trace)
+    boundary_before_expiry["steps"][5]["server_at"] = "2026-10-08T15:04:59Z"
+    with pytest.raises(AssertionError):
+        _check_claim_idempotency_trace(boundary_before_expiry)
+    excessive_future = copy.deepcopy(trace)
+    excessive_future["steps"][0]["parameters"]["claim_request_expires_at"] = (
+        "2026-10-08T17:05:00Z"
+    )
+    with pytest.raises(AssertionError):
+        _check_claim_idempotency_trace(excessive_future)
+
+
+@pytest.mark.parametrize(("expires", "now", "accepted"), [
+    ("2026-10-08T15:05:00Z", "2026-10-08T15:00:00Z", True),
+    ("2026-10-08T15:05:00Z", "2026-10-08T15:04:59Z", True),
+    ("2026-10-08T15:05:00Z", "2026-10-08T15:05:00Z", False),
+    ("2026-10-08T15:05:00Z", "2026-10-15T15:05:00Z", False),
+    ("2026-10-08T15:06:00Z", "2026-10-08T15:00:00Z", False),
+])
+def test_claim_request_server_admission_clock_boundary(expires, now, accepted):
+    timestamp = datetime.fromisoformat(expires)
+    observed_at = datetime.fromisoformat(now)
+    assert (observed_at < timestamp <= observed_at + timedelta(minutes=5)) is accepted
 
 
 def test_lost_ack_response_after_attachment_cleanup_uses_durable_proof():
