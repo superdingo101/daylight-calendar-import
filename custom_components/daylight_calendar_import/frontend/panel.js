@@ -419,7 +419,7 @@ function settingsPatchMatches(settings, patch) {
 
 
 function parseCalendarAliases(source) {
-  const result = {};
+  const entries = new Map();
   for (const line of source.split(/\r?\n/)) {
     if (!line.trim()) continue;
     const delimiter = line.lastIndexOf(" = ");
@@ -429,10 +429,10 @@ function parseCalendarAliases(source) {
     const target = line.slice(index + 1).trim();
     if (!name || /[\r\n]/.test(name) ||
         !/^calendar\.[a-z0-9_]+$/.test(target) ||
-        Object.hasOwn(result, name)) return null;
-    result[name] = target;
+        entries.has(name)) return null;
+    entries.set(name, target);
   }
-  return result;
+  return Object.fromEntries(entries);
 }
 
 
