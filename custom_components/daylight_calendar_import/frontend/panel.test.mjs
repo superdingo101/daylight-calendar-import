@@ -3365,6 +3365,6 @@ test("routing tab rejects aliases pointing to read-only calendars without saving
   const form = find(panel._content, "form");
   form.elements.namedItem("calendar_aliases").value = "Secret = calendar.private";
   await panel.saveRoutingSettings(form);
-  assert.match(find(form, ".error").textContent, /writable calendar/);
+  assert.match(form.querySelector(".error").textContent, /writable calendar/);
   assert.equal(messages.includes("daylight_calendar_import/settings/calendar_intelligence/update"), false);
 });
