@@ -1,6 +1,6 @@
 """Transport-neutral deterministic source calendar directive extraction.
 
-Only the subject and the first eight unquoted body lines are control-plane inputs.
+Only an entire subject directive and a bounded, unquoted body prefix are control-plane inputs.\nHTML normalizers must preserve quotation boundaries before invoking this resolver.
 No alias interpretation is delegated to the AI parser.
 """
 
@@ -11,7 +11,11 @@ import re
 import unicodedata
 from collections.abc import Mapping
 
-_DIRECTIVE = re.compile(r"^\s*calendar\s*:\s*(.*?)\s*$", re.IGNORECASE)
+_DIRECTIVE = re.compile(r"^\\s*calendar\\s*:\\s*(.*?)\\s*$", re.IGNORECASE)
+_QUOTE_HEADER = re.compile(
+    r"^On\\s+.+\\s+wrote:\\s*$|^-{2,}\\s*(?:forwarded|original)\\s+message\\s*-{2,}\\s*$",
+    re.IGNORECASE,
+)
 MAX_BODY_LINES = 8
 MAX_HINT_LENGTH = 64
 
@@ -51,7 +55,7 @@ def extract_calendar_route(
     kept: list[str] = []
     quoted_history = False
     for index, line in enumerate((body or "").splitlines(keepends=True)):
-        if line.lstrip().startswith((">", "On ", "-----")):
+        if line.lstrip().startswith(">") or _QUOTE_HEADER.fullmatch(line.strip()):
             quoted_history = True
         if quoted_history or index >= MAX_BODY_LINES:
             kept.append(line)
