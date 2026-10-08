@@ -15,6 +15,8 @@ from .const import (
     CONF_AI_TASK_ENTITY,
     CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
+    CONF_CALENDAR_ALIASES,
+    CONF_CONFLICT_CALENDAR_ENTITIES,
     CONF_EMAIL_ENABLED,
     CONF_EMAIL_HOST,
     CONF_EMAIL_MAILBOX,
@@ -29,6 +31,7 @@ from .settings import (
     async_save_option_patch,
     async_validate_email_options,
     core_option_patch,
+    calendar_intelligence_patch,
     effective_core_options,
     settings_lock,
     settings_snapshot,
@@ -37,6 +40,7 @@ from .settings import (
 WS_GET_SETTINGS = f"{DOMAIN}/settings/get"
 WS_UPDATE_CORE_SETTINGS = f"{DOMAIN}/settings/core/update"
 WS_UPDATE_EMAIL_SETTINGS = f"{DOMAIN}/settings/email/update"
+WS_UPDATE_CALENDAR_INTELLIGENCE = f"{DOMAIN}/settings/calendar_intelligence/update"
 
 
 def _entry_for_message(hass: HomeAssistant, msg: dict[str, Any]) -> ConfigEntry:
@@ -185,9 +189,46 @@ async def websocket_update_email_settings(
     connection.send_result(msg["id"], settings_snapshot(entry))
 
 
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        "type": WS_UPDATE_CALENDAR_INTELLIGENCE,
+        vol.Required("entry_id"): cv.string,
+        vol.Optional(CONF_CALENDAR_ALIASES): dict,
+        vol.Optional(CONF_CONFLICT_CALENDAR_ENTITIES): [cv.entity_id],
+    }
+)
+@websocket_api.async_response
+async def websocket_update_calendar_intelligence(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update only deterministic aliases and read-only conflict calendars."""
+    try:
+        entry = _entry_for_message(hass, msg)
+        async with settings_lock(hass, entry.entry_id):
+            if not any(
+                field in msg
+                for field in (CONF_CALENDAR_ALIASES, CONF_CONFLICT_CALENDAR_ENTITIES)
+            ):
+                raise SettingsValidationError(
+                    "invalid_settings", "Provide calendar aliases or conflict calendars."
+                )
+            patch = calendar_intelligence_patch(entry, msg)
+            if patch:
+                await async_save_option_patch(hass, entry, patch)
+    except SettingsValidationError as err:
+        _send_validation_error(connection, msg, err)
+        return
+    connection.send_result(msg["id"], settings_snapshot(entry))
+
+
 @callback
 def async_register_settings_api(hass: HomeAssistant) -> None:
     """Register the Daylight settings WebSocket commands once."""
     websocket_api.async_register_command(hass, websocket_get_settings)
     websocket_api.async_register_command(hass, websocket_update_core_settings)
     websocket_api.async_register_command(hass, websocket_update_email_settings)
+    websocket_api.async_register_command(hass, websocket_update_calendar_intelligence)
