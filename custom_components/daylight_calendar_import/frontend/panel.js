@@ -1,3 +1,4 @@
+import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
 import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, settingsErrorMessage} from "./settings.js";
 
@@ -227,6 +228,111 @@ function activityLabel(type) {
     calendar_created: "Calendar created",
     calendar_write_uncertain: "Calendar write needs confirmation",
     mixed: "Mixed event outcomes"})[type] || type.replaceAll("_", " ");
+}
+
+function syncTimedDuration(start, end, event, timeZone) {
+  const model = classifyEventTimeModel(event.start, event.end, timeZone);
+  const readDuration = () => {
+    const startIso = editDateTimeIso(
+      start.value, event.start, timeZone, start._daylightInstantHint || null, model
+    );
+    const endIso = editDateTimeIso(
+      end.value, event.end, timeZone, end._daylightInstantHint || null, model
+    );
+    if (!startIso || !endIso) return null;
+    const startValue = new Date(startIso);
+    const endValue = new Date(endIso);
+    if (Number.isNaN(startValue.getTime()) || Number.isNaN(endValue.getTime())) return null;
+    return endValue.getTime() - startValue.getTime();
+  };
+  let duration = readDuration();
+  const refresh = () => {
+    duration = readDuration();
+  };
+  start.addEventListener("change", () => {
+    start._daylightInstantHint = null;
+    const startIso = editDateTimeIso(start.value, event.start, timeZone, null, model);
+    if (!startIso || duration === null) return;
+    const nextStart = new Date(startIso);
+    if (Number.isNaN(nextStart.getTime())) return;
+    const nextEnd = new Date(nextStart.getTime() + duration);
+    end.value = instantEditDateTimeValue(nextEnd, event.end, timeZone, model);
+    end._daylightInstantHint = instantEditDateTimeIso(
+      nextEnd, event.end, timeZone, model
+    );
+  });
+  end.addEventListener("change", () => {
+    end._daylightInstantHint = null;
+    refresh();
+  });
+  return {refresh};
+}
+
+function syncDateDuration(start, end) {
+  const dayValue = value => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+    if (!match) return null;
+    const [year, month, day] = match.slice(1).map(Number);
+    const millis = Date.UTC(year, month - 1, day);
+    const date = new Date(millis);
+    return date.getUTCFullYear() === year &&
+      date.getUTCMonth() === month - 1 &&
+      date.getUTCDate() === day ? millis : null;
+  };
+  const readDuration = () => {
+    const startValue = dayValue(start.value);
+    const endValue = dayValue(end.value);
+    return startValue === null || endValue === null ? null : endValue - startValue;
+  };
+  let duration = readDuration();
+  const refresh = () => {
+    duration = readDuration();
+  };
+  start.addEventListener("change", () => {
+    const nextStart = dayValue(start.value);
+    if (duration === null || nextStart === null) return;
+    end.value = new Date(nextStart + duration).toISOString().slice(0, 10);
+  });
+  end.addEventListener("change", refresh);
+  return {refresh};
+}
+
+function setEditDateMode(form, allDay) {
+  const timedFields = form.querySelector(".timed-event-fields");
+  const allDayFields = form.querySelector(".all-day-event-fields");
+  if (!timedFields || !allDayFields) return;
+  timedFields.hidden = allDay;
+  allDayFields.hidden = !allDay;
+  for (const input of timedFields.querySelectorAll("input")) {
+    input.disabled = allDay;
+    input.required = !allDay;
+  }
+  for (const input of allDayFields.querySelectorAll("input")) {
+    input.disabled = !allDay;
+    input.required = allDay;
+  }
+}
+
+function clearEditError(form) {
+  const error = form.querySelector(".error");
+  if (!error) return;
+  if (typeof error.remove === "function") {
+    error.remove();
+    return;
+  }
+  form.replaceChildren(
+    ...Array.from(form.children || []).filter(child => child !== error)
+  );
+}
+
+function showEditError(form, message) {
+  clearEditError(form);
+  const error = element("p", message, "error");
+  error.setAttribute("role", "alert");
+  error.tabIndex = -1;
+  form.prepend(error);
+  error.focus();
+  return error;
 }
 
 function entityChoices(hass, domain, requiredFeature, configured = []) {
@@ -1185,11 +1291,32 @@ export class DaylightImportPanel extends HTMLElement {
   async saveEdit(event, form) {
     if (this._saving) return;
     const fields = form.elements;
+    const allDay = fields.namedItem("all_day").checked;
+    const temporal = normalizeEventTemporalEdit({
+      allDay,
+      startDate: fields.namedItem("start_date").value,
+      endDate: fields.namedItem("end_date").value,
+      startDateTime: fields.namedItem("start").value,
+      endDateTime: fields.namedItem("end").value,
+      originalStart: event.start,
+      originalEnd: event.end,
+      timeZone: this._hass?.config?.time_zone,
+      startInstantHint: fields.namedItem("start")._daylightInstantHint || null,
+      endInstantHint: fields.namedItem("end")._daylightInstantHint || null,
+    });
+    if (!temporal.valid) {
+      this._editError = temporal.error;
+      this._announcement.replaceChildren(element("span", temporal.error));
+      showEditError(form, temporal.error);
+      return;
+    }
+
+    clearEditError(form);
     const draft = {
       title: fields.namedItem("title").value,
-      start: fields.namedItem("start").value,
-      end: fields.namedItem("end").value,
-      all_day: fields.namedItem("all_day").checked,
+      start: temporal.start,
+      end: temporal.end,
+      all_day: allDay,
       location: fields.namedItem("location").value,
       description: fields.namedItem("description").value,
       confidence: event.confidence,
@@ -1225,16 +1352,12 @@ export class DaylightImportPanel extends HTMLElement {
         this._content.querySelector("button")?.focus();
         return;
       }
-      form.querySelector(".error")?.remove();
-      const message = element("p", this._editError, "error");
-      message.setAttribute("role", "alert");
-      message.tabIndex = -1;
-      form.prepend(message);
       this._announcement.replaceChildren(element("span", this._editError));
       for (const tag of ["input", "textarea", "select", "button"]) {
         for (const control of form.querySelectorAll(tag)) control.disabled = false;
       }
-      message.focus();
+      setEditDateMode(form, fields.namedItem("all_day").checked);
+      showEditError(form, this._editError);
     } finally {
       this._saving = false;
       this._refreshButton.disabled = Boolean(this._editingId);
@@ -1262,9 +1385,129 @@ export class DaylightImportPanel extends HTMLElement {
     const allDay = field("all_day", "All day", "");
     allDay.type = "checkbox";
     allDay.checked = event.all_day;
-    const start = field("start", "Start (ISO date or date and time with UTC offset)", event.start);
-    const end = field("end", "End (exclusive for all-day events)", event.end);
-    start.required = end.required = true;
+
+    const timeZone = this._hass?.config?.time_zone;
+    const timedFields = document.createElement("div");
+    timedFields.className = "timed-event-fields";
+    const timedField = (name, title, value) => {
+      const label = element("label", title);
+      const input = document.createElement("input");
+      input.name = name;
+      input.type = "datetime-local";
+      input.step = "60";
+      input.value = value;
+      label.append(input);
+      timedFields.append(label);
+      return input;
+    };
+    const start = timedField(
+      "start",
+      "Start",
+      event.all_day ? event.start + "T00:00" : editDateTimeValue(event.start, timeZone),
+    );
+    const end = timedField(
+      "end",
+      "End",
+      event.all_day ? event.end + "T00:00" : editDateTimeValue(event.end, timeZone),
+    );
+    const timedSync = syncTimedDuration(start, end, event, timeZone);
+
+    const allDayFields = document.createElement("div");
+    allDayFields.className = "all-day-event-fields";
+    const dateField = (name, title, value) => {
+      const label = element("label", title);
+      const input = document.createElement("input");
+      input.name = name;
+      input.type = "date";
+      input.value = value;
+      label.append(input);
+      allDayFields.append(label);
+      return input;
+    };
+    const startDate = dateField(
+      "start_date",
+      "Start date",
+      event.all_day ? event.start : dateOnlyFromTimed(event.start, timeZone),
+    );
+    const endDate = dateField(
+      "end_date",
+      "End date",
+      event.all_day ? visibleAllDayEnd(event.end) : dateOnlyFromTimed(event.end, timeZone),
+    );
+    const dateSync = syncDateDuration(startDate, endDate);
+    form.append(timedFields, allDayFields);
+    setEditDateMode(form, allDay.checked);
+
+    let preserveTimedTimes = !event.all_day;
+    let preservedTimedRange = null;
+    allDay.addEventListener("change", () => {
+      if (allDay.checked) {
+        const temporal = normalizeEventTemporalEdit({
+          allDay: false,
+          startDateTime: start.value,
+          endDateTime: end.value,
+          originalStart: event.start,
+          originalEnd: event.end,
+          timeZone,
+          startInstantHint: start._daylightInstantHint || null,
+          endInstantHint: end._daylightInstantHint || null,
+        });
+        const range = temporal.valid ?
+          timedEditToAllDayRange(start.value, end.value) : null;
+        if (!range) {
+          allDay.checked = false;
+          setEditDateMode(form, false);
+          const message = temporal.valid ?
+            "Fix the start and end times before switching to all day." :
+            temporal.error;
+          this._editError = message;
+          this._announcement.replaceChildren(element("span", message));
+          showEditError(form, message);
+          return;
+        }
+        preservedTimedRange = {
+          startDateTime: start.value,
+          endDateTime: end.value,
+          startInstant: temporal.start,
+          endInstant: temporal.end,
+        };
+        startDate.value = range.startDate;
+        endDate.value = range.endDate;
+        dateSync.refresh();
+      } else {
+        const range = allDayEditToTimedRange(
+          startDate.value,
+          endDate.value,
+          start.value,
+          end.value,
+          preserveTimedTimes,
+        );
+        if (!range) {
+          allDay.checked = true;
+          setEditDateMode(form, true);
+          const message = "Fix the start and end dates before switching to timed.";
+          this._editError = message;
+          this._announcement.replaceChildren(element("span", message));
+          showEditError(form, message);
+          return;
+        }
+        start.value = range.startDateTime;
+        end.value = range.endDateTime;
+        const restoresPreservedRange = preservedTimedRange &&
+          preservedTimedRange.startDateTime === range.startDateTime &&
+          preservedTimedRange.endDateTime === range.endDateTime;
+        start._daylightInstantHint = restoresPreservedRange ?
+          preservedTimedRange.startInstant : null;
+        end._daylightInstantHint = restoresPreservedRange ?
+          preservedTimedRange.endInstant : null;
+        timedSync.refresh();
+        preserveTimedTimes = true;
+      }
+      this._editError = null;
+      clearEditError(form);
+      setEditDateMode(form, allDay.checked);
+    });
+
     field("location", "Location", event.location);
     field("description", "Description and meeting join details", event.description, "textarea");
     const selectedCalendar = event.calendar_entity || this._detail?.default_calendar || "";
