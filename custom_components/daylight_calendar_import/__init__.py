@@ -52,9 +52,10 @@ from .parser import ParseOutcome, async_parse_source as parse_source_with_provid
 from .pdfs import async_pdf_source
 from .providers import SourceValidationError
 from .review_panel import async_register_review_panel, async_remove_review_panel
-from .settings import effective_ai_task_entity, effective_calendar_options
+from .settings import effective_ai_task_entity, effective_calendar_options, effective_calendar_intelligence
 from .settings_api import async_register_settings_api
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
+from .source_routing import plan_source_routing
 from .uploads import async_image_source
 from .storage import (
     PendingEventEditError,
@@ -210,6 +211,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pending_store.accepting_services = False
     default_calendar, allowed_calendars = _calendar_configuration(entry)
     ai_task_entity = _ai_task_configuration(entry)
+    aliases, _ = effective_calendar_intelligence(entry)
     await async_register_review_panel(hass)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
     def on_review_ready(pending: Any) -> None:
@@ -237,6 +239,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         return invoke
 
+    def route_review_source(source: SourceDocument):
+        return plan_source_routing(
+            source,
+            default_calendar=default_calendar,
+            allowed_calendars=set(allowed_calendars),
+            aliases=aliases,
+        )
+
     async def parse_submission(source: SourceDocument, activity_id: str) -> Any:
         """Finish a stopped parser without obscuring its original error."""
         try:
@@ -254,16 +264,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ) -> None:
         """Send one normalized email through the existing review pipeline."""
         # Email polling owns retry/terminal classification for parser failures.
-        outcome = await _async_parse_source(hass, source, ai_task_entity)
+        route = route_review_source(source)
+        outcome = await _async_parse_source(hass, route.parser_source, ai_task_entity)
         await pending_store.async_add(
             source_text=email_review_source_text(source),
             events=outcome.events,
             source_id=source.upstream_source_id,
-            calendar_entity=default_calendar,
+            calendar_entity=route.calendar_entity,
             source_kind=source.kind.value,
             source_title=source.title,
             source_sender=source.metadata.get("sender"),
-            warnings=outcome.warnings,
+            warnings=[*outcome.warnings, *route.warnings],
             activity_id=activity_id,
         )
 
@@ -322,13 +333,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
         try:
-            outcome = await parse_submission(source, activity_id)
+            route = route_review_source(source)
+            outcome = await parse_submission(route.parser_source, activity_id)
             result = await pending_store.async_add(
                 source_text=source.text,
                 events=outcome.events,
                 source_id=source.upstream_source_id,
-                calendar_entity=default_calendar,
-                warnings=outcome.warnings,
+                calendar_entity=route.calendar_entity,
+                warnings=[*outcome.warnings, *route.warnings],
                 activity_id=activity_id,
             )
         finally:
@@ -344,7 +356,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ),
             "duplicate_source": result.duplicate_source,
             "duplicate_events": result.duplicate_events,
-            "warnings": outcome.warnings,
+            "warnings": [*outcome.warnings, *route.warnings],
         }
 
     async def submit_attachment_source(source: SourceDocument) -> ServiceResponse:
@@ -358,17 +370,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
         try:
-            outcome = await parse_submission(source, activity_id)
+            route = route_review_source(source)
+            outcome = await parse_submission(route.parser_source, activity_id)
             label = "PDF" if source.kind is SourceKind.PDF else "Image"
             attachment_note = f"{label} attachment (SHA-256: {source.attachments[0].sha256})" if source.attachments else ""
             result = await pending_store.async_add(
                 source_text="\n\n".join(part for part in (source.text, attachment_note) if part),
                 events=outcome.events,
                 source_id=source.upstream_source_id,
-                calendar_entity=default_calendar,
+                calendar_entity=route.calendar_entity,
                 source_kind=source.kind.value,
                 source_title=source.title,
-                warnings=outcome.warnings,
+                warnings=[*outcome.warnings, *route.warnings],
                 activity_id=activity_id,
             )
         finally:
@@ -377,7 +390,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "duplicate": result.duplicate_source or result.duplicate_events > 0,
                 "duplicate_source": result.duplicate_source,
                 "duplicate_events": result.duplicate_events,
-                "warnings": outcome.warnings}
+                "warnings": [*outcome.warnings, *route.warnings]}
 
     async def handle_submit_image(call: ServiceCall) -> ServiceResponse:
         """Queue event drafts from an uploaded image and optional source text."""
