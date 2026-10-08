@@ -167,3 +167,71 @@ def test_ack_must_follow_durable_checkpoint_even_after_client_restart():
     assert steps[3]["checkpoint_id"] == steps[5]["checkpoint_id"]
     assert steps[0]["token"] == steps[-1]["token"]
     assert trace["source_id"] != trace["delivery_id"]
+
+
+@pytest.mark.parametrize("query", [
+    {},
+    {"limit": 1},
+    {"limit": 50, "cursor": "nextPageAbc123_-"},
+])
+def test_h3_bounded_poll_query_schema_accepts_valid_normalized_inputs(query, schema_registry):
+    schemas, registry = schema_registry
+    _validate("delivery-poll-query.schema.json", query, schemas, registry)
+
+
+@pytest.mark.parametrize("query", [
+    {"limit": 0}, {"limit": 51}, {"limit": "20"}, {"limit": -1},
+    {"cursor": ""}, {"cursor": "../other-installation"}, {"cursor": "!"}, 
+    {"cursor": "x" * 1025}, {"installation_id": "another-tenant"},
+])
+def test_h3_bounded_poll_query_rejects_invalid_or_tenant_scoped_inputs(query, schema_registry):
+    schemas, registry = schema_registry
+    with pytest.raises(ValidationError):
+        _validate("delivery-poll-query.schema.json", query, schemas, registry)
+
+
+def test_h3_sources_are_compatible_with_public_local_source_contract():
+    """Wire metadata maps into existing HA domain types; binary content is staged locally."""
+    from custom_components.daylight_calendar_import.sources import (
+        SourceAttachment, SourceDocument, SourceKind,
+    )
+    text_page = _read(FIXTURE_DIR / "valid" / "delivery-page-text.json")
+    item = text_page["deliveries"][0]
+    raw = item["source"]
+    source = SourceDocument(
+        id=item["source_id"],
+        kind=SourceKind(raw["kind"]),
+        received_at=datetime.fromisoformat(raw["received_at"]),
+        title=raw.get("title"),
+        text=raw.get("text"),
+        metadata=raw["metadata"],
+        upstream_source_id=item["source_id"],
+    )
+    assert source.kind is SourceKind.EMAIL
+    assert source.id == source.upstream_source_id
+    assert source.metadata == {"sender": "teacher@example.test"}
+    assert source.text and not source.attachments
+
+    attachment_page = _read(FIXTURE_DIR / "valid" / "delivery-page-attachment.json")
+    item = attachment_page["deliveries"][0]
+    descriptor = item["source"]["attachments"][0]
+    # The local content_ref is created only after authenticated download,
+    # size/hash verification and sandbox staging; never sent by Cloud.
+    stored = SourceAttachment(
+        id=descriptor["id"], media_type=descriptor["media_type"],
+        size_bytes=descriptor["size_bytes"], sha256=descriptor["sha256"],
+        filename=descriptor.get("filename"), content_ref="staged-local-ref",
+    )
+    assert stored.content_ref not in descriptor
+    assert stored.sha256 == descriptor["sha256"]
+
+
+def test_h3_wire_rejects_disallowed_calendar_writes_or_secrets(schema_registry):
+    schemas, registry = schema_registry
+    page = _read(FIXTURE_DIR / "valid" / "delivery-page-text.json")
+    import copy
+    for field in ("password", "authorization", "calendar_write", "model_provider"):
+        modified = copy.deepcopy(page)
+        modified["deliveries"][0]["source"]["metadata"][field] = "secret"
+        with pytest.raises(ValidationError):
+            _validate("delivery-page.schema.json", modified, schemas, registry)
