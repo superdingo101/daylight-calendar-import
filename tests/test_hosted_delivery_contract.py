@@ -234,6 +234,9 @@ def test_h3_sources_are_compatible_with_public_local_source_contract():
     text_page = _read(FIXTURE_DIR / "valid" / "delivery-page-text.json")
     item = text_page["deliveries"][0]
     raw = item["source"]
+    # Source ID is source correlation only. The durable local fingerprint
+    # uses stable delivery identity qualified by the local HA config entry.
+    local_identity = "hosted:local-config-entry-1:" + item["delivery_id"]
     source = SourceDocument(
         id=item["source_id"],
         kind=SourceKind(raw["kind"]),
@@ -241,17 +244,9 @@ def test_h3_sources_are_compatible_with_public_local_source_contract():
         title=raw.get("title"),
         text=raw.get("text"),
         metadata=raw["metadata"],
-        upstream_source_id=item["source_id"],
-    )
-    assert source.kind is SourceKind.EMAIL
-    # The public client will use delivery_id in a local installation namespace
-    # as the source fingerprint key (not the unqualified source_id).
-    local_identity = "hosted:local-config-entry-1:" + item["delivery_id"]
-    source = SourceDocument(
-        id=source.id, kind=source.kind, received_at=source.received_at,
-        title=source.title, text=source.text, metadata=source.metadata,
         upstream_source_id=local_identity,
     )
+    assert source.kind is SourceKind.EMAIL
     assert source.id == item["source_id"]
     assert source.upstream_source_id == local_identity
     assert source.id != source.upstream_source_id
@@ -450,3 +445,43 @@ def test_ack_tombstone_survives_raw_source_deletion_through_expiry():
     mutated_time["steps"][2]["acknowledged_at"] = "2026-10-10T16:00:00Z"
     with pytest.raises(AssertionError):
         _validate_ack_tombstone_trace(mutated_time)
+
+
+def _validate_identity_history(claims: list[dict]) -> None:
+    """No source or delivery ID is reassigned to new immutable bytes over time."""
+    sources: dict[str, tuple[str, dict]] = {}
+    deliveries: dict[str, tuple[str, dict]] = {}
+    for claim in claims:
+        source_id = claim["source_id"]
+        delivery_id = claim["delivery_id"]
+        payload = claim["source"]
+        if source_id in sources and sources[source_id] != (delivery_id, payload):
+            raise ValueError("source identity reassigned to different delivery or content")
+        if delivery_id in deliveries and deliveries[delivery_id] != (source_id, payload):
+            raise ValueError("delivery identity reassigned to different source or content")
+        sources[source_id] = (delivery_id, payload)
+        deliveries[delivery_id] = (source_id, payload)
+
+
+def test_source_and_delivery_ids_cannot_be_reassigned_across_poll_cycles():
+    import copy
+
+    original = _read(FIXTURE_DIR / "valid" / "delivery-page-text.json")["deliveries"][0]
+    renewed = copy.deepcopy(original)
+    renewed["lease_token"] = "leaseToken_NewClaim1234567890ABCDEFGHIJKLMNOPQRSTUV"
+    _validate_identity_history([original, renewed])
+
+    reused_source = copy.deepcopy(original)
+    reused_source["delivery_id"] = "delivery_00000000000000000099"
+    with pytest.raises(ValueError, match="source identity reassigned"):
+        _validate_identity_history([original, reused_source])
+
+    replaced_content = copy.deepcopy(original)
+    replaced_content["source"]["text"] = "Changed email under the original ID"
+    with pytest.raises(ValueError, match="source identity reassigned"):
+        _validate_identity_history([original, replaced_content])
+
+    reused_delivery = copy.deepcopy(original)
+    reused_delivery["source_id"] = "source_000000000000000000000099"
+    with pytest.raises(ValueError, match="delivery identity reassigned"):
+        _validate_identity_history([original, reused_delivery])
