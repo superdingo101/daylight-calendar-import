@@ -167,6 +167,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pending_store.active_submissions = set()
     await async_register_review_panel(hass)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
+    def on_review_ready(pending: Any) -> None:
+        """Publish only identifiers and counts, with no source or event content."""
+        try:
+            hass.bus.async_fire(
+                f"{DOMAIN}_pending_added",
+                {"pending_id": pending.id, "event_count": len(pending.events)},
+            )
+        except Exception:
+            _LOGGER.exception("Pending-added notification could not be published")
+
+    pending_store.on_review_ready = on_review_ready
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except Exception:
@@ -194,7 +205,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Send one normalized email through the existing review pipeline."""
         # Email polling owns retry/terminal classification for parser failures.
         outcome = await _async_parse_source(hass, source, ai_task_entity)
-        await add_review_ready_import(
+        await pending_store.async_add(
             source_text=email_review_source_text(source),
             events=outcome.events,
             source_id=source.upstream_source_id,
@@ -205,22 +216,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             warnings=outcome.warnings,
             activity_id=activity_id,
         )
-
-    async def add_review_ready_import(**kwargs: Any):
-        """Persist before publishing a privacy-safe, best-effort HA event."""
-        result = await pending_store.async_add(**kwargs)
-        if result.pending is not None:
-            try:
-                hass.bus.async_fire(
-                    f"{DOMAIN}_pending_added",
-                    {
-                        "pending_id": result.pending.id,
-                        "event_count": len(result.pending.events),
-                    },
-                )
-            except Exception:
-                _LOGGER.exception("Pending-added notification could not be published")
-        return result
 
     def event_calendar(event: PendingEvent) -> str:
         calendar_entity = event.calendar_entity or default_calendar
@@ -278,7 +273,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pending_store.active_submissions.add(task)
         try:
             outcome = await parse_submission(source, activity_id)
-            result = await add_review_ready_import(
+            result = await pending_store.async_add(
                 source_text=source.text,
                 events=outcome.events,
                 source_id=source.upstream_source_id,
@@ -316,7 +311,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             outcome = await parse_submission(source, activity_id)
             label = "PDF" if source.kind is SourceKind.PDF else "Image"
             attachment_note = f"{label} attachment (SHA-256: {source.attachments[0].sha256})" if source.attachments else ""
-            result = await add_review_ready_import(
+            result = await pending_store.async_add(
                 source_text="\n\n".join(part for part in (source.text, attachment_note) if part),
                 events=outcome.events,
                 source_id=source.upstream_source_id,
