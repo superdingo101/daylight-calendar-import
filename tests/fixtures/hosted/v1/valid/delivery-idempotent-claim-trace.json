@@ -1,0 +1,68 @@
+{
+  "description": "A delayed or repeated claim request ID cannot allocate a second batch; after ACK cleanup only a consumed-key error is allowed.",
+  "steps": [
+    {
+      "op": "claim",
+      "request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+      "parameters": {
+        "schema_version": 1,
+        "limit": 20,
+        "cursor": null
+      },
+      "status": 200,
+      "response": {
+        "deliveries": [
+          {
+            "delivery_id": "delivery_00000000000000000001",
+            "lease_token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456"
+          }
+        ],
+        "next_cursor": "opaqueCursor123_abc"
+      }
+    },
+    {
+      "op": "retry_same",
+      "request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+      "parameters": {
+        "schema_version": 1,
+        "limit": 20,
+        "cursor": null
+      },
+      "status": 200,
+      "response": {
+        "deliveries": [
+          {
+            "delivery_id": "delivery_00000000000000000001",
+            "lease_token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456"
+          }
+        ],
+        "next_cursor": "opaqueCursor123_abc"
+      },
+      "new_leases_issued": false
+    },
+    {
+      "op": "retry_after_cleanup",
+      "request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+      "parameters": {
+        "schema_version": 1,
+        "limit": 20,
+        "cursor": null
+      },
+      "status": 409,
+      "code": "claim_not_replayable",
+      "new_leases_issued": false
+    },
+    {
+      "op": "retry_changed_parameters",
+      "request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+      "parameters": {
+        "schema_version": 1,
+        "limit": 21,
+        "cursor": null
+      },
+      "status": 400,
+      "code": "invalid_request",
+      "new_leases_issued": false
+    }
+  ]
+}
