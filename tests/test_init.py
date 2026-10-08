@@ -113,6 +113,7 @@ class FakeHass:
         self.services = FakeServices()
         self.auth = FakeAuth(user)
         self.data = {}
+        self.bus = SimpleNamespace(async_fire=Mock())
         self.config_entries = SimpleNamespace(
             async_forward_entry_setups=AsyncMock(),
             async_unload_platforms=AsyncMock(return_value=True),

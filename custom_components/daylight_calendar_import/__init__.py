@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from typing import Any
 
@@ -62,6 +63,8 @@ from .storage import (
     PendingImportApprovalUncertainError,
     PendingImportStore,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["sensor"]
 
@@ -191,7 +194,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Send one normalized email through the existing review pipeline."""
         # Email polling owns retry/terminal classification for parser failures.
         outcome = await _async_parse_source(hass, source, ai_task_entity)
-        await pending_store.async_add(
+        await add_review_ready_import(
             source_text=email_review_source_text(source),
             events=outcome.events,
             source_id=source.upstream_source_id,
@@ -202,6 +205,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             warnings=outcome.warnings,
             activity_id=activity_id,
         )
+
+    async def add_review_ready_import(**kwargs: Any):
+        """Persist before publishing a privacy-safe, best-effort HA event."""
+        result = await pending_store.async_add(**kwargs)
+        if result.pending is not None:
+            try:
+                hass.bus.async_fire(
+                    f"{DOMAIN}_pending_added",
+                    {
+                        "pending_id": result.pending.id,
+                        "event_count": len(result.pending.events),
+                    },
+                )
+            except Exception:
+                _LOGGER.exception("Pending-added notification could not be published")
+        return result
 
     def event_calendar(event: PendingEvent) -> str:
         calendar_entity = event.calendar_entity or default_calendar
@@ -259,7 +278,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pending_store.active_submissions.add(task)
         try:
             outcome = await parse_submission(source, activity_id)
-            result = await pending_store.async_add(
+            result = await add_review_ready_import(
                 source_text=source.text,
                 events=outcome.events,
                 source_id=source.upstream_source_id,
@@ -297,7 +316,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             outcome = await parse_submission(source, activity_id)
             label = "PDF" if source.kind is SourceKind.PDF else "Image"
             attachment_note = f"{label} attachment (SHA-256: {source.attachments[0].sha256})" if source.attachments else ""
-            result = await pending_store.async_add(
+            result = await add_review_ready_import(
                 source_text="\n\n".join(part for part in (source.text, attachment_note) if part),
                 events=outcome.events,
                 source_id=source.upstream_source_id,
