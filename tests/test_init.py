@@ -2299,3 +2299,26 @@ async def test_cancelled_unload_waiting_for_platform_does_not_orphan_entry(monke
     with pytest.raises(asyncio.CancelledError):
         await unloading
     assert config_entry.entry_id not in hass.data[DOMAIN]
+
+
+async def test_new_services_reject_requests_until_sensor_setup_finishes(monkeypatch):
+    hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
+    config_entry = entry()
+    forwarding = asyncio.Event()
+    finish_forwarding = asyncio.Event()
+
+    async def delayed_forward(*args):
+        forwarding.set()
+        await finish_forwarding.wait()
+
+    hass.config_entries.async_forward_entry_setups.side_effect = delayed_forward
+    setup = asyncio.create_task(async_setup_entry(hass, config_entry))
+    await forwarding.wait()
+    handler = hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)][0]
+    call = SimpleNamespace(data={ATTR_TEXT: "Practice"}, context=Context(user_id=None))
+    with pytest.raises(ServiceValidationError, match="unloading"):
+        await handler(call)
+    finish_forwarding.set()
+    assert await setup is True
+    assert hass.data[DOMAIN][config_entry.entry_id].accepting_services is True
