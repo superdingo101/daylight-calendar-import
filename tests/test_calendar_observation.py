@@ -155,3 +155,27 @@ async def test_unavailable_calendar_failure_propagates():
         await async_classify_conflicts(
             fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
         )
+
+
+def test_observation_window_accepts_elapsed_time_across_fall_dst_fold():
+    # 01:30 PDT precedes 01:15 PST by 45 minutes, despite reversed wall time.
+    folded = EventDraft(
+        "DST practice", "2026-11-01T01:30:00-07:00",
+        "2026-11-01T01:15:00-08:00", False,
+    )
+    start, end = observation_window(folded, local_zone=ZONE)
+    assert start.isoformat() == "2026-11-01T01:30:00-07:00"
+    assert end.isoformat() == "2026-11-01T01:15:00-08:00"
+
+
+def test_observation_window_rejects_naive_timed_drafts():
+    naive = EventDraft(
+        "Practice", "2026-10-08T17:30:00", "2026-10-08T18:30:00-07:00", False,
+    )
+    with pytest.raises(CalendarObservationError, match="require UTC offsets"):
+        observation_window(naive, local_zone=ZONE)
+    naive_end = EventDraft(
+        "Practice", "2026-10-08T17:30:00-07:00", "2026-10-08T18:30:00", False,
+    )
+    with pytest.raises(CalendarObservationError, match="require UTC offsets"):
+        observation_window(naive_end, local_zone=ZONE)
