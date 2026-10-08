@@ -999,3 +999,83 @@ async def test_calendar_alias_cannot_be_stranded_by_core_update():
     )
     assert connection.errors[-1][1] == "alias_target_not_allowed"
     assert not hass.config_entries.updates
+
+
+def test_calendar_intelligence_validation_and_noop_branches():
+    from custom_components.daylight_calendar_import.settings import (
+        normalize_calendar_aliases, normalize_conflict_calendars,
+        calendar_intelligence_patch,
+    )
+    with pytest.raises(SettingsValidationError) as err:
+        normalize_calendar_aliases([], ["calendar.family"])
+    assert err.value.code == "invalid_aliases"
+    with pytest.raises(SettingsValidationError):
+        normalize_calendar_aliases({42: "calendar.family"}, ["calendar.family"])
+    with pytest.raises(SettingsValidationError):
+        normalize_calendar_aliases({"x" * 65: "calendar.family"}, ["calendar.family"])
+    with pytest.raises(SettingsValidationError):
+        normalize_calendar_aliases({"ok": 42}, ["calendar.family"])
+    with pytest.raises(SettingsValidationError):
+        normalize_conflict_calendars("calendar.family")
+    with pytest.raises(SettingsValidationError):
+        normalize_conflict_calendars([None])
+    config_entry = entry()
+    assert calendar_intelligence_patch(config_entry, {}) == {}
+    assert calendar_intelligence_patch(
+        config_entry, {"calendar_aliases": {}, "conflict_calendar_entities": ["calendar.family"]}
+    ) == {}
+    assert calendar_intelligence_patch(
+        config_entry, {"calendar_aliases": {"home": "calendar.family"}}
+    ) == {"calendar_aliases": {"home": "calendar.family"}}
+    assert calendar_intelligence_patch(
+        config_entry, {"conflict_calendar_entities": []}
+    ) == {"conflict_calendar_entities": []}
+
+
+@pytest.mark.asyncio
+async def test_calendar_intelligence_rejects_empty_update_and_noops():
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    connection = FakeConnection()
+    await invoke(
+        settings_api.websocket_update_calendar_intelligence, hass, connection,
+        {"id": 81, "type": settings_api.WS_UPDATE_CALENDAR_INTELLIGENCE,
+         "entry_id": config_entry.entry_id},
+    )
+    assert connection.errors[-1][1] == "invalid_settings"
+    await invoke(
+        settings_api.websocket_update_calendar_intelligence, hass, connection,
+        {"id": 82, "type": settings_api.WS_UPDATE_CALENDAR_INTELLIGENCE,
+         "entry_id": config_entry.entry_id, "calendar_aliases": {}},
+    )
+    assert connection.results[-1][0] == 82
+    assert hass.config_entries.reloads == []
+
+
+@pytest.mark.asyncio
+async def test_pending_calendar_selection_cannot_be_stranded():
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    event = SimpleNamespace(calendar_entity="calendar.work")
+    store = SimpleNamespace(list=lambda: [SimpleNamespace(events=[event])])
+    hass.data[DOMAIN] = {config_entry.entry_id: store}
+    connection = FakeConnection()
+    await invoke(
+        settings_api.websocket_update_core_settings, hass, connection,
+        {"id": 83, "type": settings_api.WS_UPDATE_CORE_SETTINGS,
+         "entry_id": config_entry.entry_id, CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+    )
+    assert connection.errors[-1][1] == "pending_calendar_in_use"
+    assert hass.config_entries.updates == []
+
+
+@pytest.mark.asyncio
+async def test_saving_invalid_default_does_not_change_options():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    with pytest.raises(SettingsValidationError, match="default calendar"):
+        await async_save_option_patch(
+            hass, config_entry, {CONF_CALENDAR_ENTITIES: ["calendar.work"]}
+        )
+    assert hass.config_entries.updates == []
