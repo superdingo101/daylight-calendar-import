@@ -27,13 +27,15 @@
       "op": "ack",
       "token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
       "status": 200,
-      "result": "acknowledged"
+      "result": "acknowledged",
+      "acknowledged_at": "2026-10-08T16:01:00Z"
     },
     {
       "op": "ack",
       "token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
       "status": 200,
-      "result": "acknowledged"
+      "result": "acknowledged",
+      "acknowledged_at": "2026-10-08T16:01:00Z"
     }
   ]
 }
