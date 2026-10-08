@@ -63,7 +63,9 @@ def _candidate(calendar_entity: str, raw: Any) -> CalendarCandidate:
             date.fromisoformat(end)
         except ValueError as exc:
             raise CalendarObservationError("Invalid all-day calendar interval") from exc
-        if date.fromisoformat(end) <= date.fromisoformat(start):
+        # HA permits zero-duration all-day provider events too. Keep those
+        # observable, but reject intervals with an end before the start.
+        if date.fromisoformat(end) < date.fromisoformat(start):
             raise CalendarObservationError("Invalid all-day calendar interval")
     elif len(start) == 10 or len(end) == 10:
         raise CalendarObservationError("Mixed calendar event date formats")
@@ -161,11 +163,15 @@ async def async_classify_conflicts(
     )
     matches: list[CalendarMatch] = []
     for existing in candidates:
-        # A provider's zero-duration point occupies no scheduling interval,
-        # so the positive-duration classifier must not attempt to match it.
-        if not existing.all_day and (
-            datetime.fromisoformat(existing.start).astimezone(timezone.utc)
-            == datetime.fromisoformat(existing.end).astimezone(timezone.utc)
+        # A zero-duration provider date or datetime occupies no interval.
+        # The pure classifier intentionally requires positive durations.
+        if (
+            (existing.all_day and existing.start == existing.end)
+            or (
+                not existing.all_day
+                and datetime.fromisoformat(existing.start).astimezone(timezone.utc)
+                == datetime.fromisoformat(existing.end).astimezone(timezone.utc)
+            )
         ):
             continue
         match = classify_calendar_event(draft, existing, local_zone=local_zone)
