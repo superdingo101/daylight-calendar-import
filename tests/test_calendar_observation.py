@@ -1,6 +1,6 @@
 """Read-only HA calendar observation and pure matching integration."""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call
 from zoneinfo import ZoneInfo
@@ -517,3 +517,56 @@ async def test_native_timed_zero_duration_remains_a_non_overlapping_point():
 def test_invalid_all_day_draft_uses_observation_error(start, end):
     with pytest.raises(CalendarObservationError, match="Invalid all-day observation interval"):
         observation_window(EventDraft("Practice", start, end, True), local_zone=ZONE)
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("0001-01-01T00:00:00+01:00", "0001-01-01T01:00:00+01:00"),
+    ("9999-12-31T22:00:00-02:00", "9999-12-31T23:00:00-02:00"),
+])
+def test_draft_timezone_conversion_overflow_fails_at_observation_boundary(
+    start, end,
+):
+    """Both ends of Python's supported datetime range can overflow UTC."""
+    extreme = EventDraft("Extremely early or late", start, end, False)
+    with pytest.raises(CalendarObservationError, match="Invalid timed observation"):
+        observation_window(extreme, local_zone=ZONE)
+
+
+def test_all_day_draft_utc_range_overflow_has_explicit_observation_error():
+    """All-day local midnight at year 1 can precede the minimum UTC instant."""
+    extreme = EventDraft("Year one", "0001-01-01", "0001-01-02", True)
+    with pytest.raises(CalendarObservationError, match="Invalid event interval"):
+        observation_window(extreme, local_zone=timezone(timedelta(hours=1)))
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("0001-01-01T00:00:00+01:00", "0001-01-01T01:00:00+01:00"),
+    ("9999-12-31T22:00:00-02:00", "9999-12-31T23:00:00-02:00"),
+])
+async def test_provider_timezone_conversion_overflow_fails_before_classification(
+    start, end,
+):
+    """Invalid UTC bounds must not be interpreted as an empty agenda."""
+    fake = hass({"calendar.work": {"events": [
+        existing(start=start, end=end),
+    ]}})
+    with pytest.raises(CalendarObservationError, match="Invalid timed calendar interval"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+
+
+async def test_all_day_provider_utc_overflow_is_observation_error_not_raw_overflow():
+    """The pure matcher also converts local all-day dates to UTC."""
+    fake = hass({"calendar.work": {"events": [
+        {"summary": "Year one", "start": "0001-01-01", "end": "0001-01-02"},
+    ]}})
+    fixed_zone = timezone(timedelta(hours=1))
+    with pytest.raises(
+        CalendarObservationError, match="Invalid calendar interval for classification"
+    ):
+        await async_classify_conflicts(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=fixed_zone, context=READ_CONTEXT,
+        )
