@@ -1003,11 +1003,23 @@ export class DaylightImportPanel extends HTMLElement {
       showEditError(form, "Every alias must point to a selected writable calendar.");
       return;
     }
-    const patch = {
-      calendar_aliases: parsed,
-      conflict_calendar_entities: Array.from(form.querySelectorAll("input"))
-        .filter(input => input.checked).map(input => input.value),
-    };
+    const selected = Array.from(form.querySelectorAll("input"))
+      .filter(input => input.checked).map(input => input.value);
+    const patch = {};
+    if (!aliasesEquivalent(parsed, this._settings.calendar_aliases ?? {})) {
+      patch.calendar_aliases = parsed;
+    }
+    const current = this._settings.conflict_calendar_entities ?? [this._settings.calendar_entity];
+    if (selected.length !== current.length ||
+        selected.some(value => !current.includes(value))) {
+      patch.conflict_calendar_entities = selected;
+    }
+    if (Object.keys(patch).length === 0) {
+      this._settingsDrafts.routing = null;
+      this._routingRawDraft = null;
+      this.render();
+      return;
+    }
     this._setSettingsDraft("routing", patch);
     await this._saveSettings(
       "routing", patch,
