@@ -1,0 +1,29 @@
+{
+  "description": "Successful zero-event parse is ACK eligible only after durable no_events source disposition",
+  "delivery_id": "delivery_00000000000000000001",
+  "source_id": "source_000000000000000000000001",
+  "steps": [
+    {
+      "op": "claim",
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456"
+    },
+    {
+      "op": "parse_no_events"
+    },
+    {
+      "op": "persist_terminal_no_events",
+      "source_fingerprint": "committed-hash"
+    },
+    {
+      "op": "restart_ha"
+    },
+    {
+      "op": "recover_terminal_no_events",
+      "source_fingerprint": "committed-hash"
+    },
+    {
+      "op": "ack",
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456"
+    }
+  ]
+}
