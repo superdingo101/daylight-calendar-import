@@ -564,7 +564,6 @@ export class DaylightImportPanel extends HTMLElement {
       const items = await loadInbox(this._hass);
       if (generation !== this._generation) return;
       this._items = items;
-      this._reconcileRoutingDraft(settings);
       this._status = "ready";
     } catch (error) {
       if (generation !== this._generation) return;
@@ -653,8 +652,8 @@ export class DaylightImportPanel extends HTMLElement {
             settingsDraftMatches(settings, tab, this._settingsDrafts[tab])) {
           this._settingsDrafts[tab] = null;
         }
-
       }
+      this._reconcileRoutingDraft(settings);
       this._status = "ready";
     } catch (error) {
       if (generation !== this._generation) return;
