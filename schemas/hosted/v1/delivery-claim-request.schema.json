@@ -22,10 +22,15 @@
     "claim_request_id": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{22,128}(?![\\s\\S])"
+    },
+    "claim_request_expires_at": {
+      "type": "string",
+      "format": "date-time"
     }
   },
   "required": [
     "schema_version",
-    "claim_request_id"
+    "claim_request_id",
+    "claim_request_expires_at"
   ]
 }
