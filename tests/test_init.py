@@ -1997,3 +1997,135 @@ def test_calendar_configuration_falls_back_to_entry_data():
         "calendar.family",
         ("calendar.family",),
     )
+
+
+async def test_routing_review_ingestion_uses_allowed_aliases_for_text_and_email(monkeypatch):
+    from custom_components.daylight_calendar_import.sources import SourceKind
+
+    permissions = FakePermissions(allowed=True)
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    parser = AsyncMock(return_value=ParseOutcome([draft()], ["AI note"]))
+    pending_item = pending(draft())
+    store = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_begin_submission=AsyncMock(return_value="activity-id"),
+        is_source_duplicate=Mock(return_value=False),
+        async_add=AsyncMock(return_value=PendingImportAddResult(
+            pending=pending_item, duplicate_source=False, duplicate_events=0)),
+    )
+    email_processor = None
+
+    async def capture_runtime(_hass, _entry, _store, process):
+        nonlocal email_processor
+        email_processor = process
+        return None
+
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore",
+                        lambda _: store)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parser)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_setup_email_runtime",
+                        capture_runtime)
+    cfg = entry({
+        "calendar_entities": ["calendar.family", "calendar.kids"],
+        "calendar_aliases": {"Kids": "calendar.kids"},
+    })
+    assert await async_setup_entry(hass, cfg)
+    call = SimpleNamespace(
+        data={ATTR_TEXT: "Calendar: KIDS\nSoccer at five"},
+        context=Context(user_id="test-user"),
+    )
+    handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
+    response = await handler(call)
+    assert response["warnings"] == ["AI note"]
+    assert parser.await_args.kwargs["source"].text == "Soccer at five"
+    args = store.async_add.await_args.kwargs
+    assert args["calendar_entity"] == "calendar.kids"
+    assert args["source_text"] == "Calendar: KIDS\nSoccer at five"
+    assert args["warnings"] == ["AI note"]
+
+    source = TextSourceAdapter().create("Calendar: nope\nPlay at seven")
+    source = replace(source, kind=SourceKind.EMAIL,
+                     title="Calendar: KIDS", metadata={"sender": "school@example.test"})
+    assert email_processor is not None
+    await email_processor(source, "activity-id")
+    assert parser.await_args.kwargs["source"].text == "Play at seven"
+    args = store.async_add.await_args.kwargs
+    assert args["calendar_entity"] == "calendar.family"
+    assert "Conflicting calendar routing hints" in args["warnings"][1]
+    assert args["source_sender"] == "school@example.test"
+
+
+@pytest.mark.parametrize("kind, service", [
+    ("image", SERVICE_SUBMIT_IMAGE), ("pdf", SERVICE_SUBMIT_PDF),
+])
+async def test_attachment_review_routing_strips_only_text_directive(
+    monkeypatch, kind, service,
+):
+    from custom_components.daylight_calendar_import.sources import SourceKind, SourceAttachment
+
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    parser = AsyncMock(return_value=ParseOutcome([draft()], []))
+    store = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_begin_submission=AsyncMock(return_value="activity-id"),
+        is_source_duplicate=Mock(return_value=False),
+        async_add=AsyncMock(return_value=PendingImportAddResult(
+            pending=pending(draft()), duplicate_source=False, duplicate_events=0)),
+    )
+    attachment = SourceAttachment(
+        id="file-id", media_type="image/png" if kind == "image" else "application/pdf",
+        size_bytes=100, content_ref="file-ref", sha256="a" * 64,
+    )
+    @asynccontextmanager
+    async def attachment_source(*_args):
+        yield replace(
+            TextSourceAdapter().create("unused"), kind=SourceKind(kind),
+            text=None, title="Calendar: kids", attachments=(attachment,),
+        )
+
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore",
+                        lambda _: store)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parser)
+    module_name = "async_image_source" if kind == "image" else "async_pdf_source"
+    monkeypatch.setattr(f"custom_components.daylight_calendar_import.{module_name}",
+                        attachment_source)
+    assert await async_setup_entry(hass, entry({
+        "calendar_entities": ["calendar.family", "calendar.kids"],
+        "calendar_aliases": {"kids": "calendar.kids"},
+    }))
+    handler = hass.services.handlers[(DOMAIN, service)][0]
+    call = SimpleNamespace(data={
+        ATTR_FILE_ID: "a" * 32,
+        ATTR_TEXT: "Calendar: kids\nParty next week",
+    }, context=Context(user_id="test-user"))
+    result = await handler(call)
+    assert result["warnings"] == []
+    assert parser.await_args.kwargs["source"].text == "Party next week"
+    assert store.async_add.await_args.kwargs["calendar_entity"] == "calendar.kids"
+    assert "Calendar: kids" in store.async_add.await_args.kwargs["source_text"]
+
+
+async def test_unresolved_manual_hint_is_review_warning_not_writable_override(monkeypatch):
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    parser = AsyncMock(return_value=ParseOutcome([draft()], []))
+    store = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_begin_submission=AsyncMock(return_value="activity-id"),
+        is_source_duplicate=Mock(return_value=False),
+        async_add=AsyncMock(return_value=PendingImportAddResult(
+            pending=pending(draft()), duplicate_source=False, duplicate_events=0)),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore",
+                        lambda _: store)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider",
+                        parser)
+    assert await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
+    response = await handler(SimpleNamespace(
+        data={ATTR_TEXT: "Calendar: private\nSoccer practice"},
+        context=Context(user_id="test-user"),
+    ))
+    assert "not configured or allowed" in response["warnings"][0]
+    assert store.async_add.await_args.kwargs["calendar_entity"] == "calendar.family"
+    assert store.async_add.await_args.kwargs["warnings"] == response["warnings"]
+    assert parser.await_args.kwargs["source"].text == "Soccer practice"
