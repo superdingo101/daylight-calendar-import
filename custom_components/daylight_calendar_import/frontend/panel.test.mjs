@@ -3674,3 +3674,130 @@ test("routing no-op save clears stale definitive error", async () => {
   assert.equal(panel._settingsError, null);
   assert.equal(updates, 0);
 });
+
+
+test("routing preserves FEFF-prefixed persisted alias when only conflicts change", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {"\uFEFFKids": "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let sent;
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent = message;
+      current = {...current, ...message};
+      return current;
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value,
+    "\uFEFFKids = calendar.family");
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.external";
+  }
+  await panel.saveRoutingSettings(form);
+  assert.equal(Object.hasOwn(sent, "calendar_aliases"), false);
+  assert.deepEqual(current.calendar_aliases, {"\uFEFFKids": "calendar.family"});
+});
+
+test("routing refresh keeps an alias-only edit but adopts concurrent conflict changes", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const sent = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent.push(message);
+      current = {...current, ...message};
+      return current;
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const aliasField = form.elements.namedItem("calendar_aliases");
+  aliasField.value = "Kids = calendar.family";
+  aliasField.input();
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+  assert.equal(panel._routingRawDraft.conflictsDirty, false);
+  current = {...current, conflict_calendar_entities: ["calendar.external"]};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  assert.equal(form.querySelectorAll("input").find(
+    input => input.value === "calendar.external").checked, true);
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].calendar_aliases, {Kids: "calendar.family"});
+  assert.equal(Object.hasOwn(sent[0], "conflict_calendar_entities"), false);
+});
+
+test("routing refresh keeps conflict-only edits but adopts concurrent alias changes", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {Old: "calendar.family"}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let sent;
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent = message;
+      current = {...current, ...message};
+      return current;
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const external = form.querySelectorAll("input").find(
+    input => input.value === "calendar.external");
+  external.checked = true;
+  external.change();
+  assert.equal(panel._routingRawDraft.aliasesDirty, false);
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+  current = {...current, calendar_aliases: {New: "calendar.family"}};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value, "New = calendar.family");
+  await panel.saveRoutingSettings(form);
+  assert.equal(Object.hasOwn(sent, "calendar_aliases"), false);
+  assert.deepEqual(sent.conflict_calendar_entities, ["calendar.family", "calendar.external"]);
+});
