@@ -13,6 +13,7 @@ from homeassistant.exceptions import Unauthorized
 
 from custom_components.daylight_calendar_import.calendar_observation import (
     CalendarObservationError,
+    _candidate,
     async_classify_conflicts,
     async_observe_candidates,
     observation_window,
@@ -419,3 +420,8 @@ async def test_native_provider_date_datetime_values_and_missing_fields():
             fake, draft(), observed_calendars=["calendar.school"],
             local_zone=ZONE, context=READ_CONTEXT,
         )
+
+
+def test_candidate_rejects_non_mapping_response():
+    with pytest.raises(CalendarObservationError, match="Invalid calendar event response"):
+        _candidate("calendar.work", None)
