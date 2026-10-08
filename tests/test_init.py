@@ -113,6 +113,10 @@ class FakeHass:
         self.services = FakeServices()
         self.auth = FakeAuth(user)
         self.data = {}
+        self.config_entries = SimpleNamespace(
+            async_forward_entry_setups=AsyncMock(),
+            async_unload_platforms=AsyncMock(return_value=True),
+        )
 
 
 @pytest.fixture(autouse=True)
