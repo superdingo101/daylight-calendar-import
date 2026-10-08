@@ -23,6 +23,14 @@ class CalendarObservationError(ValueError):
     """Calendar responses cannot be trusted to prove no overlap."""
 
 
+def _as_utc(value: datetime, *, message: str) -> datetime:
+    """Normalize time bounds, including overflows at ISO years 1 and 9999."""
+    try:
+        return value.astimezone(timezone.utc)
+    except (OverflowError, ValueError) as exc:
+        raise CalendarObservationError(message) from exc
+
+
 def observation_window(
     draft: EventDraft, *, local_zone: tzinfo,
 ) -> tuple[datetime, datetime]:
@@ -41,11 +49,16 @@ def observation_window(
             raise CalendarObservationError("Invalid timed observation interval") from exc
         if start_value.utcoffset() is None or end_value.utcoffset() is None:
             raise CalendarObservationError("Timed observations require UTC offsets")
-        start = start_value.astimezone(local_zone)
-        end = end_value.astimezone(local_zone)
+        try:
+            start = start_value.astimezone(local_zone)
+            end = end_value.astimezone(local_zone)
+        except (OverflowError, ValueError) as exc:
+            raise CalendarObservationError("Invalid timed observation interval") from exc
     # Python compares datetimes sharing a tzinfo by wall clock, which is
     # incorrect across the repeated hour of the autumn DST transition.
-    if end.astimezone(timezone.utc) <= start.astimezone(timezone.utc):
+    if _as_utc(end, message="Invalid event interval") <= _as_utc(
+        start, message="Invalid event interval"
+    ):
         raise CalendarObservationError("Invalid event interval")
     return start, end
 
@@ -83,7 +96,9 @@ def _candidate(calendar_entity: str, raw: Any) -> CalendarCandidate:
             raise CalendarObservationError("Timed calendar events require timezone offsets")
         # Home Assistant permits zero-duration timed provider events. Reject
         # reversed intervals, but preserve zero-duration points for observation.
-        if end_time.astimezone(timezone.utc) < start_time.astimezone(timezone.utc):
+        if _as_utc(end_time, message="Invalid timed calendar interval") < _as_utc(
+            start_time, message="Invalid timed calendar interval"
+        ):
             raise CalendarObservationError("Invalid timed calendar interval")
     return CalendarCandidate(calendar_entity, title, start, end, all_day)
 
@@ -172,11 +187,23 @@ async def async_classify_conflicts(
         # Native CalendarEvent already expands a same-day all-day event into
         # a one-day interval. Only timed zero-duration points are non-overlapping.
         if not existing.all_day and (
-            datetime.fromisoformat(existing.start).astimezone(timezone.utc)
-            == datetime.fromisoformat(existing.end).astimezone(timezone.utc)
+            _as_utc(
+                datetime.fromisoformat(existing.start),
+                message="Invalid timed calendar interval",
+            ) == _as_utc(
+                datetime.fromisoformat(existing.end),
+                message="Invalid timed calendar interval",
+            )
         ):
             continue
-        match = classify_calendar_event(draft, existing, local_zone=local_zone)
+        try:
+            match = classify_calendar_event(draft, existing, local_zone=local_zone)
+        except (OverflowError, ValueError) as exc:
+            # The pure matcher operates on UTC intervals. For extreme valid
+            # local dates, conversion to UTC may overflow datetime's range.
+            raise CalendarObservationError(
+                "Invalid calendar interval for classification"
+            ) from exc
         if match is not None:
             matches.append(match)
     return tuple(matches)
