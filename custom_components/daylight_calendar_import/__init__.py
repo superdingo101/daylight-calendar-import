@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from typing import Any
 
@@ -62,6 +63,8 @@ from .storage import (
     PendingImportApprovalUncertainError,
     PendingImportStore,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["sensor"]
 
@@ -185,6 +188,18 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Daylight Calendar Import from a config entry."""
+    # A failed sensor rollback may have left entities pointing at an old
+    # store. Never silently replace it with a freshly loaded snapshot.
+    previous_store = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if previous_store is not None:
+        if not getattr(previous_store, "rollback_pending", False):
+            raise RuntimeError("Daylight entry is already initialized")
+        runtime = getattr(previous_store, "email_runtime", None)
+        if runtime is not None:
+            await runtime.async_stop()
+        if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+            raise RuntimeError("Previous Daylight sensor rollback is incomplete")
+        hass.data[DOMAIN].pop(entry.entry_id, None)
     pending_store = PendingImportStore(hass)
     await pending_store.async_load()
     pending_store.active_submissions = set()
@@ -720,49 +735,70 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     except (Exception, asyncio.CancelledError):
-        # Forwarding may have partially loaded a platform when it failed.
+        # Even a failed or cancelled partial forward must not leave its sensor
+        # entities pointing to a discarded store.
         pending_store.accepting_services = False
         _unregister_entry_services(hass)
+        cleanup_ok = True
         runtime = getattr(pending_store, "email_runtime", None)
         if runtime is not None:
-            await runtime.async_stop()
+            try:
+                await runtime.async_stop()
+            except Exception:
+                cleanup_ok = False
+                _LOGGER.exception("Failed to stop email runtime during setup rollback")
         try:
-            await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-        except Exception:
-            # Propagate the original setup failure, but record cleanup errors.
-            import logging
-            logging.getLogger(__name__).exception("Failed to roll back sensor setup")
+            if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+                cleanup_ok = False
+                _LOGGER.error("Failed to roll back Daylight sensor platform")
+        except (Exception, asyncio.CancelledError):
+            cleanup_ok = False
+            _LOGGER.exception("Failed to roll back sensor setup")
         async_remove_review_panel(hass)
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        if cleanup_ok:
+            hass.data[DOMAIN].pop(entry.entry_id, None)
+        else:
+            # Keep the store reachable so the next setup can retry cleanup
+            # before reading a second, potentially stale storage snapshot.
+            pending_store.rollback_pending = True
         raise
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Drain accepted calls while rejecting new requests across platform unload."""
+    """Finish unload atomically from the caller's perspective, even on cancellation."""
     store = hass.data[DOMAIN][entry.entry_id]
     store.accepting_services = False
-    try:
-        platforms_unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    except BaseException:
-        store.accepting_services = True
-        raise
-    if not platforms_unloaded:
-        store.accepting_services = True
-        return False
 
-    # No new service may enter; existing calls are included even if waiting for
-    # authorization or the first durable source-claim write.
-    _unregister_entry_services(hass)
-    async_remove_review_panel(hass)
-    email_runtime = getattr(store, "email_runtime", None)
-    if email_runtime is not None:
-        await email_runtime.async_stop()
-    accepted = set(store.active_submissions) | set(getattr(store, "active_service_handlers", ()))
-    if accepted:
-        await asyncio.gather(*accepted, return_exceptions=True)
-    hass.data[DOMAIN].pop(entry.entry_id, None)
-    return True
+    async def finish_unload() -> bool:
+        try:
+            platforms_unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        except BaseException:
+            store.accepting_services = True
+            raise
+        if not platforms_unloaded:
+            store.accepting_services = True
+            return False
+
+        _unregister_entry_services(hass)
+        async_remove_review_panel(hass)
+        email_runtime = getattr(store, "email_runtime", None)
+        if email_runtime is not None:
+            await email_runtime.async_stop()
+        accepted = set(store.active_submissions) | set(getattr(store, "active_service_handlers", ()))
+        if accepted:
+            await asyncio.gather(*accepted, return_exceptions=True)
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        return True
+
+    # Shield the entire sequence, not just gathering handlers: cancellation
+    # after platform unload must not strand a half-torn-down entry.
+    completion = asyncio.create_task(finish_unload())
+    try:
+        return await asyncio.shield(completion)
+    except asyncio.CancelledError:
+        await completion
+        raise
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Remove persisted data when the config entry is deleted."""
