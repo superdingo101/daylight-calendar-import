@@ -93,7 +93,7 @@ async def test_empty_observation_scope_never_queries_home_assistant():
     fake.services.async_call.assert_not_awaited()
 
 
-@pytest.mark.parametrize("entities", [["sensor.fake"], [None], ["calendar.family", 7]])
+@pytest.mark.parametrize("entities", [["sensor.fake"], [None], ["calendar.family", 7], [["calendar.work"]]])
 async def test_invalid_observation_scope_rejected_before_provider_call(entities):
     fake = hass(None)
     with pytest.raises(CalendarObservationError, match="Invalid observation calendar"):
@@ -508,3 +508,12 @@ async def test_native_timed_zero_duration_remains_a_non_overlapping_point():
     assert [(match.kind, match.existing_title) for match in matches] == [
         ("conflict", "Other appointment"),
     ]
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("not-a-date", "2026-10-09"),
+    ("2026-10-08", "not-a-date"),
+])
+def test_invalid_all_day_draft_uses_observation_error(start, end):
+    with pytest.raises(CalendarObservationError, match="Invalid all-day observation interval"):
+        observation_window(EventDraft("Practice", start, end, True), local_zone=ZONE)
