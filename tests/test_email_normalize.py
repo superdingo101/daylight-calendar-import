@@ -1036,3 +1036,33 @@ def test_inline_style_malformed_declaration_does_not_stop_later_hide() -> None:
 
 def test_normalize_body_text_preserves_bare_carriage_return_as_line_break() -> None:
     assert email_normalize._normalize_body_text("one\rtwo") == "one\ntwo"
+
+
+def test_html_blockquote_retains_control_boundary_for_routing() -> None:
+    from custom_components.daylight_calendar_import.calendar_routing import extract_calendar_route
+
+    normalized = html_to_text(
+        "<p>Details</p><blockquote><p>Calendar: kids</p></blockquote>"
+    )
+    assert normalized == "Details\n>\nCalendar: kids"
+    decision = extract_calendar_route(
+        subject=None, body=normalized,
+        aliases={"kids": "calendar.kids"},
+        allowed_calendars={"calendar.kids"},
+    )
+    assert decision.result.status == "none"
+
+
+def test_html_normalization_preserves_directive_before_quote() -> None:
+    from custom_components.daylight_calendar_import.calendar_routing import extract_calendar_route
+
+    normalized = html_to_text(
+        "<p>Calendar: kids</p><blockquote><p>Calendar: work</p></blockquote>"
+    )
+    decision = extract_calendar_route(
+        subject=None, body=normalized,
+        aliases={"kids": "calendar.kids", "work": "calendar.work"},
+        allowed_calendars={"calendar.kids", "calendar.work"},
+    )
+    assert decision.result.status == "resolved"
+    assert decision.result.calendar_entity == "calendar.kids"
