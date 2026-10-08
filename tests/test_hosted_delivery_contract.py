@@ -23,8 +23,40 @@ SCHEMA_DIR = ROOT / "schemas" / "hosted" / "v1"
 FIXTURE_DIR = ROOT / "tests" / "fixtures" / "hosted" / "v1"
 
 
+def _strict_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON member")
+        result[key] = value
+    return result
+
+
+def _reject_constant(value):
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def _reject_surrogates(value):
+    if isinstance(value, str):
+        if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+            raise ValueError("unpaired Unicode surrogate")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _reject_surrogates(key)
+            _reject_surrogates(item)
+    elif isinstance(value, list):
+        for item in value:
+            _reject_surrogates(item)
+
+
+def _decode_strict(raw):
+    result = json.loads(raw, object_pairs_hook=_strict_pairs, parse_constant=_reject_constant)
+    _reject_surrogates(result)
+    return result
+
+
 def _read(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _decode_strict(path.read_text(encoding="utf-8"))
 
 
 def _source_evidence_sha256(source: dict) -> str:
@@ -38,8 +70,15 @@ def _source_evidence_sha256(source: dict) -> str:
 
 def _check_checkpoint_evidence(claim: dict, saved: dict, recovered: dict) -> None:
     """A restart cannot trade a durable source identity for verified contents."""
-    assert saved["source_fingerprint"] == recovered["source_fingerprint"]
-    assert saved["source_fingerprint"]
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    expected = source_fingerprint(
+        f"hosted:{claim['local_config_entry_id']}:{claim['delivery_id']}"
+    )
+    assert saved["source_fingerprint"] == expected
+    assert recovered["source_fingerprint"] == expected
+    assert saved["source_expires_at"] == claim["source_expires_at"]
+    assert recovered["source_expires_at"] == claim["source_expires_at"]
     expected = _source_evidence_sha256(claim["source"])
     assert saved["source_evidence_sha256"] == expected
     assert recovered["source_evidence_sha256"] == expected
