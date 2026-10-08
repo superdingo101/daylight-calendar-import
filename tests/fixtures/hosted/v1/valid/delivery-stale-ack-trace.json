@@ -6,7 +6,17 @@
     {
       "op": "claim",
       "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
-      "status": 200
+      "status": 200,
+      "source": {
+        "kind": "email",
+        "received_at": "2026-10-08T15:00:00Z",
+        "title": "School picture day",
+        "text": "Picture day on October 15, 2026 at 9am",
+        "attachments": [],
+        "metadata": {
+          "sender": "teacher@example.test"
+        }
+      }
     },
     {
       "op": "expire",
@@ -15,7 +25,17 @@
     {
       "op": "claim",
       "token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
-      "status": 200
+      "status": 200,
+      "source": {
+        "kind": "email",
+        "received_at": "2026-10-08T15:00:00Z",
+        "title": "School picture day",
+        "text": "Picture day on October 15, 2026 at 9am",
+        "attachments": [],
+        "metadata": {
+          "sender": "teacher@example.test"
+        }
+      }
     },
     {
       "op": "ack",
