@@ -78,7 +78,16 @@ def _check_checkpoint_evidence(claim: dict, saved: dict, recovered: dict) -> Non
     assert saved["source_fingerprint"] == expected
     assert recovered["source_fingerprint"] == expected
     assert saved["source_expires_at"] == claim["source_expires_at"]
+    assert saved["lease_token"] == claim["token"]
+    assert saved["verified_attachments"] == {
+        attachment["id"]: attachment["sha256"]
+        for attachment in claim["source"]["attachments"]
+    }
+    assert saved["attachments_verification_complete"] is True
     assert recovered["source_expires_at"] == claim["source_expires_at"]
+    assert recovered["lease_token"] == saved["lease_token"]
+    assert recovered["verified_attachments"] == saved["verified_attachments"]
+    assert recovered["attachments_verification_complete"] is True
     expected = _source_evidence_sha256(claim["source"])
     assert saved["source_evidence_sha256"] == expected
     assert recovered["source_evidence_sha256"] == expected
@@ -265,9 +274,9 @@ def test_ack_must_follow_durable_checkpoint_even_after_client_restart():
 
 
 @pytest.mark.parametrize("claim", [
-    {"schema_version": 1},
-    {"schema_version": 1, "limit": 1},
-    {"schema_version": 1, "limit": 50, "cursor": "nextPageAbc123_-"},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "limit": 1},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "limit": 50, "cursor": "nextPageAbc123_-"},
 ])
 def test_h3_bounded_claim_request_schema_accepts_valid_json(claim, schema_registry):
     schemas, registry = schema_registry
@@ -275,13 +284,13 @@ def test_h3_bounded_claim_request_schema_accepts_valid_json(claim, schema_regist
 
 
 @pytest.mark.parametrize("claim", [
-    {}, {"schema_version": 2}, {"schema_version": 1, "limit": 0},
-    {"schema_version": 1, "limit": 51}, {"schema_version": 1, "limit": "20"},
-    {"schema_version": 1, "limit": -1}, {"schema_version": 1, "cursor": ""},
-    {"schema_version": 1, "cursor": "../other-installation"},
-    {"schema_version": 1, "cursor": "!"},
-    {"schema_version": 1, "cursor": "x" * 1025},
-    {"schema_version": 1, "installation_id": "another-tenant"},
+    {}, {"schema_version": 1}, {"schema_version": 2, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"}, {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "limit": 0},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "limit": 51}, {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "limit": "20"},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "limit": -1}, {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "cursor": ""},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "cursor": "../other-installation"},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "cursor": "!"},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "cursor": "x" * 1025},
+    {"schema_version": 1, "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", "installation_id": "another-tenant"},
 ])
 def test_h3_bounded_claim_request_rejects_invalid_or_tenant_scoped_input(claim, schema_registry):
     schemas, registry = schema_registry
