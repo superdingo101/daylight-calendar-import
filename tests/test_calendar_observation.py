@@ -237,7 +237,6 @@ async def test_invalid_timed_provider_events_are_rejected_at_observation_boundar
 
 @pytest.mark.parametrize(("start", "end"), [
     ("2026-10-09", "2026-10-08"),
-    ("2026-10-08", "2026-10-08"),
 ])
 async def test_invalid_all_day_provider_duration_is_rejected(start, end):
     fake = hass({"calendar.work": {"events": [
@@ -425,3 +424,47 @@ async def test_native_provider_date_datetime_values_and_missing_fields():
 def test_candidate_rejects_non_mapping_response():
     with pytest.raises(CalendarObservationError, match="Invalid calendar event response"):
         _candidate("calendar.work", None)
+
+
+async def test_zero_duration_all_day_provider_event_remains_observable():
+    """An HA-valid all-day point must not abort other calendar observations."""
+    fake = hass({
+        "calendar.work": {"events": [
+            {"summary": "Same-day point", "start": "2026-10-31", "end": "2026-10-31"},
+            {"summary": "Practice", "start": "2026-10-31", "end": "2026-11-02"},
+        ]},
+        "calendar.school": {"events": [
+            {"summary": "School conflict", "start": "2026-11-01", "end": "2026-11-02"},
+        ]},
+    })
+    observed = await async_observe_candidates(
+        fake, draft(all_day=True),
+        observed_calendars=["calendar.work", "calendar.school"],
+        local_zone=ZONE, context=READ_CONTEXT,
+    )
+    assert len(observed) == 3
+    assert observed[0].all_day is True
+    assert observed[0].start == observed[0].end == "2026-10-31"
+
+    matches = await async_classify_conflicts(
+        fake, draft(all_day=True),
+        observed_calendars=["calendar.work", "calendar.school"],
+        local_zone=ZONE, context=READ_CONTEXT,
+    )
+    assert [(m.kind, m.calendar_entity, m.existing_title) for m in matches] == [
+        ("exact_duplicate", "calendar.work", "Practice"),
+        ("conflict", "calendar.school", "School conflict"),
+    ]
+
+
+async def test_zero_duration_all_day_point_cannot_create_a_duplicate():
+    """Even matching titles must not make zero-length events duplicates."""
+    fake = hass({"calendar.work": {"events": [
+        {"summary": "Practice", "start": "2026-10-31", "end": "2026-10-31"},
+    ]}})
+    matches = await async_classify_conflicts(
+        fake, draft(all_day=True),
+        observed_calendars=["calendar.work"], local_zone=ZONE,
+        context=READ_CONTEXT,
+    )
+    assert matches == ()
