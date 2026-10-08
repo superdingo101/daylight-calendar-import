@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timezone, tzinfo
 
 from .models import EventDraft
 
@@ -13,12 +13,14 @@ def _key(title: str) -> str:
     return " ".join(title.split()).casefold()
 
 
-def _range(start: str, end: str, all_day: bool) -> tuple[datetime, datetime]:
-    """Compare intervals as UTC instants, using date-only midnight as UTC."""
+def _range(
+    start: str, end: str, all_day: bool, local_zone: tzinfo,
+) -> tuple[datetime, datetime]:
+    """Compare intervals as UTC instants, interpreting all-day dates locally."""
     if all_day:
         return (
-            datetime.combine(date.fromisoformat(start), time.min, timezone.utc),
-            datetime.combine(date.fromisoformat(end), time.min, timezone.utc),
+            datetime.combine(date.fromisoformat(start), time.min, local_zone).astimezone(timezone.utc),
+            datetime.combine(date.fromisoformat(end), time.min, local_zone).astimezone(timezone.utc),
         )
     return (
         datetime.fromisoformat(start).astimezone(timezone.utc),
@@ -47,12 +49,12 @@ class CalendarMatch:
 
 
 def classify_calendar_event(
-    draft: EventDraft, existing: CalendarCandidate,
+    draft: EventDraft, existing: CalendarCandidate, *, local_zone: tzinfo,
 ) -> CalendarMatch | None:
     """Classify exact duplicate, possible duplicate, or scheduling conflict."""
-    candidate_start, candidate_end = _range(draft.start, draft.end, draft.all_day)
+    candidate_start, candidate_end = _range(draft.start, draft.end, draft.all_day, local_zone)
     existing_start, existing_end = _range(
-        existing.start, existing.end, existing.all_day
+        existing.start, existing.end, existing.all_day, local_zone
     )
     same_title = _key(draft.title) == _key(existing.title)
     same_interval = (
