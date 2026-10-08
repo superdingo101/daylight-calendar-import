@@ -136,3 +136,71 @@ Provider-specific exception classes and raw provider payloads are not public API
 - The free/BYO parser path remains functional without Daylight Cloud.
 
 Fixtures in `tests/fixtures/hosted/v1/` are executable examples of the contract. Normal CI validates both the schemas and representative valid/invalid documents without contacting Daylight Cloud or a paid AI provider.
+
+
+## H3: Hosted source delivery protocol (public v1 contract)
+
+The endpoints in this section define the **canonical public wire contract** for a future, opt-in Daylight-hosted inbox. They are **not active services** merely because this document and the schemas are published. A live client requires a configured hosted installation (H2 authentication) and a separate HA sync adapter; server endpoints, hosted ingress, delivery ledger and tokens belong **only** in private `daylight-cloud`. Resources, Railway/PostgreSQL, DNS, queues and monitoring belong in `daylight-infrastructure`. The public `daylight-calendar-import` repository owns this contract, fixtures, client adapter and local review/dedupe/checkpoint/ACK sequence; the free/BYO Direct IMAP path remains fully independent. No hosted endpoint creates, edits or deletes calendar events.
+
+### Authorization and versioning
+
+Every request MUST use HTTPS with the installation credential in `Authorization: Bearer <installation-token>`; no installation ID or customer identifier is accepted as a tenant selector in a query, URL or body. Cloud MUST authenticate the installation, check hosted-ingress entitlement as applicable and scope every cursor, delivery, attachment and ACK lookup to that installation **before** inspecting the resource. A non-owner MUST receive the same non-enumerating 404 response as an unknown identifier. Authentication failure is 401; a valid token without permission is 403. Revoked credentials never work, including for duplicate ACK requests.
+
+JSON responses and the ACK request use `"schema_version": 1`; malformed or unsupported versions are HTTP 400 `invalid_request`. The schemas are in `schemas/hosted/v1/delivery-*.schema.json`. Errors use the **existing v1** `error.schema.json` envelope. All timestamps MUST be explicit-offset RFC 3339 values; servers should send UTC `Z`. Ids, lease tokens and cursors are opaque, unguessable, length-bounded strings; no server database keys, installation IDs, internal S3 paths, passwords or model metadata are wire fields. Tokens and source/attachment bodies MUST NOT appear in normal HTTP/application logs or telemetry; `X-Request-ID` is allowed for safe correlation.
+
+### GET /v1/sources — claim a bounded page
+
+```http
+GET /v1/sources?limit=20&cursor=<opaque-cursor>
+Authorization: Bearer <installation-token>
+Accept: application/json
+```
+
+- `limit` is optional, an ASCII decimal integer from 1–50 (default 20). A duplicate parameter, noncanonical integer, negative/zero, or unrecognized query parameter is `invalid_request`.
+- `cursor` is optional, an opaque, installation-bound, tamper-resistant page continuation token (at most 1,024 characters). An invalid/expired/mismatched cursor is HTTP 400 `invalid_cursor`, with `retryable: false`. Clients restart enumeration at the **first page**, never treat the cursor as a persistent checkpoint, and never transform it.
+- HTTP 200 uses `delivery-page.schema.json`: `deliveries` contains at most `limit` unique delivery IDs; `next_cursor` is either a continuation or `null`. An empty page with `next_cursor: null` is valid. The server MUST NOT return one source twice in a single page.
+- Each claimed item provides stable `delivery_id` and `source_id`, a **new, cryptographically unpredictable `lease_token` per successful re-lease**, `lease_expires_at`, `source_expires_at` and a bounded `source`. The IDs stay unchanged across lease expiry and redelivery. Server issuance of a lease does **not** mean the HA side has persisted the source.
+- Fetching a page may claim available/expired items atomically, with exclusive leases per item, but MUST NOT expose items leased to another active claim or already acknowledged/expired sources. A page cursor traverses the server's bounded enumeration window without promising exactly-once delivery or an indefinite snapshot. A crashed client or expired lease becomes eligible for **redelivery on a new first-page poll**; a client MUST restart at `cursor=null` every polling cycle and SHOULD avoid concurrent polls for the same installation.
+- Servers MUST bound the number and total size of responses and enforce retention, quotas and rate limiting without silently truncating source content. Clients MUST reject over-limit pages and unknown schema versions and MUST NOT silently treat malformed responses as empty queues.
+
+A polled `source` is transport-normalized data with `kind: "email"`, `received_at`, optional `title` and `text`, `attachments` and a metadata allowlist of optional `sender` only. At least nonempty text or an attachment is required. No raw SMTP headers, mailbox credentials, internal upstream IDs, AI model output or cloud delivery internals are exposed. Attachment descriptors contain ID, supported media type, byte count, SHA-256 and optional filename; **no download URL**, signed object-storage URL or local file reference is returned. The client maps this to its local `SourceDocument`/`SourceAttachment` contracts and resolves source routing aliases **locally**.
+
+### GET /v1/sources/{delivery_id}/attachments/{attachment_id}
+
+An attachment may be downloaded only using the installation bearer credential **plus the currently issued lease token** in the `X-Daylight-Lease-Token` HTTP header. Both opaque path IDs must belong to the installation-scoped delivery, and the token must match its active unexpired claim. Neither a delivery ID nor a lease token alone authorizes a different installation. Use the exact same path-safe `attachment_id` advertised in the descriptor (URL percent-encoded as needed); any unknown delivery/attachment is 404, and a stale/expired lease is HTTP 409 `lease_not_current`. No cross-origin redirects or attacker-controlled download hosts are permitted.
+
+Successful HTTP 200 returns **raw binary** with matching `Content-Type` and `Content-Length`, not JSON/base64. Enforce the advertised `size_bytes` and `sha256` on the client before entering the local review pipeline; a mismatch is an incomplete/failed ingestion, **never** a reason to ACK. Supported media are PNG, JPEG, WebP and PDF, at most 4 files and 10 MiB total per delivered source. Fetching may be repeated within a lease. No attachment-fetch endpoint creates a calendar event.
+
+### POST /v1/sources/{delivery_id}/ack — durable checkpoint only
+
+```http
+POST /v1/sources/<delivery_id>/ack
+Authorization: Bearer <installation-token>
+Content-Type: application/json
+
+{"schema_version":1,"lease_token":"<token-from-current-claim>"}
+```
+
+The request MUST validate against `delivery-ack-request.schema.json`. HTTP 200 returns `delivery-ack-response.schema.json` with `status: "acknowledged"`, the stable `delivery_id`, and stable `acknowledged_at`.
+
+**The HA client MUST NOT ACK until its authoritative local source claim/pending import (or durable terminal dedupe/parse outcome) is committed and recoverable across HA restarts.** A volatile fetch, successful download, started AI request or merely parsed response does not constitute a checkpoint. On uncertain local storage outcomes, do not ACK; recover/reinspect local store before retry. Retain the same source/delivery identity for local dedupe and lifecycle correlation. The client can retry an ambiguous ACK response without re-running an already committed AI parse. The cloud is authoritative only for transport delivery/ack status; local HA remains authoritative for review, lifecycle, routing and calendar writes.
+
+Server ACK is atomic and installation-scoped: it succeeds **only** for the currently active, unexpired claim token for that delivery, except that a retry with the token of the **same already-confirmed ACK** returns the same HTTP 200 acknowledgement. An expired or replaced token MUST NOT ACK a re-leased source; return HTTP 409 `lease_not_current` and preserve the current lease. Any delivery no longer present due to expiration/retention returns HTTP 410 `source_expired` only after authorization and installation scoping, without exposing another tenant's existence. This is an at-least-once protocol; duplicate polling/retries MUST NOT create duplicate local pending imports or calendar writes. The token is a per-claim ACK capability, not a blanket installation/source-fetch capability.
+
+### Failure, retention and compatibility
+
+| HTTP | `error.code` | `retryable` | Required client action |
+|---|---|---|---|
+| 400 | `invalid_request` / `invalid_cursor` | false | Fix malformed request / restart from first page for bad cursor |
+| 401 | `unauthenticated` | false | Re-authenticate or disconnect the hosted account |
+| 403 | `forbidden` / `entitlement_required` | false | Do not retry until access restored |
+| 404 | `not_found` | false | Treat opaque ID as unavailable, never enumerate others |
+| 409 | `lease_not_current` | true | Re-poll, recover locally and use a *new* lease token; never ACK old claim |
+| 410 | `source_expired` | false | Record a bounded transport failure and require explicit recovery |
+| 413 | `source_too_large` | false | Reject explicitly, do not silently truncate |
+| 429 | `quota_exceeded` / `rate_limited` | true when transient | Back off using Retry-After if provided |
+| 500/502/503/504 | `internal_error` / `provider_unavailable` / `provider_timeout` | true when transient | Retry with bounded backoff |
+
+The service MUST retain unacknowledged source data until ACK or an explicit **bounded** `source_expires_at` TTL and MUST expose that expiry with each claim; expiration can occur despite retry and is a terminal observable failure, not silent success. ACK merely makes a source eligible for configured privacy/retention cleanup—ACK does not promise immediate deletion. A scheduler/purge for bounded expiration is a **private cloud activation prerequisite**, not defined or implemented by these public schemas. Client credential rotation/revocation must not leak or resurrect another installation's source. Cloud and HA contract tests MUST cover independent tenants, claim/re-lease, stale ACK rejection, same-lease ACK idempotency, cursor isolation, retention/expiry, 0/50+ pages, attachment integrity and recovery after persistence or network failure. Public fixtures in `tests/fixtures/hosted/v1/` are normative examples; private cloud tests MUST consume or compare against them before enabling HTTP endpoints.
+
+**Activation gate:** this PR defines only the public protocol. Private `daylight-cloud` H3 endpoints, server-side auth, queues/leases/ACK state and hosted MIME normalization belong in the cloud repository and MUST stay inactive until contract-review acceptance, H2 auth and verified retention cleanup. An opt-in HA poll/ack adapter, secure token configuration and local durable checkpoint integration are follow-on implementation in `daylight-calendar-import` after the server implements the accepted contract. No billing, managed AI, hosted receiver, Railway/Postgres provisioning or private server code is added here.

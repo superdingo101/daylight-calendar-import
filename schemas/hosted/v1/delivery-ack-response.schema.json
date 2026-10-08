@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/delivery-ack-response.schema.json",
+  "title": "Daylight H3 confirmed durable acknowledgement",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "delivery_id",
+    "status",
+    "acknowledged_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "delivery_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{16,128}$"
+    },
+    "status": {
+      "const": "acknowledged"
+    },
+    "acknowledged_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

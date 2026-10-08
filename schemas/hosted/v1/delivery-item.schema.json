@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/delivery-item.schema.json",
+  "title": "Daylight H3 leased source delivery",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "delivery_id",
+    "source_id",
+    "lease_token",
+    "lease_expires_at",
+    "source_expires_at",
+    "source"
+  ],
+  "properties": {
+    "delivery_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{16,128}$"
+    },
+    "source_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{16,128}$"
+    },
+    "lease_token": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{32,256}$"
+    },
+    "lease_expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "$ref": "https://docs.daylightcalendar.com/schemas/hosted/v1/delivery-source.schema.json"
+    }
+  }
+}
