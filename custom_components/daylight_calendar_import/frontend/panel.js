@@ -646,14 +646,13 @@ export class DaylightImportPanel extends HTMLElement {
     try {
       const settings = await loadSettings(this._hass);
       if (generation !== this._generation) return;
-      this._settings = settings;
+      this._applySettingsSnapshot(settings);
       for (const tab of ["general", "calendars", "routing", "email"]) {
         if (this._settingsDrafts[tab] &&
             settingsDraftMatches(settings, tab, this._settingsDrafts[tab])) {
           this._settingsDrafts[tab] = null;
         }
       }
-      this._reconcileRoutingDraft(settings);
       this._status = "ready";
     } catch (error) {
       if (generation !== this._generation) return;
@@ -665,6 +664,13 @@ export class DaylightImportPanel extends HTMLElement {
     this.render();
     const settingsLoadError = this._content.querySelector("[data-settings-load-error]");
     (settingsLoadError || this._content.querySelector("h2") || this._refreshButton)?.focus();
+  }
+
+  _applySettingsSnapshot(settings) {
+    // All server snapshots (including saves from other tabs) must rebase
+    // untouched Routing fields before the next render or save.
+    this._settings = settings;
+    this._reconcileRoutingDraft(settings);
   }
 
   _reconcileRoutingDraft(settings) {
@@ -710,8 +716,10 @@ export class DaylightImportPanel extends HTMLElement {
     this.render();
     this._content.querySelector("[data-settings-saving]")?.focus();
     try {
-      this._settings = await save();
+      const saved = await save();
+      if (tab === "routing") this._routingRawDraft = null;
       this._settingsDrafts[tab] = null;
+      this._applySettingsSnapshot(saved);
       if (changesPersistedSettings) this._settingsReloadWarning = null;
       this._announcement.replaceChildren(element("span", successMessage));
     } catch (error) {
@@ -722,8 +730,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._settings = {...this._settings, ...patch};
         this._settingsDrafts[tab] = null;
         try {
-          this._settings = await loadSettings(this._hass);
-          if (tab === "routing") this._reconcileRoutingDraft(this._settings);
+          this._applySettingsSnapshot(await loadSettings(this._hass));
         } catch (refreshError) {
           this._settingsError = settingsErrorMessage(
             refreshError,
@@ -735,8 +742,7 @@ export class DaylightImportPanel extends HTMLElement {
       } else {
         try {
           const reconciled = await loadSettings(this._hass);
-          this._settings = reconciled;
-          if (tab === "routing") this._reconcileRoutingDraft(reconciled);
+          this._applySettingsSnapshot(reconciled);
           if (settingsPatchMatches(reconciled, patch)) {
             this._settingsDrafts[tab] = null;
             if (changesPersistedSettings) {
@@ -1121,7 +1127,7 @@ export class DaylightImportPanel extends HTMLElement {
     this.render();
     this._content.querySelector("[data-settings-saving]")?.focus();
     try {
-      this._settings = await saveEmailSettings(this._hass, payload);
+      this._applySettingsSnapshot(await saveEmailSettings(this._hass, payload));
       this._settingsDrafts.email = null;
       this._settingsReloadWarning = null;
       this._announcement.replaceChildren(element(
@@ -1151,7 +1157,7 @@ export class DaylightImportPanel extends HTMLElement {
         };
         this._settingsDrafts.email = null;
         try {
-          this._settings = await loadSettings(this._hass);
+          this._applySettingsSnapshot(await loadSettings(this._hass));
         } catch (refreshError) {
           this._settingsError = settingsErrorMessage(
             refreshError,
@@ -1163,7 +1169,7 @@ export class DaylightImportPanel extends HTMLElement {
       } else {
         try {
           const reconciled = await loadSettings(this._hass);
-          this._settings = reconciled;
+          this._applySettingsSnapshot(reconciled);
           if (emailSaveConfirmed(previousEmail, reconciled.email, draft)) {
             this._settingsDrafts.email = null;
             this._settingsReloadWarning = SETTINGS_RUNTIME_UNCERTAIN_WARNING;
