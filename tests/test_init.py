@@ -583,8 +583,11 @@ async def test_approve_pending_event_action_writes_only_selected_event(monkeypat
     with pytest.raises(ServiceValidationError, match="not found"):
         await handler(call)
     store.async_approve_event.side_effect = PendingImportApprovalUncertainError(item.id)
-    with pytest.raises(ServiceValidationError, match="uncertain calendar write"):
+    with pytest.raises(ServiceValidationError) as error:
         await handler(call)
+    assert str(error.value) == (
+        "This event has an uncertain calendar write; verify it before retrying"
+    )
 
     store.async_approve_event.reset_mock(side_effect=True)
     call.context = Context(user_id=None)
@@ -713,10 +716,13 @@ async def test_reject_all_requires_resolution_of_uncertain_write(monkeypatch):
     hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
     await async_setup_entry(hass, entry())
     handler = hass.services.handlers[(DOMAIN, SERVICE_REJECT_PENDING)][0]
-    with pytest.raises(ServiceValidationError, match="uncertain calendar write"):
+    with pytest.raises(ServiceValidationError) as error:
         await handler(SimpleNamespace(
             data={ATTR_PENDING_ID: item.id}, context=Context(user_id="reviewer"),
         ))
+    assert str(error.value) == (
+        "Pending import has an uncertain calendar write; resolve it before rejecting"
+    )
 
 
 async def test_submit_text_without_events_records_source_handling(monkeypatch):
@@ -2339,8 +2345,9 @@ async def test_new_services_reject_requests_until_sensor_setup_finishes(monkeypa
     await forwarding.wait()
     handler = hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)][0]
     call = SimpleNamespace(data={ATTR_TEXT: "Practice"}, context=Context(user_id=None))
-    with pytest.raises(ServiceValidationError, match="unloading"):
+    with pytest.raises(ServiceValidationError) as error:
         await handler(call)
+    assert str(error.value) == "Daylight is unloading; retry after reload"
     finish_forwarding.set()
     assert await setup is True
     assert hass.data[DOMAIN][config_entry.entry_id].accepting_services is True
