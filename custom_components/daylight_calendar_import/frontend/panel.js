@@ -404,8 +404,7 @@ function parseCalendarAliases(source) {
     if (!line.trim()) continue;
     const index = line.indexOf("=");
     if (index < 1) return null;
-    const name = line.slice(0, index).normalize("NFKC").trim()
-      .replace(/\s+/g, " ").toLocaleLowerCase("en");
+    const name = line.slice(0, index).trim();
     const target = line.slice(index + 1).trim();
     if (!name || name.length > 64 || /[\r\n]/.test(name) ||
         !/^calendar\.[a-z0-9_]+$/.test(target) ||
@@ -912,7 +911,6 @@ export class DaylightImportPanel extends HTMLElement {
     const aliases = draft?.calendar_aliases ?? this._settings.calendar_aliases ?? {};
     const selectedConflicts = draft?.conflict_calendar_entities ??
       this._settings.conflict_calendar_entities ?? [this._settings.calendar_entity];
-    const writable = new Set(this._settings.calendar_entities);
     const aliasLabel = element("label", "Calendar aliases (one per line: name = calendar.entity)");
     const textarea = document.createElement("textarea");
     textarea.name = "calendar_aliases";
