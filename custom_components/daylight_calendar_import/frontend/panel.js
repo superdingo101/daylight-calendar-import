@@ -383,23 +383,13 @@ function setSettingsFormBusy(form, busy) {
   }
 }
 
-function normalizedAliasKey(value) {
-  // Comparison is advisory: the backend is authoritative for Unicode casefolding.
-  return value.normalize("NFKC").trim().replace(/\s+/gu, " ")
-    .toLowerCase().replace(/ß/g, "ss").replace(/ς/g, "σ");
-}
-
 function aliasesEquivalent(left, right) {
+  // Exact comparison only: Python's NFKC/split/casefold normalization cannot
+  // be reproduced faithfully by a handful of JavaScript substitutions.
   if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
-  const normalize = aliases => Object.fromEntries(
-    Object.entries(aliases).map(([key, value]) => [normalizedAliasKey(key), value]),
-  );
-  const a = normalize(left);
-  const b = normalize(right);
-  return Object.keys(a).length === Object.keys(left).length &&
-    Object.keys(b).length === Object.keys(right).length &&
-    Object.keys(a).length === Object.keys(b).length &&
-    Object.entries(a).every(([key, value]) => b[key] === value);
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length &&
+    keys.every(key => Object.hasOwn(right, key) && right[key] === left[key]);
 }
 
 function settingsPatchMatches(settings, patch) {
@@ -654,6 +644,18 @@ export class DaylightImportPanel extends HTMLElement {
         if (this._settingsDrafts[tab] &&
             settingsDraftMatches(settings, tab, this._settingsDrafts[tab])) {
           this._settingsDrafts[tab] = null;
+        }
+        if (tab === "routing" && this._routingRawDraft) {
+          const savedAliases = parseCalendarAliases(this._routingRawDraft.aliasesText);
+          const selected = this._routingRawDraft.conflictCalendarEntities;
+          const persisted = settings.conflict_calendar_entities ??
+            [settings.calendar_entity];
+          if (savedAliases && aliasesEquivalent(savedAliases, settings.calendar_aliases ?? {}) &&
+              selected.length === persisted.length &&
+              selected.every(value => persisted.includes(value))) {
+            this._routingRawDraft = null;
+            this._settingsDrafts.routing = null;
+          }
         }
       }
       this._status = "ready";
@@ -1017,6 +1019,8 @@ export class DaylightImportPanel extends HTMLElement {
     if (Object.keys(patch).length === 0) {
       this._settingsDrafts.routing = null;
       this._routingRawDraft = null;
+      this._settingsError = null;
+      this._announcement.replaceChildren();
       this.render();
       return;
     }
