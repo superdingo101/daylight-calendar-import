@@ -1,6 +1,6 @@
 import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
 import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
-import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, settingsErrorMessage} from "./settings.js";
+import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, settingsErrorMessage} from "./settings.js";
 
 const css = `
   :host {
@@ -389,8 +389,30 @@ function settingsPatchMatches(settings, patch) {
     return Array.isArray(value) ?
       Array.isArray(current) && value.length === current.length &&
         value.every((item, index) => item === current[index]) :
-      value === current;
+      value && typeof value === "object" ?
+        current && typeof current === "object" &&
+        Object.keys(value).length === Object.keys(current).length &&
+        Object.keys(value).every(key => current[key] === value[key]) :
+        value === current;
   });
+}
+
+
+function parseCalendarAliases(source) {
+  const result = {};
+  for (const line of source.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const index = line.indexOf("=");
+    if (index < 1) return null;
+    const name = line.slice(0, index).normalize("NFKC").trim()
+      .replace(/\s+/g, " ").toLocaleLowerCase("en");
+    const target = line.slice(index + 1).trim();
+    if (!name || name.length > 64 || /[\r\n]/.test(name) ||
+        !/^calendar\.[a-z0-9_]+$/.test(target) ||
+        Object.hasOwn(result, name)) return null;
+    result[name] = target;
+  }
+  return result;
 }
 
 function emailDraftMatches(settings, draft) {
@@ -455,7 +477,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._settingsTab = "general";
     this._settingsError = null;
     this._settingsReloadWarning = null;
-    this._settingsDrafts = {general: null, calendars: null, email: null};
+    this._settingsDrafts = {general: null, calendars: null, routing: null, email: null};
     this._settingsSaving = false;
     const style = element("style", css);
     const header = document.createElement("header");
@@ -606,7 +628,7 @@ export class DaylightImportPanel extends HTMLElement {
       const settings = await loadSettings(this._hass);
       if (generation !== this._generation) return;
       this._settings = settings;
-      for (const tab of ["general", "calendars", "email"]) {
+      for (const tab of ["general", "calendars", "routing", "email"]) {
         if (this._settingsDrafts[tab] &&
             settingsDraftMatches(settings, tab, this._settingsDrafts[tab])) {
           this._settingsDrafts[tab] = null;
@@ -755,6 +777,7 @@ export class DaylightImportPanel extends HTMLElement {
     for (const [tab, label] of [
       ["general", "General"],
       ["calendars", "Calendars"],
+      ["routing", "Routing"],
       ["email", "Email"],
     ]) {
       const button = element("button", label);
@@ -872,6 +895,103 @@ export class DaylightImportPanel extends HTMLElement {
     setSettingsFormBusy(form, this._settingsSaving);
     section.append(form);
     return section;
+  }
+
+
+  routingSettingsView() {
+    const section = element("section", "", "settings-card");
+    const heading = element("h2", "Calendar routing & conflict checks");
+    heading.tabIndex = -1;
+    section.append(
+      heading,
+      element("p", "Map exact aliases used in forwarded messages to writable calendars. " +
+        "Conflict calendars are read-only observation targets; they do not grant write access.", "settings-help"),
+    );
+    const form = document.createElement("form");
+    const draft = this._settingsDrafts.routing;
+    const aliases = draft?.calendar_aliases ?? this._settings.calendar_aliases ?? {};
+    const selectedConflicts = draft?.conflict_calendar_entities ??
+      this._settings.conflict_calendar_entities ?? [this._settings.calendar_entity];
+    const writable = new Set(this._settings.calendar_entities);
+    const aliasLabel = element("label", "Calendar aliases (one per line: name = calendar.entity)");
+    const textarea = document.createElement("textarea");
+    textarea.name = "calendar_aliases";
+    textarea.rows = 5;
+    textarea.placeholder = "Kids = calendar.kids";
+    textarea.value = Object.entries(aliases).map(([name, entity]) => `${name} = ${entity}`).join("\n");
+    textarea.addEventListener("change", () => {
+      const parsed = parseCalendarAliases(textarea.value);
+      if (parsed) this._setSettingsDraft("routing", {
+        calendar_aliases: parsed,
+        conflict_calendar_entities: Array.from(form.querySelectorAll("input"))
+          .filter(input => input.checked).map(input => input.value),
+      });
+    });
+    aliasLabel.append(textarea);
+    form.append(aliasLabel);
+    const fieldset = document.createElement("fieldset");
+    fieldset.append(element("legend", "Calendars checked for conflicts (read-only)"));
+    const choices = entityChoices(this._hass, "calendar", 0,
+      [...selectedConflicts, ...this._settings.calendar_entities]);
+    for (const choice of choices) {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.name = "conflict_calendar_entities";
+      input.value = choice.id;
+      input.checked = selectedConflicts.includes(choice.id);
+      input.addEventListener("change", () => {
+        const parsed = parseCalendarAliases(textarea.value);
+        if (parsed) this._setSettingsDraft("routing", {
+          calendar_aliases: parsed,
+          conflict_calendar_entities: Array.from(form.querySelectorAll("input"))
+            .filter(item => item.checked).map(item => item.value),
+        });
+      });
+      label.append(input, element("span", choice.label));
+      fieldset.append(label);
+    }
+    form.append(fieldset);
+    const save = element("button", this._settingsSaving ? "Saving…" : "Save routing settings");
+    save.type = "submit";
+    save.disabled = this._settingsSaving;
+    form.append(save);
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      void this.saveRoutingSettings(form);
+    });
+    setSettingsFormBusy(form, this._settingsSaving);
+    section.append(form);
+    return section;
+  }
+
+  async saveRoutingSettings(form) {
+    if (this._settingsSaving || !this._settings) return;
+    const textarea = form.elements.namedItem("calendar_aliases");
+    const parsed = parseCalendarAliases(textarea.value);
+    if (!parsed) {
+      showEditError(form, "Use one alias per line in the format: Kids = calendar.family");
+      return;
+    }
+    const writable = new Set(this._settings.calendar_entities);
+    if (Object.values(parsed).some(target => !writable.has(target))) {
+      showEditError(form, "Every alias must point to a selected writable calendar.");
+      return;
+    }
+    const patch = {
+      calendar_aliases: parsed,
+      conflict_calendar_entities: Array.from(form.querySelectorAll("input"))
+        .filter(input => input.checked).map(input => input.value),
+    };
+    this._setSettingsDraft("routing", patch);
+    await this._saveSettings(
+      "routing", patch,
+      () => saveCalendarIntelligenceSettings(
+        this._hass, {entry_id: this._settings.entry_id, ...patch},
+      ),
+      "Calendar routing settings saved",
+      "Could not save calendar routing settings.",
+    );
   }
 
   _emailDraftFromForm(form) {
@@ -1614,6 +1734,8 @@ export class DaylightImportPanel extends HTMLElement {
         content.append(
           this._settingsTab === "calendars" ?
             this.calendarSettingsView() :
+            this._settingsTab === "routing" ?
+              this.routingSettingsView() :
             this._settingsTab === "email" ?
               this.emailSettingsView() : this.generalSettingsView(),
         );
