@@ -2029,11 +2029,19 @@ async def test_failed_sensor_forwarding_rolls_back_without_service_leaks(monkeyp
 
 
 def _fake_lifecycle_store(monkeypatch):
-    """Build lightweight storage for service-only Home Assistant fixtures."""
+    """Return a fresh fake on retries, preserving the first for assertions."""
     store = SimpleNamespace(async_load=AsyncMock())
+    created = False
+
+    def factory(_hass):
+        nonlocal created
+        if not created:
+            created = True
+            return store
+        return SimpleNamespace(async_load=AsyncMock())
+
     monkeypatch.setattr(
-        "custom_components.daylight_calendar_import.PendingImportStore",
-        lambda _hass: store,
+        "custom_components.daylight_calendar_import.PendingImportStore", factory,
     )
     return store
 
