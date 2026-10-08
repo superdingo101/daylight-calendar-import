@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from copy import deepcopy
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
@@ -19,6 +20,8 @@ from .dedup import (
     source_fingerprint as build_source_fingerprint,
 )
 from .models import EventDraft
+
+_LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 2
 STORAGE_KEY = f"{DOMAIN}.pending_imports"
@@ -248,6 +251,26 @@ class PendingImportStore:
         self._source_claims: dict[str, str] = {}
         self._source_claim_releases: set[str] = set()
         self._lock = asyncio.Lock()
+        self._subscribers: set[Callable[[], None]] = set()
+        self.on_review_ready: Callable[[PendingImport], None] | None = None
+
+    def async_subscribe(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Listen for committed queue snapshots; unsubscribe on entity unload."""
+        self._subscribers.add(callback)
+
+        def unsubscribe() -> None:
+            self._subscribers.discard(callback)
+
+        return unsubscribe
+
+    def _commit_items(self, items: dict[str, PendingImport]) -> None:
+        """Install persisted data and notify consumers only after storage succeeds."""
+        self._items = items
+        for callback in tuple(self._subscribers):
+            try:
+                callback()
+            except Exception:
+                _LOGGER.exception("Pending queue subscriber failed")
 
     async def async_load(self) -> None:
         """Load pending imports and deduplication history."""
@@ -823,7 +846,7 @@ class PendingImportStore:
                              if record["id"] == pending_id else record
                              for record in self._activity)
             await self._async_save(items, activity=activity)
-            self._items = items
+            self._commit_items(items)
             self._activity = activity
             return edited
 
@@ -1011,9 +1034,11 @@ class PendingImportStore:
                 activity=activity,
                 source_claims=source_claims,
             )
-            self._items = items
+            self._commit_items(items)
             self._activity = activity
             self._source_claims = source_claims
+            if self.on_review_ready is not None:
+                self.on_review_ready(pending)
             return PendingImportAddResult(
                 pending=pending,
                 duplicate_source=False,
@@ -1049,7 +1074,7 @@ class PendingImportStore:
                 seen_event_fingerprints=seen_events,
                 activity=activity,
             )
-            self._items = items
+            self._commit_items(items)
             self._activity = activity
             self._seen_source_fingerprints = seen_sources
             self._seen_event_fingerprints = seen_events
@@ -1094,7 +1119,7 @@ class PendingImportStore:
                 seen_event_fingerprints=seen_events,
                 activity=activity,
             )
-            self._items = items
+            self._commit_items(items)
             self._activity = activity
             self._seen_source_fingerprints = seen_sources
             self._seen_event_fingerprints = seen_events
@@ -1150,7 +1175,7 @@ class PendingImportStore:
                 seen_event_fingerprints=seen_events,
                 activity=activity,
             )
-            self._items = items
+            self._commit_items(items)
             self._activity = activity
             self._seen_source_fingerprints = seen_sources
             self._seen_event_fingerprints = seen_events
@@ -1211,7 +1236,7 @@ class PendingImportStore:
         items[pending.id] = in_flight
         activity = self._transition(pending, "calendar_write_started", event_id=event.id)
         await self._async_save(items, activity=activity)
-        self._items = items
+        self._commit_items(items)
         self._activity = activity
 
         try:
@@ -1252,7 +1277,7 @@ class PendingImportStore:
             seen_event_fingerprints=seen_events,
             activity=activity,
         )
-        self._items = items
+        self._commit_items(items)
         self._activity = activity
         self._seen_source_fingerprints = seen_sources
         self._seen_event_fingerprints = seen_events

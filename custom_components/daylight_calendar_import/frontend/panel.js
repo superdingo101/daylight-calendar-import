@@ -1,6 +1,6 @@
 import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
 import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
-import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, settingsErrorMessage} from "./settings.js";
+import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, settingsErrorMessage} from "./settings.js";
 
 const css = `
   :host {
@@ -378,20 +378,60 @@ function appendOptions(select, choices, selected) {
 function setSettingsFormBusy(form, busy) {
   if (!busy) return;
   form.setAttribute("aria-busy", "true");
-  for (const tag of ["input", "select", "button"]) {
+  for (const tag of ["input", "select", "textarea", "button"]) {
     for (const control of form.querySelectorAll(tag)) control.disabled = true;
   }
+}
+
+function aliasesEquivalent(left, right) {
+  // Exact comparison only: Python's NFKC/split/casefold normalization cannot
+  // be reproduced faithfully by a handful of JavaScript substitutions.
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length &&
+    keys.every(key => Object.hasOwn(right, key) && right[key] === left[key]);
+}
+
+function conflictsEquivalent(left, right) {
+  return Array.isArray(left) && Array.isArray(right) &&
+    left.length === right.length && left.every(value => right.includes(value));
 }
 
 function settingsPatchMatches(settings, patch) {
   return Object.entries(patch).every(([key, value]) => {
     const current = settings?.[key];
+    if (key === "calendar_aliases") return aliasesEquivalent(value, current);
     return Array.isArray(value) ?
       Array.isArray(current) && value.length === current.length &&
         value.every((item, index) => item === current[index]) :
-      value === current;
+      value && typeof value === "object" ?
+        current && typeof current === "object" &&
+        Object.keys(value).length === Object.keys(current).length &&
+        Object.keys(value).every(key => current[key] === value[key]) :
+        value === current;
   });
 }
+
+
+function parseCalendarAliases(source) {
+  const entries = new Map();
+  for (const line of source.split(/\r?\n/)) {
+    // JavaScript trim() removes FEFF, but Python's alias normalizer does not.
+    // Strip only the explicit " = " separator, never the alias itself.
+    if (!line) continue;
+    const delimiter = line.lastIndexOf(" = ");
+    const index = delimiter >= 0 ? delimiter : line.indexOf("=");
+    if (index < 1) return null;
+    const name = line.slice(0, index);
+    const target = line.slice(index + (delimiter >= 0 ? 3 : 1));
+    if (!name || /[\r\n]/.test(name) ||
+        !/^calendar\.[a-z0-9_]+$/.test(target) ||
+        entries.has(name)) return null;
+    entries.set(name, target);
+  }
+  return Object.fromEntries(entries);
+}
+
 
 function emailDraftMatches(settings, draft) {
   const email = settings?.email;
@@ -455,7 +495,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._settingsTab = "general";
     this._settingsError = null;
     this._settingsReloadWarning = null;
-    this._settingsDrafts = {general: null, calendars: null, email: null};
+    this._settingsDrafts = {general: null, calendars: null, routing: null, email: null};
+    this._routingRawDraft = null;
     this._settingsSaving = false;
     const style = element("style", css);
     const header = document.createElement("header");
@@ -605,8 +646,8 @@ export class DaylightImportPanel extends HTMLElement {
     try {
       const settings = await loadSettings(this._hass);
       if (generation !== this._generation) return;
-      this._settings = settings;
-      for (const tab of ["general", "calendars", "email"]) {
+      this._applySettingsSnapshot(settings);
+      for (const tab of ["general", "calendars", "routing", "email"]) {
         if (this._settingsDrafts[tab] &&
             settingsDraftMatches(settings, tab, this._settingsDrafts[tab])) {
           this._settingsDrafts[tab] = null;
@@ -625,6 +666,48 @@ export class DaylightImportPanel extends HTMLElement {
     (settingsLoadError || this._content.querySelector("h2") || this._refreshButton)?.focus();
   }
 
+  _applySettingsSnapshot(settings) {
+    // All server snapshots (including saves from other tabs) must rebase
+    // untouched Routing fields before the next render or save.
+    this._settings = settings;
+    this._reconcileRoutingDraft(settings);
+  }
+
+  _reconcileRoutingDraft(settings) {
+    // Keep the same reconciliation semantics for manual refreshes and network
+    // failures after saves: only fields with actual local edits stay drafted.
+    const raw = this._routingRawDraft;
+    if (!raw) return;
+    const parsed = parseCalendarAliases(raw.aliasesText);
+    const persistedAliases = settings.calendar_aliases ?? {};
+    const persistedConflicts = settings.conflict_calendar_entities ??
+      [settings.calendar_entity];
+    const aliasesMatch = parsed && aliasesEquivalent(parsed, persistedAliases);
+    const conflictsMatch = conflictsEquivalent(raw.conflictCalendarEntities, persistedConflicts);
+
+    if (!raw.aliasesDirty || aliasesMatch) {
+      raw.aliasesText = Object.entries(persistedAliases)
+        .map(([name, target]) => `${name} = ${target}`).join("\n");
+      raw.aliasesDirty = false;
+    }
+    if (!raw.conflictsDirty || conflictsMatch) {
+      raw.conflictCalendarEntities = [...persistedConflicts];
+      raw.conflictsDirty = false;
+    }
+    if (!raw.aliasesDirty && !raw.conflictsDirty) {
+      this._routingRawDraft = null;
+      this._settingsDrafts.routing = null;
+      return;
+    }
+    const patch = {};
+    const pendingAliases = parseCalendarAliases(raw.aliasesText);
+    if (raw.aliasesDirty && pendingAliases) patch.calendar_aliases = pendingAliases;
+    if (raw.conflictsDirty) {
+      patch.conflict_calendar_entities = [...raw.conflictCalendarEntities];
+    }
+    this._settingsDrafts.routing = Object.keys(patch).length ? patch : null;
+  }
+
   async _saveSettings(tab, patch, save, successMessage, fallbackMessage) {
     const changesPersistedSettings = !settingsPatchMatches(this._settings, patch);
     this._settingsSaving = true;
@@ -633,8 +716,10 @@ export class DaylightImportPanel extends HTMLElement {
     this.render();
     this._content.querySelector("[data-settings-saving]")?.focus();
     try {
-      this._settings = await save();
+      const saved = await save();
+      if (tab === "routing") this._routingRawDraft = null;
       this._settingsDrafts[tab] = null;
+      this._applySettingsSnapshot(saved);
       if (changesPersistedSettings) this._settingsReloadWarning = null;
       this._announcement.replaceChildren(element("span", successMessage));
     } catch (error) {
@@ -645,7 +730,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._settings = {...this._settings, ...patch};
         this._settingsDrafts[tab] = null;
         try {
-          this._settings = await loadSettings(this._hass);
+          this._applySettingsSnapshot(await loadSettings(this._hass));
         } catch (refreshError) {
           this._settingsError = settingsErrorMessage(
             refreshError,
@@ -657,7 +742,7 @@ export class DaylightImportPanel extends HTMLElement {
       } else {
         try {
           const reconciled = await loadSettings(this._hass);
-          this._settings = reconciled;
+          this._applySettingsSnapshot(reconciled);
           if (settingsPatchMatches(reconciled, patch)) {
             this._settingsDrafts[tab] = null;
             if (changesPersistedSettings) {
@@ -755,6 +840,7 @@ export class DaylightImportPanel extends HTMLElement {
     for (const [tab, label] of [
       ["general", "General"],
       ["calendars", "Calendars"],
+      ["routing", "Routing"],
       ["email", "Email"],
     ]) {
       const button = element("button", label);
@@ -874,6 +960,136 @@ export class DaylightImportPanel extends HTMLElement {
     return section;
   }
 
+
+  routingSettingsView() {
+    const section = element("section", "", "settings-card");
+    const heading = element("h2", "Calendar routing & conflict checks");
+    heading.tabIndex = -1;
+    section.append(
+      heading,
+      element("p", "Map exact aliases used in forwarded messages to writable calendars. " +
+        "Conflict calendars are read-only observation targets; they do not grant write access.", "settings-help"),
+    );
+    const form = document.createElement("form");
+    const draft = this._settingsDrafts.routing;
+    const aliases = draft?.calendar_aliases ?? this._settings.calendar_aliases ?? {};
+    const selectedConflicts = this._routingRawDraft?.conflictCalendarEntities ??
+      draft?.conflict_calendar_entities ??
+      this._settings.conflict_calendar_entities ?? [this._settings.calendar_entity];
+    const aliasLabel = element("label", "Calendar aliases (one per line: name = calendar.entity)");
+    const textarea = document.createElement("textarea");
+    textarea.name = "calendar_aliases";
+    textarea.rows = 5;
+    textarea.placeholder = "Kids = calendar.kids";
+    textarea.value = this._routingRawDraft?.aliasesText ??
+      Object.entries(aliases).map(([name, entity]) => `${name} = ${entity}`).join("\n");
+    const recordRoutingDraft = () => {
+      const conflicts = Array.from(form.querySelectorAll("input"))
+        .filter(input => input.checked).map(input => input.value);
+      const parsed = parseCalendarAliases(textarea.value);
+      const aliasesDirty = !parsed ||
+        !aliasesEquivalent(parsed, this._settings.calendar_aliases ?? {});
+      const conflictsDirty = !conflictsEquivalent(conflicts,
+        this._settings.conflict_calendar_entities ?? [this._settings.calendar_entity]);
+      this._routingRawDraft = {
+        aliasesText: textarea.value,
+        conflictCalendarEntities: conflicts,
+        aliasesDirty,
+        conflictsDirty,
+      };
+      const patch = {};
+      if (aliasesDirty && parsed) patch.calendar_aliases = parsed;
+      if (conflictsDirty) patch.conflict_calendar_entities = conflicts;
+      this._settingsDrafts.routing = Object.keys(patch).length ? patch : null;
+    };
+    textarea.addEventListener("input", recordRoutingDraft);
+    textarea.addEventListener("change", recordRoutingDraft);
+    aliasLabel.append(textarea);
+    form.append(aliasLabel);
+    const fieldset = document.createElement("fieldset");
+    fieldset.append(element("legend", "Calendars checked for conflicts (read-only)"));
+    const choices = entityChoices(this._hass, "calendar", 0,
+      [...selectedConflicts, ...this._settings.calendar_entities]);
+    for (const choice of choices) {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.name = "conflict_calendar_entities";
+      input.value = choice.id;
+      input.checked = selectedConflicts.includes(choice.id);
+      input.addEventListener("change", recordRoutingDraft);
+      label.append(input, element("span", choice.label));
+      fieldset.append(label);
+    }
+    form.append(fieldset);
+    const save = element("button", this._settingsSaving ? "Saving…" : "Save routing settings");
+    save.type = "submit";
+    save.disabled = this._settingsSaving;
+    form.append(save);
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      void this.saveRoutingSettings(form);
+    });
+    setSettingsFormBusy(form, this._settingsSaving);
+    section.append(form);
+    return section;
+  }
+
+  async saveRoutingSettings(form) {
+    if (this._settingsSaving || !this._settings) return;
+    const textarea = form.elements.namedItem("calendar_aliases");
+    const parsed = parseCalendarAliases(textarea.value);
+    this._routingRawDraft = {
+      aliasesText: textarea.value,
+      conflictCalendarEntities: Array.from(form.querySelectorAll("input"))
+        .filter(input => input.checked).map(input => input.value),
+      aliasesDirty: !parsed ||
+        !aliasesEquivalent(parsed, this._settings.calendar_aliases ?? {}),
+      conflictsDirty: !conflictsEquivalent(
+        Array.from(form.querySelectorAll("input"))
+          .filter(input => input.checked).map(input => input.value),
+        this._settings.conflict_calendar_entities ?? [this._settings.calendar_entity]),
+
+    };
+    if (!parsed) {
+      showEditError(form, "Use one alias per line in the format: Kids = calendar.family");
+      return;
+    }
+    const writable = new Set(this._settings.calendar_entities);
+    if (Object.values(parsed).some(target => !writable.has(target))) {
+      showEditError(form, "Every alias must point to a selected writable calendar.");
+      return;
+    }
+    const selected = Array.from(form.querySelectorAll("input"))
+      .filter(input => input.checked).map(input => input.value);
+    const patch = {};
+    if (!aliasesEquivalent(parsed, this._settings.calendar_aliases ?? {})) {
+      patch.calendar_aliases = parsed;
+    }
+    const current = this._settings.conflict_calendar_entities ?? [this._settings.calendar_entity];
+    if (!conflictsEquivalent(selected, current)) {
+      patch.conflict_calendar_entities = selected;
+    }
+    if (Object.keys(patch).length === 0) {
+      this._settingsDrafts.routing = null;
+      this._routingRawDraft = null;
+      this._settingsError = null;
+      this._announcement.replaceChildren();
+      this.render();
+      return;
+    }
+    this._setSettingsDraft("routing", patch);
+    await this._saveSettings(
+      "routing", patch,
+      () => saveCalendarIntelligenceSettings(
+        this._hass, {entry_id: this._settings.entry_id, ...patch},
+      ),
+      "Calendar routing settings saved",
+      "Could not save calendar routing settings.",
+    );
+    if (!this._settingsDrafts.routing) this._routingRawDraft = null;
+  }
+
   _emailDraftFromForm(form) {
     const fields = form.elements;
     return {
@@ -911,7 +1127,7 @@ export class DaylightImportPanel extends HTMLElement {
     this.render();
     this._content.querySelector("[data-settings-saving]")?.focus();
     try {
-      this._settings = await saveEmailSettings(this._hass, payload);
+      this._applySettingsSnapshot(await saveEmailSettings(this._hass, payload));
       this._settingsDrafts.email = null;
       this._settingsReloadWarning = null;
       this._announcement.replaceChildren(element(
@@ -941,7 +1157,7 @@ export class DaylightImportPanel extends HTMLElement {
         };
         this._settingsDrafts.email = null;
         try {
-          this._settings = await loadSettings(this._hass);
+          this._applySettingsSnapshot(await loadSettings(this._hass));
         } catch (refreshError) {
           this._settingsError = settingsErrorMessage(
             refreshError,
@@ -953,7 +1169,7 @@ export class DaylightImportPanel extends HTMLElement {
       } else {
         try {
           const reconciled = await loadSettings(this._hass);
-          this._settings = reconciled;
+          this._applySettingsSnapshot(reconciled);
           if (emailSaveConfirmed(previousEmail, reconciled.email, draft)) {
             this._settingsDrafts.email = null;
             this._settingsReloadWarning = SETTINGS_RUNTIME_UNCERTAIN_WARNING;
@@ -1614,6 +1830,8 @@ export class DaylightImportPanel extends HTMLElement {
         content.append(
           this._settingsTab === "calendars" ?
             this.calendarSettingsView() :
+            this._settingsTab === "routing" ?
+              this.routingSettingsView() :
             this._settingsTab === "email" ?
               this.emailSettingsView() : this.generalSettingsView(),
         );

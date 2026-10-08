@@ -3285,3 +3285,954 @@ test("leaving Settings drops an Email draft when password was the only edit", as
 
   assert.equal(panel._settingsDrafts.email, null);
 });
+
+test("routing tab saves aliases and read-only conflict calendar scope separately", async () => {
+  let current = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    calendar_aliases: {},
+    conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const calls = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.busy": {
+        entity_id: "calendar.busy", state: "off",
+        attributes: {friendly_name: "Busy", supported_features: 0},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return current;
+      if (message.type === "daylight_calendar_import/settings/calendar_intelligence/update") {
+        calls.push(message);
+        current = {...current, calendar_aliases: message.calendar_aliases,
+          conflict_calendar_entities: message.conflict_calendar_entities};
+        return current;
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value = "Kids = calendar.family";
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.busy";
+  }
+  await panel.saveRoutingSettings(form);
+  assert.deepEqual(calls[0], {
+    type: "daylight_calendar_import/settings/calendar_intelligence/update",
+    entry_id: "entry-1",
+    calendar_aliases: {Kids: "calendar.family"},
+    conflict_calendar_entities: ["calendar.busy"],
+  });
+  assert.deepEqual(panel._settings.calendar_aliases, {Kids: "calendar.family"});
+  assert.equal(panel._settingsDrafts.routing, null);
+});
+
+test("routing tab rejects aliases pointing to read-only calendars without saving", async () => {
+  const snapshot = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  const messages = [];
+  panel.hass = {
+    user: {is_admin: true}, states: {},
+    callWS: async message => {
+      messages.push(message.type);
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      throw new Error("Unexpected update");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value = "Secret = calendar.private";
+  await panel.saveRoutingSettings(form);
+  assert.match(form.querySelector(".error").textContent, /writable calendar/);
+  assert.equal(messages.includes("daylight_calendar_import/settings/calendar_intelligence/update"), false);
+});
+
+test("routing aliases with equals and astral Unicode names are accepted by client", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {"Pickup=A": "calendar.family"},
+    conflict_calendar_entities: [],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let sent;
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+        sent = message;
+        current = {...current, calendar_aliases: message.calendar_aliases,
+          conflict_calendar_entities: message.conflict_calendar_entities};
+        return current;
+      }
+      throw Error("Unexpected call");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  assert.match(form.elements.namedItem("calendar_aliases").value, /Pickup=A/);
+  form.elements.namedItem("calendar_aliases").value =
+    `Pickup=A = calendar.family\n${"🎉".repeat(33)} = calendar.family`;
+  await panel.saveRoutingSettings(form);
+  assert.ok(sent);
+  assert.deepEqual(Object.keys(sent.calendar_aliases), ["Pickup=A", "🎉".repeat(33)]);
+});
+
+test("routing preserves unfinished text and conflict selection across tabs", async () => {
+  const snapshot = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.personal": {entity_id: "calendar.personal", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return snapshot;
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const textarea = form.elements.namedItem("calendar_aliases");
+  textarea.value = "Unfinished = ";
+  textarea.input();
+  for (const input of form.querySelectorAll("input")) {
+    if (input.value === "calendar.personal") {
+      input.checked = true;
+      input.change();
+    }
+  }
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Routing").click();
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value, "Unfinished = ");
+  assert.equal(form.querySelectorAll("input")
+    .find(input => input.value === "calendar.personal").checked, true);
+});
+
+test("routing lost response conservatively retains canonicalized alias draft", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+        current = {...current, calendar_aliases: {kids: "calendar.family"}};
+        throw Error("response lost after persistence");
+      }
+      throw Error("Unexpected call");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value = " Kids = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.deepEqual(panel._settingsDrafts.routing.calendar_aliases, {" Kids": "calendar.family"});
+  assert.ok(panel._settingsError);
+  assert.equal(panel._routingRawDraft.aliasesText, " Kids = calendar.family");
+  assert.deepEqual(panel._settings.calendar_aliases, {kids: "calendar.family"});
+});
+
+test("routing textarea is disabled while settings save is awaiting response", async () => {
+  let finish;
+  const pending = new Promise(resolve => {finish = resolve;});
+  const snapshot = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return snapshot;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) return pending;
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  find(panel._content, "textarea").value = "Kids = calendar.family";
+  const started = panel.saveRoutingSettings(find(panel._content, "form"));
+  assert.equal(find(panel._content, "textarea").disabled, true);
+  finish(snapshot);
+  await started;
+});
+
+test("routing save patches only changed settings fields and preserves special keys", async () => {
+  const snapshot = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: Object.fromEntries([["__proto__", "calendar.family"]]),
+    conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const calls = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off", attributes: {supported_features: 1}},
+    "calendar.readonly": {entity_id: "calendar.readonly", state: "off", attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return snapshot;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      calls.push(message);
+      return {...snapshot, ...message};
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  assert.match(form.elements.namedItem("calendar_aliases").value, /__proto__/);
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.readonly";
+  }
+  await panel.saveRoutingSettings(form);
+  assert.deepEqual(calls[0].conflict_calendar_entities, ["calendar.readonly"]);
+  assert.equal(Object.hasOwn(calls[0], "calendar_aliases"), false);
+
+  panel._settings = snapshot;
+  await panel.showSettings("routing");
+  form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value =
+    "__proto__ = calendar.family\nKids = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.equal(Object.hasOwn(calls[1], "conflict_calendar_entities"), false);
+  assert.equal(Object.hasOwn(calls[1].calendar_aliases, "__proto__"), true);
+  assert.equal(calls[1].calendar_aliases.__proto__, "calendar.family");
+});
+
+test("routing lost response does not guess the server Unicode normalization", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+        current = {...current, calendar_aliases: {"kids events": "calendar.family"}};
+        throw Error("response lost after persistence");
+      }
+      throw Error("Unexpected call");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value =
+    " Kids   Events = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.deepEqual(panel._settingsDrafts.routing.calendar_aliases,
+    {" Kids   Events": "calendar.family"});
+  assert.ok(panel._settingsError);
+  assert.deepEqual(panel._settings.calendar_aliases, {"kids events": "calendar.family"});
+});
+
+
+test("routing field scoping treats FEFF and Python-casefold differences as real edits", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {"a b": "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const sent = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent.push(message);
+      current = {...current, calendar_aliases: message.calendar_aliases};
+      return current;
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value = "a\uFEFFb = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].calendar_aliases, {"a\uFEFFb": "calendar.family"});
+
+  current = {...current, calendar_aliases: {"ἀι": "calendar.family"}};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value = "ᾀ = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent[1].calendar_aliases, {"ᾀ": "calendar.family"});
+});
+
+test("routing refresh clears a saved raw draft but retains unfinished text", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let textarea = find(panel._content, "textarea");
+  textarea.value = "Kids = calendar.family";
+  textarea.input();
+  assert.ok(panel._routingRawDraft);
+  current = {...current, calendar_aliases: {Kids: "calendar.family"}};
+  await panel.showSettings("routing", true);
+  assert.equal(panel._routingRawDraft, null);
+  assert.equal(panel._settingsDrafts.routing, null);
+
+  textarea = find(panel._content, "textarea");
+  textarea.value = "Unfinished = ";
+  textarea.input();
+  await panel.showSettings("routing", true);
+  assert.equal(panel._routingRawDraft.aliasesText, "Unfinished = ");
+  assert.equal(find(panel._content, "textarea").value, "Unfinished = ");
+});
+
+test("routing no-op save clears stale definitive error", async () => {
+  const current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let updates = 0;
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) updates++;
+    return current;
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  panel._settingsError = "Previous save rejected";
+  await panel.saveRoutingSettings(find(panel._content, "form"));
+  assert.equal(panel._settingsError, null);
+  assert.equal(updates, 0);
+});
+
+
+test("routing preserves FEFF-prefixed persisted alias when only conflicts change", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {"\uFEFFKids": "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let sent;
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent = message;
+      current = {...current, ...message};
+      return current;
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value,
+    "\uFEFFKids = calendar.family");
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.external";
+  }
+  await panel.saveRoutingSettings(form);
+  assert.equal(Object.hasOwn(sent, "calendar_aliases"), false);
+  assert.deepEqual(current.calendar_aliases, {"\uFEFFKids": "calendar.family"});
+});
+
+test("routing refresh keeps an alias-only edit but adopts concurrent conflict changes", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const sent = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent.push(message);
+      current = {...current, ...message};
+      return current;
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const aliasField = form.elements.namedItem("calendar_aliases");
+  aliasField.value = "Kids = calendar.family";
+  aliasField.input();
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+  assert.equal(panel._routingRawDraft.conflictsDirty, false);
+  current = {...current, conflict_calendar_entities: ["calendar.external"]};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  assert.equal(form.querySelectorAll("input").find(
+    input => input.value === "calendar.external").checked, true);
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].calendar_aliases, {Kids: "calendar.family"});
+  assert.equal(Object.hasOwn(sent[0], "conflict_calendar_entities"), false);
+});
+
+test("routing refresh keeps conflict-only edits but adopts concurrent alias changes", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {Old: "calendar.family"}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let sent;
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent = message;
+      current = {...current, ...message};
+      return current;
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const external = form.querySelectorAll("input").find(
+    input => input.value === "calendar.external");
+  external.checked = true;
+  external.change();
+  assert.equal(panel._routingRawDraft.aliasesDirty, false);
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+  current = {...current, calendar_aliases: {New: "calendar.family"}};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value, "New = calendar.family");
+  await panel.saveRoutingSettings(form);
+  assert.equal(Object.hasOwn(sent, "calendar_aliases"), false);
+  assert.deepEqual(new Set(sent.conflict_calendar_entities),
+    new Set(["calendar.family", "calendar.external"]));
+});
+
+
+test("routing reverted alias edit adopts newer remote aliases on refresh", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {Kids: "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const sent = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+        sent.push(message);
+        current = {...current, ...message};
+        return current;
+      }
+      throw Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  let input = form.elements.namedItem("calendar_aliases");
+  input.value = "Different = calendar.family";
+  input.input();
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+  input.value = "Kids = calendar.family";
+  input.input();
+  assert.equal(panel._routingRawDraft.aliasesDirty, false);
+
+  current = {...current, calendar_aliases: {Remote: "calendar.family"}};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value,
+    "Remote = calendar.family");
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 0);
+  assert.equal(panel._routingRawDraft, null);
+});
+
+test("routing reverted conflict selection adopts newer remote scope on refresh", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const sent = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent.push(message);
+      return {...current, ...message};
+    }
+    throw Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const extra = form.querySelectorAll("input").find(
+    input => input.value === "calendar.external");
+  extra.checked = true;
+  extra.change();
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+  extra.checked = false;
+  extra.change();
+  assert.equal(panel._routingRawDraft.conflictsDirty, false);
+
+  current = {...current, conflict_calendar_entities: ["calendar.external"]};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  const refreshed = form.querySelectorAll("input").find(
+    input => input.value === "calendar.external");
+  assert.equal(refreshed.checked, true);
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 0);
+});
+
+test("invalid routing alias text stays dirty even after an edit is reverted", async () => {
+  const current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      throw Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  let field = find(panel._content, "textarea");
+  field.value = "Kids = calendar.family";
+  field.input();
+  field.value = "Incomplete = ";
+  field.input();
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+  await panel.showSettings("routing", true);
+  field = find(panel._content, "textarea");
+  assert.equal(field.value, "Incomplete = ");
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+});
+
+
+test("routing failed conflict-only save rebases untouched aliases from concurrent update", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {Old: "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let attempts = 0;
+  const payloads = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      payloads.push(message);
+      if (++attempts === 1) {
+        current = {...current, calendar_aliases: {Remote: "calendar.family"}};
+        throw new Error("Response lost before write");
+      }
+      current = {...current, ...message};
+      return current;
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const extra = form.querySelectorAll("input").find(
+    input => input.value === "calendar.external");
+  extra.checked = true;
+  extra.change();
+  assert.equal(panel._routingRawDraft.aliasesDirty, false);
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+  await panel.saveRoutingSettings(form);
+  assert.ok(panel._settingsError);
+  assert.equal(panel._routingRawDraft.aliasesText, "Remote = calendar.family");
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value,
+    "Remote = calendar.family");
+  await panel.saveRoutingSettings(form);
+  assert.equal(payloads.length, 2);
+  assert.equal(Object.hasOwn(payloads[1], "calendar_aliases"), false);
+  assert.deepEqual(new Set(payloads[1].conflict_calendar_entities),
+    new Set(["calendar.family", "calendar.external"]));
+  assert.deepEqual(current.calendar_aliases, {Remote: "calendar.family"});
+});
+
+test("routing failed alias-only save rebases untouched conflict scope before retry", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {},
+    conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let attempts = 0;
+  const payloads = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      payloads.push(message);
+      if (++attempts === 1) {
+        current = {...current, conflict_calendar_entities: ["calendar.external"]};
+        throw new Error("Connection dropped before write");
+      }
+      current = {...current, ...message};
+      return current;
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const field = form.elements.namedItem("calendar_aliases");
+  field.value = "Kids = calendar.family";
+  field.input();
+  assert.equal(panel._routingRawDraft.conflictsDirty, false);
+  await panel.saveRoutingSettings(form);
+  assert.ok(panel._settingsError);
+  assert.deepEqual(panel._routingRawDraft.conflictCalendarEntities, ["calendar.external"]);
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+
+  form = find(panel._content, "form");
+  assert.equal(form.querySelectorAll("input").find(
+    input => input.value === "calendar.external").checked, true);
+  await panel.saveRoutingSettings(form);
+  assert.equal(payloads.length, 2);
+  assert.deepEqual(payloads[1].calendar_aliases, {Kids: "calendar.family"});
+  assert.equal(Object.hasOwn(payloads[1], "conflict_calendar_entities"), false);
+  assert.deepEqual(current.conflict_calendar_entities, ["calendar.external"]);
+});
+
+
+test("saving General rebases untouched routing aliases from the returned snapshot", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {Old: "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const routingUpdates = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "ai_task.openai": {entity_id: "ai_task.openai", state: "idle",
+      attributes: {friendly_name: "OpenAI", supported_features: 1}},
+    "ai_task.google": {entity_id: "ai_task.google", state: "idle",
+      attributes: {friendly_name: "Google", supported_features: 1}},
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/core/update")) {
+      current = {...current, ai_task_entity: message.ai_task_entity,
+        calendar_aliases: {Remote: "calendar.family"}};
+      return current;
+    }
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      routingUpdates.push(message);
+      current = {...current, ...message};
+      return current;
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const extra = form.querySelectorAll("input").find(x => x.value === "calendar.external");
+  extra.checked = true;
+  extra.change();
+  assert.equal(panel._routingRawDraft.aliasesDirty, false);
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+
+  await panel.showSettings("general");
+  form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+  assert.equal(panel._routingRawDraft.aliasesText, "Remote = calendar.family");
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+
+  await panel.showSettings("routing");
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value, "Remote = calendar.family");
+  await panel.saveRoutingSettings(form);
+  assert.equal(routingUpdates.length, 1);
+  assert.equal(Object.hasOwn(routingUpdates[0], "calendar_aliases"), false);
+  assert.deepEqual(current.calendar_aliases, {Remote: "calendar.family"});
+});
+
+test("ambiguous General save rebases untouched routing conflict selection", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const routingUpdates = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "ai_task.openai": {entity_id: "ai_task.openai", state: "idle",
+      attributes: {supported_features: 1}},
+    "ai_task.google": {entity_id: "ai_task.google", state: "idle",
+      attributes: {supported_features: 1}},
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/core/update")) {
+      current = {...current, conflict_calendar_entities: ["calendar.external"]};
+      throw new Error("Network disconnected before General settings persisted");
+    }
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      routingUpdates.push(message);
+      current = {...current, ...message};
+      return current;
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let field = find(panel._content, "textarea");
+  field.value = "Kids = calendar.family";
+  field.input();
+  assert.equal(panel._routingRawDraft.conflictsDirty, false);
+
+  await panel.showSettings("general");
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+  assert.ok(panel._settingsError);
+  assert.deepEqual(panel._routingRawDraft.conflictCalendarEntities,
+    ["calendar.external"]);
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+
+  await panel.showSettings("routing");
+  form = find(panel._content, "form");
+  assert.equal(form.querySelectorAll("input").find(x =>
+    x.value === "calendar.external").checked, true);
+  await panel.saveRoutingSettings(form);
+  assert.equal(routingUpdates.length, 1);
+  assert.deepEqual(routingUpdates[0].calendar_aliases, {Kids: "calendar.family"});
+  assert.equal(Object.hasOwn(routingUpdates[0], "conflict_calendar_entities"), false);
+});
+
+test("successful Email save also rebases an unfinished routing draft", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const routingUpdates = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/email/update")) {
+      current = {...current, calendar_aliases: {Remote: "calendar.family"}};
+      return current;
+    }
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      routingUpdates.push(message);
+      current = {...current, ...message};
+      return current;
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  const external = find(panel._content, "form").querySelectorAll("input")
+    .find(x => x.value === "calendar.external");
+  external.checked = true;
+  external.change();
+
+  await panel.showSettings("email");
+  await panel.saveEmailSettingsForm(find(panel._content, "form"));
+  assert.equal(panel._routingRawDraft.aliasesText, "Remote = calendar.family");
+
+  await panel.showSettings("routing");
+  await panel.saveRoutingSettings(find(panel._content, "form"));
+  assert.equal(routingUpdates.length, 1);
+  assert.equal(Object.hasOwn(routingUpdates[0], "calendar_aliases"), false);
+  assert.deepEqual(current.calendar_aliases, {Remote: "calendar.family"});
+});
+
+test("Email save-error recovery also rebases untouched routing selections", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/email/update")) {
+      current = {...current, conflict_calendar_entities: ["calendar.external"]};
+      throw new Error("Email save response unavailable");
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  const field = find(panel._content, "textarea");
+  field.value = "Kids = calendar.family";
+  field.input();
+
+  await panel.showSettings("email");
+  await panel.saveEmailSettingsForm(find(panel._content, "form"));
+  assert.deepEqual(panel._routingRawDraft.conflictCalendarEntities,
+    ["calendar.external"]);
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+});

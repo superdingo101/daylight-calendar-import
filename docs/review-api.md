@@ -82,3 +82,29 @@ are retained even when the completed-history limit is reached.
 No submitted text, attachment, or upstream source identifier is stored in
 these summaries. A submission that never reached parsing (for example, an
 invalid upload) still returns its action error directly.
+
+
+## Automations: pending imports available for review
+
+The integration fires the Home Assistant event `daylight_calendar_import_pending_added`
+after an event-bearing import has been durably committed to the review queue.
+
+Example trigger:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: daylight_calendar_import_pending_added
+```
+
+The payload contains only `pending_id` (an opaque review identifier) and
+`event_count` (number of event drafts accepted into this import). No email
+content, sender, title, description, attachment metadata, or credentials
+are included. Other Home Assistant automations can respond to this signal
+and fetch review information through the authenticated Daylight review API.
+
+This event is a **best-effort notification**, not a durable delivery
+guarantee: an abrupt shutdown between store commit and bus publication can
+lose a notification, and events are not replayed when Home Assistant
+restarts. The pending queue and its sensors remain the authoritative state.
+Duplicate/empty submissions do not publish a new pending-added event.

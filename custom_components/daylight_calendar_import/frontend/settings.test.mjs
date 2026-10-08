@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, settingsErrorMessage} from "./settings.js";
+import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, settingsErrorMessage} from "./settings.js";
 
 const snapshot = {
   entry_id: "entry-1",
@@ -105,4 +105,25 @@ test("settings client recognizes Home Assistant websocket errors", () => {
   assert.equal(settingsErrorMessage(new Error("Network failed"), "fallback"), "Network failed");
   assert.equal(settingsErrorMessage("Disconnected", "fallback"), "Disconnected");
   assert.equal(settingsErrorMessage(null, "fallback"), "fallback");
+});
+
+test("calendar intelligence settings only send explicit changes", async () => {
+  const calls = [];
+  const hass = {callWS: async value => {
+    calls.push(value);
+    return {...snapshot, calendar_aliases: value.calendar_aliases ?? {},
+      conflict_calendar_entities: value.conflict_calendar_entities ?? []};
+  }};
+  const result = await saveCalendarIntelligenceSettings(hass, {
+    entry_id: "entry-1",
+    calendar_aliases: {kids: "calendar.family"},
+    conflict_calendar_entities: ["calendar.work"],
+  });
+  assert.deepEqual(calls, [{
+    type: "daylight_calendar_import/settings/calendar_intelligence/update",
+    entry_id: "entry-1",
+    calendar_aliases: {kids: "calendar.family"},
+    conflict_calendar_entities: ["calendar.work"],
+  }]);
+  assert.deepEqual(result.calendar_aliases, {kids: "calendar.family"});
 });
