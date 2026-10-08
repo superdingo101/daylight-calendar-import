@@ -275,18 +275,6 @@ async def async_save_option_patch(
         raise SettingsValidationError(
             "default_not_allowed", "The default calendar must be included in the allowed calendars."
         )
-    # Pending event destinations are durable; do not silently strand them.
-    if CONF_CALENDAR_ENTITIES in patch:
-        store = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-        if store is not None and any(
-            event.calendar_entity is not None and event.calendar_entity not in allowed
-            for item in store.list()
-            for event in item.events
-        ):
-            raise SettingsValidationError(
-                "pending_calendar_in_use",
-                "A pending event still uses a removed calendar. Reassign it before saving.",
-            )
     hass.config_entries.async_update_entry(entry, options=merged)
     if not await hass.config_entries.async_reload(entry.entry_id):
         raise SettingsValidationError(
