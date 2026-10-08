@@ -636,3 +636,100 @@ def test_h3_checkpoint_rejects_wrong_namespace_delivery_or_expiry():
     changed["source_expires_at"] = "2026-10-12T16:00:00Z"
     with pytest.raises(AssertionError):
         _check_checkpoint_evidence(claim, saved, changed)
+
+
+@pytest.mark.parametrize("request_id", [
+    "", "too-short", "A" * 22 + "\n", "../unsafe", "A" * 129,
+])
+def test_claim_identity_rejects_missing_weak_and_trailing_newline(request_id, schema_registry):
+    schemas, registry = schema_registry
+    with pytest.raises(ValidationError):
+        _validate(
+            "delivery-claim-request.schema.json",
+            {"schema_version": 1, "claim_request_id": request_id},
+            schemas, registry,
+        )
+
+
+def _check_claim_idempotency_trace(trace: dict) -> None:
+    """Retries of a consumed request ID never lease another page."""
+    originals = {}
+    for step in trace["steps"]:
+        request_id = step["request_id"]
+        parameters = step["parameters"]
+        if step["op"] == "claim":
+            assert request_id not in originals
+            assert step["status"] == 200
+            originals[request_id] = (parameters, step["response"])
+        else:
+            prior_parameters, prior_response = originals[request_id]
+            assert step["new_leases_issued"] is False
+            if step["op"] == "retry_same":
+                assert parameters == prior_parameters
+                assert step["status"] == 200
+                assert step["response"] == prior_response
+            elif step["op"] == "retry_after_cleanup":
+                assert parameters == prior_parameters
+                assert step["status"] == 409
+                assert step["code"] == "claim_not_replayable"
+            elif step["op"] == "retry_changed_parameters":
+                assert parameters != prior_parameters
+                assert step["status"] == 400
+                assert step["code"] == "invalid_request"
+            else:
+                raise ValueError("unexpected request-ID trace operation")
+
+
+def test_claim_replays_do_not_allocate_second_batch():
+    import copy
+
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-idempotent-claim-trace.json")
+    _check_claim_idempotency_trace(trace)
+    changed_token = copy.deepcopy(trace)
+    changed_token["steps"][1]["response"]["deliveries"][0]["lease_token"] = "Z" * 48
+    with pytest.raises(AssertionError):
+        _check_claim_idempotency_trace(changed_token)
+    repeated_after_ack = copy.deepcopy(trace)
+    repeated_after_ack["steps"][2]["new_leases_issued"] = True
+    with pytest.raises(AssertionError):
+        _check_claim_idempotency_trace(repeated_after_ack)
+    changed_params = copy.deepcopy(trace)
+    changed_params["steps"][3]["parameters"]["limit"] = 20
+    with pytest.raises(AssertionError):
+        _check_claim_idempotency_trace(changed_params)
+
+
+def test_lost_ack_response_after_attachment_cleanup_uses_durable_proof():
+    import copy
+
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-ack-retry-after-cleanup.json")
+    steps = trace["steps"]
+    assert [step["op"] for step in steps] == [
+        "claim", "download_and_verify", "persist_local_checkpoint",
+        "ack_applied", "delete_cloud_source", "recover_checkpoint", "retry_same_ack",
+    ]
+    claim, saved, recovered = steps[0], steps[2], steps[5]
+    _check_checkpoint_evidence(claim, saved, recovered)
+    assert steps[6]["token"] == saved["lease_token"]
+    assert steps[6]["status"] == 200
+    assert steps[6]["acknowledged_at"] == steps[3]["acknowledged_at"]
+    assert recovered["cloud_attachment_bytes_available"] is False
+    assert saved["verified_attachments"] == steps[1]["verified_attachments"]
+    for field, value in [
+        ("verified_attachments", {}),
+        ("attachments_verification_complete", False),
+        ("lease_token", "Z" * 48),
+    ]:
+        corrupt = copy.deepcopy(recovered)
+        corrupt[field] = value
+        with pytest.raises(AssertionError):
+            _check_checkpoint_evidence(claim, saved, corrupt)
+
+
+def test_ack_response_rejects_ending_line_break(schema_registry):
+    schemas, registry = schema_registry
+    valid = _read(FIXTURE_DIR / "valid" / "delivery-ack-response.json")
+    _validate("delivery-ack-response.schema.json", valid, schemas, registry)
+    valid["delivery_id"] += "\n"
+    with pytest.raises(ValidationError):
+        _validate("delivery-ack-response.schema.json", valid, schemas, registry)
