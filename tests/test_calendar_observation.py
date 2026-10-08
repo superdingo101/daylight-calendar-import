@@ -570,3 +570,200 @@ async def test_all_day_provider_utc_overflow_is_observation_error_not_raw_overfl
             fake, draft(), observed_calendars=["calendar.work"],
             local_zone=fixed_zone, context=READ_CONTEXT,
         )
+
+
+# Mutation gates must check the public error contract, not only exception type.
+# The review UI depends on distinguishing malformed inputs from incomplete HA
+# calendar reads and read authorization failures.
+@pytest.mark.parametrize(("item", "expected"), [
+    (None, "Invalid calendar event response"),
+    ({}, "Missing calendar event fields"),
+    ({"summary": "Practice", "start": "bad-date-!", "end": "2026-10-09"},
+     "Invalid all-day calendar interval"),
+    ({"summary": "Practice", "start": "2026-10-09", "end": "2026-10-08"},
+     "Invalid all-day calendar interval"),
+    ({"summary": "Practice", "start": "2026-10-08", "end": "2026-10-08"},
+     "Invalid all-day calendar interval"),
+    ({"summary": "Practice", "start": "2026-10-08", "end":
+      "2026-10-08T18:00:00-07:00"}, "Mixed calendar event date formats"),
+    ({"summary": "Practice", "start": "2026-10-08T17:00:00-07:00",
+      "end": "2026-10-08"}, "Mixed calendar event date formats"),
+    ({"summary": "Practice", "start": "nonsense", "end":
+      "2026-10-08T18:00:00-07:00"}, "Invalid timed calendar interval"),
+    ({"summary": "Practice", "start": "2026-10-08T17:00:00-07:00",
+      "end": "nonsense"}, "Invalid timed calendar interval"),
+    ({"summary": "Practice", "start": "2026-10-08T17:00:00",
+      "end": "2026-10-08T18:00:00-07:00"},
+     "Timed calendar events require timezone offsets"),
+    ({"summary": "Practice", "start": "2026-10-08T17:00:00-07:00",
+      "end": "2026-10-08T18:00:00"},
+     "Timed calendar events require timezone offsets"),
+    ({"summary": "Practice", "start": "2026-10-08T18:00:00-07:00",
+      "end": "2026-10-08T17:00:00-07:00"}, "Invalid timed calendar interval"),
+    ({"summary": "Practice", "start": "0001-01-01T00:00:00+01:00",
+      "end": "0001-01-01T01:00:00+01:00"}, "Invalid timed calendar interval"),
+    ({"summary": "Practice", "start": "9999-12-31T22:00:00-02:00",
+      "end": "9999-12-31T23:00:00-02:00"}, "Invalid timed calendar interval"),
+])
+def test_calendar_candidate_exact_validation_errors(item, expected):
+    with pytest.raises(CalendarObservationError) as exc:
+        _candidate("calendar.family", item)
+    assert str(exc.value) == expected
+
+
+@pytest.mark.parametrize(("item", "expected"), [
+    (EventDraft("Practice", "bad-date", "2026-10-09", True),
+     "Invalid all-day observation interval"),
+    (EventDraft("Practice", "bad-datetime", "2026-10-08T18:00:00-07:00", False),
+     "Invalid timed observation interval"),
+    (EventDraft("Practice", "2026-10-08T17:00:00-07:00", "bad-datetime", False),
+     "Invalid timed observation interval"),
+    (EventDraft("Practice", "2026-10-08T17:00:00", "2026-10-08T18:00:00-07:00", False),
+     "Timed observations require UTC offsets"),
+    (EventDraft("Practice", "2026-10-08T17:00:00-07:00", "2026-10-08T18:00:00", False),
+     "Timed observations require UTC offsets"),
+    (EventDraft("Practice", "2026-10-08", "2026-10-08", True),
+     "Invalid event interval"),
+    (EventDraft("Practice", "2026-10-09", "2026-10-08", True),
+     "Invalid event interval"),
+    (EventDraft("Practice", "2026-10-08T18:00:00-07:00",
+      "2026-10-08T18:00:00-07:00", False), "Invalid event interval"),
+    (EventDraft("Practice", "2026-10-08T19:00:00-07:00",
+      "2026-10-08T18:00:00-07:00", False), "Invalid event interval"),
+    (EventDraft("Practice", "0001-01-01T00:00:00+01:00",
+      "0001-01-01T01:00:00+01:00", False), "Invalid timed observation interval"),
+    (EventDraft("Practice", "9999-12-31T22:00:00-02:00",
+      "9999-12-31T23:00:00-02:00", False), "Invalid timed observation interval"),
+])
+def test_observation_window_exact_validation_errors(item, expected):
+    with pytest.raises(CalendarObservationError) as exc:
+        observation_window(item, local_zone=ZONE)
+    assert str(exc.value) == expected
+
+
+@pytest.mark.parametrize(("calendar_ids", "expected"), [
+    (["sensor.illegal"], "Invalid observation calendar"),
+    ([["calendar.unhashable"]], "Invalid observation calendar"),
+])
+async def test_rejected_calendar_scope_error_is_precise(calendar_ids, expected):
+    fake = hass(None)
+    with pytest.raises(CalendarObservationError) as exc:
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=calendar_ids,
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    assert str(exc.value) == expected
+    fake.auth.async_get_user.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("fake_response", "expected"), [
+    (None, "Calendar observation is incomplete"),
+    ({"calendar.work": {"events": "bad-provider-data"}},
+     "Calendar observation is incomplete"),
+])
+async def test_calendar_provider_incomplete_response_message(fake_response, expected):
+    fake = hass(fake_response)
+    with pytest.raises(CalendarObservationError) as exc:
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    assert str(exc.value) == expected
+
+
+async def test_missing_calendar_component_and_entity_exact_error_contract():
+    fake = hass({"calendar.work": {"events": []}})
+    fake.data.pop(DATA_COMPONENT)
+    with pytest.raises(CalendarObservationError) as exc:
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    assert str(exc.value) == "Calendar observation is unavailable"
+
+    fake = hass({"calendar.work": {"events": []}})
+    with pytest.raises(CalendarObservationError) as exc:
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work", "calendar.missing"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    assert str(exc.value) == "Calendar observation is incomplete"
+    fake.providers["calendar.work"].async_get_events.assert_not_awaited()
+
+
+@pytest.mark.parametrize("missing", ["context", "user", "calendar_permission"])
+async def test_calendar_authorization_denials_include_expected_metadata(missing):
+    fake = hass({"calendar.work": {"events": [existing()]}})
+    context = Context(user_id="reviewer")
+    if missing == "context":
+        context = Context()
+    elif missing == "user":
+        fake.auth.async_get_user.return_value = None
+    elif missing == "calendar_permission":
+        fake.user.permissions.check_entity.return_value = False
+    with pytest.raises(Unauthorized) as exc:
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=context,
+        )
+    denied = exc.value
+    assert denied.context is context
+    assert denied.permission == POLICY_READ
+    assert denied.user_id == context.user_id
+    assert denied.entity_id == (
+        "calendar.work" if missing == "calendar_permission" else None
+    )
+    fake.providers["calendar.work"].async_get_events.assert_not_awaited()
+
+
+def test_all_day_window_utc_underflow_message_is_exact():
+    fixed_zone = timezone(timedelta(hours=1))
+    with pytest.raises(CalendarObservationError) as exc:
+        observation_window(
+            EventDraft("Year one", "0001-01-01", "0001-01-02", True),
+            local_zone=fixed_zone,
+        )
+    assert str(exc.value) == "Invalid event interval"
+
+
+def test_all_day_window_utc_overflow_message_is_exact():
+    fixed_zone = timezone(timedelta(hours=-2))
+    with pytest.raises(CalendarObservationError) as exc:
+        observation_window(
+            EventDraft("Year max", "9999-12-30", "9999-12-31", True),
+            local_zone=fixed_zone,
+        )
+    assert str(exc.value) == "Invalid event interval"
+
+
+async def test_classifier_overflow_preserves_exact_boundary_message():
+    fake = hass({"calendar.work": {"events": [
+        {"summary": "Year one", "start": "0001-01-01", "end": "0001-01-02"},
+    ]}})
+    with pytest.raises(CalendarObservationError) as exc:
+        await async_classify_conflicts(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=timezone(timedelta(hours=1)), context=READ_CONTEXT,
+        )
+    assert str(exc.value) == "Invalid calendar interval for classification"
+
+
+async def test_classifier_rejects_bad_timed_point_with_exact_error(monkeypatch):
+    """Exercise the classifier's defensive UTC conversion after observation."""
+    from custom_components.daylight_calendar_import import calendar_observation
+    from custom_components.daylight_calendar_import.calendar_match import CalendarCandidate
+
+    unsafe = CalendarCandidate(
+        "calendar.work", "Practice",
+        "0001-01-01T00:00:00+01:00", "0001-01-01T00:00:00+01:00", False,
+    )
+    monkeypatch.setattr(
+        calendar_observation, "async_observe_candidates",
+        AsyncMock(return_value=(unsafe,)),
+    )
+    with pytest.raises(CalendarObservationError) as exc:
+        await async_classify_conflicts(
+            hass(None), draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    assert str(exc.value) == "Invalid timed calendar interval"
