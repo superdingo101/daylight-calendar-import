@@ -1,0 +1,32 @@
+{
+  "description": "ACK only after local durable checkpoint survives restart",
+  "delivery_id": "delivery_00000000000000000001",
+  "source_id": "source_000000000000000000000001",
+  "steps": [
+    {
+      "op": "claim",
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456"
+    },
+    {
+      "op": "download_and_verify"
+    },
+    {
+      "op": "source_normalized"
+    },
+    {
+      "op": "persist_local_checkpoint",
+      "checkpoint_id": "local-store-001"
+    },
+    {
+      "op": "restart_ha"
+    },
+    {
+      "op": "recover_checkpoint",
+      "checkpoint_id": "local-store-001"
+    },
+    {
+      "op": "ack",
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "description": "Only active, unexpired claim may ack; retries of confirmed lease are idempotent",
+  "delivery_id": "delivery_00000000000000000001",
+  "source_id": "source_000000000000000000000001",
+  "steps": [
+    {
+      "op": "claim",
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
+      "status": 200
+    },
+    {
+      "op": "expire",
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456"
+    },
+    {
+      "op": "claim",
+      "token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
+      "status": 200
+    },
+    {
+      "op": "ack",
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
+      "status": 409,
+      "code": "lease_not_current"
+    },
+    {
+      "op": "ack",
+      "token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
+      "status": 200,
+      "result": "acknowledged"
+    },
+    {
+      "op": "ack",
+      "token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
+      "status": 200,
+      "result": "acknowledged"
+    }
+  ]
+}

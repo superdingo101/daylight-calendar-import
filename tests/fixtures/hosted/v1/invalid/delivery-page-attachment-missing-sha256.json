@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "deliveries": [
+    {
+      "delivery_id": "delivery_00000000000000000001",
+      "source_id": "source_000000000000000000000001",
+      "lease_token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
+      "lease_expires_at": "2026-10-08T16:05:00Z",
+      "source_expires_at": "2026-10-15T16:00:00Z",
+      "source": {
+        "kind": "email",
+        "received_at": "2026-10-08T15:00:00Z",
+        "title": "School picture day",
+        "text": null,
+        "attachments": [
+          {
+            "id": "flyer.pdf",
+            "filename": "School schedule.pdf",
+            "media_type": "application/pdf",
+            "size_bytes": 1024
+          }
+        ],
+        "metadata": {
+          "sender": "teacher@example.test"
+        }
+      }
+    }
+  ],
+  "next_cursor": null
+}
