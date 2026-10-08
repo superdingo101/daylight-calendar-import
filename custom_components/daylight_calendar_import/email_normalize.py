@@ -115,7 +115,7 @@ class _HTMLTextExtractor(HTMLParser):
             self._parts.append("\n")
         if tag == "blockquote":
             # Preserve a visible history boundary for downstream routing logic.
-            self._parts.append(">\\n")
+            self._parts.append(">\n")
 
         if tag == "a":
             href = (attributes.get("href") or "").strip()
