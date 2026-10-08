@@ -5,21 +5,33 @@
   "steps": [
     {
       "op": "claim",
-      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456"
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
+      "source": {
+        "kind": "email",
+        "received_at": "2026-10-08T15:00:00Z",
+        "title": "School picture day",
+        "text": "Picture day on October 15, 2026 at 9am",
+        "attachments": [],
+        "metadata": {
+          "sender": "teacher@example.test"
+        }
+      }
     },
     {
       "op": "parse_no_events"
     },
     {
       "op": "persist_terminal_no_events",
-      "source_fingerprint": "committed-hash"
+      "source_fingerprint": "committed-hash",
+      "source_evidence_sha256": "ca7f8771ba5ff1a732842b889f06b77fad7b50dbf2ebb55b4db47008376946f6"
     },
     {
       "op": "restart_ha"
     },
     {
       "op": "recover_terminal_no_events",
-      "source_fingerprint": "committed-hash"
+      "source_fingerprint": "committed-hash",
+      "source_evidence_sha256": "ca7f8771ba5ff1a732842b889f06b77fad7b50dbf2ebb55b4db47008376946f6"
     },
     {
       "op": "ack",
