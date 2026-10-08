@@ -10,7 +10,10 @@ from datetime import date, datetime, time, timezone, tzinfo
 from collections.abc import Sequence
 from typing import Any
 
+from homeassistant.auth.permissions.const import POLICY_READ
+from homeassistant.components.calendar.const import DATA_COMPONENT
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.exceptions import Unauthorized
 
 from .calendar_match import CalendarCandidate, CalendarMatch, classify_calendar_event
 from .models import EventDraft
@@ -87,7 +90,7 @@ async def async_observe_candidates(
     local_zone: tzinfo,
     context: Context | None = None,
 ) -> tuple[CalendarCandidate, ...]:
-    """Read selected calendars via their HA service, never create/edit events."""
+    """Read selected calendars under POLICY_READ; never create/edit events."""
     identifiers = list(dict.fromkeys(observed_calendars))
     if not identifiers:
         return ()
@@ -95,24 +98,54 @@ async def async_observe_candidates(
            for identifier in identifiers):
         raise CalendarObservationError("Invalid observation calendar")
     start, end = observation_window(draft, local_zone=local_zone)
-    response = await hass.services.async_call(
-        "calendar",
-        "get_events",
-        {"start_date_time": start.isoformat(), "end_date_time": end.isoformat()},
-        target={"entity_id": identifiers},
-        blocking=True,
-        return_response=True,
-        context=context,
-    )
-    if not isinstance(response, dict):
-        raise CalendarObservationError("Calendar observation returned no agenda")
-    candidates: list[CalendarCandidate] = []
+    # Home Assistant's calendar.get_events *service* requires POLICY_CONTROL
+    # because generic entity services are control-scoped. Read-only reviewers
+    # must instead use the same POLICY_READ + entity API as HA's calendar view.
+    if context is None or context.user_id is None:
+        raise Unauthorized(context=context, permission=POLICY_READ)
+    user = await hass.auth.async_get_user(context.user_id)
+    if user is None:
+        raise Unauthorized(
+            context=context, permission=POLICY_READ, user_id=context.user_id,
+        )
     for entity in identifiers:
-        records = response.get(entity)
-        if not isinstance(records, dict) or not isinstance(records.get("events"), list):
+        if not user.permissions.check_entity(entity, POLICY_READ):
+            raise Unauthorized(
+                context=context, entity_id=entity, permission=POLICY_READ,
+                user_id=context.user_id,
+            )
+    component = hass.data.get(DATA_COMPONENT)
+    if component is None:
+        raise CalendarObservationError("Calendar observation is unavailable")
+    providers = []
+    for entity_id in identifiers:
+        provider = component.get_entity(entity_id)
+        if provider is None:
             raise CalendarObservationError("Calendar observation is incomplete")
-        for raw in records["events"]:
-            candidates.append(_candidate(entity, raw))
+        providers.append((entity_id, provider))
+
+    candidates: list[CalendarCandidate] = []
+    for entity_id, provider in providers:
+        response = await provider.async_get_events(hass, start, end)
+        if not isinstance(response, list):
+            raise CalendarObservationError("Calendar observation is incomplete")
+        for event in response:
+            # CalendarEvent exposes native date/datetime fields. Do not retain
+            # descriptions, attendees or other private provider metadata.
+            summary = getattr(event, "summary", None)
+            event_start = getattr(event, "start", None)
+            event_end = getattr(event, "end", None)
+            candidates.append(_candidate(entity_id, {
+                "summary": summary,
+                "start": (
+                    event_start.isoformat()
+                    if isinstance(event_start, (date, datetime)) else event_start
+                ),
+                "end": (
+                    event_end.isoformat()
+                    if isinstance(event_end, (date, datetime)) else event_end
+                ),
+            }))
     return tuple(candidates)
 
 
