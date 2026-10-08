@@ -3494,6 +3494,7 @@ test("routing textarea is disabled while settings save is awaiting response", as
   }};
   await flush();
   await panel.showSettings("routing");
+  find(panel._content, "textarea").value = "Kids = calendar.family";
   const started = panel.saveRoutingSettings(find(panel._content, "form"));
   assert.equal(find(panel._content, "textarea").disabled, true);
   finish(snapshot);
