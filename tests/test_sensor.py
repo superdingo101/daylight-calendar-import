@@ -27,6 +27,13 @@ async def test_two_entities_are_registered_and_read_live_counts(hass):
     imports, events = captured
     assert imports.unique_id == "unit-entry_pending_imports"
     assert events.unique_id == "unit-entry_pending_events"
+    assert imports._key == "pending_imports"
+    assert events._key == "pending_events"
+    # Entity names and MDI icons are public HA UI and automation metadata.
+    assert imports.name == "Daylight Calendar Import Pending Imports"
+    assert events.name == "Daylight Calendar Import Pending Events"
+    assert imports.icon == "mdi:tray-full"
+    assert events.icon == "mdi:calendar-clock"
     assert imports.native_value == 0
     assert events.native_value == 0
 
