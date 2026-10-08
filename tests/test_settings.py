@@ -938,3 +938,64 @@ async def test_integration_setup_registers_settings_api(monkeypatch):
 
     assert await async_setup(hass, {}) is True
     register.assert_called_once_with(hass)
+
+
+def test_calendar_intelligence_normalization_and_legacy_defaults():
+    from custom_components.daylight_calendar_import.settings import (
+        normalize_calendar_aliases, normalize_conflict_calendars, effective_calendar_intelligence,
+    )
+    assert effective_calendar_intelligence(entry()) == ({}, ["calendar.family"])
+    assert normalize_calendar_aliases(
+        {"  KIDS  ": "calendar.work", "Family": "calendar.family"},
+        ["calendar.family", "calendar.work"],
+    ) == {"kids": "calendar.work", "family": "calendar.family"}
+    assert normalize_conflict_calendars(["calendar.other", "calendar.other"]) == ["calendar.other"]
+    for aliases in (
+        {"": "calendar.family"},
+        {"Work": "calendar.work", " work ": "calendar.family"},
+        {"Bad": "calendar.other"},
+        {"Bad\\nAlias": "calendar.family"},
+    ):
+        with pytest.raises(SettingsValidationError):
+            normalize_calendar_aliases(aliases, ["calendar.family", "calendar.work"])
+    with pytest.raises(SettingsValidationError):
+        normalize_conflict_calendars(["sensor.not_calendar"])
+
+
+@pytest.mark.asyncio
+async def test_calendar_intelligence_admin_update_and_writable_scope():
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    connection = FakeConnection()
+    await invoke(
+        settings_api.websocket_update_calendar_intelligence, hass, connection,
+        {"id": 60, "entry_id": config_entry.entry_id,
+         "type": settings_api.WS_UPDATE_CALENDAR_INTELLIGENCE,
+         "calendar_aliases": {" Kids ": "calendar.work"},
+         "conflict_calendar_entities": ["calendar.observation"]},
+    )
+    assert not connection.errors
+    assert config_entry.options["calendar_aliases"] == {"kids": "calendar.work"}
+    assert connection.results[-1][1]["conflict_calendar_entities"] == ["calendar.observation"]
+    await invoke(
+        settings_api.websocket_update_calendar_intelligence, hass, connection,
+        {"id": 61, "entry_id": config_entry.entry_id,
+         "type": settings_api.WS_UPDATE_CALENDAR_INTELLIGENCE,
+         "calendar_aliases": {"bad": "calendar.observation"}},
+    )
+    assert connection.errors[-1][1] == "alias_target_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_calendar_alias_cannot_be_stranded_by_core_update():
+    config_entry = entry(options={"calendar_aliases": {"work": "calendar.work"}})
+    hass = hass_for(config_entry)
+    connection = FakeConnection()
+    await invoke(
+        settings_api.websocket_update_core_settings, hass, connection,
+        {"id": 62, "entry_id": config_entry.entry_id,
+         "type": settings_api.WS_UPDATE_CORE_SETTINGS,
+         CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+    )
+    assert connection.errors[-1][1] == "alias_target_not_allowed"
+    assert not hass.config_entries.updates
