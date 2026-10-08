@@ -1069,8 +1069,8 @@ async def test_saving_invalid_default_does_not_change_options():
     [
         ([], "invalid_aliases", "Calendar aliases must be a mapping."),
         ({42: "calendar.family"}, "invalid_alias", "Calendar alias is invalid."),
-        ({"Bad\\nAlias": "calendar.family"}, "invalid_alias", "Calendar alias is invalid."),
-        ({"Bad\\rAlias": "calendar.family"}, "invalid_alias", "Calendar alias is invalid."),
+        ({"Bad\nAlias": "calendar.family"}, "invalid_alias", "Calendar alias is invalid."),
+        ({"Bad\rAlias": "calendar.family"}, "invalid_alias", "Calendar alias is invalid."),
         ({"   ": "calendar.family"}, "invalid_alias", "Calendar alias is invalid."),
         ({"A" * 65: "calendar.family"}, "invalid_alias", "Calendar alias is invalid."),
         (
@@ -1125,7 +1125,7 @@ def test_calendar_aliases_preserve_precise_unicode_and_length_contract():
         "a" * 64: "calendar.family",
     }
     assert normalize({"ＫＩＤＳ": "calendar.family"}) == {"kids": "calendar.family"}
-    assert normalize({"Cafe\\u0301": "calendar.family"}) == {"café": "calendar.family"}
+    assert normalize({"Cafe\u0301": "calendar.family"}) == {"café": "calendar.family"}
     with pytest.raises(SettingsValidationError) as err:
         normalize({"ＫＩＤＳ": "calendar.family", "kids": "calendar.family"})
     assert err.value.code == "duplicate_alias"
