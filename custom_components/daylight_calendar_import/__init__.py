@@ -206,7 +206,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Track entry service calls *before* their first await so unload cannot
     # miss a request waiting for authorization or a source claim.
     pending_store.active_service_handlers = set()
-    pending_store.accepting_services = True
+    # Do not expose half-initialized handlers while email/sensor setup awaits.
+    pending_store.accepting_services = False
     default_calendar, allowed_calendars = _calendar_configuration(entry)
     ai_task_entity = _ai_task_configuration(entry)
     await async_register_review_panel(hass)
@@ -733,6 +734,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         # Forward last: a failing email configuration cannot strand sensor entities.
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        pending_store.accepting_services = True
 
     except (Exception, asyncio.CancelledError):
         # Even a failed or cancelled partial forward must not leave its sensor
