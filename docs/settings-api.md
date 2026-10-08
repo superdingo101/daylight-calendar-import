@@ -21,7 +21,8 @@ Request:
 Because Daylight currently permits one config entry, the panel read command discovers
 that sole entry automatically. The response includes its `entry_id` for subsequent
 update commands, plus the effective AI Task entity, default calendar, writable
-calendar list, and Direct IMAP settings. The saved IMAP password is never
+calendar list, normalized `calendar_aliases` mapping, independent
+`conflict_calendar_entities` list, and Direct IMAP settings. The saved IMAP password is never
 returned. The response exposes only `password_configured: true|false`.
 
 ## Update AI and calendar settings
@@ -36,6 +37,29 @@ effective writable-calendar list.
 
 Saving merges the validated patch into the latest config-entry options and then
 reloads the entry.
+
+## Update calendar intelligence settings
+
+`daylight_calendar_import/settings/calendar_intelligence/update`
+
+This administrator-only command accepts `entry_id` and one or both of
+`calendar_aliases` (an alias-to-calendar-entity mapping) and
+`conflict_calendar_entities` (a list of calendar entity IDs, possibly empty).
+Aliases are exact after whitespace, Unicode NFKC and case normalization.
+Alias names must be nonempty, no more than 64 normalized characters,
+unique after normalization, and must target a configured writable calendar.
+Conflict-observation calendars have **no write authorization**.
+
+Use `calendar_aliases: {}` to clear aliases. When removing a writable calendar
+used by an alias, remove/remap that alias first in a separate settings request.
+
+**Pending-event destination changes:** configuration does not mutate or delete
+pending events. If you remove a writable calendar, existing pending events
+targeting it remain in review; their destination must be reassigned to an
+allowed calendar before approval. The review editor supports this recovery
+path, and approval enforces the current allowed destination set. This API
+does not promise an atomic transaction across runtime email ingestion and
+pending-event persistence.
 
 ## Update Direct IMAP settings
 
@@ -60,6 +84,11 @@ Validation failures use stable WebSocket error codes:
 - `invalid_calendar`
 - `entry_not_found`
 - `invalid_settings`
+- `invalid_aliases`
+- `invalid_alias`
+- `duplicate_alias`
+- `alias_target_not_allowed`
+- `invalid_conflict_calendars`
 - `reload_failed`
 
 The API intentionally keeps config-entry options as the source of truth. The
