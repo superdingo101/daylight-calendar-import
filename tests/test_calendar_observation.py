@@ -1,11 +1,15 @@
 """Read-only HA calendar observation and pure matching integration."""
 
-from datetime import datetime
+from datetime import date, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, call
 from zoneinfo import ZoneInfo
 
 import pytest
+from homeassistant.auth.permissions.const import POLICY_READ
+from homeassistant.components.calendar.const import DATA_COMPONENT
+from homeassistant.core import Context
+from homeassistant.exceptions import Unauthorized
 
 from custom_components.daylight_calendar_import.calendar_observation import (
     CalendarObservationError,
@@ -28,9 +32,33 @@ def draft(*, all_day=False):
     )
 
 
+READ_CONTEXT = Context(user_id="reviewer")
+
+
 def hass(response):
-    services = SimpleNamespace(async_call=AsyncMock(return_value=response))
-    return SimpleNamespace(services=services)
+    """Fake the read-only entity API, not the control-only HA service."""
+    providers = {}
+    for calendar_id, record in (response if isinstance(response, dict) else {}).items():
+        if record is None:
+            continue
+        values = record.get("events") if isinstance(record, dict) else record
+        if isinstance(values, list):
+            values = [SimpleNamespace(**value) if isinstance(value, dict) else value
+                      for value in values]
+        providers[calendar_id] = SimpleNamespace(async_get_events=AsyncMock(
+            return_value=values,
+        ))
+    component = SimpleNamespace(get_entity=Mock(side_effect=providers.get))
+    user = SimpleNamespace(permissions=SimpleNamespace(check_entity=Mock(return_value=True)))
+    auth = SimpleNamespace(async_get_user=AsyncMock(return_value=user))
+    fake = SimpleNamespace(
+        auth=auth, data={DATA_COMPONENT: component},
+        services=SimpleNamespace(async_call=AsyncMock(
+            side_effect=AssertionError("get_events service requires control permission"),
+        )),
+        providers=providers, user=user,
+    )
+    return fake
 
 
 def existing(**changes):
@@ -58,7 +86,7 @@ def test_window_rejects_reversed_dates():
 async def test_empty_observation_scope_never_queries_home_assistant():
     fake = hass(None)
     assert await async_observe_candidates(
-        fake, draft(), observed_calendars=[], local_zone=ZONE
+        fake, draft(), observed_calendars=[], local_zone=ZONE, context=READ_CONTEXT
     ) == ()
     fake.services.async_call.assert_not_awaited()
 
@@ -67,12 +95,12 @@ async def test_empty_observation_scope_never_queries_home_assistant():
 async def test_invalid_observation_scope_rejected_before_provider_call(entities):
     fake = hass(None)
     with pytest.raises(CalendarObservationError, match="Invalid observation calendar"):
-        await async_observe_candidates(fake, draft(), observed_calendars=entities, local_zone=ZONE)
+        await async_observe_candidates(fake, draft(), observed_calendars=entities, local_zone=ZONE, context=READ_CONTEXT)
     fake.services.async_call.assert_not_awaited()
 
 
 async def test_read_only_query_uses_requested_scope_context_and_local_interval():
-    context = object()
+    context = READ_CONTEXT
     fake = hass({
         "calendar.work": {"events": [existing()]},
         "calendar.other": {"events": []},
@@ -85,12 +113,18 @@ async def test_read_only_query_uses_requested_scope_context_and_local_interval()
     assert len(found) == 1
     assert found[0].calendar_entity == "calendar.work"
     assert found[0].title == "Practice"
-    fake.services.async_call.assert_awaited_once_with(
-        "calendar", "get_events",
-        {"start_date_time": "2026-10-08T17:30:00-07:00",
-         "end_date_time": "2026-10-08T18:30:00-07:00"},
-        target={"entity_id": ["calendar.work", "calendar.other"]},
-        blocking=True, return_response=True, context=context,
+    fake.services.async_call.assert_not_awaited()
+    fake.auth.async_get_user.assert_awaited_once_with("reviewer")
+    assert fake.user.permissions.check_entity.call_args_list == [
+        call("calendar.work", POLICY_READ), call("calendar.other", POLICY_READ)
+    ]
+    start = datetime.fromisoformat("2026-10-08T17:30:00-07:00").astimezone(ZONE)
+    end = datetime.fromisoformat("2026-10-08T18:30:00-07:00").astimezone(ZONE)
+    fake.providers["calendar.work"].async_get_events.assert_awaited_once_with(
+        fake, start, end
+    )
+    fake.providers["calendar.other"].async_get_events.assert_awaited_once_with(
+        fake, start, end
     )
 
 
@@ -104,7 +138,7 @@ async def test_missing_or_invalid_provider_responses_are_not_empty_agendas(respo
     fake = hass(response)
     with pytest.raises(CalendarObservationError):
         await async_observe_candidates(
-            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE
+            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE, context=READ_CONTEXT
         )
 
 
@@ -119,7 +153,7 @@ async def test_malformed_calendar_items_raise_instead_of_disappearing(event):
     fake = hass({"calendar.work": {"events": [event]}})
     with pytest.raises(CalendarObservationError):
         await async_observe_candidates(
-            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE
+            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE, context=READ_CONTEXT
         )
 
 
@@ -128,7 +162,7 @@ async def test_all_day_calendar_response_maps_to_all_day_candidate():
         {"summary": "Vacation", "start": "2026-10-31", "end": "2026-11-02"}
     ]}})
     result = await async_observe_candidates(
-        fake, draft(all_day=True), observed_calendars=["calendar.work"], local_zone=ZONE
+        fake, draft(all_day=True), observed_calendars=["calendar.work"], local_zone=ZONE, context=READ_CONTEXT
     )
     assert result[0].all_day is True
     assert result[0].start == "2026-10-31"
@@ -142,7 +176,7 @@ async def test_match_classifies_duplicate_conflict_and_ignores_unrelated_events(
                  end="2026-10-09T10:00:00-07:00"),
     ]}})
     matches = await async_classify_conflicts(
-        fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE
+        fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE, context=READ_CONTEXT
     )
     assert [match.kind for match in matches] == ["exact_duplicate", "conflict"]
     assert all(match.calendar_entity == "calendar.work" for match in matches)
@@ -150,10 +184,12 @@ async def test_match_classifies_duplicate_conflict_and_ignores_unrelated_events(
 
 async def test_unavailable_calendar_failure_propagates():
     fake = hass(None)
-    fake.services.async_call.side_effect = RuntimeError("provider timeout")
+    fake.data[DATA_COMPONENT].get_entity.side_effect = lambda _entity: SimpleNamespace(
+        async_get_events=AsyncMock(side_effect=RuntimeError("provider timeout")),
+    )
     with pytest.raises(RuntimeError, match="provider timeout"):
         await async_classify_conflicts(
-            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
+            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE, context=READ_CONTEXT,
         )
 
 
@@ -194,7 +230,7 @@ async def test_invalid_timed_provider_events_are_rejected_at_observation_boundar
     fake = hass({"calendar.work": {"events": [existing(start=start, end=end)]}})
     with pytest.raises(CalendarObservationError, match="timed calendar interval|timezone offsets"):
         await async_observe_candidates(
-            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
+            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE, context=READ_CONTEXT,
         )
 
 
@@ -208,7 +244,7 @@ async def test_invalid_all_day_provider_duration_is_rejected(start, end):
     ]}})
     with pytest.raises(CalendarObservationError, match="all-day calendar interval"):
         await async_observe_candidates(
-            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
+            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE, context=READ_CONTEXT,
         )
 
 
@@ -226,13 +262,13 @@ async def test_zero_duration_timed_provider_event_is_observable_but_not_a_confli
                  end="2026-10-09T10:00:00-07:00"),
     ]}})
     observed = await async_observe_candidates(
-        fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
+        fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE, context=READ_CONTEXT,
     )
     assert len(observed) == 3
     assert observed[0].start == point["start"]
     assert observed[0].end == point["end"]
     matches = await async_classify_conflicts(
-        fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
+        fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE, context=READ_CONTEXT,
     )
     assert [(m.kind, m.existing_title) for m in matches] == [
         ("conflict", "Real conflict")
@@ -259,7 +295,7 @@ async def test_all_day_provider_events_still_reach_classifier():
     ]}})
     matches = await async_classify_conflicts(
         fake, draft(all_day=True),
-        observed_calendars=["calendar.work"], local_zone=ZONE,
+        observed_calendars=["calendar.work"], local_zone=ZONE, context=READ_CONTEXT,
     )
     assert [(match.kind, match.existing_title) for match in matches] == [
         ("exact_duplicate", "Practice")
@@ -272,7 +308,114 @@ async def test_valid_timed_provider_interval_crosses_repeated_dst_hour():
                  end="2026-11-01T01:15:00-08:00"),
     ]}})
     observed = await async_observe_candidates(
-        fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
+        fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE, context=READ_CONTEXT,
     )
     assert len(observed) == 1
     assert observed[0].start == "2026-11-01T01:30:00-07:00"
+
+
+
+async def test_read_only_user_can_observe_but_control_service_is_never_called():
+    fake = hass({"calendar.school": {"events": [existing()]}})
+    results = await async_observe_candidates(
+        fake, draft(), observed_calendars=["calendar.school"], local_zone=ZONE,
+        context=READ_CONTEXT,
+    )
+    assert len(results) == 1
+    fake.user.permissions.check_entity.assert_called_once_with(
+        "calendar.school", POLICY_READ
+    )
+    fake.services.async_call.assert_not_awaited()
+
+
+async def test_user_without_calendar_read_permission_is_denied_before_provider_access():
+    fake = hass({"calendar.school": {"events": [existing()]}})
+    fake.user.permissions.check_entity.return_value = False
+    with pytest.raises(Unauthorized):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.school"], local_zone=ZONE,
+            context=READ_CONTEXT,
+        )
+    fake.providers["calendar.school"].async_get_events.assert_not_awaited()
+
+
+async def test_no_user_or_missing_user_is_denied_before_provider_access():
+    fake = hass({"calendar.school": {"events": [existing()]}})
+    with pytest.raises(Unauthorized):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.school"], local_zone=ZONE,
+        )
+    with pytest.raises(Unauthorized):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.school"], local_zone=ZONE,
+            context=Context(),
+        )
+    fake.auth.async_get_user.return_value = None
+    with pytest.raises(Unauthorized):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.school"], local_zone=ZONE,
+            context=READ_CONTEXT,
+        )
+    fake.providers["calendar.school"].async_get_events.assert_not_awaited()
+
+
+async def test_read_permission_checks_all_calendars_before_fetching_any():
+    fake = hass({
+        "calendar.school": {"events": [existing()]},
+        "calendar.private": {"events": [existing(summary="Secret")]},
+    })
+    fake.user.permissions.check_entity.side_effect = lambda entity, policy: (
+        policy == POLICY_READ and entity == "calendar.school"
+    )
+    with pytest.raises(Unauthorized):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.school", "calendar.private"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    fake.providers["calendar.school"].async_get_events.assert_not_awaited()
+    fake.providers["calendar.private"].async_get_events.assert_not_awaited()
+
+
+async def test_missing_calendar_component_and_entity_fail_closed():
+    fake = hass({"calendar.school": {"events": [existing()]}})
+    fake.data.pop(DATA_COMPONENT)
+    with pytest.raises(CalendarObservationError, match="unavailable"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.school"], local_zone=ZONE,
+            context=READ_CONTEXT,
+        )
+    fake = hass({"calendar.school": {"events": [existing()]}})
+    with pytest.raises(CalendarObservationError, match="incomplete"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.school", "calendar.missing"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    fake.providers["calendar.school"].async_get_events.assert_not_awaited()
+
+
+async def test_native_provider_date_datetime_values_and_missing_fields():
+    raw = [
+        SimpleNamespace(summary="Holiday", start=date(2026, 10, 8),
+                        end=date(2026, 10, 9)),
+        SimpleNamespace(summary="Meeting",
+                        start=datetime.fromisoformat("2026-10-08T17:30:00-07:00"),
+                        end=datetime.fromisoformat("2026-10-08T18:30:00-07:00")),
+    ]
+    fake = hass({"calendar.school": {"events": []}})
+    fake.providers["calendar.school"].async_get_events.return_value = raw
+    candidates = await async_observe_candidates(
+        fake, draft(), observed_calendars=["calendar.school"], local_zone=ZONE,
+        context=READ_CONTEXT,
+    )
+    assert [value.all_day for value in candidates] == [True, False]
+    assert candidates[0].start == "2026-10-08"
+    assert candidates[1].start == "2026-10-08T17:30:00-07:00"
+
+    fake.providers["calendar.school"].async_get_events.return_value = [
+        SimpleNamespace(start=date(2026, 10, 8), end=date(2026, 10, 9))
+    ]
+    with pytest.raises(CalendarObservationError, match="Missing calendar event"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.school"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
