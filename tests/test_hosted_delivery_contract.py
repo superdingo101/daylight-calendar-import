@@ -103,6 +103,34 @@ def test_h3_schema_enforces_page_bounds_and_wire_field_allowlist(schema_registry
         _validate("delivery-page.schema.json", leaked, schemas, registry)
 
 
+def _validate_delivery_page_semantics(page: dict) -> None:
+    """Semantic invariants the JSON Schema cannot express by property."""
+    deliveries = page["deliveries"]
+    delivery_ids = [item["delivery_id"] for item in deliveries]
+    if len(delivery_ids) != len(set(delivery_ids)):
+        raise ValueError("delivery IDs must be unique within a page")
+    for item in deliveries:
+        attachments = item["source"]["attachments"]
+        ids = [attachment["id"] for attachment in attachments]
+        if len(ids) != len(set(ids)):
+            raise ValueError("attachment IDs must be unique within a source")
+        if sum(attachment["size_bytes"] for attachment in attachments) > 10 * 1024 * 1024:
+            raise ValueError("aggregate attachment bytes exceed 10 MiB")
+
+
+def _validate_lease_trace_immutable(trace: dict) -> None:
+    source = None
+    for event in trace["steps"]:
+        if event["op"] != "claim":
+            continue
+        if source is None:
+            source = event["source"]
+        elif source != event["source"]:
+            raise ValueError("re-lease MUST preserve the original source payload")
+    if source is None:
+        raise ValueError("at least one source claim is required")
+
+
 def test_h3_semantic_fixture_checks_immutability_integrity_and_retention():
     text_page = _read(FIXTURE_DIR / "valid" / "delivery-page-text.json")
     att_page = _read(FIXTURE_DIR / "valid" / "delivery-page-attachment.json")
@@ -156,6 +184,7 @@ def test_stale_ack_trace_rejects_old_lease_and_repeated_ack_is_idempotent():
                 assert step["code"] == "lease_not_current"
     assert acknowledged_token is not None
     assert current_token is None
+    _validate_lease_trace_immutable(trace)
 
 
 def test_ack_must_follow_durable_checkpoint_even_after_client_restart():
@@ -239,3 +268,55 @@ def test_h3_wire_rejects_disallowed_calendar_writes_or_secrets(schema_registry):
         modified["deliveries"][0]["source"]["metadata"][field] = "secret"
         with pytest.raises(ValidationError):
             _validate("delivery-page.schema.json", modified, schemas, registry)
+
+
+def test_semantically_conflicting_attachment_ids_are_rejected(schema_registry):
+    """uniqueItems cannot detect different descriptors with the same ID."""
+    schemas, registry = schema_registry
+    page = _read(
+        FIXTURE_DIR / "invalid" / "delivery-page-duplicate-attachment-id-semantic.json"
+    )
+    # Structural schema validates: uniqueness by *ID* needs a semantic rule.
+    _validate("delivery-page.schema.json", page, schemas, registry)
+    with pytest.raises(ValueError, match="attachment IDs must be unique"):
+        _validate_delivery_page_semantics(page)
+
+
+def test_page_semantics_reject_duplicate_deliveries_and_aggregate_oversize():
+    import copy
+
+    page = _read(FIXTURE_DIR / "valid" / "delivery-page-attachment.json")
+    _validate_delivery_page_semantics(page)
+    duplicate = copy.deepcopy(page)
+    duplicate["deliveries"].append(copy.deepcopy(duplicate["deliveries"][0]))
+    with pytest.raises(ValueError, match="delivery IDs must be unique"):
+        _validate_delivery_page_semantics(duplicate)
+
+    oversized = copy.deepcopy(page)
+    attachment = oversized["deliveries"][0]["source"]["attachments"][0]
+    attachment["size_bytes"] = 6 * 1024 * 1024
+    oversized["deliveries"][0]["source"]["attachments"].append(
+        {**attachment, "id": "different-attachment"}
+    )
+    with pytest.raises(ValueError, match="aggregate attachment bytes"):
+        _validate_delivery_page_semantics(oversized)
+
+
+def test_released_lease_cannot_change_source_payload_before_retry_ack():
+    import copy
+
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-stale-ack-trace.json")
+    _validate_lease_trace_immutable(trace)
+    changed_text = copy.deepcopy(trace)
+    changed_text["steps"][2]["source"]["text"] += " silently changed"
+    with pytest.raises(ValueError, match="original source payload"):
+        _validate_lease_trace_immutable(changed_text)
+
+    changed_attachment = copy.deepcopy(trace)
+    attachment = {
+        "id": "source.pdf", "media_type": "application/pdf", "size_bytes": 4096,
+        "sha256": "a" * 64,
+    }
+    changed_attachment["steps"][2]["source"]["attachments"].append(attachment)
+    with pytest.raises(ValueError, match="original source payload"):
+        _validate_lease_trace_immutable(changed_attachment)
