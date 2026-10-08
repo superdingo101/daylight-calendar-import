@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.auth.permissions.const import POLICY_READ
+from homeassistant.components.calendar import CalendarEvent
 from homeassistant.components.calendar.const import DATA_COMPONENT
 from homeassistant.core import Context
 from homeassistant.exceptions import Unauthorized
@@ -237,6 +238,7 @@ async def test_invalid_timed_provider_events_are_rejected_at_observation_boundar
 
 @pytest.mark.parametrize(("start", "end"), [
     ("2026-10-09", "2026-10-08"),
+    ("2026-10-08", "2026-10-08"),
 ])
 async def test_invalid_all_day_provider_duration_is_rejected(start, end):
     fake = hass({"calendar.work": {"events": [
@@ -426,45 +428,83 @@ def test_candidate_rejects_non_mapping_response():
         _candidate("calendar.work", None)
 
 
-async def test_zero_duration_all_day_provider_event_remains_observable():
-    """An HA-valid all-day point must not abort other calendar observations."""
-    fake = hass({
-        "calendar.work": {"events": [
-            {"summary": "Same-day point", "start": "2026-10-31", "end": "2026-10-31"},
-            {"summary": "Practice", "start": "2026-10-31", "end": "2026-11-02"},
-        ]},
-        "calendar.school": {"events": [
-            {"summary": "School conflict", "start": "2026-11-01", "end": "2026-11-02"},
-        ]},
-    })
+async def test_native_same_day_all_day_event_is_normalized_and_counted_as_conflict():
+    """Native HA CalendarEvent expands a same-date all-day event to one day."""
+    native = CalendarEvent(
+        start=date(2026, 10, 31),
+        end=date(2026, 10, 31),
+        summary="Same-day holiday",
+    )
+    assert native.end == date(2026, 11, 1)
+    fake = hass({"calendar.work": {"events": []}})
+    fake.providers["calendar.work"].async_get_events.return_value = [
+        native,
+        CalendarEvent(
+            start=date(2026, 10, 31),
+            end=date(2026, 11, 2),
+            summary="Practice",
+        ),
+    ]
     observed = await async_observe_candidates(
         fake, draft(all_day=True),
-        observed_calendars=["calendar.work", "calendar.school"],
-        local_zone=ZONE, context=READ_CONTEXT,
+        observed_calendars=["calendar.work"], local_zone=ZONE,
+        context=READ_CONTEXT,
     )
-    assert len(observed) == 3
-    assert observed[0].all_day is True
-    assert observed[0].start == observed[0].end == "2026-10-31"
-
-    matches = await async_classify_conflicts(
-        fake, draft(all_day=True),
-        observed_calendars=["calendar.work", "calendar.school"],
-        local_zone=ZONE, context=READ_CONTEXT,
-    )
-    assert [(m.kind, m.calendar_entity, m.existing_title) for m in matches] == [
-        ("exact_duplicate", "calendar.work", "Practice"),
-        ("conflict", "calendar.school", "School conflict"),
+    assert [(event.start, event.end) for event in observed] == [
+        ("2026-10-31", "2026-11-01"),
+        ("2026-10-31", "2026-11-02"),
     ]
-
-
-async def test_zero_duration_all_day_point_cannot_create_a_duplicate():
-    """Even matching titles must not make zero-length events duplicates."""
-    fake = hass({"calendar.work": {"events": [
-        {"summary": "Practice", "start": "2026-10-31", "end": "2026-10-31"},
-    ]}})
     matches = await async_classify_conflicts(
         fake, draft(all_day=True),
         observed_calendars=["calendar.work"], local_zone=ZONE,
         context=READ_CONTEXT,
     )
-    assert matches == ()
+    assert [(match.kind, match.existing_title) for match in matches] == [
+        ("conflict", "Same-day holiday"),
+        ("exact_duplicate", "Practice"),
+    ]
+
+
+async def test_native_same_day_event_can_be_an_exact_duplicate():
+    """Do not silently discard a normalized event with the same title."""
+    native = CalendarEvent(
+        start=date(2026, 10, 31),
+        end=date(2026, 10, 31),
+        summary="Practice",
+    )
+    fake = hass({"calendar.work": {"events": []}})
+    fake.providers["calendar.work"].async_get_events.return_value = [native]
+    one_day_draft = EventDraft(
+        "Practice", "2026-10-31", "2026-11-01", True,
+    )
+    matches = await async_classify_conflicts(
+        fake, one_day_draft,
+        observed_calendars=["calendar.work"], local_zone=ZONE,
+        context=READ_CONTEXT,
+    )
+    assert [(match.kind, match.existing_title) for match in matches] == [
+        ("exact_duplicate", "Practice"),
+    ]
+
+
+async def test_native_timed_zero_duration_remains_a_non_overlapping_point():
+    """Unlike all-day events, native timed events retain equal timestamps."""
+    start = datetime.fromisoformat("2026-10-08T17:30:00-07:00")
+    native = CalendarEvent(start=start, end=start, summary="Practice")
+    assert native.end == native.start
+    fake = hass({"calendar.work": {"events": []}})
+    fake.providers["calendar.work"].async_get_events.return_value = [
+        native,
+        CalendarEvent(
+            start=start,
+            end=datetime.fromisoformat("2026-10-08T18:30:00-07:00"),
+            summary="Other appointment",
+        ),
+    ]
+    matches = await async_classify_conflicts(
+        fake, draft(), observed_calendars=["calendar.work"],
+        local_zone=ZONE, context=READ_CONTEXT,
+    )
+    assert [(match.kind, match.existing_title) for match in matches] == [
+        ("conflict", "Other appointment"),
+    ]
