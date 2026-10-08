@@ -32,7 +32,7 @@ SCHEMA_FILES = (
     "delivery-source.schema.json",
     "delivery-item.schema.json",
     "delivery-page.schema.json",
-    "delivery-poll-query.schema.json",
+    "delivery-claim-request.schema.json",
     "delivery-ack-request.schema.json",
     "delivery-ack-response.schema.json",
 )
