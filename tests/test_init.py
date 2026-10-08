@@ -2147,3 +2147,30 @@ async def test_failing_platform_forwarding_unloads_started_email_runtime(monkeyp
     hass.config_entries.async_unload_platforms.assert_awaited_once_with(
         config_entry, ["sensor"]
     )
+
+
+async def test_forwarding_failure_and_rollback_unload_error_preserves_first_cause(
+    monkeypatch, caplog,
+):
+    hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
+    config_entry = entry()
+    hass.config_entries.async_forward_entry_setups.side_effect = RuntimeError("forward failed")
+    hass.config_entries.async_unload_platforms.side_effect = RuntimeError("rollback failed")
+    with pytest.raises(RuntimeError, match="forward failed"):
+        await async_setup_entry(hass, config_entry)
+    assert "Failed to roll back sensor setup" in caplog.text
+    assert hass.services.handlers == {}
+    assert config_entry.entry_id not in hass.data[DOMAIN]
+
+
+async def test_cancelled_platform_forwarding_does_not_leak_services(monkeypatch):
+    hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
+    config_entry = entry()
+    hass.config_entries.async_forward_entry_setups.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await async_setup_entry(hass, config_entry)
+    assert hass.services.handlers == {}
+    assert config_entry.entry_id not in hass.data[DOMAIN]
+    hass.config_entries.async_unload_platforms.assert_awaited_once()
