@@ -31,7 +31,10 @@
       "checkpoint_id": "local-store-001",
       "source_fingerprint": "v1:source:a4766efbcbf0979ea400270284e26e437e446ae5736865a2e44d61f56b97b92e",
       "source_evidence_sha256": "ca7f8771ba5ff1a732842b889f06b77fad7b50dbf2ebb55b4db47008376946f6",
-      "source_expires_at": "2026-10-15T16:00:00Z"
+      "source_expires_at": "2026-10-15T16:00:00Z",
+      "lease_token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
+      "verified_attachments": {},
+      "attachments_verification_complete": true
     },
     {
       "op": "restart_ha"
@@ -41,7 +44,10 @@
       "checkpoint_id": "local-store-001",
       "source_fingerprint": "v1:source:a4766efbcbf0979ea400270284e26e437e446ae5736865a2e44d61f56b97b92e",
       "source_evidence_sha256": "ca7f8771ba5ff1a732842b889f06b77fad7b50dbf2ebb55b4db47008376946f6",
-      "source_expires_at": "2026-10-15T16:00:00Z"
+      "source_expires_at": "2026-10-15T16:00:00Z",
+      "lease_token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
+      "verified_attachments": {},
+      "attachments_verification_complete": true
     },
     {
       "op": "ack",
