@@ -28,8 +28,11 @@ def observation_window(
 ) -> tuple[datetime, datetime]:
     """Use the draft's real local interval, including variable DST day lengths."""
     if draft.all_day:
-        start = datetime.combine(date.fromisoformat(draft.start), time.min, local_zone)
-        end = datetime.combine(date.fromisoformat(draft.end), time.min, local_zone)
+        try:
+            start = datetime.combine(date.fromisoformat(draft.start), time.min, local_zone)
+            end = datetime.combine(date.fromisoformat(draft.end), time.min, local_zone)
+        except ValueError as exc:
+            raise CalendarObservationError("Invalid all-day observation interval") from exc
     else:
         try:
             start_value = datetime.fromisoformat(draft.start)
@@ -94,12 +97,14 @@ async def async_observe_candidates(
     context: Context | None = None,
 ) -> tuple[CalendarCandidate, ...]:
     """Read selected calendars under POLICY_READ; never create/edit events."""
-    identifiers = list(dict.fromkeys(observed_calendars))
-    if not identifiers:
+    if not observed_calendars:
         return ()
+    # Validate before using identifiers as dict keys, so malformed/unhashable
+    # input fails with the same explicit observation error.
     if any(not isinstance(identifier, str) or not identifier.startswith("calendar.")
-           for identifier in identifiers):
+           for identifier in observed_calendars):
         raise CalendarObservationError("Invalid observation calendar")
+    identifiers = list(dict.fromkeys(observed_calendars))
     start, end = observation_window(draft, local_zone=local_zone)
     # Home Assistant's calendar.get_events *service* requires POLICY_CONTROL
     # because generic entity services are control-scoped. Read-only reviewers
