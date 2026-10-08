@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from copy import deepcopy
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
@@ -19,6 +20,8 @@ from .dedup import (
     source_fingerprint as build_source_fingerprint,
 )
 from .models import EventDraft
+
+_LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 2
 STORAGE_KEY = f"{DOMAIN}.pending_imports"
@@ -263,7 +266,10 @@ class PendingImportStore:
         """Install persisted data and notify consumers only after storage succeeds."""
         self._items = items
         for callback in tuple(self._subscribers):
-            callback()
+            try:
+                callback()
+            except Exception:
+                _LOGGER.exception("Pending queue subscriber failed")
 
     async def async_load(self) -> None:
         """Load pending imports and deduplication history."""
