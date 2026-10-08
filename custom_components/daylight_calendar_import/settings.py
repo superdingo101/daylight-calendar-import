@@ -172,7 +172,7 @@ def normalize_calendar_aliases(
         raise SettingsValidationError("invalid_aliases", "Calendar aliases must be a mapping.")
     normalized: dict[str, str] = {}
     for alias, target in aliases.items():
-        if not isinstance(alias, str) or "\\n" in alias or "\\r" in alias:
+        if not isinstance(alias, str) or "\n" in alias or "\r" in alias:
             raise SettingsValidationError("invalid_alias", "Calendar alias is invalid.")
         key = " ".join(unicodedata.normalize("NFKC", alias).split()).casefold()
         if not key or len(key) > 64:
