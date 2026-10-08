@@ -234,6 +234,7 @@ class PipelineEnvironment:
                 CONF_AI_TASK_ENTITY: "ai_task.test",
                 CONF_CALENDAR_ENTITY: "calendar.family",
             },
+            options={},
         )
         assert await integration_module.async_setup_entry(hass, entry) is True
         store = hass.data[DOMAIN][entry.entry_id]
