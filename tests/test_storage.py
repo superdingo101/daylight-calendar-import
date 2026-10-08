@@ -2014,6 +2014,9 @@ async def test_claim_handoff_cancellation_keeps_durable_pending_import(monkeypat
     )
     assert activity_id is not None
     backend.block_on_attempt = backend.save_attempts + 1
+    from unittest.mock import Mock
+    ready = Mock()
+    store.on_review_ready = ready
 
     task = asyncio.create_task(store.async_add(
         source_text="Friday at 5",
@@ -2035,6 +2038,7 @@ async def test_claim_handoff_cancellation_keeps_durable_pending_import(monkeypat
     assert pending.source_fingerprint == source_fingerprint(source_id)
     assert store.get_activity(activity_id)["status"] == "review_ready"
     assert "source_claims" not in backend.saved[-1]
+    ready.assert_called_once_with(pending)
 
     await store.async_record_parse_failure(activity_id)
     assert store.get(activity_id) == pending
