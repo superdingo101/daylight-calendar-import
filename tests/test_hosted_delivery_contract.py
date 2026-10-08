@@ -7,6 +7,7 @@ They do not pretend to exercise the private cloud server or a live HA adapter.
 from __future__ import annotations
 
 from datetime import datetime
+from hashlib import sha256
 import json
 from pathlib import Path
 
@@ -24,6 +25,24 @@ FIXTURE_DIR = ROOT / "tests" / "fixtures" / "hosted" / "v1"
 
 def _read(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _source_evidence_sha256(source: dict) -> str:
+    """Canonical complete-source evidence independent of namespaced dedup ID."""
+    canonical = json.dumps(
+        source, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return sha256(canonical).hexdigest()
+
+
+def _check_checkpoint_evidence(claim: dict, saved: dict, recovered: dict) -> None:
+    """A restart cannot trade a durable source identity for verified contents."""
+    assert saved["source_fingerprint"] == recovered["source_fingerprint"]
+    assert saved["source_fingerprint"]
+    expected = _source_evidence_sha256(claim["source"])
+    assert saved["source_evidence_sha256"] == expected
+    assert recovered["source_evidence_sha256"] == expected
 
 
 @pytest.fixture(scope="module")
@@ -201,29 +220,34 @@ def test_ack_must_follow_durable_checkpoint_even_after_client_restart():
         "recover_checkpoint", "ack",
     ]
     assert steps[3]["checkpoint_id"] == steps[5]["checkpoint_id"]
+    _check_checkpoint_evidence(steps[0], steps[3], steps[5])
     assert steps[0]["token"] == steps[-1]["token"]
     assert trace["source_id"] != trace["delivery_id"]
 
 
-@pytest.mark.parametrize("query", [
-    {},
-    {"limit": 1},
-    {"limit": 50, "cursor": "nextPageAbc123_-"},
+@pytest.mark.parametrize("claim", [
+    {"schema_version": 1},
+    {"schema_version": 1, "limit": 1},
+    {"schema_version": 1, "limit": 50, "cursor": "nextPageAbc123_-"},
 ])
-def test_h3_bounded_poll_query_schema_accepts_valid_normalized_inputs(query, schema_registry):
+def test_h3_bounded_claim_request_schema_accepts_valid_json(claim, schema_registry):
     schemas, registry = schema_registry
-    _validate("delivery-poll-query.schema.json", query, schemas, registry)
+    _validate("delivery-claim-request.schema.json", claim, schemas, registry)
 
 
-@pytest.mark.parametrize("query", [
-    {"limit": 0}, {"limit": 51}, {"limit": "20"}, {"limit": -1},
-    {"cursor": ""}, {"cursor": "../other-installation"}, {"cursor": "!"}, 
-    {"cursor": "x" * 1025}, {"installation_id": "another-tenant"},
+@pytest.mark.parametrize("claim", [
+    {}, {"schema_version": 2}, {"schema_version": 1, "limit": 0},
+    {"schema_version": 1, "limit": 51}, {"schema_version": 1, "limit": "20"},
+    {"schema_version": 1, "limit": -1}, {"schema_version": 1, "cursor": ""},
+    {"schema_version": 1, "cursor": "../other-installation"},
+    {"schema_version": 1, "cursor": "!"},
+    {"schema_version": 1, "cursor": "x" * 1025},
+    {"schema_version": 1, "installation_id": "another-tenant"},
 ])
-def test_h3_bounded_poll_query_rejects_invalid_or_tenant_scoped_inputs(query, schema_registry):
+def test_h3_bounded_claim_request_rejects_invalid_or_tenant_scoped_input(claim, schema_registry):
     schemas, registry = schema_registry
     with pytest.raises(ValidationError):
-        _validate("delivery-poll-query.schema.json", query, schemas, registry)
+        _validate("delivery-claim-request.schema.json", claim, schemas, registry)
 
 
 def test_h3_sources_are_compatible_with_public_local_source_contract():
@@ -375,16 +399,9 @@ def _validate_terminal_ack_trace(trace: dict) -> None:
     assert operations.index("persist_terminal_no_events") < operations.index("restart_ha")
     assert operations.index("restart_ha") < operations.index("recover_terminal_no_events")
     assert operations.index("recover_terminal_no_events") < operations.index("ack")
-    committed = next(
-        step["source_fingerprint"]
-        for step in steps if step["op"] == "persist_terminal_no_events"
-    )
-    recovered = next(
-        step["source_fingerprint"]
-        for step in steps if step["op"] == "recover_terminal_no_events"
-    )
-    assert committed == recovered
-    assert committed
+    saved = next(step for step in steps if step["op"] == "persist_terminal_no_events")
+    recovered = next(step for step in steps if step["op"] == "recover_terminal_no_events")
+    _check_checkpoint_evidence(steps[0], saved, recovered)
 
 
 def test_durable_no_event_disposition_can_be_acknowledged_after_restart():
@@ -401,6 +418,14 @@ def test_durable_no_event_disposition_can_be_acknowledged_after_restart():
     inconsistent["steps"][4]["source_fingerprint"] = "other-hash"
     with pytest.raises(AssertionError):
         _validate_terminal_ack_trace(inconsistent)
+    altered_evidence = copy.deepcopy(trace)
+    altered_evidence["steps"][4]["source_evidence_sha256"] = "0" * 64
+    with pytest.raises(AssertionError):
+        _validate_terminal_ack_trace(altered_evidence)
+    altered_redelivery = copy.deepcopy(trace)
+    altered_redelivery["steps"][0]["source"]["text"] += " tampered"
+    with pytest.raises(AssertionError):
+        _validate_terminal_ack_trace(altered_redelivery)
 
 
 def _validate_ack_tombstone_trace(trace: dict) -> None:
@@ -425,7 +450,8 @@ def _validate_ack_tombstone_trace(trace: dict) -> None:
     last_retry = steps[4]
     assert last_retry["op"] == "retry_ack"
     assert datetime.fromisoformat(last_retry["at"]) >= expiry
-    assert last_retry["status"] in (404, 410)
+    assert last_retry["status"] == 404
+    assert last_retry["code"] == "not_found"
 
 
 def test_ack_tombstone_survives_raw_source_deletion_through_expiry():
@@ -445,6 +471,11 @@ def test_ack_tombstone_survives_raw_source_deletion_through_expiry():
     mutated_time["steps"][2]["acknowledged_at"] = "2026-10-10T16:00:00Z"
     with pytest.raises(AssertionError):
         _validate_ack_tombstone_trace(mutated_time)
+    wrong_terminal = copy.deepcopy(trace)
+    wrong_terminal["steps"][4]["status"] = 410
+    wrong_terminal["steps"][4]["code"] = "source_expired"
+    with pytest.raises(AssertionError):
+        _validate_ack_tombstone_trace(wrong_terminal)
 
 
 def _validate_identity_history(claims: list[dict]) -> None:
@@ -455,12 +486,13 @@ def _validate_identity_history(claims: list[dict]) -> None:
         source_id = claim["source_id"]
         delivery_id = claim["delivery_id"]
         payload = claim["source"]
-        if source_id in sources and sources[source_id] != (delivery_id, payload):
-            raise ValueError("source identity reassigned to different delivery or content")
-        if delivery_id in deliveries and deliveries[delivery_id] != (source_id, payload):
-            raise ValueError("delivery identity reassigned to different source or content")
-        sources[source_id] = (delivery_id, payload)
-        deliveries[delivery_id] = (source_id, payload)
+        expiry = claim["source_expires_at"]
+        if source_id in sources and sources[source_id] != (delivery_id, payload, expiry):
+            raise ValueError("source identity reassigned to different delivery, content or expiry")
+        if delivery_id in deliveries and deliveries[delivery_id] != (source_id, payload, expiry):
+            raise ValueError("delivery identity reassigned to different source, content or expiry")
+        sources[source_id] = (delivery_id, payload, expiry)
+        deliveries[delivery_id] = (source_id, payload, expiry)
 
 
 def test_source_and_delivery_ids_cannot_be_reassigned_across_poll_cycles():
@@ -470,6 +502,15 @@ def test_source_and_delivery_ids_cannot_be_reassigned_across_poll_cycles():
     renewed = copy.deepcopy(original)
     renewed["lease_token"] = "leaseToken_NewClaim1234567890ABCDEFGHIJKLMNOPQRSTUV"
     _validate_identity_history([original, renewed])
+
+    shortened_expiry = copy.deepcopy(renewed)
+    shortened_expiry["source_expires_at"] = "2026-10-12T16:00:00Z"
+    with pytest.raises(ValueError, match="source identity reassigned"):
+        _validate_identity_history([original, shortened_expiry])
+    extended_expiry = copy.deepcopy(renewed)
+    extended_expiry["source_expires_at"] = "2026-10-18T16:00:00Z"
+    with pytest.raises(ValueError, match="source identity reassigned"):
+        _validate_identity_history([original, extended_expiry])
 
     reused_source = copy.deepcopy(original)
     reused_source["delivery_id"] = "delivery_00000000000000000099"
@@ -485,3 +526,19 @@ def test_source_and_delivery_ids_cannot_be_reassigned_across_poll_cycles():
     reused_delivery["source_id"] = "source_000000000000000000000099"
     with pytest.raises(ValueError, match="delivery identity reassigned"):
         _validate_identity_history([original, reused_delivery])
+
+
+def test_durable_pending_checkpoint_requires_content_evidence_after_restart():
+    import copy
+
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-durable-client-trace.json")
+    claim, saved, recovered = trace["steps"][0], trace["steps"][3], trace["steps"][5]
+    _check_checkpoint_evidence(claim, saved, recovered)
+    changed = copy.deepcopy(trace)
+    changed["steps"][0]["source"]["metadata"]["sender"] = "attacker@example.test"
+    with pytest.raises(AssertionError):
+        _check_checkpoint_evidence(changed["steps"][0], saved, recovered)
+    lost = copy.deepcopy(trace)
+    del lost["steps"][5]["source_evidence_sha256"]
+    with pytest.raises(KeyError):
+        _check_checkpoint_evidence(claim, saved, lost["steps"][5])
