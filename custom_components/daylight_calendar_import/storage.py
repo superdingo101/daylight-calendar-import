@@ -252,6 +252,7 @@ class PendingImportStore:
         self._source_claim_releases: set[str] = set()
         self._lock = asyncio.Lock()
         self._subscribers: set[Callable[[], None]] = set()
+        self.on_review_ready: Callable[[PendingImport], None] | None = None
 
     def async_subscribe(self, callback: Callable[[], None]) -> Callable[[], None]:
         """Listen for committed queue snapshots; unsubscribe on entity unload."""
@@ -1036,6 +1037,8 @@ class PendingImportStore:
             self._commit_items(items)
             self._activity = activity
             self._source_claims = source_claims
+            if self.on_review_ready is not None:
+                self.on_review_ready(pending)
             return PendingImportAddResult(
                 pending=pending,
                 duplicate_source=False,
