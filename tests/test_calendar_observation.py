@@ -179,3 +179,74 @@ def test_observation_window_rejects_naive_timed_drafts():
     )
     with pytest.raises(CalendarObservationError, match="require UTC offsets"):
         observation_window(naive_end, local_zone=ZONE)
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("nonsense-time", "2026-10-08T18:00:00-07:00"),
+    ("2026-10-08T17:00:00-07:00", "bad-end"),
+    ("2026-10-08T17:00:00", "2026-10-08T18:00:00-07:00"),
+    ("2026-10-08T17:00:00-07:00", "2026-10-08T18:00:00"),
+    ("2026-10-08T19:00:00-07:00", "2026-10-08T18:00:00-07:00"),
+])
+async def test_invalid_timed_provider_events_are_rejected_at_observation_boundary(
+    start, end,
+):
+    fake = hass({"calendar.work": {"events": [existing(start=start, end=end)]}})
+    with pytest.raises(CalendarObservationError, match="timed calendar interval|timezone offsets"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
+        )
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("2026-10-09", "2026-10-08"),
+    ("2026-10-08", "2026-10-08"),
+])
+async def test_invalid_all_day_provider_duration_is_rejected(start, end):
+    fake = hass({"calendar.work": {"events": [
+        existing(start=start, end=end)
+    ]}})
+    with pytest.raises(CalendarObservationError, match="all-day calendar interval"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
+        )
+
+
+async def test_zero_duration_timed_provider_event_is_observable_but_not_a_conflict():
+    # HA 2026.7.4 permits zero-duration provider events, e.g. from Google.
+    point = existing(
+        summary="Practice",
+        start="2026-10-08T17:30:00-07:00",
+        end="2026-10-09T00:30:00+00:00",
+    )
+    fake = hass({"calendar.work": {"events": [
+        point,
+        existing(summary="Real conflict"),
+        existing(summary="Outside", start="2026-10-09T09:00:00-07:00",
+                 end="2026-10-09T10:00:00-07:00"),
+    ]}})
+    observed = await async_observe_candidates(
+        fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
+    )
+    assert len(observed) == 3
+    assert observed[0].start == point["start"]
+    assert observed[0].end == point["end"]
+    matches = await async_classify_conflicts(
+        fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
+    )
+    assert [(m.kind, m.existing_title) for m in matches] == [
+        ("conflict", "Real conflict")
+    ]
+
+
+def test_invalid_timed_draft_is_rejected_as_observation_error():
+    broken = EventDraft(
+        "Broken", "not-a-datetime", "2026-10-08T18:30:00-07:00", False,
+    )
+    with pytest.raises(CalendarObservationError, match="Invalid timed observation"):
+        observation_window(broken, local_zone=ZONE)
+    broken_end = EventDraft(
+        "Broken", "2026-10-08T17:30:00-07:00", "not-a-datetime", False,
+    )
+    with pytest.raises(CalendarObservationError, match="Invalid timed observation"):
+        observation_window(broken_end, local_zone=ZONE)
