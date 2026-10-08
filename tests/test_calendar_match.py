@@ -85,3 +85,19 @@ def test_mixed_all_day_and_timed_uses_local_day_boundary():
     assert classify(all_day, timed) is None
     overlap = existing("Meeting", "2026-10-08T08:00:00+00:00", "2026-10-08T09:00:00+00:00")
     assert classify(all_day, overlap).kind == "conflict"
+
+
+def test_unicode_equivalent_titles_are_exact_duplicates():
+    assert classify(draft("Café"), existing("Cafe\u0301")).kind == "exact_duplicate"
+    assert classify(draft("Ａｃｔｉｖｉｔｙ"), existing("Activity")).kind == "exact_duplicate"
+
+
+def test_naive_timed_provider_values_fail_closed():
+    import pytest
+
+    for start, end in (
+        ("2026-10-08T17:00:00", "2026-10-08T18:00:00+00:00"),
+        ("2026-10-09T00:00:00+00:00", "2026-10-09T01:00:00"),
+    ):
+        with pytest.raises(ValueError, match="timezone offsets"):
+            classify(draft(), existing(start=start, end=end))
