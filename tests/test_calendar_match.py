@@ -101,3 +101,16 @@ def test_naive_timed_provider_values_fail_closed():
     ):
         with pytest.raises(ValueError, match="timezone offsets"):
             classify(draft(), existing(start=start, end=end))
+
+
+def test_invalid_provider_ranges_fail_closed():
+    import pytest
+
+    invalid_ranges = (
+        existing(start="2026-10-09T00:00:00+00:00", end="2026-10-09T00:00:00+00:00"),
+        existing(start="2026-10-09T01:00:00+00:00", end="2026-10-09T00:00:00+00:00"),
+        existing(start="2026-10-10", end="2026-10-09", all_day=True),
+    )
+    for candidate in invalid_ranges:
+        with pytest.raises(ValueError, match="end must be after start"):
+            classify(draft(), candidate)
