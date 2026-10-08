@@ -3368,3 +3368,134 @@ test("routing tab rejects aliases pointing to read-only calendars without saving
   assert.match(form.querySelector(".error").textContent, /writable calendar/);
   assert.equal(messages.includes("daylight_calendar_import/settings/calendar_intelligence/update"), false);
 });
+
+test("routing aliases with equals and astral Unicode names are accepted by client", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {"Pickup=A": "calendar.family"},
+    conflict_calendar_entities: [],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let sent;
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+        sent = message;
+        current = {...current, calendar_aliases: message.calendar_aliases,
+          conflict_calendar_entities: message.conflict_calendar_entities};
+        return current;
+      }
+      throw Error("Unexpected call");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  assert.match(form.elements.namedItem("calendar_aliases").value, /Pickup=A/);
+  form.elements.namedItem("calendar_aliases").value =
+    `Pickup=A = calendar.family\n${"🎉".repeat(33)} = calendar.family`;
+  await panel.saveRoutingSettings(form);
+  assert.ok(sent);
+  assert.deepEqual(Object.keys(sent.calendar_aliases), ["Pickup=A", "🎉".repeat(33)]);
+});
+
+test("routing preserves unfinished text and conflict selection across tabs", async () => {
+  const snapshot = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.personal": {entity_id: "calendar.personal", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return snapshot;
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const textarea = form.elements.namedItem("calendar_aliases");
+  textarea.value = "Unfinished = ";
+  textarea.input();
+  for (const input of form.querySelectorAll("input")) {
+    if (input.value === "calendar.personal") {
+      input.checked = true;
+      input.change();
+    }
+  }
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Routing").click();
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value, "Unfinished = ");
+  assert.equal(form.querySelectorAll("input")
+    .find(input => input.value === "calendar.personal").checked, true);
+});
+
+test("routing ambiguous save reconciles normalized server aliases", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+        current = {...current, calendar_aliases: {kids: "calendar.family"}};
+        throw Error("response lost after persistence");
+      }
+      throw Error("Unexpected call");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value = " Kids = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.equal(panel._settingsDrafts.routing, null);
+  assert.equal(panel._settingsError, null);
+  assert.deepEqual(panel._settings.calendar_aliases, {kids: "calendar.family"});
+});
+
+test("routing textarea is disabled while settings save is awaiting response", async () => {
+  let finish;
+  const pending = new Promise(resolve => {finish = resolve;});
+  const snapshot = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return snapshot;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) return pending;
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  const started = panel.saveRoutingSettings(find(panel._content, "form"));
+  assert.equal(find(panel._content, "textarea").disabled, true);
+  finish(snapshot);
+  await started;
+});
