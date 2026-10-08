@@ -113,6 +113,9 @@ class _HTMLTextExtractor(HTMLParser):
 
         if tag == "br" or tag in _BLOCK_TAGS:
             self._parts.append("\n")
+        if tag == "blockquote":
+            # Preserve a visible history boundary for downstream routing logic.
+            self._parts.append(">\\n")
 
         if tag == "a":
             href = (attributes.get("href") or "").strip()
