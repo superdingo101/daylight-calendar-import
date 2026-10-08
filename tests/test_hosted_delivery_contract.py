@@ -109,6 +109,9 @@ def _validate_delivery_page_semantics(page: dict) -> None:
     delivery_ids = [item["delivery_id"] for item in deliveries]
     if len(delivery_ids) != len(set(delivery_ids)):
         raise ValueError("delivery IDs must be unique within a page")
+    source_ids = [item["source_id"] for item in deliveries]
+    if len(source_ids) != len(set(source_ids)):
+        raise ValueError("source IDs must be unique within a page")
     for item in deliveries:
         attachments = item["source"]["attachments"]
         ids = [attachment["id"] for attachment in attachments]
@@ -241,7 +244,17 @@ def test_h3_sources_are_compatible_with_public_local_source_contract():
         upstream_source_id=item["source_id"],
     )
     assert source.kind is SourceKind.EMAIL
-    assert source.id == source.upstream_source_id
+    # The public client will use delivery_id in a local installation namespace
+    # as the source fingerprint key (not the unqualified source_id).
+    local_identity = "hosted:local-config-entry-1:" + item["delivery_id"]
+    source = SourceDocument(
+        id=source.id, kind=source.kind, received_at=source.received_at,
+        title=source.title, text=source.text, metadata=source.metadata,
+        upstream_source_id=local_identity,
+    )
+    assert source.id == item["source_id"]
+    assert source.upstream_source_id == local_identity
+    assert source.id != source.upstream_source_id
     assert source.metadata == {"sender": "teacher@example.test"}
     assert source.text and not source.attachments
 
@@ -320,3 +333,120 @@ def test_released_lease_cannot_change_source_payload_before_retry_ack():
     changed_attachment["steps"][2]["source"]["attachments"].append(attachment)
     with pytest.raises(ValueError, match="original source payload"):
         _validate_lease_trace_immutable(changed_attachment)
+
+
+def test_page_semantics_reject_distinct_deliveries_reusing_source_identity(
+    schema_registry,
+):
+    """Two different delivery IDs must not mask a duplicate source ID."""
+    schemas, registry = schema_registry
+    page = _read(
+        FIXTURE_DIR / "invalid" / "delivery-page-duplicate-source-id-semantic.json"
+    )
+    _validate("delivery-page.schema.json", page, schemas, registry)
+    assert page["deliveries"][0]["delivery_id"] != page["deliveries"][1]["delivery_id"]
+    assert page["deliveries"][0]["source_id"] == page["deliveries"][1]["source_id"]
+    with pytest.raises(ValueError, match="source IDs must be unique"):
+        _validate_delivery_page_semantics(page)
+
+
+def test_hosted_delivery_fingerprint_keys_are_installation_namespaced():
+    """A source collision cannot ACK another delivery or local installation."""
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    def identity(local_entry: str, delivery_id: str) -> str:
+        return f"hosted:{local_entry}:{delivery_id}"
+
+    key = identity("entry-one", "delivery_00000000000000000001")
+    assert source_fingerprint(key) == source_fingerprint(key)
+    assert source_fingerprint(key) != source_fingerprint(
+        identity("entry-one", "delivery_00000000000000000002")
+    )
+    assert source_fingerprint(key) != source_fingerprint(
+        identity("entry-two", "delivery_00000000000000000001")
+    )
+
+
+def _validate_terminal_ack_trace(trace: dict) -> None:
+    """Model only the documented public ordering constraint; not a mock cloud."""
+    steps = trace["steps"]
+    operations = [step["op"] for step in steps]
+    assert operations[0] == "claim"
+    assert operations[-1] == "ack"
+    assert operations.index("parse_no_events") < operations.index(
+        "persist_terminal_no_events"
+    )
+    assert operations.index("persist_terminal_no_events") < operations.index("ack")
+    assert operations.index("persist_terminal_no_events") < operations.index("restart_ha")
+    assert operations.index("restart_ha") < operations.index("recover_terminal_no_events")
+    assert operations.index("recover_terminal_no_events") < operations.index("ack")
+    committed = next(
+        step["source_fingerprint"]
+        for step in steps if step["op"] == "persist_terminal_no_events"
+    )
+    recovered = next(
+        step["source_fingerprint"]
+        for step in steps if step["op"] == "recover_terminal_no_events"
+    )
+    assert committed == recovered
+    assert committed
+
+
+def test_durable_no_event_disposition_can_be_acknowledged_after_restart():
+    import copy
+
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-no-events-client-trace.json")
+    _validate_terminal_ack_trace(trace)
+    assert trace["steps"][0]["token"] == trace["steps"][-1]["token"]
+    premature = copy.deepcopy(trace)
+    premature["steps"].pop(2)
+    with pytest.raises((AssertionError, StopIteration, ValueError)):
+        _validate_terminal_ack_trace(premature)
+    inconsistent = copy.deepcopy(trace)
+    inconsistent["steps"][4]["source_fingerprint"] = "other-hash"
+    with pytest.raises(AssertionError):
+        _validate_terminal_ack_trace(inconsistent)
+
+
+def _validate_ack_tombstone_trace(trace: dict) -> None:
+    """Wire-idempotency lifetime is bounded by the source expiration."""
+    steps = trace["steps"]
+    expiry = datetime.fromisoformat(trace["source_expires_at"])
+    confirmed = steps[0]
+    assert confirmed["op"] == "ack_confirmed" and confirmed["status"] == 200
+    original_time = confirmed["acknowledged_at"]
+    confirmed_token = confirmed["token"]
+    assert datetime.fromisoformat(original_time) < expiry
+    assert steps[1]["op"] == "delete_source_bytes"
+    assert datetime.fromisoformat(steps[1]["at"]) < expiry
+    first_retry = steps[2]
+    assert first_retry["op"] == "retry_ack"
+    assert datetime.fromisoformat(first_retry["at"]) < expiry
+    assert first_retry["token"] == confirmed_token
+    assert first_retry["status"] == 200
+    assert first_retry["acknowledged_at"] == original_time
+    assert steps[3]["op"] == "expire_tombstone"
+    assert datetime.fromisoformat(steps[3]["at"]) >= expiry
+    last_retry = steps[4]
+    assert last_retry["op"] == "retry_ack"
+    assert datetime.fromisoformat(last_retry["at"]) >= expiry
+    assert last_retry["status"] in (404, 410)
+
+
+def test_ack_tombstone_survives_raw_source_deletion_through_expiry():
+    import copy
+
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-ack-tombstone-trace.json")
+    _validate_ack_tombstone_trace(trace)
+    missing_idempotency = copy.deepcopy(trace)
+    missing_idempotency["steps"][2]["status"] = 410
+    with pytest.raises(AssertionError):
+        _validate_ack_tombstone_trace(missing_idempotency)
+    early_delete = copy.deepcopy(trace)
+    early_delete["steps"][3]["at"] = "2026-10-09T16:00:00Z"
+    with pytest.raises(AssertionError):
+        _validate_ack_tombstone_trace(early_delete)
+    mutated_time = copy.deepcopy(trace)
+    mutated_time["steps"][2]["acknowledged_at"] = "2026-10-10T16:00:00Z"
+    with pytest.raises(AssertionError):
+        _validate_ack_tombstone_trace(mutated_time)
