@@ -58,6 +58,7 @@ INVALID_FIXTURES = (
     ("parse-response.schema.json", "parse-response-invalid-confidence.json"),
     ("error.schema.json", "error-missing-retryable.json"),
     ("delivery-claim-request.schema.json", "delivery-claim-request-missing-id.json"),
+    ("delivery-claim-request.schema.json", "delivery-claim-request-missing-expiry.json"),
     ("delivery-page.schema.json", "delivery-page-missing-lease-token.json"),
     ("delivery-page.schema.json", "delivery-page-extra-metadata.json"),
     ("delivery-page.schema.json", "delivery-page-attachment-missing-sha256.json"),
