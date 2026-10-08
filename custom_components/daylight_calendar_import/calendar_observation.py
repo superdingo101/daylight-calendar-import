@@ -28,8 +28,11 @@ def observation_window(
         start = datetime.combine(date.fromisoformat(draft.start), time.min, local_zone)
         end = datetime.combine(date.fromisoformat(draft.end), time.min, local_zone)
     else:
-        start_value = datetime.fromisoformat(draft.start)
-        end_value = datetime.fromisoformat(draft.end)
+        try:
+            start_value = datetime.fromisoformat(draft.start)
+            end_value = datetime.fromisoformat(draft.end)
+        except ValueError as exc:
+            raise CalendarObservationError("Invalid timed observation interval") from exc
         if start_value.utcoffset() is None or end_value.utcoffset() is None:
             raise CalendarObservationError("Timed observations require UTC offsets")
         start = start_value.astimezone(local_zone)
@@ -57,8 +60,22 @@ def _candidate(calendar_entity: str, raw: Any) -> CalendarCandidate:
             date.fromisoformat(end)
         except ValueError as exc:
             raise CalendarObservationError("Invalid all-day calendar interval") from exc
+        if date.fromisoformat(end) <= date.fromisoformat(start):
+            raise CalendarObservationError("Invalid all-day calendar interval")
     elif len(start) == 10 or len(end) == 10:
         raise CalendarObservationError("Mixed calendar event date formats")
+    else:
+        try:
+            start_time = datetime.fromisoformat(start)
+            end_time = datetime.fromisoformat(end)
+        except ValueError as exc:
+            raise CalendarObservationError("Invalid timed calendar interval") from exc
+        if start_time.utcoffset() is None or end_time.utcoffset() is None:
+            raise CalendarObservationError("Timed calendar events require timezone offsets")
+        # Home Assistant permits zero-duration timed provider events. Reject
+        # reversed intervals, but preserve zero-duration points for observation.
+        if end_time.astimezone(timezone.utc) < start_time.astimezone(timezone.utc):
+            raise CalendarObservationError("Invalid timed calendar interval")
     return CalendarCandidate(calendar_entity, title, start, end, all_day)
 
 
@@ -109,9 +126,16 @@ async def async_classify_conflicts(
         hass, draft, observed_calendars=observed_calendars,
         local_zone=local_zone, context=context,
     )
-    return tuple(
-        match
-        for existing in candidates
-        if (match := classify_calendar_event(draft, existing, local_zone=local_zone))
-        is not None
-    )
+    matches: list[CalendarMatch] = []
+    for existing in candidates:
+        # A provider's zero-duration point occupies no scheduling interval,
+        # so the positive-duration classifier must not attempt to match it.
+        if not existing.all_day and (
+            datetime.fromisoformat(existing.start).astimezone(timezone.utc)
+            == datetime.fromisoformat(existing.end).astimezone(timezone.utc)
+        ):
+            continue
+        match = classify_calendar_event(draft, existing, local_zone=local_zone)
+        if match is not None:
+            matches.append(match)
+    return tuple(matches)
