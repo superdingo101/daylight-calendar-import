@@ -1046,16 +1046,18 @@ async def test_approve_uncertain_pending_raises_validation_error(monkeypatch):
     await async_setup_entry(hass, entry())
     approve_handler = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)][0]
 
-    with pytest.raises(
-        ServiceValidationError,
-        match="unfinished approval attempt.*resolve_pending_event",
-    ):
+    with pytest.raises(ServiceValidationError) as error:
         await approve_handler(
             SimpleNamespace(
                 data={ATTR_PENDING_ID: "pending-1"},
                 context=Context(user_id="reviewer"),
             )
         )
+    assert str(error.value) == (
+        "Pending import has an unfinished approval attempt; "
+        "automatic retry is blocked to avoid duplicates. Check the "
+        "calendar and use resolve_pending_event for the uncertain event"
+    )
 
     assert permissions.calls == [("calendar.family", POLICY_CONTROL)]
     assert hass.services.calls == []
@@ -2083,8 +2085,9 @@ async def test_unload_blocks_new_service_calls_and_drains_accepted_before_store_
     unloading_task = asyncio.create_task(async_unload_entry(hass, config_entry))
     await unloading.wait()
     assert old_store.accepting_services is False
-    with pytest.raises(ServiceValidationError, match="unloading"):
+    with pytest.raises(ServiceValidationError) as error:
         await handler(call)
+    assert str(error.value) == "Daylight is unloading; retry after reload"
     assert old_store.active_service_handlers == {accepted}
 
     finish_platform.set()
@@ -2167,7 +2170,10 @@ async def test_forwarding_failure_and_rollback_unload_error_preserves_first_caus
     hass.config_entries.async_unload_platforms.side_effect = RuntimeError("rollback failed")
     with pytest.raises(RuntimeError, match="forward failed"):
         await async_setup_entry(hass, config_entry)
-    assert "Failed to roll back sensor setup" in caplog.text
+    assert any(
+        record.message == "Failed to roll back sensor setup"
+        for record in caplog.records
+    )
     assert hass.services.handlers == {}
     assert hass.data[DOMAIN][config_entry.entry_id].rollback_pending is True
 
@@ -2193,13 +2199,17 @@ async def test_failed_sensor_rollback_keeps_store_until_retry_cleanup(monkeypatc
     hass.config_entries.async_unload_platforms.return_value = False
     with pytest.raises(RuntimeError, match="forward interrupted"):
         await async_setup_entry(hass, config_entry)
-    assert "Failed to roll back Daylight sensor platform" in caplog.text
+    assert any(
+        record.message == "Failed to roll back Daylight sensor platform"
+        for record in caplog.records
+    )
     assert hass.data[DOMAIN][config_entry.entry_id] is old_store
     assert old_store.rollback_pending is True
 
     # A failed cleanup on retry must not install a second store.
-    with pytest.raises(RuntimeError, match="rollback is incomplete"):
+    with pytest.raises(RuntimeError) as error:
         await async_setup_entry(hass, config_entry)
+    assert str(error.value) == "Previous Daylight sensor rollback is incomplete"
     assert hass.data[DOMAIN][config_entry.entry_id] is old_store
 
     # The next successful cleanup allows a fresh entry setup.
@@ -2216,8 +2226,9 @@ async def test_duplicate_setup_never_discards_live_store(monkeypatch):
     config_entry = entry()
     await async_setup_entry(hass, config_entry)
     existing = hass.data[DOMAIN][config_entry.entry_id]
-    with pytest.raises(RuntimeError, match="already initialized"):
+    with pytest.raises(RuntimeError) as error:
         await async_setup_entry(hass, config_entry)
+    assert str(error.value) == "Daylight entry is already initialized"
     assert hass.data[DOMAIN][config_entry.entry_id] is existing
 
 
@@ -2233,7 +2244,10 @@ async def test_rollback_email_stop_failure_keeps_runtime_for_retry(monkeypatch, 
     hass.config_entries.async_forward_entry_setups.side_effect = RuntimeError("sensor failed")
     with pytest.raises(RuntimeError, match="sensor failed"):
         await async_setup_entry(hass, config_entry)
-    assert "Failed to stop email runtime" in caplog.text
+    assert any(
+        record.message == "Failed to stop email runtime during setup rollback"
+        for record in caplog.records
+    )
     previous = hass.data[DOMAIN][config_entry.entry_id]
     assert previous.rollback_pending is True
     assert previous.email_runtime is runtime
