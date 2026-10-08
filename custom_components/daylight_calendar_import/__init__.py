@@ -202,13 +202,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if not pending_store.accepting_services:
                 raise ServiceValidationError("Daylight is unloading; retry after reload")
             task = asyncio.current_task()
-            if task is not None:
-                pending_store.active_service_handlers.add(task)
+            pending_store.active_service_handlers.add(task)
             try:
                 return await handler(call)
             finally:
-                if task is not None:
-                    pending_store.active_service_handlers.discard(task)
+                pending_store.active_service_handlers.discard(task)
 
         return invoke
 
@@ -760,7 +758,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     email_runtime = getattr(store, "email_runtime", None)
     if email_runtime is not None:
         await email_runtime.async_stop()
-    accepted = set(store.active_submissions) | set(store.active_service_handlers)
+    accepted = set(store.active_submissions) | set(getattr(store, "active_service_handlers", ()))
     if accepted:
         await asyncio.gather(*accepted, return_exceptions=True)
     hass.data[DOMAIN].pop(entry.entry_id, None)
