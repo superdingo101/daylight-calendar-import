@@ -2028,9 +2028,20 @@ async def test_failed_sensor_forwarding_rolls_back_without_service_leaks(monkeyp
     assert hass.services.handlers == {}
 
 
+def _fake_lifecycle_store(monkeypatch):
+    """Build lightweight storage for service-only Home Assistant fixtures."""
+    store = SimpleNamespace(async_load=AsyncMock())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: store,
+    )
+    return store
+
+
 async def test_unload_blocks_new_service_calls_and_drains_accepted_before_store_removal(monkeypatch):
     """A handler awaiting its first permission check cannot outlive its store."""
     hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
     config_entry = entry()
     parsing = asyncio.Event()
     finish_parsing = asyncio.Event()
@@ -2082,6 +2093,7 @@ async def test_unload_blocks_new_service_calls_and_drains_accepted_before_store_
 
 async def test_email_setup_failure_cleans_registered_services_and_panel(monkeypatch):
     hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
     config_entry = entry()
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.async_setup_email_runtime",
@@ -2103,8 +2115,9 @@ async def test_email_setup_failure_cleans_registered_services_and_panel(monkeypa
     )
 
 
-async def test_unload_platform_exception_restores_service_admission():
+async def test_unload_platform_exception_restores_service_admission(monkeypatch):
     hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
     config_entry = entry()
     await async_setup_entry(hass, config_entry)
     store = hass.data[DOMAIN][config_entry.entry_id]
@@ -2118,6 +2131,7 @@ async def test_unload_platform_exception_restores_service_admission():
 
 async def test_failing_platform_forwarding_unloads_started_email_runtime(monkeypatch):
     hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
     config_entry = entry()
     runtime = SimpleNamespace(async_stop=AsyncMock())
     monkeypatch.setattr(
