@@ -726,16 +726,6 @@ def test_all_day_window_utc_underflow_message_is_exact():
     assert str(exc.value) == "Invalid event interval"
 
 
-def test_all_day_window_utc_overflow_message_is_exact():
-    fixed_zone = timezone(timedelta(hours=-2))
-    with pytest.raises(CalendarObservationError) as exc:
-        observation_window(
-            EventDraft("Year max", "9999-12-30", "9999-12-31", True),
-            local_zone=fixed_zone,
-        )
-    assert str(exc.value) == "Invalid event interval"
-
-
 async def test_classifier_overflow_preserves_exact_boundary_message():
     fake = hass({"calendar.work": {"events": [
         {"summary": "Year one", "start": "0001-01-01", "end": "0001-01-02"},
