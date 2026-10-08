@@ -156,7 +156,7 @@ Authorization: Bearer <installation-token>
 Accept: application/json
 ```
 
-- `limit` is optional, an ASCII decimal integer from 1–50 (default 20). A duplicate parameter, noncanonical integer, negative/zero, or unrecognized query parameter is `invalid_request`.
+- `limit` is optional, an ASCII decimal integer from 1–50 (default 20). The parsed query object is structurally defined by `delivery-poll-query.schema.json`. A duplicate parameter, noncanonical integer, negative/zero, or unrecognized query parameter is `invalid_request`.
 - `cursor` is optional, an opaque, installation-bound, tamper-resistant page continuation token (at most 1,024 characters). An invalid/expired/mismatched cursor is HTTP 400 `invalid_cursor`, with `retryable: false`. Clients restart enumeration at the **first page**, never treat the cursor as a persistent checkpoint, and never transform it.
 - HTTP 200 uses `delivery-page.schema.json`: `deliveries` contains at most `limit` unique delivery IDs; `next_cursor` is either a continuation or `null`. An empty page with `next_cursor: null` is valid. The server MUST NOT return one source twice in a single page.
 - Each claimed item provides stable `delivery_id` and `source_id`, a **new, cryptographically unpredictable `lease_token` per successful re-lease**, `lease_expires_at`, `source_expires_at` and a bounded `source`. The IDs stay unchanged across lease expiry and redelivery. Server issuance of a lease does **not** mean the HA side has persisted the source.
