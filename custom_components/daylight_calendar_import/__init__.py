@@ -63,6 +63,9 @@ from .storage import (
     PendingImportStore,
 )
 
+PLATFORMS = ["sensor"]
+
+
 PARSE_SCHEMA = vol.Schema({vol.Required(ATTR_TEXT): cv.string})
 SUBMIT_SCHEMA = vol.Schema(
     {
@@ -669,6 +672,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pending_store,
         process_email_document,
     )
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
@@ -697,8 +701,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await email_runtime.async_stop()
     if store.active_submissions:
         await asyncio.gather(*tuple(store.active_submissions), return_exceptions=True)
-    hass.data[DOMAIN].pop(entry.entry_id, None)
-    return True
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+    return unloaded
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
