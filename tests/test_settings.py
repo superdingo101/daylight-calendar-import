@@ -954,7 +954,7 @@ def test_calendar_intelligence_normalization_and_legacy_defaults():
         {"": "calendar.family"},
         {"Work": "calendar.work", " work ": "calendar.family"},
         {"Bad": "calendar.other"},
-        {"Bad\\nAlias": "calendar.family"},
+        {"Bad\nAlias": "calendar.family"},
     ):
         with pytest.raises(SettingsValidationError):
             normalize_calendar_aliases(aliases, ["calendar.family", "calendar.work"])
