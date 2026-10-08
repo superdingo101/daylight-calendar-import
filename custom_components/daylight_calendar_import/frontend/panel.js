@@ -564,6 +564,7 @@ export class DaylightImportPanel extends HTMLElement {
       const items = await loadInbox(this._hass);
       if (generation !== this._generation) return;
       this._items = items;
+      this._reconcileRoutingDraft(settings);
       this._status = "ready";
     } catch (error) {
       if (generation !== this._generation) return;
@@ -652,38 +653,7 @@ export class DaylightImportPanel extends HTMLElement {
             settingsDraftMatches(settings, tab, this._settingsDrafts[tab])) {
           this._settingsDrafts[tab] = null;
         }
-        if (tab === "routing" && this._routingRawDraft) {
-          const raw = this._routingRawDraft;
-          const savedAliases = parseCalendarAliases(raw.aliasesText);
-          const persistedAliases = settings.calendar_aliases ?? {};
-          const persistedConflicts = settings.conflict_calendar_entities ??
-            [settings.calendar_entity];
-          const aliasesMatch = savedAliases && aliasesEquivalent(savedAliases, persistedAliases);
-          const conflictsMatch =
-            conflictsEquivalent(raw.conflictCalendarEntities, persistedConflicts);
 
-          if (!raw.aliasesDirty || aliasesMatch) {
-            raw.aliasesText = Object.entries(persistedAliases)
-              .map(([name, target]) => `${name} = ${target}`).join("\n");
-            raw.aliasesDirty = false;
-          }
-          if (!raw.conflictsDirty || conflictsMatch) {
-            raw.conflictCalendarEntities = [...persistedConflicts];
-            raw.conflictsDirty = false;
-          }
-          if (!raw.aliasesDirty && !raw.conflictsDirty && savedAliases) {
-            this._routingRawDraft = null;
-            this._settingsDrafts.routing = null;
-          } else {
-            const patch = {};
-            const parsed = parseCalendarAliases(raw.aliasesText);
-            if (raw.aliasesDirty && parsed) patch.calendar_aliases = parsed;
-            if (raw.conflictsDirty) {
-              patch.conflict_calendar_entities = [...raw.conflictCalendarEntities];
-            }
-            this._settingsDrafts.routing = Object.keys(patch).length ? patch : null;
-          }
-        }
       }
       this._status = "ready";
     } catch (error) {
@@ -696,6 +666,41 @@ export class DaylightImportPanel extends HTMLElement {
     this.render();
     const settingsLoadError = this._content.querySelector("[data-settings-load-error]");
     (settingsLoadError || this._content.querySelector("h2") || this._refreshButton)?.focus();
+  }
+
+  _reconcileRoutingDraft(settings) {
+    // Keep the same reconciliation semantics for manual refreshes and network
+    // failures after saves: only fields with actual local edits stay drafted.
+    const raw = this._routingRawDraft;
+    if (!raw) return;
+    const parsed = parseCalendarAliases(raw.aliasesText);
+    const persistedAliases = settings.calendar_aliases ?? {};
+    const persistedConflicts = settings.conflict_calendar_entities ??
+      [settings.calendar_entity];
+    const aliasesMatch = parsed && aliasesEquivalent(parsed, persistedAliases);
+    const conflictsMatch = conflictsEquivalent(raw.conflictCalendarEntities, persistedConflicts);
+
+    if (!raw.aliasesDirty || aliasesMatch) {
+      raw.aliasesText = Object.entries(persistedAliases)
+        .map(([name, target]) => `${name} = ${target}`).join("\n");
+      raw.aliasesDirty = false;
+    }
+    if (!raw.conflictsDirty || conflictsMatch) {
+      raw.conflictCalendarEntities = [...persistedConflicts];
+      raw.conflictsDirty = false;
+    }
+    if (!raw.aliasesDirty && !raw.conflictsDirty) {
+      this._routingRawDraft = null;
+      this._settingsDrafts.routing = null;
+      return;
+    }
+    const patch = {};
+    const pendingAliases = parseCalendarAliases(raw.aliasesText);
+    if (raw.aliasesDirty && pendingAliases) patch.calendar_aliases = pendingAliases;
+    if (raw.conflictsDirty) {
+      patch.conflict_calendar_entities = [...raw.conflictCalendarEntities];
+    }
+    this._settingsDrafts.routing = Object.keys(patch).length ? patch : null;
   }
 
   async _saveSettings(tab, patch, save, successMessage, fallbackMessage) {
@@ -719,6 +724,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._settingsDrafts[tab] = null;
         try {
           this._settings = await loadSettings(this._hass);
+          if (tab === "routing") this._reconcileRoutingDraft(this._settings);
         } catch (refreshError) {
           this._settingsError = settingsErrorMessage(
             refreshError,
@@ -731,6 +737,7 @@ export class DaylightImportPanel extends HTMLElement {
         try {
           const reconciled = await loadSettings(this._hass);
           this._settings = reconciled;
+          if (tab === "routing") this._reconcileRoutingDraft(reconciled);
           if (settingsPatchMatches(reconciled, patch)) {
             this._settingsDrafts[tab] = null;
             if (changesPersistedSettings) {
