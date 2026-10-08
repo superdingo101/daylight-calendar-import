@@ -378,14 +378,34 @@ function appendOptions(select, choices, selected) {
 function setSettingsFormBusy(form, busy) {
   if (!busy) return;
   form.setAttribute("aria-busy", "true");
-  for (const tag of ["input", "select", "button"]) {
+  for (const tag of ["input", "select", "textarea", "button"]) {
     for (const control of form.querySelectorAll(tag)) control.disabled = true;
   }
+}
+
+function normalizedAliasKey(value) {
+  // Comparison is advisory: the backend is authoritative for Unicode casefolding.
+  return value.normalize("NFKC").trim().replace(/\\s+/g, " ")
+    .toLowerCase().replace(/ß/g, "ss").replace(/ς/g, "σ");
+}
+
+function aliasesEquivalent(left, right) {
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  const normalize = aliases => Object.fromEntries(
+    Object.entries(aliases).map(([key, value]) => [normalizedAliasKey(key), value]),
+  );
+  const a = normalize(left);
+  const b = normalize(right);
+  return Object.keys(a).length === Object.keys(left).length &&
+    Object.keys(b).length === Object.keys(right).length &&
+    Object.keys(a).length === Object.keys(b).length &&
+    Object.entries(a).every(([key, value]) => b[key] === value);
 }
 
 function settingsPatchMatches(settings, patch) {
   return Object.entries(patch).every(([key, value]) => {
     const current = settings?.[key];
+    if (key === "calendar_aliases") return aliasesEquivalent(value, current);
     return Array.isArray(value) ?
       Array.isArray(current) && value.length === current.length &&
         value.every((item, index) => item === current[index]) :
@@ -402,17 +422,19 @@ function parseCalendarAliases(source) {
   const result = {};
   for (const line of source.split(/\r?\n/)) {
     if (!line.trim()) continue;
-    const index = line.indexOf("=");
+    const delimiter = line.lastIndexOf(" = ");
+    const index = delimiter >= 0 ? delimiter + 1 : line.indexOf("=");
     if (index < 1) return null;
     const name = line.slice(0, index).trim();
     const target = line.slice(index + 1).trim();
-    if (!name || name.length > 64 || /[\r\n]/.test(name) ||
+    if (!name || /[\r\n]/.test(name) ||
         !/^calendar\.[a-z0-9_]+$/.test(target) ||
         Object.hasOwn(result, name)) return null;
     result[name] = target;
   }
   return result;
 }
+
 
 function emailDraftMatches(settings, draft) {
   const email = settings?.email;
@@ -477,6 +499,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._settingsError = null;
     this._settingsReloadWarning = null;
     this._settingsDrafts = {general: null, calendars: null, routing: null, email: null};
+    this._routingRawDraft = null;
     this._settingsSaving = false;
     const style = element("style", css);
     const header = document.createElement("header");
@@ -909,22 +932,28 @@ export class DaylightImportPanel extends HTMLElement {
     const form = document.createElement("form");
     const draft = this._settingsDrafts.routing;
     const aliases = draft?.calendar_aliases ?? this._settings.calendar_aliases ?? {};
-    const selectedConflicts = draft?.conflict_calendar_entities ??
+    const selectedConflicts = this._routingRawDraft?.conflictCalendarEntities ??
+      draft?.conflict_calendar_entities ??
       this._settings.conflict_calendar_entities ?? [this._settings.calendar_entity];
     const aliasLabel = element("label", "Calendar aliases (one per line: name = calendar.entity)");
     const textarea = document.createElement("textarea");
     textarea.name = "calendar_aliases";
     textarea.rows = 5;
     textarea.placeholder = "Kids = calendar.kids";
-    textarea.value = Object.entries(aliases).map(([name, entity]) => `${name} = ${entity}`).join("\n");
-    textarea.addEventListener("change", () => {
+    textarea.value = this._routingRawDraft?.aliasesText ??
+      Object.entries(aliases).map(([name, entity]) => `${name} = ${entity}`).join("\n");
+    const recordRoutingDraft = () => {
+      const conflicts = Array.from(form.querySelectorAll("input"))
+        .filter(input => input.checked).map(input => input.value);
+      this._routingRawDraft = {aliasesText: textarea.value, conflictCalendarEntities: conflicts};
       const parsed = parseCalendarAliases(textarea.value);
       if (parsed) this._setSettingsDraft("routing", {
         calendar_aliases: parsed,
-        conflict_calendar_entities: Array.from(form.querySelectorAll("input"))
-          .filter(input => input.checked).map(input => input.value),
+        conflict_calendar_entities: conflicts,
       });
-    });
+    };
+    textarea.addEventListener("input", recordRoutingDraft);
+    textarea.addEventListener("change", recordRoutingDraft);
     aliasLabel.append(textarea);
     form.append(aliasLabel);
     const fieldset = document.createElement("fieldset");
@@ -938,14 +967,7 @@ export class DaylightImportPanel extends HTMLElement {
       input.name = "conflict_calendar_entities";
       input.value = choice.id;
       input.checked = selectedConflicts.includes(choice.id);
-      input.addEventListener("change", () => {
-        const parsed = parseCalendarAliases(textarea.value);
-        if (parsed) this._setSettingsDraft("routing", {
-          calendar_aliases: parsed,
-          conflict_calendar_entities: Array.from(form.querySelectorAll("input"))
-            .filter(item => item.checked).map(item => item.value),
-        });
-      });
+      input.addEventListener("change", recordRoutingDraft);
       label.append(input, element("span", choice.label));
       fieldset.append(label);
     }
@@ -967,6 +989,11 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._settingsSaving || !this._settings) return;
     const textarea = form.elements.namedItem("calendar_aliases");
     const parsed = parseCalendarAliases(textarea.value);
+    this._routingRawDraft = {
+      aliasesText: textarea.value,
+      conflictCalendarEntities: Array.from(form.querySelectorAll("input"))
+        .filter(input => input.checked).map(input => input.value),
+    };
     if (!parsed) {
       showEditError(form, "Use one alias per line in the format: Kids = calendar.family");
       return;
@@ -990,6 +1017,7 @@ export class DaylightImportPanel extends HTMLElement {
       "Calendar routing settings saved",
       "Could not save calendar routing settings.",
     );
+    if (!this._settingsDrafts.routing) this._routingRawDraft = null;
   }
 
   _emailDraftFromForm(form) {
