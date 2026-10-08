@@ -2011,3 +2011,18 @@ async def test_unload_keeps_store_if_platform_unload_fails():
     hass.config_entries.async_unload_platforms.return_value = False
     assert await async_unload_entry(hass, config_entry) is False
     assert hass.data[DOMAIN][config_entry.entry_id] is store
+
+
+async def test_failed_sensor_forwarding_rolls_back_without_service_leaks(monkeypatch):
+    hass = FakeHass()
+    config_entry = entry()
+    store = SimpleNamespace(async_load=AsyncMock())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _hass: store,
+    )
+    hass.config_entries.async_forward_entry_setups.side_effect = RuntimeError("sensor setup failed")
+    with pytest.raises(RuntimeError, match="sensor setup failed"):
+        await async_setup_entry(hass, config_entry)
+    assert DOMAIN not in hass.data or config_entry.entry_id not in hass.data[DOMAIN]
+    assert hass.services.handlers == {}
