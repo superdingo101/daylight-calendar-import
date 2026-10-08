@@ -59,3 +59,10 @@ def test_only_bounded_leading_unquoted_body_is_considered():
     quoted = route(body="> Calendar: kids\n----- Forwarded message\nOn Tuesday\n")
     assert quoted.result.status == "none"
     assert quoted.body.startswith("> Calendar")
+
+
+def test_forwarded_history_cannot_inject_a_route():
+    text = "Event info\n----- Forwarded message\nCalendar: kids\n"
+    result = route(body=text)
+    assert result.result.status == "none"
+    assert result.body == text
