@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
   "claim_request_id": "ClaimKey_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
-  "limit": 20
+  "limit": 20,
+  "claim_request_expires_at": "2026-10-08T15:05:00Z"
 }
