@@ -34,6 +34,10 @@
       }
     },
     {
+      "op": "parse_success",
+      "event_count": 1
+    },
+    {
       "op": "persist_local_checkpoint",
       "checkpoint_id": "local-store-attachments-01",
       "source_fingerprint": "v1:source:44f19ced0914e953b0aa90f5a3c2a3d5b5eec0641c4247c7ec408b58a2b656e8",
@@ -45,7 +49,11 @@
       },
       "attachments_verification_complete": true,
       "delivery_id": "delivery_00000000000000000002",
-      "local_config_entry_id": "entry-one"
+      "local_config_entry_id": "entry-one",
+      "disposition": {
+        "status": "pending",
+        "pending_import_id": "local-store-attachments-01"
+      }
     },
     {
       "op": "ack_applied",
@@ -68,7 +76,11 @@
       "attachments_verification_complete": true,
       "cloud_attachment_bytes_available": false,
       "delivery_id": "delivery_00000000000000000002",
-      "local_config_entry_id": "entry-one"
+      "local_config_entry_id": "entry-one",
+      "disposition": {
+        "status": "pending",
+        "pending_import_id": "local-store-attachments-01"
+      }
     },
     {
       "op": "retry_same_ack",

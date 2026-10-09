@@ -27,6 +27,10 @@
       "op": "source_normalized"
     },
     {
+      "op": "parse_success",
+      "event_count": 1
+    },
+    {
       "op": "persist_local_checkpoint",
       "checkpoint_id": "local-store-001",
       "source_fingerprint": "v1:source:a4766efbcbf0979ea400270284e26e437e446ae5736865a2e44d61f56b97b92e",
@@ -36,7 +40,11 @@
       "verified_attachments": {},
       "attachments_verification_complete": true,
       "delivery_id": "delivery_00000000000000000001",
-      "local_config_entry_id": "entry-one"
+      "local_config_entry_id": "entry-one",
+      "disposition": {
+        "status": "pending",
+        "pending_import_id": "local-store-001"
+      }
     },
     {
       "op": "restart_ha"
@@ -51,7 +59,11 @@
       "verified_attachments": {},
       "attachments_verification_complete": true,
       "delivery_id": "delivery_00000000000000000001",
-      "local_config_entry_id": "entry-one"
+      "local_config_entry_id": "entry-one",
+      "disposition": {
+        "status": "pending",
+        "pending_import_id": "local-store-001"
+      }
     },
     {
       "op": "ack",

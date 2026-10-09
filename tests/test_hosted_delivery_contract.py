@@ -63,6 +63,12 @@ def _read(path: Path) -> dict:
     return _decode_strict(path.read_text(encoding="utf-8"))
 
 
+def _step(trace: dict, operation: str) -> dict:
+    matches = [step for step in trace["steps"] if step["op"] == operation]
+    assert len(matches) == 1
+    return matches[0]
+
+
 def _source_evidence_sha256(source: dict) -> str:
     """Canonical complete-source evidence independent of namespaced dedup ID."""
     def integer_values(value):
@@ -118,6 +124,15 @@ def _ack_path_from_recovered_checkpoint(
         for key, value in manifest.items()
     )
     assert recovered["attachments_verification_complete"] is True
+    disposition = recovered["disposition"]
+    assert isinstance(disposition, dict)
+    assert disposition.get("status") in {"pending", "no_events", "duplicate"}
+    if disposition["status"] == "pending":
+        assert set(disposition) == {"status", "pending_import_id"}
+        pending_id = disposition["pending_import_id"]
+        assert isinstance(pending_id, str) and 0 < len(pending_id) <= 128
+    else:
+        assert set(disposition) == {"status"}
     return f"/v1/sources/{delivery_id}/ack"
 
 
@@ -134,6 +149,7 @@ def _check_recovered_checkpoint(
     assert saved["source_expires_at"] == recovered["source_expires_at"]
     assert saved["lease_token"] == recovered["lease_token"]
     assert saved["verified_attachments"] == recovered["verified_attachments"]
+    assert saved["disposition"] == recovered["disposition"]
 
 
 def _check_checkpoint_evidence(claim: dict, saved: dict, recovered: dict) -> None:
@@ -386,12 +402,16 @@ def test_ack_must_follow_durable_checkpoint_even_after_client_restart():
     steps = trace["steps"]
     operations = [step["op"] for step in steps]
     assert operations == [
-        "claim", "download_and_verify", "source_normalized",
+        "claim", "download_and_verify", "source_normalized", "parse_success",
         "persist_local_checkpoint", "restart_ha",
         "recover_checkpoint", "ack",
     ]
-    assert steps[3]["checkpoint_id"] == steps[5]["checkpoint_id"]
-    _check_checkpoint_evidence(steps[0], steps[3], steps[5])
+    saved = _step(trace, "persist_local_checkpoint")
+    recovered = _step(trace, "recover_checkpoint")
+    assert saved["checkpoint_id"] == recovered["checkpoint_id"]
+    assert _step(trace, "parse_success")["event_count"] == 1
+    assert saved["disposition"] == {"status": "pending", "pending_import_id": saved["checkpoint_id"]}
+    _check_checkpoint_evidence(steps[0], saved, recovered)
     assert steps[0]["token"] == steps[-1]["token"]
     assert trace["source_id"] != trace["delivery_id"]
 
@@ -561,17 +581,21 @@ def _validate_terminal_ack_trace(trace: dict) -> None:
     """Model only the documented public ordering constraint; not a mock cloud."""
     steps = trace["steps"]
     operations = [step["op"] for step in steps]
+    status = trace["disposition_status"]
+    assert status in {"no_events", "duplicate"}
+    parse_op = f"parse_{status}"
+    persist_op = f"persist_terminal_{status}"
+    recover_op = f"recover_terminal_{status}"
     assert operations[0] == "claim"
     assert operations[-1] == "ack"
-    assert operations.index("parse_no_events") < operations.index(
-        "persist_terminal_no_events"
-    )
-    assert operations.index("persist_terminal_no_events") < operations.index("ack")
-    assert operations.index("persist_terminal_no_events") < operations.index("restart_ha")
-    assert operations.index("restart_ha") < operations.index("recover_terminal_no_events")
-    assert operations.index("recover_terminal_no_events") < operations.index("ack")
-    saved = next(step for step in steps if step["op"] == "persist_terminal_no_events")
-    recovered = next(step for step in steps if step["op"] == "recover_terminal_no_events")
+    assert operations.index(parse_op) < operations.index(persist_op)
+    assert operations.index(persist_op) < operations.index("ack")
+    assert operations.index(persist_op) < operations.index("restart_ha")
+    assert operations.index("restart_ha") < operations.index(recover_op)
+    assert operations.index(recover_op) < operations.index("ack")
+    saved = _step(trace, persist_op)
+    recovered = _step(trace, recover_op)
+    assert saved["disposition"] == recovered["disposition"] == {"status": status}
     _check_checkpoint_evidence(steps[0], saved, recovered)
 
 
@@ -728,16 +752,16 @@ def test_durable_pending_checkpoint_requires_content_evidence_after_restart():
     import copy
 
     trace = _read(FIXTURE_DIR / "valid" / "delivery-durable-client-trace.json")
-    claim, saved, recovered = trace["steps"][0], trace["steps"][3], trace["steps"][5]
+    claim, saved, recovered = trace["steps"][0], _step(trace, "persist_local_checkpoint"), _step(trace, "recover_checkpoint")
     _check_checkpoint_evidence(claim, saved, recovered)
     changed = copy.deepcopy(trace)
     changed["steps"][0]["source"]["metadata"]["sender"] = "attacker@example.test"
     with pytest.raises(AssertionError):
         _check_checkpoint_evidence(changed["steps"][0], saved, recovered)
     lost = copy.deepcopy(trace)
-    del lost["steps"][5]["source_evidence_sha256"]
+    del _step(lost, "recover_checkpoint")["source_evidence_sha256"]
     with pytest.raises(KeyError):
-        _check_checkpoint_evidence(claim, saved, lost["steps"][5])
+        _check_checkpoint_evidence(claim, saved, _step(lost, "recover_checkpoint"))
 
 
 @pytest.mark.parametrize("raw", [
@@ -770,7 +794,7 @@ def test_h3_checkpoint_rejects_wrong_namespace_delivery_or_expiry():
     import copy
 
     trace = _read(FIXTURE_DIR / "valid" / "delivery-durable-client-trace.json")
-    claim, saved, recovered = trace["steps"][0], trace["steps"][3], trace["steps"][5]
+    claim, saved, recovered = trace["steps"][0], _step(trace, "persist_local_checkpoint"), _step(trace, "recover_checkpoint")
     _check_checkpoint_evidence(claim, saved, recovered)
     for key, value in [
         ("local_config_entry_id", "entry-two"),
@@ -895,10 +919,10 @@ def test_lost_ack_response_after_attachment_cleanup_uses_durable_proof():
     trace = _read(FIXTURE_DIR / "valid" / "delivery-ack-retry-after-cleanup.json")
     steps = trace["steps"]
     assert [step["op"] for step in steps] == [
-        "claim", "download_and_verify", "persist_local_checkpoint",
+        "claim", "download_and_verify", "parse_success", "persist_local_checkpoint",
         "ack_applied", "delete_cloud_source", "recover_checkpoint", "retry_same_ack",
     ]
-    claim, saved, recovered = steps[0], steps[2], steps[5]
+    claim, saved, recovered = steps[0], _step(trace, "persist_local_checkpoint"), _step(trace, "recover_checkpoint")
     # First ACK was based on the full claim, before Cloud deleted bytes.
     _check_checkpoint_evidence(claim, saved, recovered)
     # The ambiguous *retry* must be decidable using recovered local data alone.
@@ -908,9 +932,12 @@ def test_lost_ack_response_after_attachment_cleanup_uses_durable_proof():
     assert _ack_path_from_recovered_checkpoint(
         recovered, expected_local_entry_id="entry-one"
     ) == "/v1/sources/delivery_00000000000000000002/ack"
-    assert steps[6]["token"] == recovered["lease_token"]
-    assert steps[6]["status"] == 200
-    assert steps[6]["acknowledged_at"] == steps[3]["acknowledged_at"]
+    assert _step(trace, "parse_success")["event_count"] == 1
+    assert saved["disposition"] == {"status": "pending", "pending_import_id": saved["checkpoint_id"]}
+    retry = _step(trace, "retry_same_ack")
+    assert retry["token"] == recovered["lease_token"]
+    assert retry["status"] == 200
+    assert retry["acknowledged_at"] == _step(trace, "ack_applied")["acknowledged_at"]
     assert recovered["cloud_attachment_bytes_available"] is False
     assert saved["verified_attachments"] == steps[1]["verified_attachments"]
     for field, value in [
@@ -929,7 +956,7 @@ def test_recovered_ack_path_requires_durable_delivery_id_and_entry():
     import copy
 
     trace = _read(FIXTURE_DIR / "valid" / "delivery-ack-retry-after-cleanup.json")
-    saved, recovered = trace["steps"][2], trace["steps"][5]
+    saved, recovered = _step(trace, "persist_local_checkpoint"), _step(trace, "recover_checkpoint")
     _check_recovered_checkpoint(saved, recovered, expected_local_entry_id="entry-one")
     assert _ack_path_from_recovered_checkpoint(
         recovered, expected_local_entry_id="entry-one"
@@ -1066,7 +1093,7 @@ def test_claim_page_respects_effective_requested_limit(limit, schema_registry):
 def test_standalone_recovered_ack_rejects_malformed_proof(field, value):
     from custom_components.daylight_calendar_import.dedup import source_fingerprint
 
-    recovered = _read(FIXTURE_DIR / "valid" / "delivery-ack-retry-after-cleanup.json")["steps"][5]
+    recovered = _step(_read(FIXTURE_DIR / "valid" / "delivery-ack-retry-after-cleanup.json"), "recover_checkpoint")
     recovered[field] = value
     if field == "delivery_id":
         recovered["source_fingerprint"] = source_fingerprint(f"hosted:entry-one:{value}")
@@ -1087,3 +1114,41 @@ def test_source_evidence_string_escaping_vector(schema_registry):
     original = _source_evidence_sha256(source)
     source["attachments"][0]["size_bytes"] = 1024.0
     assert _source_evidence_sha256(source) == original
+
+
+@pytest.mark.parametrize("disposition", [
+    None, {}, {"status": "downloaded"}, {"status": "failed"},
+    {"status": "processing"}, {"status": "pending"},
+    {"status": "pending", "pending_import_id": ""},
+    {"status": "pending", "pending_import_id": True},
+    {"status": "no_events", "pending_import_id": "unexpected"},
+])
+def test_recovered_proof_without_eligible_disposition_cannot_authorize_ack(disposition):
+    recovered = _step(_read(FIXTURE_DIR / "valid" / "delivery-ack-retry-after-cleanup.json"), "recover_checkpoint")
+    recovered["disposition"] = disposition
+    with pytest.raises(AssertionError):
+        _ack_path_from_recovered_checkpoint(recovered, expected_local_entry_id="entry-one")
+    del recovered["disposition"]
+    with pytest.raises(KeyError):
+        _ack_path_from_recovered_checkpoint(recovered, expected_local_entry_id="entry-one")
+
+
+def test_disposition_survives_restart_and_duplicate_is_ack_eligible():
+    import copy
+
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-duplicate-client-trace.json")
+    _validate_terminal_ack_trace(trace)
+    saved = _step(trace, "persist_terminal_duplicate")
+    recovered = _step(trace, "recover_terminal_duplicate")
+    assert _ack_path_from_recovered_checkpoint(recovered, expected_local_entry_id="entry-one")
+    corrupt = copy.deepcopy(recovered)
+    corrupt["disposition"] = {"status": "no_events"}
+    with pytest.raises(AssertionError):
+        _check_recovered_checkpoint(saved, corrupt, expected_local_entry_id="entry-one")
+
+    pending = _read(FIXTURE_DIR / "valid" / "delivery-durable-client-trace.json")
+    saved = _step(pending, "persist_local_checkpoint")
+    recovered = copy.deepcopy(_step(pending, "recover_checkpoint"))
+    recovered["disposition"]["pending_import_id"] = "another-import"
+    with pytest.raises(AssertionError):
+        _check_recovered_checkpoint(saved, recovered, expected_local_entry_id="entry-one")
