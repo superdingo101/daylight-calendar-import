@@ -757,3 +757,71 @@ async def test_classifier_rejects_bad_timed_point_with_exact_error(monkeypatch):
             local_zone=ZONE, context=READ_CONTEXT,
         )
     assert str(exc.value) == "Invalid timed calendar interval"
+
+
+@pytest.mark.parametrize("all_day", [True, False])
+def test_observation_range_limit_rejects_91_days_before_provider_work(all_day):
+    from custom_components.daylight_calendar_import.calendar_observation import MAX_OBSERVATION_WINDOW
+    assert MAX_OBSERVATION_WINDOW == timedelta(days=90)
+    if all_day:
+        too_long = EventDraft("Long", "2026-01-01", "2026-04-02", True)
+    else:
+        too_long = EventDraft("Long", "2026-01-01T12:00:00+00:00",
+                              "2026-04-02T12:00:00+00:00", False)
+    with pytest.raises(CalendarObservationError, match="exceeds 90 days"):
+        observation_window(too_long, local_zone=ZONE)
+
+
+async def test_observation_range_limit_allows_90_days():
+    event = EventDraft("Long", "2026-01-01", "2026-04-01", True)
+    fake = hass({"calendar.work": {"events": []}})
+    assert await async_observe_candidates(
+        fake, event, observed_calendars=["calendar.work"],
+        local_zone=ZONE, context=READ_CONTEXT
+    ) == ()
+
+
+async def test_observation_scope_limit_rejects_more_than_16_calendars_without_reads():
+    ids = [f"calendar.room_{i}" for i in range(17)]
+    fake = hass({calendar: {"events": []} for calendar in ids})
+    with pytest.raises(CalendarObservationError, match="exceeds 16 calendars"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=ids,
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    for provider in fake.providers.values():
+        provider.async_get_events.assert_not_awaited()
+
+
+async def test_provider_response_over_500_events_fails_explicitly_without_truncation():
+    raw_events = [existing() for _ in range(501)]
+    fake = hass({"calendar.work": {"events": raw_events}})
+    with pytest.raises(CalendarObservationError, match="exceeds 500 events"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+
+
+async def test_cumulative_event_limit_checks_across_selected_calendars():
+    fake = hass({
+        "calendar.one": {"events": [existing() for _ in range(260)]},
+        "calendar.two": {"events": [existing() for _ in range(241)]},
+    })
+    with pytest.raises(CalendarObservationError, match="exceeds 500 events"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.one", "calendar.two"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    fake.providers["calendar.one"].async_get_events.assert_awaited_once()
+    fake.providers["calendar.two"].async_get_events.assert_awaited_once()
+
+
+async def test_exactly_500_observed_events_are_returned_without_truncation():
+    fake = hass({"calendar.work": {"events": [existing() for _ in range(500)]}})
+    matches = await async_classify_conflicts(
+        fake, draft(), observed_calendars=["calendar.work"],
+        local_zone=ZONE, context=READ_CONTEXT,
+    )
+    assert len(matches) == 500
+    assert all(match.kind == "exact_duplicate" for match in matches)
