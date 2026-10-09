@@ -27,6 +27,28 @@ export async function loadImport(hass, pendingId) {
   return pending;
 }
 
+/** On-demand, advisory calendar intelligence for the loaded review snapshot. */
+export async function checkEvent(hass, pendingId, event) {
+  const result = await hass.callWS({
+    type: "call_service", domain: "daylight_calendar_import",
+    service: "check_pending_event",
+    service_data: {pending_id: pendingId, event_id: event.id, expected_event: event},
+    return_response: true,
+  });
+  const response = result?.response;
+  const validMatch = match => match && typeof match === "object" &&
+    ["exact_duplicate", "possible_duplicate", "conflict"].includes(match.kind) &&
+    typeof match.calendar_entity === "string" && match.calendar_entity.length > 0 &&
+    typeof match.existing_title === "string";
+  if (response?.pending_id !== pendingId || response?.event_id !== event.id ||
+      !Array.isArray(response.matches) || !response.matches.every(validMatch) ||
+      !Array.isArray(response.observed_calendars) ||
+      !response.observed_calendars.every(calendar => typeof calendar === "string")) {
+    throw new Error("Calendar check returned an unexpected response. Refresh and try again.");
+  }
+  return response;
+}
+
 export async function loadActivity(hass) {
   const result = await hass.callWS({
     type: "call_service", domain: "daylight_calendar_import",
