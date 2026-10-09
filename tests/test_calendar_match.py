@@ -114,3 +114,15 @@ def test_invalid_provider_ranges_fail_closed():
     for candidate in invalid_ranges:
         with pytest.raises(ValueError, match=r"^Calendar event end must be after start$"):
             classify(draft(), candidate)
+
+
+def test_end_to_start_adjacency_is_not_a_conflict():
+    """Back-to-back events are distinct in either direction."""
+    assert classify(
+        draft("Practice"),
+        existing(
+            "Another appointment",
+            start="2026-10-08T23:00:00+00:00",
+            end="2026-10-09T00:00:00+00:00",
+        ),
+    ) is None
