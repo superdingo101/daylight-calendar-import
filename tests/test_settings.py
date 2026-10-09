@@ -1319,3 +1319,18 @@ async def test_ai_only_setting_does_not_need_running_queue():
         CONF_AI_TASK_ENTITY: "ai_task.new",
     })
     assert config_entry.options[CONF_AI_TASK_ENTITY] == "ai_task.new"
+
+
+@pytest.mark.asyncio
+async def test_calendar_scope_changes_refuse_unloading_runtime():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+    store.accepting_services = False
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert err.value.code == "pending_store_unavailable"
+    assert not hass.config_entries.updates
