@@ -156,7 +156,13 @@ class _OptionsConfigEntries:
 
 
 def _options_hass():
-    return SimpleNamespace(data={}, config_entries=_OptionsConfigEntries())
+    return SimpleNamespace(
+        data={"daylight_calendar_import": {"test-entry": SimpleNamespace(
+            _lock=asyncio.Lock(), list=lambda: (), accepting_services=True,
+            active_submissions=set(), active_service_handlers=set(),
+        )}},
+        config_entries=_OptionsConfigEntries(),
+    )
 
 
 def test_config_flow_exposes_options_flow():

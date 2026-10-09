@@ -2498,6 +2498,28 @@ def test_routing_snapshot_preserves_confirmation_state():
     assert _expected_event(original.as_service_dict(), original.id) == original
 
 
+async def test_bulk_approval_rejects_unresolved_routing_before_writes(monkeypatch):
+    store = SimpleNamespace(
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
+        get=Mock(return_value=None),
+        async_process_events=AsyncMock(side_effect=PendingEventEditError(
+            "Confirm the destination calendar in the event editor before approval")),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _: store,
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)]
+    with pytest.raises(ServiceValidationError, match="Confirm the destination"):
+        await handler(SimpleNamespace(
+            data={ATTR_PENDING_ID: "pending-1"},
+            context=Context(user_id="reviewer"),
+        ))
+    assert hass.services.calls == []
+
+
 async def test_check_pending_event_uses_read_only_observer_and_configured_scope(monkeypatch):
     from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
     from custom_components.daylight_calendar_import.calendar_match import CalendarMatch
@@ -2532,6 +2554,7 @@ async def test_check_pending_event_uses_read_only_observer_and_configured_scope(
     assert observer.await_args.kwargs["context"].user_id == "test-user"
 
 
+
 async def test_check_pending_event_does_not_hide_unavailable_calendars(monkeypatch):
     from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
     from custom_components.daylight_calendar_import.calendar_observation import CalendarObservationError
@@ -2557,27 +2580,6 @@ async def test_check_pending_event_does_not_hide_unavailable_calendars(monkeypat
         ))
 
 
-async def test_bulk_approval_rejects_unresolved_routing_before_writes(monkeypatch):
-    store = SimpleNamespace(
-        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
-        get=Mock(return_value=None),
-        async_process_events=AsyncMock(side_effect=PendingEventEditError(
-            "Confirm the destination calendar in the event editor before approval")),
-    )
-    monkeypatch.setattr(
-        "custom_components.daylight_calendar_import.PendingImportStore",
-        lambda _: store,
-    )
-    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
-    await async_setup_entry(hass, entry())
-    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)]
-    with pytest.raises(ServiceValidationError, match="Confirm the destination"):
-        await handler(SimpleNamespace(
-            data={ATTR_PENDING_ID: "pending-1"},
-            context=Context(user_id="reviewer"),
-        ))
-    assert hass.services.calls == []
-
 
 async def test_check_pending_event_rejects_missing_review_event(monkeypatch):
     from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
@@ -2595,3 +2597,4 @@ async def test_check_pending_event_rejects_missing_review_event(monkeypatch):
             data={ATTR_PENDING_ID: "not-found", ATTR_EVENT_ID: "missing"},
             context=Context(user_id="reviewer"),
         ))
+

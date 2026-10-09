@@ -1214,6 +1214,11 @@ class PendingImportStore:
                 return None
             if pending.approval_in_flight:
                 raise PendingImportApprovalUncertainError(pending_id)
+            # Reject a mixed-resolution batch before its first external write.
+            if any(event.routing_unresolved for event in pending.events):
+                raise PendingEventEditError(
+                    "Confirm all event destinations in the editor before bulk approval"
+                )
 
             original = pending
             while pending is not None:

@@ -101,9 +101,14 @@ class FakeConnection:
 
 
 def hass_for(config_entry):
+    runtime_store = SimpleNamespace(
+        _lock=asyncio.Lock(), list=lambda: (),
+        active_submissions=set(), active_service_handlers=set(),
+        accepting_services=True, email_runtime=None,
+    )
     return SimpleNamespace(
         config_entries=FakeConfigEntries(config_entry),
-        data={},
+        data={DOMAIN: {config_entry.entry_id: runtime_store}},
     )
 
 
@@ -1230,3 +1235,87 @@ async def test_safe_calendar_scope_update_retains_pending_destinations():
     })
     assert config_entry.options[CONF_CALENDAR_ENTITIES] == ["calendar.family"]
     assert hass.config_entries.reloads == [config_entry.entry_id]
+
+
+@pytest.mark.asyncio
+async def test_calendar_changes_fail_closed_if_runtime_queue_cannot_be_checked():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    hass.data[DOMAIN].clear()  # Unloaded integration, durable state may remain.
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert err.value.code == "pending_store_unavailable"
+    assert hass.config_entries.updates == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active_field", ["active_submissions", "active_service_handlers"])
+async def test_calendar_scope_change_rejects_live_processing(active_field):
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    runtime_store = hass.data[DOMAIN][config_entry.entry_id]
+    getattr(runtime_store, active_field).add(object())
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert err.value.code == "calendar_change_busy"
+    assert runtime_store.accepting_services is True
+    assert not hass.config_entries.updates
+
+
+@pytest.mark.asyncio
+async def test_calendar_scope_change_rejects_running_imap_poll():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    runtime_store = hass.data[DOMAIN][config_entry.entry_id]
+    runtime_store.email_runtime = SimpleNamespace(_task=SimpleNamespace(done=lambda: False))
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert err.value.code == "calendar_change_busy"
+    runtime_store.email_runtime._task = SimpleNamespace(done=lambda: True)
+    await async_save_option_patch(hass, config_entry, {
+        CONF_CALENDAR_ENTITIES: ["calendar.family"],
+    })
+    assert runtime_store.accepting_services is True
+
+
+@pytest.mark.asyncio
+async def test_calendar_admission_is_paused_during_reload_and_restored_on_failure():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    runtime_store = hass.data[DOMAIN][config_entry.entry_id]
+    observed = []
+
+    async def reload_while_blocked(_entry_id):
+        observed.append(runtime_store.accepting_services)
+        return False
+
+    hass.config_entries.async_reload = reload_while_blocked
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert err.value.code == "reload_failed"
+    assert observed == [False]
+    assert runtime_store.accepting_services is True
+
+
+@pytest.mark.asyncio
+async def test_ai_only_setting_does_not_need_running_queue():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    hass.data[DOMAIN].clear()
+    await async_save_option_patch(hass, config_entry, {
+        CONF_AI_TASK_ENTITY: "ai_task.new",
+    })
+    assert config_entry.options[CONF_AI_TASK_ENTITY] == "ai_task.new"

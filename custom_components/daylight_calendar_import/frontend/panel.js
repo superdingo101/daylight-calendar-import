@@ -1537,7 +1537,15 @@ export class DaylightImportPanel extends HTMLElement {
       description: fields.namedItem("description").value,
       confidence: event.confidence,
     };
-    const calendarEntity = fields.namedItem("calendar_entity")?.value ||
+    const calendarSelect = fields.namedItem("calendar_entity");
+    if (event.routing_unresolved && !calendarSelect?.value) {
+      const message = "Select and confirm a destination calendar before saving this event.";
+      this._editError = message;
+      this._announcement.replaceChildren(element("span", message));
+      showEditError(form, message);
+      return;
+    }
+    const calendarEntity = calendarSelect?.value ||
       event.calendar_entity || this._detail?.default_calendar || null;
     const generation = this._generation;
     const pendingId = this._selectedId;
@@ -1735,6 +1743,14 @@ export class DaylightImportPanel extends HTMLElement {
       const label = element("label", "Calendar");
       const select = document.createElement("select");
       select.name = "calendar_entity";
+      if (event.routing_unresolved) {
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Choose a destination to confirm routing";
+        placeholder.disabled = true;
+        select.append(placeholder);
+        select.required = true;
+      }
       for (const calendar of calendars) {
         const option = document.createElement("option");
         option.value = calendar;
@@ -1742,7 +1758,7 @@ export class DaylightImportPanel extends HTMLElement {
         option.textContent = friendly ? `${friendly} (${calendar})` : calendar;
         select.append(option);
       }
-      select.value = selectedCalendar || calendars[0];
+      select.value = event.routing_unresolved ? "" : (selectedCalendar || calendars[0]);
       label.append(select);
       form.append(label);
     }
