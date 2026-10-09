@@ -2839,5 +2839,5 @@ async def test_control_only_reviewer_can_approve_with_private_destination_observ
     assert response["approved"] is True
     assert observe.await_args.kwargs["trusted_internal"] is True
     assert observe.await_args.kwargs["context"] is None
-    assert all(policy == POLICY_CONTROL for _, policy in permission.check_entity.call_args_list)
+    assert all(call.args[1] == POLICY_CONTROL for call in permission.check_entity.call_args_list)
     assert len(hass.services.calls) == 1
