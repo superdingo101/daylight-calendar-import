@@ -332,7 +332,13 @@ async def async_save_option_patch(
             verify_pending_and_admission()
             was_accepting = getattr(pending_store, "accepting_services", True)
             pending_store.accepting_services = False
-            hass.config_entries.async_update_entry(entry, options=merged)
+            try:
+                hass.config_entries.async_update_entry(entry, options=merged)
+            except BaseException:
+                # Persistence failed before the new options were committed.
+                # Restore service admission only while the old runtime is valid.
+                pending_store.accepting_services = was_accepting
+                raise
     else:
         hass.config_entries.async_update_entry(entry, options=merged)
     reloaded = False
