@@ -219,6 +219,65 @@ def _validate_delivery_page_semantics(page: dict) -> None:
             raise ValueError("aggregate attachment bytes exceed 10 MiB")
 
 
+def _validate_source_retention_window(*, enqueued_at: datetime, source_expires_at: datetime) -> None:
+    """Cloud must reject sources whose immutable expiry exceeds seven days."""
+    if not (enqueued_at < source_expires_at <= enqueued_at + timedelta(days=7)):
+        raise ValueError("source retention must be within seven days of Cloud enqueue")
+
+
+def _validate_claim_retention_window(*, claim_received_at: datetime, source_expires_at: datetime) -> None:
+    """HA cannot trust a far-future expiry advertised by the hosted service."""
+    if not (claim_received_at < source_expires_at <= claim_received_at + timedelta(days=7, minutes=5)):
+        raise ValueError("advertised source expiry exceeds seven-day cap or already passed")
+
+
+def test_h3_seven_day_source_retention_is_measured_from_cloud_enqueue():
+    """No public ingestion timestamp is necessary; Cloud already owns created_at."""
+    import copy
+
+    item = _read(FIXTURE_DIR / "valid" / "delivery-page-text.json")["deliveries"][0]
+    enqueued_at = datetime.fromisoformat("2026-10-08T16:00:00Z")
+    observed_at = datetime.fromisoformat("2026-10-08T16:01:00Z")
+    expiry = datetime.fromisoformat(item["source_expires_at"])
+    _validate_source_retention_window(enqueued_at=enqueued_at, source_expires_at=expiry)
+    _validate_claim_retention_window(claim_received_at=observed_at, source_expires_at=expiry)
+
+    # The email's received_at is not Cloud ingestion time. Old forwarded
+    # emails must remain valid with an expiry anchored to Cloud enqueue.
+    historical_email = copy.deepcopy(item)
+    historical_email["source"]["received_at"] = "2025-01-15T10:00:00Z"
+    _validate_source_retention_window(
+        enqueued_at=enqueued_at,
+        source_expires_at=datetime.fromisoformat(historical_email["source_expires_at"]),
+    )
+
+    for invalid_expiry in (
+        enqueued_at,
+        enqueued_at - timedelta(seconds=1),
+        expiry + timedelta(seconds=1),
+        enqueued_at + timedelta(days=365 * 50),
+    ):
+        with pytest.raises(ValueError, match="seven days"):
+            _validate_source_retention_window(
+                enqueued_at=enqueued_at, source_expires_at=invalid_expiry,
+            )
+
+    for invalid_expiry in (
+        observed_at,
+        observed_at + timedelta(days=7, minutes=5, seconds=1),
+        observed_at + timedelta(days=365 * 50),
+    ):
+        with pytest.raises(ValueError, match="seven-day"):
+            _validate_claim_retention_window(
+                claim_received_at=observed_at, source_expires_at=invalid_expiry,
+            )
+
+    _validate_claim_retention_window(
+        claim_received_at=observed_at,
+        source_expires_at=observed_at + timedelta(days=7, minutes=5),
+    )
+
+
 def _validate_lease_trace_immutable(trace: dict) -> None:
     source = None
     for event in trace["steps"]:
