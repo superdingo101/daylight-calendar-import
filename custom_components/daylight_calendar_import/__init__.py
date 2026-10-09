@@ -443,6 +443,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     observed_calendars=[destination],
                     local_zone=dt_util.get_time_zone(hass.config.time_zone),
                     context=self.context,
+                    trusted_internal=self.context is None or self.context.user_id is None,
                 )
             except CalendarObservationError as err:
                 raise ServiceValidationError(
