@@ -1268,6 +1268,7 @@ async def test_service_registration_contracts(monkeypatch):
         SERVICE_LIST_PENDING: (None, SupportsResponse.ONLY),
         SERVICE_GET_PENDING: (PENDING_SCHEMA, SupportsResponse.ONLY),
         SERVICE_GET_PENDING_EVENT: (PENDING_EVENT_SCHEMA, SupportsResponse.ONLY),
+        "check_pending_event": (PENDING_EVENT_SCHEMA, SupportsResponse.ONLY),
         SERVICE_EDIT_PENDING_EVENT: (EDIT_EVENT_SCHEMA, SupportsResponse.ONLY),
         SERVICE_REJECT_PENDING_EVENT: (
             PENDING_EVENT_SCHEMA,
@@ -2576,3 +2577,21 @@ async def test_bulk_approval_rejects_unresolved_routing_before_writes(monkeypatc
             context=Context(user_id="reviewer"),
         ))
     assert hass.services.calls == []
+
+
+async def test_check_pending_event_rejects_missing_review_event(monkeypatch):
+    from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get_event=Mock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    assert await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_CHECK_PENDING_EVENT)]
+    with pytest.raises(ServiceValidationError, match="Pending event not found"):
+        await handler(SimpleNamespace(
+            data={ATTR_PENDING_ID: "not-found", ATTR_EVENT_ID: "missing"},
+            context=Context(user_id="reviewer"),
+        ))
