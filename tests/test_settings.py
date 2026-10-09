@@ -1179,3 +1179,54 @@ async def test_invalid_default_calendar_save_has_stable_code_and_message():
     )
     assert hass.config_entries.updates == []
     assert hass.config_entries.reloads == []
+
+
+@pytest.mark.asyncio
+async def test_calendar_change_cannot_strand_pending_explicit_destination():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    pending = SimpleNamespace(events=[SimpleNamespace(calendar_entity="calendar.work")])
+    hass.data[DOMAIN] = {config_entry.entry_id: SimpleNamespace(
+        _lock=asyncio.Lock(), list=lambda: (pending,),
+    )}
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert err.value.code == "pending_destination_not_allowed"
+    assert not hass.config_entries.updates
+    assert not hass.config_entries.reloads
+
+
+@pytest.mark.asyncio
+async def test_calendar_change_rejects_implicit_default_retargeting():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    pending = SimpleNamespace(events=[SimpleNamespace(calendar_entity=None)])
+    hass.data[DOMAIN] = {config_entry.entry_id: SimpleNamespace(
+        _lock=asyncio.Lock(), list=lambda: (pending,),
+    )}
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITY: "calendar.work",
+        })
+    assert err.value.code == "pending_default_would_change"
+    assert not hass.config_entries.updates
+
+
+@pytest.mark.asyncio
+async def test_safe_calendar_scope_update_retains_pending_destinations():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    pending = SimpleNamespace(events=[SimpleNamespace(calendar_entity="calendar.family")])
+    hass.data[DOMAIN] = {config_entry.entry_id: SimpleNamespace(
+        _lock=asyncio.Lock(), list=lambda: (pending,),
+    )}
+    await async_save_option_patch(hass, config_entry, {
+        CONF_CALENDAR_ENTITIES: ["calendar.family"],
+    })
+    assert config_entry.options[CONF_CALENDAR_ENTITIES] == ["calendar.family"]
+    assert hass.config_entries.reloads == [config_entry.entry_id]
