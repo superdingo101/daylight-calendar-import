@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import voluptuous as vol
@@ -74,6 +74,7 @@ EVENTS_STRUCTURE = vol.Schema(
                         "selector": {"text": {"multiline": True}},
                     },
                     "assumptions": {
+                        "required": True,
                         "label": "Short disclosures of context used to resolve dates or times",
                         "selector": {"text": {"multiple": True}},
                     },
@@ -99,6 +100,7 @@ class ParseOutcome:
 
     events: list[EventDraft]
     warnings: list[str]
+    event_assumptions: list[tuple[str, ...]] = field(default_factory=list)
 
 
 async def async_parse_text(
@@ -144,6 +146,7 @@ def parse_ai_data(data: Any) -> ParseOutcome:
         raise ParseResultError("AI Task result must contain an events list")
 
     drafts: list[EventDraft] = []
+    event_assumptions: list[tuple[str, ...]] = []
     warnings: list[str] = []
     for index, raw in enumerate(events):
         if not isinstance(raw, dict):
@@ -158,10 +161,7 @@ def parse_ai_data(data: Any) -> ParseOutcome:
             ):
                 raise DraftValidationError("assumptions must be up to eight short strings")
             drafts.append(draft)
-            warnings.extend(
-                f"event {index} date/time assumption: {value.strip()}"
-                for value in assumptions
-            )
+            event_assumptions.append(tuple(value.strip() for value in assumptions))
         except DraftValidationError as err:
             warnings.append(f"event {index} is invalid: {err}")
-    return ParseOutcome(drafts, warnings)
+    return ParseOutcome(drafts, warnings, event_assumptions)
