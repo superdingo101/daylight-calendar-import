@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/delivery-claim-request.schema.json",
-  "title": "Daylight H3 source claim request (POST /v1/sources/claim)",
+  "title": "Daylight H3 bounded source claim request",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -12,25 +12,9 @@
       "type": "integer",
       "minimum": 1,
       "maximum": 50
-    },
-    "cursor": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 1024,
-      "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
-    },
-    "claim_request_id": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9_-]{22,128}(?![\\s\\S])"
-    },
-    "claim_request_expires_at": {
-      "type": "string",
-      "format": "date-time"
     }
   },
   "required": [
-    "schema_version",
-    "claim_request_id",
-    "claim_request_expires_at"
+    "schema_version"
   ]
 }

@@ -1,13 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/delivery-page.schema.json",
-  "title": "Daylight H3 source poll page",
+  "title": "Daylight H3 bounded source claim response",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
-    "deliveries",
-    "next_cursor"
+    "deliveries"
   ],
   "properties": {
     "schema_version": {
@@ -19,15 +18,6 @@
       "items": {
         "$ref": "https://docs.daylightcalendar.com/schemas/hosted/v1/delivery-item.schema.json"
       }
-    },
-    "next_cursor": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "minLength": 1,
-      "maxLength": 1024,
-      "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
     }
   }
 }

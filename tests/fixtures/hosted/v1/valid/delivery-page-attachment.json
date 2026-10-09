@@ -5,7 +5,7 @@
       "delivery_id": "delivery_00000000000000000002",
       "source_id": "source_000000000000000000000002",
       "lease_token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
-      "lease_expires_at": "2026-10-08T16:05:00Z",
+      "lease_expires_at": "2026-10-08T16:02:00Z",
       "source_expires_at": "2026-10-15T16:00:00Z",
       "source": {
         "kind": "email",
@@ -26,6 +26,5 @@
         }
       }
     }
-  ],
-  "next_cursor": null
+  ]
 }
