@@ -1374,3 +1374,62 @@ async def test_calendar_option_save_failure_restores_original_ingress():
     assert store.accepting_services is True
     assert config_entry.options == {}
     assert hass.config_entries.reloads == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["false", "exception"])
+async def test_actual_calendar_reload_unload_failure_preserves_ingress_barrier(failure):
+    from custom_components.daylight_calendar_import import async_unload_entry
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+    hass.config_entries.async_unload_platforms = AsyncMock(
+        return_value=False if failure == "false" else True,
+    )
+    if failure == "exception":
+        hass.config_entries.async_unload_platforms.side_effect = RuntimeError(
+            "platform unload failed"
+        )
+
+    async def actual_unload(_entry_id):
+        assert store.calendar_settings_reload_guard is True
+        assert store.accepting_services is False
+        return await async_unload_entry(hass, config_entry)
+
+    hass.config_entries.async_reload = actual_unload
+    if failure == "false":
+        with pytest.raises(SettingsValidationError) as raised:
+            await async_save_option_patch(hass, config_entry, {
+                CONF_CALENDAR_ENTITIES: ["calendar.family"],
+            })
+        assert raised.value.code == "reload_failed"
+    else:
+        with pytest.raises(RuntimeError, match="platform unload failed"):
+            await async_save_option_patch(hass, config_entry, {
+                CONF_CALENDAR_ENTITIES: ["calendar.family"],
+            })
+    assert config_entry.options[CONF_CALENDAR_ENTITIES] == ["calendar.family"]
+    assert hass.data[DOMAIN][config_entry.entry_id] is store
+    assert store.calendar_settings_reload_guard is True
+    assert store.accepting_services is False
+
+
+@pytest.mark.asyncio
+async def test_calendar_option_save_failure_clears_reload_barrier():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+
+    def fail(_entry, *, options):
+        assert store.calendar_settings_reload_guard is True
+        raise RuntimeError("save failed")
+
+    hass.config_entries.async_update_entry = fail
+    with pytest.raises(RuntimeError, match="save failed"):
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert store.calendar_settings_reload_guard is False
+    assert store.accepting_services is True
