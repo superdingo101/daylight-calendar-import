@@ -17,7 +17,11 @@ skipped when the import was created). It does not return source text.
 source metadata and warnings. Email imports may additionally include `source_sender`,
 the normalized first `From` header; the field is omitted when no sender was available.
 Its events have stable IDs, statuses, destination
-calendars, and editable draft fields. A write-uncertain event must be resolved
+calendars, editable draft fields and, when the parser reports temporal context,
+a bounded `date_time_assumptions` list belonging to that specific event.
+Those disclosures survive deduplication and persistence, and are cleared if
+the event's start/end or all-day state is edited. Older events have no
+assumption list. A write-uncertain event must be resolved
 with `resolve_pending_event` before it can be edited, rejected, or retried.
 Recovery controls send the loaded `expected_event` snapshot. The backend
 compares it under the storage lock so an older calendar check cannot resolve
