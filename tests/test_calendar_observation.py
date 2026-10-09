@@ -825,3 +825,14 @@ async def test_exactly_500_observed_events_are_returned_without_truncation():
     )
     assert len(matches) == 500
     assert all(match.kind == "exact_duplicate" for match in matches)
+
+
+async def test_unbounded_provider_title_is_an_explicit_incomplete_observation():
+    fake = hass({"calendar.work": {"events": [
+        existing(summary="x" * 513)
+    ]}})
+    with pytest.raises(CalendarObservationError, match="title exceeds 512 characters"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
