@@ -2729,6 +2729,7 @@ test("admin can configure and disable Direct IMAP from native Email settings", a
     password: "",
     mailbox: "Calendar",
     verify_ssl: false,
+    sender_allowlist: [],
   });
   assert.equal(panel._settings.email.host, "imap.new.test");
   assert.equal(panel._settingsDrafts.email, null);
