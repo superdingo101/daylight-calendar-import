@@ -766,6 +766,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Forward last: a failing email configuration cannot strand sensor entities.
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         pending_store.accepting_services = True
+        runtime = pending_store.email_runtime
+        if runtime is not None:
+            runtime.on_entry_ready()
 
     except (Exception, asyncio.CancelledError):
         # Even a failed or cancelled partial forward must not leave its sensor
