@@ -174,7 +174,12 @@ async def async_observe_candidates(
         # A later provider might have become unavailable while earlier reads
         # awaited; a provider can also become unavailable during its own read.
         ensure_available(entity_id, provider)
-        response = await provider.async_get_events(hass, start, end)
+        try:
+            response = await provider.async_get_events(hass, start, end)
+        except Exception as exc:
+            # Provider errors are not proof of an empty schedule. Do not
+            # surface provider-specific messages in the user-facing response.
+            raise CalendarObservationError("Calendar observation is incomplete") from exc
         ensure_available(entity_id, provider)
         if not isinstance(response, list):
             raise CalendarObservationError("Calendar observation is incomplete")
