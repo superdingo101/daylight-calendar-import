@@ -156,7 +156,7 @@ get_pending_event:
 
 check_pending_event:
   name: Check pending event against calendars
-  description: Read selected calendars for exact duplicates, possible duplicates, and conflicts without writing. Unavailable calendars, windows over 90 days, scopes over 16 calendars, or more than 500 total returned events cause an error rather than silently truncated results.
+  description: Read calendars for duplicates and conflicts without writing. Requires CONTROL permission for the configured AI Task and all writable calendars, plus READ permission for every observed calendar. Unavailable or oversized observations fail, and results are rejected if the pending event changes during the check.
   fields:
     pending_id:
       name: Pending import ID
@@ -168,6 +168,11 @@ check_pending_event:
       required: true
       selector:
         text:
+    expected_event:
+      name: Previously loaded event
+      description: Optional draft snapshot from get_pending_event; reject if it changes.
+      selector:
+        object:
 
 edit_pending_event:
   name: Edit pending event
