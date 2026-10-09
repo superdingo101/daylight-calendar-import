@@ -4422,7 +4422,7 @@ test("keyboard calendar checks preserve button focus and announce the result", a
   await pending;
   assert.equal(globalThis.focusedNode, panel._content.querySelectorAll("button")
     .find(item => item.dataset.calendarCheckEventId === "e1"));
-  assert.match(panel._announcement.children[0].textContent, /found 1 possible matches/);
+  assert.match(panel._announcement.children[0].textContent, /found 1 match/);
   assert.equal(panel._content.querySelector(".calendar-matches").attributes.role, "region");
 });
 
@@ -4477,11 +4477,14 @@ test("calendar check completion doesn't steal focus after moving elsewhere", asy
     .find(item => item.dataset.calendarCheckEventId === "e1");
   panel.shadowRoot.activeElement = button;
   const pending = panel.checkCalendarEvent(event);
-  panel.shadowRoot.activeElement = panel._refreshButton;
-  globalThis.focusedNode = panel._refreshButton;
+  const back = panel._content.querySelectorAll("button")
+    .find(item => item.textContent === "Back to inbox");
+  panel.shadowRoot.activeElement = back;
+  globalThis.focusedNode = back;
   resolveCheck({response: {pending_id: "imp", event_id: "e1",
     matches: [], observed_calendars: ["calendar.family"]}});
   await pending;
-  assert.equal(globalThis.focusedNode, panel._refreshButton);
+  assert.equal(globalThis.focusedNode, back);
+  assert.equal(panel._content.querySelectorAll("button").includes(back), true);
   assert.match(panel._announcement.children[0].textContent, /no matches/);
 });
