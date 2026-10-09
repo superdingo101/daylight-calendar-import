@@ -448,12 +448,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
             except CalendarObservationError as err:
                 raise ServiceValidationError(
-                    "Cannot verify destination calendar before approval: "
+                    "Approval rejected before calendar write: Cannot verify destination calendar before approval: "
                     "calendar observation is incomplete"
                 ) from err
             if any(match.kind == "exact_duplicate" for match in matches):
                 raise ServiceValidationError(
-                    "Exact duplicate already exists on the destination calendar; "
+                    "Approval rejected before calendar write: Exact duplicate already exists on the destination calendar; "
                     "review or reject the pending event"
                 )
 
