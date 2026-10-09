@@ -7,6 +7,7 @@ upon. A missing/failed provider response is not equivalent to an empty agenda.
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
+from dataclasses import replace
 from collections.abc import Sequence
 from typing import Any
 
@@ -215,15 +216,38 @@ async def async_observe_candidates(
     return tuple(candidates)
 
 
+def _approval_start_window(draft: EventDraft) -> EventDraft:
+    """Bound an exact-duplicate preflight to the candidate's start.
+
+    An exact duplicate must have the same start and complete end as the draft.
+    There is no reason to read years of calendar history for a long event:
+    a provider's start/overlap query covering the draft's start is sufficient.
+    Leave the original draft unchanged for full-interval classification.
+    """
+    if draft.all_day:
+        start = date.fromisoformat(draft.start)
+        end = date.fromisoformat(draft.end)
+        if end - start <= timedelta(days=89):
+            return draft
+        return replace(draft, end=(start + timedelta(days=89)).isoformat())
+    start = datetime.fromisoformat(draft.start)
+    end = datetime.fromisoformat(draft.end)
+    if end - start <= timedelta(days=89):
+        return draft
+    return replace(draft, end=(start + timedelta(days=89)).isoformat())
+
+
 async def async_classify_conflicts(
     hass: HomeAssistant, draft: EventDraft, *,
     observed_calendars: Sequence[str], local_zone: tzinfo,
     context: Context | None = None,
     trusted_internal: bool = False,
+    approval_start_only: bool = False,
 ) -> tuple[CalendarMatch, ...]:
     """Classify observed event intervals without hiding calendar lookup errors."""
+    observation_draft = _approval_start_window(draft) if approval_start_only else draft
     candidates = await async_observe_candidates(
-        hass, draft, observed_calendars=observed_calendars,
+        hass, observation_draft, observed_calendars=observed_calendars,
         local_zone=local_zone, context=context,
         trusted_internal=trusted_internal,
     )
