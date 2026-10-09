@@ -4259,3 +4259,22 @@ test("unresolved calendar route requires a new explicit calendar choice", async 
   // The selected fallback is now an explicit decision, not merely a prefill.
   assert.equal(selector.value, "calendar.family");
 });
+
+
+test("unresolved routing disables bulk approval but not rejection", () => {
+  const panel = new DaylightImportPanel();
+  panel._status = "ready";
+  panel._selectedId = "import";
+  const fields = {start: "2026-10-11", end: "2026-10-12", all_day: true,
+    status: "pending", confidence: 0.9, calendar_entity: "calendar.family"};
+  panel._detail = {id: "import", source_kind: "manual_text", source_text: "Practice",
+    events: [{...fields, id: "first", title: "A", routing_unresolved: true},
+      {...fields, id: "second", title: "B"}]};
+  panel.render();
+  const approve = panel._content.querySelectorAll("button").find(
+    button => button.dataset.batchAction === "approve");
+  const reject = panel._content.querySelectorAll("button").find(
+    button => button.dataset.batchAction === "reject");
+  assert.equal(approve.disabled, true);
+  assert.equal(reject.disabled, undefined);
+});
