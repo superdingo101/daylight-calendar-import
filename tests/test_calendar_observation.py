@@ -836,3 +836,32 @@ async def test_unbounded_provider_title_is_an_explicit_incomplete_observation():
             fake, draft(), observed_calendars=["calendar.work"],
             local_zone=ZONE, context=READ_CONTEXT,
         )
+
+
+@pytest.mark.parametrize("position", ["first", "second"])
+async def test_unavailable_calendar_entity_fails_before_any_provider_read(position):
+    """An HA entity marked unavailable must not act like an empty calendar."""
+    fake = hass({
+        "calendar.family": {"events": []},
+        "calendar.work": {"events": [existing()]},
+    })
+    target = "calendar.family" if position == "first" else "calendar.work"
+    fake.providers[target].available = False
+    with pytest.raises(CalendarObservationError, match="incomplete"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.family", "calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    fake.providers["calendar.family"].async_get_events.assert_not_awaited()
+    fake.providers["calendar.work"].async_get_events.assert_not_awaited()
+
+
+async def test_available_calendar_entity_remains_observable():
+    fake = hass({"calendar.family": {"events": []}})
+    fake.providers["calendar.family"].available = True
+    result = await async_observe_candidates(
+        fake, draft(), observed_calendars=["calendar.family"],
+        local_zone=ZONE, context=READ_CONTEXT,
+    )
+    assert result == ()
+    fake.providers["calendar.family"].async_get_events.assert_awaited_once()
