@@ -24,6 +24,7 @@ from .const import (
     CONF_EMAIL_PORT,
     CONF_EMAIL_USERNAME,
     CONF_EMAIL_VERIFY_SSL,
+    CONF_EMAIL_SENDER_ALLOWLIST,
     DOMAIN,
 )
 from .settings import (
@@ -148,6 +149,7 @@ async def websocket_update_core_settings(
         vol.Optional("password"): cv.string,
         vol.Optional("mailbox"): cv.string,
         vol.Optional("verify_ssl"): bool,
+        vol.Optional("sender_allowlist"): [cv.string],
     }
 )
 @websocket_api.async_response
@@ -170,6 +172,7 @@ async def websocket_update_email_settings(
                     "password": CONF_EMAIL_PASSWORD,
                     "mailbox": CONF_EMAIL_MAILBOX,
                     "verify_ssl": CONF_EMAIL_VERIFY_SSL,
+                    "sender_allowlist": CONF_EMAIL_SENDER_ALLOWLIST,
                 }
                 email_input = {
                     option_key: msg[api_key]
