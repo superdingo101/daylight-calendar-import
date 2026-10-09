@@ -1320,25 +1320,50 @@ export class DaylightImportPanel extends HTMLElement {
   async checkCalendarEvent(event) {
     if (!["pending", "write_uncertain"].includes(event.status) ||
         this._saving || this._editingId || this._decision ||
-        this._batchAction || this._resolution || !this._detail?.events.includes(event)) return;
+        this._batchAction || this._resolution || !this._detail?.events.includes(event) ||
+        (this._calendarCheck?.event === event && this._calendarCheck.status === "loading")) return;
     const pendingId = this._selectedId;
     const generation = this._generation;
+    const focused = this.shadowRoot.activeElement?.dataset.calendarCheckEventId === event.id;
     const check = {pendingId, event, status: "loading"};
     this._calendarCheck = check;
     this.render();
+    if (focused) this.focusCalendarCheck(event.id);
+    this._announcement.replaceChildren(element("span", "Checking selected calendars…"));
+
+    let next;
     try {
       const response = await checkEvent(this._hass, pendingId, event);
-      if (this._calendarCheck !== check || generation !== this._generation ||
-          this._selectedId !== pendingId || !this._detail?.events.includes(event)) return;
-      this._calendarCheck = {...check, status: "ready",
-        matches: response.matches, observed_calendars: response.observed_calendars};
+      next = {status: "ready", matches: response.matches,
+        observed_calendars: response.observed_calendars};
     } catch (error) {
-      if (this._calendarCheck !== check || generation !== this._generation ||
-          this._selectedId !== pendingId || !this._detail?.events.includes(event)) return;
-      this._calendarCheck = {...check, status: "error",
+      next = {status: "error",
         message: typeof error?.message === "string" ? error.message : "Calendar check failed"};
     }
+    if (this._calendarCheck !== check || generation !== this._generation ||
+        this._selectedId !== pendingId || !this._detail?.events.includes(event)) return;
+    // An unrelated UI action might start while a provider read is pending.
+    // Never rerender over an unsaved edit, a decision, or recovery controls.
+    if (this._saving || this._editingId || this._decision ||
+        this._batchAction || this._resolution) {
+      this._calendarCheck = null;
+      return;
+    }
+    const restoreFocus = this.shadowRoot.activeElement?.dataset.calendarCheckEventId === event.id;
+    this._calendarCheck = {...check, ...next};
     this.render();
+    if (restoreFocus) this.focusCalendarCheck(event.id);
+    const summary = next.status === "error" ?
+      `Calendar check incomplete: ${next.message}` :
+      next.matches.length ?
+        `Calendar check found ${next.matches.length} possible matches. Review the advisory results below.` :
+        `Calendar check complete: no matches in ${next.observed_calendars.length} observed calendars.`;
+    this._announcement.replaceChildren(element("span", summary));
+  }
+
+  focusCalendarCheck(eventId) {
+    this._content.querySelectorAll("button").find(
+      button => button.dataset.calendarCheckEventId === eventId)?.focus();
   }
 
   async showImport(id) {
@@ -2065,6 +2090,7 @@ export class DaylightImportPanel extends HTMLElement {
         if (this._calendarCheck?.event === event) {
           const result = this._calendarCheck;
           const section = element("section", "", "calendar-matches");
+          section.setAttribute("role", "region");
           section.setAttribute("aria-label", "Calendar check results");
           if (result.status === "loading") {
             section.append(element("p", "Checking selected calendars…"));
