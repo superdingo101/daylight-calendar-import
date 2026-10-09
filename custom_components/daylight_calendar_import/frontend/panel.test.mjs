@@ -4683,3 +4683,37 @@ test("failed calendar checks re-enable other events for retry", async () => {
   assert.equal(attempts, 2);
   assert.equal(panel._calendarCheck.status, "ready");
 });
+
+
+test("bulk approval reports definite preflight rejections without uncertain-write warning", async () => {
+  const panel = new DaylightImportPanel();
+  const first = {id: "first", title: "Practice", start: "2026-10-01",
+    end: "2026-10-02", all_day: true, status: "pending", confidence: 0};
+  const second = {...first, id: "second"};
+  let remaining = [first, second];
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "one"}]}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events: remaining}}};
+    if (request.service === "approve_pending_event") {
+      if (request.service_data.event_id === "first") {
+        remaining = [second];
+        return {response: {pending_id: "one", event_id: "first", approved: true}};
+      }
+      throw {message: "Approval rejected before calendar write: " +
+        "Exact duplicate already exists on the destination calendar"};
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.batchAction === "approve").click();
+  await panel.runBatch("approve");
+  assert.equal(panel._batchResults[0].outcome, "success");
+  assert.equal(panel._batchResults[1].outcome,
+    "Approval rejected before calendar write: " +
+    "Exact duplicate already exists on the destination calendar");
+  assert.doesNotMatch(panel._batchResults[1].outcome, /outcome unknown/i);
+  assert.equal(panel._detail.events.length, 1);
+  assert.equal(panel._detail.events[0].id, "second");
+});
