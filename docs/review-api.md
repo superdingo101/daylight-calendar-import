@@ -170,7 +170,17 @@ rechecks the event after the asynchronous provider reads. If the draft,
 destination, status or identity changed—or it was approved/rejected—while
 observation was in progress, the action fails with a refresh error instead of
 returning matches for the old draft. Calendar access failures are explicit errors, **not** a signal that
-the schedule is empty. This API does not enforce a write-time duplicate guard. The review
-panel uses these results to display an optional, on-demand duplicate/conflict
-check; the results are advisory, not a condition for approval. Write-time
-duplicate protection is a separate scoped change.
+the schedule is empty. The review panel uses these results as an optional, on-demand advisory
+calendar check, not as an approval decision. At **approval time**, the
+single-event and bulk approval actions make a fresh read of *each event's
+destination calendar only* before recording its durable write checkpoint.
+An exact match blocks that event's write; possible duplicates and scheduling
+overlaps remain advisory. An unavailable or malformed destination calendar
+also blocks writing, leaving the event pending rather than write-uncertain.
+Earlier events in a bulk approval may already have been created before a
+later event fails, so callers should refresh the remaining pending queue.
+
+Trusted Home Assistant automations may invoke approval without a user context;
+the internal preflight retains the established internal-service trust boundary.
+Authenticated callers still need their existing entity permissions. The
+legacy immediate `import_text` action does not use the pending-approval guard.
