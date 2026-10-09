@@ -1992,6 +1992,10 @@ export class DaylightImportPanel extends HTMLElement {
             const button = element("button", `${action === "approve" ? "Approve" : "Reject"} all ${ready.length}`);
             button.type = "button";
             button.dataset.batchAction = action;
+            if (action === "approve" && ready.some(item => item.routing_unresolved)) {
+              button.disabled = true;
+              button.title = "Confirm every unresolved destination before bulk approval";
+            }
             button.addEventListener("click", () => {
               if (this._saving) return;
               this._batchResults = [];
