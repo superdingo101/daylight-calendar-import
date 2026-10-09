@@ -1374,3 +1374,26 @@ async def test_calendar_option_save_failure_restores_original_ingress():
     assert store.accepting_services is True
     assert config_entry.options == {}
     assert hass.config_entries.reloads == []
+
+
+def test_conflict_calendar_limit_leaves_room_for_any_writable_destination():
+    from custom_components.daylight_calendar_import.settings import (
+        calendar_intelligence_patch, effective_calendar_intelligence,
+    )
+    config_entry = entry()
+    selected = [f"calendar.observed_{i}" for i in range(16)]
+    with pytest.raises(SettingsValidationError) as err:
+        calendar_intelligence_patch(config_entry, {
+            "conflict_calendar_entities": selected,
+        })
+    assert err.value.code == "conflict_calendar_limit"
+    assert calendar_intelligence_patch(config_entry, {
+        "conflict_calendar_entities": selected[:15],
+    }) == {"conflict_calendar_entities": selected[:15]}
+    # Existing settings remain readable so admins can reduce a previously
+    # saved, overlong scope instead of breaking setup during an upgrade.
+    legacy = entry(options={"conflict_calendar_entities": selected})
+    assert effective_calendar_intelligence(legacy)[1] == selected
+    assert calendar_intelligence_patch(legacy, {
+        "conflict_calendar_entities": selected[:15],
+    }) == {"conflict_calendar_entities": selected[:15]}
