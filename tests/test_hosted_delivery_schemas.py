@@ -2,45 +2,26 @@
 
 from __future__ import annotations
 
-
 from datetime import datetime, timedelta
-
-
 from hashlib import sha256
-
-
 import json
-
-
 import math
-
-
-import re
-
-
 from pathlib import Path
 
-
 import pytest
-from custom_components.daylight_calendar_import.dedup import source_fingerprint
-from custom_components.daylight_calendar_import.sources import SourceAttachment, SourceDocument, SourceKind
-
-
 from jsonschema import Draft202012Validator, FormatChecker
-
-
 from jsonschema.exceptions import ValidationError
-
-
 from referencing import Registry, Resource
 
+from custom_components.daylight_calendar_import.dedup import source_fingerprint
+from custom_components.daylight_calendar_import.sources import (
+    SourceAttachment, SourceDocument, SourceKind,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
+if not (ROOT / "schemas").is_dir():
+    ROOT = ROOT.parent
 SCHEMA_DIR = ROOT / "schemas" / "hosted" / "v1"
-
-
 FIXTURE_DIR = ROOT / "tests" / "fixtures" / "hosted" / "v1"
 
 
