@@ -865,3 +865,99 @@ async def test_available_calendar_entity_remains_observable():
     )
     assert result == ()
     fake.providers["calendar.family"].async_get_events.assert_awaited_once()
+
+
+async def test_calendar_becoming_unavailable_during_its_own_read_fails_closed():
+    fake = hass({"calendar.work": {"events": []}})
+    provider = fake.providers["calendar.work"]
+
+    async def read_then_disconnect(_hass, _start, _end):
+        provider.available = False
+        return []  # A stale/cached empty agenda must not mean no conflicts.
+
+    provider.available = True
+    provider.async_get_events.side_effect = read_then_disconnect
+    with pytest.raises(CalendarObservationError, match="incomplete"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    provider.async_get_events.assert_awaited_once()
+
+
+async def test_later_calendar_unavailable_during_first_read_is_never_queried():
+    fake = hass({
+        "calendar.first": {"events": []},
+        "calendar.second": {"events": []},
+    })
+    first, second = fake.providers["calendar.first"], fake.providers["calendar.second"]
+
+    async def disconnect_later_calendar(_hass, _start, _end):
+        second.available = False
+        return []
+
+    first.async_get_events.side_effect = disconnect_later_calendar
+    with pytest.raises(CalendarObservationError, match="incomplete"):
+        await async_observe_candidates(
+            fake, draft(),
+            observed_calendars=["calendar.first", "calendar.second"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    first.async_get_events.assert_awaited_once()
+    second.async_get_events.assert_not_awaited()
+
+
+async def test_earlier_calendar_unavailable_during_later_read_invalidates_result():
+    fake = hass({
+        "calendar.first": {"events": []},
+        "calendar.second": {"events": []},
+    })
+    first, second = fake.providers["calendar.first"], fake.providers["calendar.second"]
+
+    async def disconnect_earlier_calendar(_hass, _start, _end):
+        first.available = False
+        return []
+
+    second.async_get_events.side_effect = disconnect_earlier_calendar
+    with pytest.raises(CalendarObservationError, match="incomplete"):
+        await async_observe_candidates(
+            fake, draft(),
+            observed_calendars=["calendar.first", "calendar.second"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    first.async_get_events.assert_awaited_once()
+    second.async_get_events.assert_awaited_once()
+
+
+async def test_calendar_entity_replaced_during_read_invalidates_cached_response():
+    fake = hass({"calendar.work": {"events": []}})
+    provider = fake.providers["calendar.work"]
+
+    async def replace_entity(_hass, _start, _end):
+        fake.providers["calendar.work"] = SimpleNamespace(
+            available=True, async_get_events=AsyncMock(return_value=[]),
+        )
+        return []
+
+    provider.async_get_events.side_effect = replace_entity
+    with pytest.raises(CalendarObservationError, match="incomplete"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+
+
+async def test_calendar_component_replaced_during_read_invalidates_result():
+    fake = hass({"calendar.work": {"events": []}})
+    provider = fake.providers["calendar.work"]
+
+    async def replace_component(_hass, _start, _end):
+        fake.data[DATA_COMPONENT] = SimpleNamespace(get_entity=Mock(return_value=provider))
+        return []
+
+    provider.async_get_events.side_effect = replace_component
+    with pytest.raises(CalendarObservationError, match="incomplete"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
