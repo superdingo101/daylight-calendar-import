@@ -2984,3 +2984,27 @@ async def test_routing_confirmation_is_durable_and_blocks_single_and_bulk_writes
     assert writes == [first.id]
     with pytest.raises(PendingEventEditError, match="Confirm the destination"):
         await restored.async_approve_event(item.id, second.id, write)
+
+
+async def test_bulk_route_preflight_refuses_mixed_events_before_first_side_effect(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(
+        source_text="Calendar: unresolved\nTwo events",
+        events=[draft(), second_draft()],
+        calendar_entity="calendar.family", routing_unresolved=True,
+    )).pending
+    first, second = item.events
+    await store.async_edit_event(item.id, first.id, first.draft,
+                                 calendar_entity="calendar.family")
+    writes = []
+
+    async def write(event):
+        writes.append(event.id)
+
+    with pytest.raises(PendingEventEditError, match="Confirm all event destinations"):
+        await store.async_process_events(item.id, write)
+    assert writes == []
+    assert store.get_event(item.id, second.id).routing_unresolved
+    assert store.get_event(item.id, first.id).status == "pending"

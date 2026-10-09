@@ -4236,3 +4236,26 @@ test("Email save-error recovery also rebases untouched routing selections", asyn
     ["calendar.external"]);
   assert.equal(panel._routingRawDraft.aliasesDirty, true);
 });
+
+
+test("unresolved calendar route requires a new explicit calendar choice", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Practice", start: "2026-10-11",
+    end: "2026-10-12", all_day: true, confidence: 0.9,
+    calendar_entity: "calendar.family", routing_unresolved: true, status: "pending"};
+  panel._detail = {id: "pending", default_calendar: "calendar.family",
+    allowed_calendars: ["calendar.family"], events: [event]};
+  const form = panel.editForm(event);
+  const selector = form.elements.namedItem("calendar_entity");
+  assert.equal(selector.value, "");
+  assert.equal(selector.required, true);
+  let writes = 0;
+  panel._hass = {config: {time_zone: "America/Los_Angeles"},
+    callWS: async () => { writes++; return {}; }};
+  await panel.saveEdit(event, form);
+  assert.equal(writes, 0);
+  assert.match(panel._editError, /Select and confirm a destination/);
+  selector.value = "calendar.family";
+  // The selected fallback is now an explicit decision, not merely a prefill.
+  assert.equal(selector.value, "calendar.family");
+});
