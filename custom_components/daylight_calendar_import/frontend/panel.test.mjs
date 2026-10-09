@@ -4494,3 +4494,46 @@ test("calendar check completion doesn't steal focus after moving elsewhere", asy
   assert.equal(panel._content.querySelectorAll("button").includes(back), true);
   assert.match(panel._announcement.children[0].textContent, /no matches/);
 });
+
+test("inbox refresh invalidates a pending calendar check and allows a fresh check", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending"};
+  const checks = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return new Promise(resolve => {
+      checks.push(resolve);
+    });
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  const original = panel.checkCalendarEvent(event);
+  assert.equal(panel._calendarCheck.status, "loading");
+  await panel.refresh();
+  assert.equal(panel._calendarCheck, null);
+  const button = panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1");
+  assert.equal(button.attributes["aria-disabled"], undefined);
+
+  const freshCheck = panel.checkCalendarEvent(event);
+  assert.equal(checks.length, 2);
+  checks[0]({response: {pending_id: "imp", event_id: "e1",
+    matches: [{kind: "conflict", calendar_entity: "calendar.family",
+      existing_title: "Stale result"}], observed_calendars: ["calendar.family"]}});
+  await original;
+  assert.equal(panel._calendarCheck.status, "loading");
+  assert.equal(panel._content.querySelector(".calendar-matches")
+    .querySelectorAll("li").length, 0);
+  checks[1]({response: {pending_id: "imp", event_id: "e1",
+    matches: [], observed_calendars: ["calendar.family"]}});
+  await freshCheck;
+  assert.equal(panel._calendarCheck.status, "ready");
+  assert.match(panel._announcement.children[0].textContent, /no matches/);
+  assert.equal(panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1")
+    .attributes["aria-disabled"], undefined);
+});
