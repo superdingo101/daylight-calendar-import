@@ -114,6 +114,7 @@ class FakeHass:
         self.services = FakeServices()
         self.auth = FakeAuth(user)
         self.data = {}
+        self.config = SimpleNamespace(time_zone="America/Los_Angeles")
         self.bus = SimpleNamespace(async_fire=Mock())
         self.config_entries = SimpleNamespace(
             async_forward_entry_setups=AsyncMock(),
@@ -126,6 +127,7 @@ def fake_review_panel_for_service_unit_tests(monkeypatch):
     """Service-only fakes exercise the panel separately from registration."""
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_review_panel", AsyncMock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_remove_review_panel", Mock())
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_classify_conflicts", AsyncMock(return_value=()))
 
 
 async def test_panel_registration_failure_leaves_no_services_or_store(monkeypatch):
