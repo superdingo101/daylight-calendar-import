@@ -53,13 +53,21 @@ Conflict-observation calendars have **no write authorization**.
 Use `calendar_aliases: {}` to clear aliases. When removing a writable calendar
 used by an alias, remove/remap that alias first in a separate settings request.
 
-**Pending-event destination changes:** configuration does not mutate or delete
-pending events. If you remove a writable calendar, existing pending events
-targeting it remain in review; their destination must be reassigned to an
-allowed calendar before approval. The review editor supports this recovery
-path, and approval enforces the current allowed destination set. This API
-does not promise an atomic transaction across runtime email ingestion and
-pending-event persistence.
+**Pending-event destination changes:** configuration never silently
+retargets pending events. Removing a writable calendar used by any pending
+event fails with `pending_destination_not_allowed`; choose another destination
+in review (or reject the event) before retrying. Changing the default when a
+legacy pending event uses the implicit default fails with
+`pending_default_would_change`. The queue is checked while holding the store
+transaction lock, so editing a pending event cannot race the validation.
+
+A scope change fails closed with `pending_store_unavailable` if Daylight is not
+loaded and its durable queue therefore cannot be checked. If a submission,
+service handler or IMAP poll is running it fails with `calendar_change_busy`
+rather than switching calendar settings under active ingestion. On successful
+validation, admission of new services and scheduled polls is suspended until
+the config entry finishes reloading (or the update fails). AI-only and
+unchanged-calendar updates are not subject to the queue gate.
 
 ## Update Direct IMAP settings
 
@@ -89,6 +97,10 @@ Validation failures use stable WebSocket error codes:
 - `duplicate_alias`
 - `alias_target_not_allowed`
 - `invalid_conflict_calendars`
+- `pending_destination_not_allowed`
+- `pending_default_would_change`
+- `pending_store_unavailable`
+- `calendar_change_busy`
 - `reload_failed`
 
 The API intentionally keeps config-entry options as the source of truth. The
