@@ -2486,3 +2486,8 @@ async def test_unresolved_manual_hint_is_review_warning_not_writable_override(mo
     assert store.async_add.await_args.kwargs["calendar_entity"] == "calendar.family"
     assert store.async_add.await_args.kwargs["warnings"] == response["warnings"]
     assert parser.await_args.kwargs["source"].text == "Soccer practice"
+
+
+def test_routing_snapshot_preserves_confirmation_state():
+    original = PendingEvent("event-id", draft(), routing_unresolved=True)
+    assert _expected_event(original.as_service_dict(), original.id) == original
