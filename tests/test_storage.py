@@ -1199,7 +1199,7 @@ async def test_store_async_add_rejects_blank_source_text(monkeypatch):
     store = make_store(monkeypatch, backend)
     await store.async_load()
 
-    with pytest.raises(ValueError, match="source_text must be a non-empty string"):
+    with pytest.raises(ValueError, match=r"^source_text must be a non-empty string$"):
         await store.async_add(source_text="   ", events=[draft()])
 
 
@@ -1472,7 +1472,7 @@ async def test_v1_migration_failure_does_not_replace_storage(hass):
 
 
 def test_pending_event_rejects_unknown_status():
-    with pytest.raises(ValueError, match="invalid pending event status"):
+    with pytest.raises(ValueError, match=r"^invalid pending event status$"):
         PendingEvent.from_dict({"id": "x", "draft": draft().as_dict(), "status": "unknown"})
 
 
