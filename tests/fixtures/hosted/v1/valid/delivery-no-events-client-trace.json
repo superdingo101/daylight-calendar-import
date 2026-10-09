@@ -30,7 +30,9 @@
       "source_expires_at": "2026-10-15T16:00:00Z",
       "lease_token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
       "verified_attachments": {},
-      "attachments_verification_complete": true
+      "attachments_verification_complete": true,
+      "delivery_id": "delivery_00000000000000000001",
+      "local_config_entry_id": "entry-one"
     },
     {
       "op": "restart_ha"
@@ -42,7 +44,9 @@
       "source_expires_at": "2026-10-15T16:00:00Z",
       "lease_token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
       "verified_attachments": {},
-      "attachments_verification_complete": true
+      "attachments_verification_complete": true,
+      "delivery_id": "delivery_00000000000000000001",
+      "local_config_entry_id": "entry-one"
     },
     {
       "op": "ack",
