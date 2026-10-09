@@ -120,8 +120,9 @@ async def async_observe_candidates(
     observed_calendars: Sequence[str],
     local_zone: tzinfo,
     context: Context | None = None,
+    trusted_internal: bool = False,
 ) -> tuple[CalendarCandidate, ...]:
-    """Read selected calendars under POLICY_READ; never create/edit events."""
+    """Read selected calendars; only trusted HA internal approval may omit a user."""
     if not observed_calendars:
         return ()
     # Validate before using identifiers as dict keys, so malformed/unhashable
@@ -137,18 +138,23 @@ async def async_observe_candidates(
     # because generic entity services are control-scoped. Read-only reviewers
     # must instead use the same POLICY_READ + entity API as HA's calendar view.
     if context is None or context.user_id is None:
-        raise Unauthorized(context=context, permission=POLICY_READ)
-    user = await hass.auth.async_get_user(context.user_id)
-    if user is None:
-        raise Unauthorized(
-            context=context, permission=POLICY_READ, user_id=context.user_id,
-        )
-    for entity in identifiers:
-        if not user.permissions.check_entity(entity, POLICY_READ):
+        # HA automations and trusted in-process service calls use a userless
+        # context. The caller must explicitly opt into this internal-only path;
+        # public review reads still require an authenticated user.
+        if not trusted_internal:
+            raise Unauthorized(context=context, permission=POLICY_READ)
+    else:
+        user = await hass.auth.async_get_user(context.user_id)
+        if user is None:
             raise Unauthorized(
-                context=context, entity_id=entity, permission=POLICY_READ,
-                user_id=context.user_id,
+                context=context, permission=POLICY_READ, user_id=context.user_id,
             )
+        for entity in identifiers:
+            if not user.permissions.check_entity(entity, POLICY_READ):
+                raise Unauthorized(
+                    context=context, entity_id=entity, permission=POLICY_READ,
+                    user_id=context.user_id,
+                )
     component = hass.data.get(DATA_COMPONENT)
     if component is None:
         raise CalendarObservationError("Calendar observation is unavailable")
@@ -213,11 +219,13 @@ async def async_classify_conflicts(
     hass: HomeAssistant, draft: EventDraft, *,
     observed_calendars: Sequence[str], local_zone: tzinfo,
     context: Context | None = None,
+    trusted_internal: bool = False,
 ) -> tuple[CalendarMatch, ...]:
     """Classify observed event intervals without hiding calendar lookup errors."""
     candidates = await async_observe_candidates(
         hass, draft, observed_calendars=observed_calendars,
         local_zone=local_zone, context=context,
+        trusted_internal=trusted_internal,
     )
     matches: list[CalendarMatch] = []
     for existing in candidates:
