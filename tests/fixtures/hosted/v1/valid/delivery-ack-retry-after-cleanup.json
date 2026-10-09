@@ -43,7 +43,9 @@
       "verified_attachments": {
         "flyer.pdf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
-      "attachments_verification_complete": true
+      "attachments_verification_complete": true,
+      "delivery_id": "delivery_00000000000000000002",
+      "local_config_entry_id": "entry-one"
     },
     {
       "op": "ack_applied",
@@ -64,7 +66,9 @@
         "flyer.pdf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
       "attachments_verification_complete": true,
-      "cloud_attachment_bytes_available": false
+      "cloud_attachment_bytes_available": false,
+      "delivery_id": "delivery_00000000000000000002",
+      "local_config_entry_id": "entry-one"
     },
     {
       "op": "retry_same_ack",
