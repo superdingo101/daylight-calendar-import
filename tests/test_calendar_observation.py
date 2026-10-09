@@ -189,7 +189,7 @@ async def test_unavailable_calendar_failure_propagates():
     fake.data[DATA_COMPONENT].get_entity.side_effect = lambda _entity: SimpleNamespace(
         async_get_events=AsyncMock(side_effect=RuntimeError("provider timeout")),
     )
-    with pytest.raises(RuntimeError, match="provider timeout"):
+    with pytest.raises(CalendarObservationError, match="Calendar observation is incomplete"):
         await async_classify_conflicts(
             fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE, context=READ_CONTEXT,
         )
@@ -957,6 +957,31 @@ async def test_calendar_component_replaced_during_read_invalidates_result():
 
     provider.async_get_events.side_effect = replace_component
     with pytest.raises(CalendarObservationError, match="incomplete"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+
+
+async def test_provider_failure_does_not_expose_internal_error_text():
+    fake = hass({"calendar.work": {"events": []}})
+    fake.providers["calendar.work"].async_get_events.side_effect = RuntimeError(
+        "private-provider-token-and-connection-info",
+    )
+    with pytest.raises(CalendarObservationError) as exc:
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    assert str(exc.value) == "Calendar observation is incomplete"
+    assert isinstance(exc.value.__cause__, RuntimeError)
+
+
+async def test_observation_cancellation_propagates_without_false_incomplete_result():
+    import asyncio
+    fake = hass({"calendar.work": {"events": []}})
+    fake.providers["calendar.work"].async_get_events.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
         await async_observe_candidates(
             fake, draft(), observed_calendars=["calendar.work"],
             local_zone=ZONE, context=READ_CONTEXT,
