@@ -4314,3 +4314,73 @@ test("routing settings reject an oversized conflict scope before saving", async 
   assert.match(form.querySelector(".error").textContent, /at most 15 conflict calendars/);
   assert.equal(requests.some(request => request.type.includes("/update")), false);
 });
+
+test("on-demand calendar check renders classified matches without changing review state", async () => {
+  const event = {id: "event-1", title: "School", start: "2026-10-12",
+    end: "2026-10-13", all_day: true, status: "pending", calendar_entity: "calendar.family"};
+  const requests = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    requests.push(request);
+    if (request.service === "list_pending") return {response: {imports: [{id: "import-1"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "import-1", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return {response: {
+      pending_id: "import-1", event_id: "event-1",
+      observed_calendars: ["calendar.family"],
+      matches: [{kind: "exact_duplicate", calendar_entity: "calendar.family",
+        existing_title: "School"}, {kind: "conflict",
+        calendar_entity: "calendar.family", existing_title: "Dentist"}]}};
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("import-1");
+  const button = panel._content.querySelectorAll("button").find(
+    item => item.dataset.calendarCheckEventId === "event-1");
+  assert.equal(button.textContent, "Check calendars");
+  assert.equal(requests.some(item => item.service === "check_pending_event"), false);
+  await panel.checkCalendarEvent(event);
+  const results = panel._content.querySelector(".calendar-matches");
+  assert.ok(results);
+  assert.deepEqual(results.querySelectorAll("li").map(item => item.textContent), [
+    "Exact duplicate: School (calendar.family)",
+    "Scheduling conflict: Dentist (calendar.family)",
+  ]);
+  assert.equal(panel._detail.events[0].status, "pending");
+  assert.deepEqual(requests.find(item => item.service === "check_pending_event").service_data,
+    {pending_id: "import-1", event_id: "event-1", expected_event: event});
+});
+
+test("failed and stale calendar checks never masquerade as current results", async () => {
+  const event = {id: "event-1", title: "A", start: "2026-10-12",
+    end: "2026-10-13", all_day: true, status: "pending"};
+  let release;
+  let failed = true;
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "import-1"}]}};
+    if (request.service === "get_pending") return {response: {
+      pending: {id: "import-1", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") {
+      if (failed) throw new Error("Provider unavailable");
+      return new Promise(resolve => {release = resolve;});
+    }
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("import-1");
+  await panel.checkCalendarEvent(event);
+  const error = panel._content.querySelector(".calendar-matches").querySelector(".error");
+  assert.match(error.textContent, /Calendar check incomplete: Provider unavailable/);
+  assert.equal(error.attributes.role, "alert");
+  failed = false;
+  const check = panel.checkCalendarEvent(event);
+  assert.equal(panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "event-1").disabled, true);
+  panel._detail = {...panel._detail, events: [{...event, title: "Edited"}]};
+  panel.render();
+  release({response: {pending_id: "import-1", event_id: "event-1",
+    matches: [], observed_calendars: ["calendar.family"]}});
+  await check;
+  assert.equal(panel._content.querySelector(".calendar-matches"), null);
+});
