@@ -110,6 +110,8 @@ class EmailPollingRuntime:
     @callback
     def _schedule_poll(self, _now: object) -> None:
         """Start a poll unless one is already active."""
+        if not getattr(self._store, "accepting_services", True):
+            return
         if self._task is not None and not self._task.done():
             return
         self._task = self._hass.async_create_task(
