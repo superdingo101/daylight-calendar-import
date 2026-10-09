@@ -2760,3 +2760,35 @@ async def test_approval_writer_rechecks_destination_before_calendar_write(monkey
         assert response["approved"] is True
         assert len(hass.services.calls) == 1
     assert observer.await_args.kwargs["observed_calendars"] == ["calendar.family"]
+
+
+@pytest.mark.parametrize("context", [None, Context(user_id=None)])
+async def test_approval_internal_userless_service_context_is_forwarded(monkeypatch, context):
+    item = pending(draft())
+    event = item.events[0]
+
+    async def approve(_id, writer):
+        await writer.async_preflight(event)
+        await writer(event)
+        return item
+
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get=Mock(return_value=item),
+        async_process_events=AsyncMock(side_effect=approve),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store
+    )
+    observer = AsyncMock(return_value=())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_classify_conflicts", observer
+    )
+    hass = FakeHass(user=None)
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)][0]
+    response = await handler(SimpleNamespace(
+        data={ATTR_PENDING_ID: item.id}, context=context,
+    ))
+    assert response["approved"] is True
+    assert len(hass.services.calls) == 1
+    assert observer.await_args.kwargs["trusted_internal"] is True
