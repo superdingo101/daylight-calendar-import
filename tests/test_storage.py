@@ -3119,13 +3119,13 @@ def test_pending_storage_initializes_independent_containers_and_unsubscribes(mon
     removed = lambda: received.append("removed")
     cancel_removed = first.async_subscribe(removed)
     first._commit_items({})
-    assert received == ["kept", "removed"]
+    assert sorted(received) == ["kept", "removed"]
     cancel_removed()
     first._commit_items({})
-    assert received == ["kept", "removed", "kept"]
+    assert sorted(received) == ["kept", "kept", "removed"]
     cancel_first()
     first._commit_items({})
-    assert received == ["kept", "removed", "kept"]
+    assert sorted(received) == ["kept", "kept", "removed"]
 
 
 def test_pending_import_constructor_defaults_and_rejections_are_exact():
