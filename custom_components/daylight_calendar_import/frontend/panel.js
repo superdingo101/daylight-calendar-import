@@ -433,13 +433,28 @@ function parseCalendarAliases(source) {
 }
 
 
+function normalizedSenderList(addresses) {
+  // Match the server's ordered, case-insensitive deduplication of exact
+  // mailbox addresses for comparing a submitted draft to the saved snapshot.
+  // Validation and full RFC mailbox normalization remain server-owned.
+  if (!Array.isArray(addresses)) return null;
+  return [...new Set(addresses.map(address => address.trim().toLowerCase()))];
+}
+
+function senderListsMatch(draft, persisted) {
+  const requested = normalizedSenderList(draft);
+  const saved = normalizedSenderList(persisted);
+  return requested !== null && saved !== null &&
+    JSON.stringify(requested) === JSON.stringify(saved);
+}
+
 function emailDraftMatches(settings, draft) {
   const email = settings?.email;
   if (!email || !draft) return false;
   if (draft.password) return false;
   return Object.entries(draft).every(([key, value]) =>
     key === "password" || (key === "sender_allowlist"
-      ? JSON.stringify(value) === JSON.stringify(email[key] ?? [])
+      ? senderListsMatch(value, email[key] ?? [])
       : value === email[key]));
 }
 
@@ -1115,7 +1130,7 @@ export class DaylightImportPanel extends HTMLElement {
       mailbox: fields.namedItem("email_mailbox").value.trim(),
       verify_ssl: fields.namedItem("email_verify_ssl").checked,
       sender_allowlist: fields.namedItem("email_sender_allowlist").value
-        .split(/[,\n]/).map(value => value.trim()).filter(Boolean),
+        .split(/\r\n|\r|\n/).map(value => value.trim()).filter(Boolean),
     };
   }
 
