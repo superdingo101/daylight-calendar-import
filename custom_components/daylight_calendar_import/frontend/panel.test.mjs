@@ -4715,7 +4715,7 @@ test("ambiguous IMAP allowlist save reconciles casefolded and deduplicated addre
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     email: {enabled: true, host: "imap.example.test", port: 993,
-      username: "user@example.test", password_configured: true,
+      username: "user@example.test", password_configured: false,
       mailbox: "INBOX", verify_ssl: true, sender_allowlist: []},
   };
   let readCount = 0;
@@ -4732,7 +4732,8 @@ test("ambiguous IMAP allowlist save reconciles casefolded and deduplicated addre
       if (message.type === "daylight_calendar_import/settings/email/update") {
         submitted = message.sender_allowlist;
         saved = {...saved, email: {...saved.email,
-          sender_allowlist: ['a@example.test', '"last,first"@example.com']}};
+          sender_allowlist: ['a@example.test', '"last,first"@example.com'],
+          password_configured: true}};
         // Simulate a committed save whose WebSocket response was lost.
         throw 3;
       }
@@ -4744,12 +4745,14 @@ test("ambiguous IMAP allowlist save reconciles casefolded and deduplicated addre
   const form = find(panel._content, "form");
   form.elements.namedItem("email_sender_allowlist").value =
     'A@Example.test\na@example.test\n"last,first"@Example.com';
+  form.elements.namedItem("email_password").value = "new-app-password";
   await panel.saveEmailSettingsForm(form);
   assert.deepEqual(submitted,
     ["A@Example.test", "a@example.test", '"last,first"@Example.com']);
   assert.equal(readCount, 2);
   assert.equal(panel._settingsError, null);
   assert.equal(panel._settingsDrafts.email, null);
+  assert.equal(find(panel._content, "form").elements.namedItem("email_password").value, "");
   assert.match(panel._settingsReloadWarning, /could not confirm/i);
   assert.equal(find(panel._content, "form").elements
     .namedItem("email_sender_allowlist").value,
