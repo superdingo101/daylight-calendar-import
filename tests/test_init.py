@@ -1895,7 +1895,7 @@ async def test_setup_email_runtime_reuses_parser_store_and_default_calendar(
     monkeypatch,
 ):
     hass = FakeHass()
-    runtime = SimpleNamespace(async_stop=AsyncMock())
+    runtime = SimpleNamespace(async_stop=AsyncMock(), on_entry_ready=Mock())
     captured = {}
     setup_runtime = AsyncMock(return_value=runtime)
     parse = AsyncMock(return_value=ParseOutcome([draft()], ["Review time"]))
@@ -1933,6 +1933,7 @@ async def test_setup_email_runtime_reuses_parser_store_and_default_calendar(
     assert await async_setup_entry(hass, config_entry) is True
     assert captured["args"] == (hass, config_entry, pending_store)
     assert pending_store.email_runtime is runtime
+    runtime.on_entry_ready.assert_called_once_with()
 
     document = SourceDocument(
         id="email-doc",
