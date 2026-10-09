@@ -1075,3 +1075,43 @@ async def test_trusted_internal_flag_never_bypasses_authenticated_read_permissio
             fake, draft(), observed_calendars=["calendar.work"],
             local_zone=ZONE, context=READ_CONTEXT, trusted_internal=True,
         )
+
+
+@pytest.mark.parametrize("all_day", [False, True])
+async def test_approval_start_probe_supports_long_events_and_full_exact_match(all_day):
+    from dataclasses import replace
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    original = draft(all_day=all_day)
+    long_end = ("2027-06-30" if all_day else "2027-06-30T18:30:00-07:00")
+    extended = replace(original, end=long_end)
+    probe = _approval_start_window(extended)
+    assert probe.start == extended.start
+    assert probe.end != extended.end
+    assert probe.end > probe.start
+    assert (datetime.fromisoformat(probe.end) - datetime.fromisoformat(probe.start)
+            if not all_day else date.fromisoformat(probe.end) - date.fromisoformat(probe.start)
+            ) <= timedelta(days=89)
+    stored = {
+        "summary": extended.title, "start": extended.start, "end": extended.end
+    }
+    fake = hass({"calendar.work": {"events": [stored]}})
+    result = await async_classify_conflicts(
+        fake, extended, observed_calendars=["calendar.work"],
+        local_zone=ZONE, context=READ_CONTEXT, approval_start_only=True,
+    )
+    assert len(result) == 1
+    assert result[0].kind == "exact_duplicate"
+    query = fake.providers["calendar.work"].async_get_events.await_args.args
+    assert query[1].isoformat().startswith(extended.start[:10])
+    assert query[2] < datetime.fromisoformat(long_end).astimezone(ZONE) if not all_day else query[2].date() < date.fromisoformat(long_end)
+
+
+@pytest.mark.parametrize("all_day", [False, True])
+def test_short_approval_probe_preserves_short_event(all_day):
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    event = draft(all_day=all_day)
+    assert _approval_start_window(event) is event
