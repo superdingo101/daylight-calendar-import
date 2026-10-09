@@ -3097,3 +3097,87 @@ async def test_migrated_uncertain_route_stays_blocked_after_not_created(monkeypa
     with pytest.raises(PendingEventEditError, match="Confirm"):
         await restarted.async_process_events(original.id, write)
     assert writes == []
+
+
+def test_pending_storage_initializes_independent_containers_and_unsubscribes(monkeypatch):
+    """Fresh durable stores must have usable isolated state and removable listeners."""
+    first = make_store(monkeypatch, FakeStoreBackend())
+    second = make_store(monkeypatch, FakeStoreBackend())
+    for store in (first, second):
+        assert store._items == {}
+        assert store._activity == ()
+        assert store._seen_source_fingerprints == ()
+        assert store._seen_event_fingerprints == ()
+        assert store._source_claims == {}
+        assert store._source_claim_releases == set()
+    assert first._items is not second._items
+    assert first._source_claims is not second._source_claims
+    assert first._source_claim_releases is not second._source_claim_releases
+
+    received = []
+    cancel_first = first.async_subscribe(lambda: received.append("kept"))
+    removed = lambda: received.append("removed")
+    cancel_removed = first.async_subscribe(removed)
+    first._commit_items({})
+    assert received == ["kept", "removed"]
+    cancel_removed()
+    first._commit_items({})
+    assert received == ["kept", "removed", "kept"]
+    cancel_first()
+    first._commit_items({})
+    assert received == ["kept", "removed", "kept"]
+
+
+def test_pending_import_constructor_defaults_and_rejections_are_exact():
+    with pytest.raises(ValueError) as error:
+        PendingImport.create(source_text="   ", events=[draft()])
+    assert str(error.value) == "source_text must be a non-empty string"
+    with pytest.raises(ValueError) as error:
+        PendingImport.create(source_text="Valid text", events=[])
+    assert str(error.value) == "pending import must contain at least one event"
+
+    pending = PendingImport.create(source_text="Valid text", events=[draft()])
+    assert pending.source_kind == "manual_text"
+    assert pending.source_sender is None
+    assert pending.events[0].routing_unresolved is False
+    assert pending.events[0].as_dict()["routing_unresolved"] is False
+    assert pending.warnings == ()
+    flagged = PendingEvent.create(draft(), routing_unresolved=True)
+    assert flagged.routing_unresolved is True
+    assert flagged.as_dict()["routing_unresolved"] is True
+    assert flagged.as_service_dict()["routing_unresolved"] is True
+    explicit = PendingEvent.create(draft(), "calendar.family")
+    assert explicit.calendar_entity == "calendar.family"
+    assert explicit.routing_unresolved is False
+
+
+async def test_store_add_persists_sender_and_source_kind_across_restart(monkeypatch):
+    """Source metadata is intentionally durable, not omitted during transaction handoff."""
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    outcome = await store.async_add(
+        source_text="Upcoming class",
+        events=[draft()],
+        source_kind="email",
+        source_title="School digest",
+        source_sender="Teacher <teacher@example.test>",
+        routing_unresolved=True,
+    )
+    item = outcome.pending
+    assert item is not None
+    assert item.source_kind == "email"
+    assert item.source_title == "School digest"
+    assert item.source_sender == "Teacher <teacher@example.test>"
+    assert item.events[0].routing_unresolved is True
+    assert backend.saved[-1]["items"][0]["source_sender"] == "Teacher <teacher@example.test>"
+
+    backend.load_result = backend.saved[-1]
+    reloaded = make_store(monkeypatch, backend)
+    await reloaded.async_load()
+    restored = reloaded.get(item.id)
+    assert restored is not None
+    assert restored.source_kind == "email"
+    assert restored.source_title == "School digest"
+    assert restored.source_sender == "Teacher <teacher@example.test>"
+    assert restored.events[0].routing_unresolved is True
