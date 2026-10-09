@@ -986,3 +986,69 @@ async def test_observation_cancellation_propagates_without_false_incomplete_resu
             fake, draft(), observed_calendars=["calendar.work"],
             local_zone=ZONE, context=READ_CONTEXT,
         )
+
+
+def test_exact_ninety_day_timed_window_and_next_second_boundary():
+    """A real UTC 90-day duration is admitted; 90 days plus one second is not."""
+    start = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
+    end = start + timedelta(days=90)
+    valid = EventDraft("Long event", start.isoformat(), end.isoformat(), False)
+    window = observation_window(valid, local_zone=ZONE)
+    assert window[1].astimezone(timezone.utc) - window[0].astimezone(timezone.utc) == timedelta(days=90)
+
+    invalid = EventDraft(
+        "Long event", start.isoformat(), (end + timedelta(seconds=1)).isoformat(), False
+    )
+    with pytest.raises(CalendarObservationError) as error:
+        observation_window(invalid, local_zone=ZONE)
+    assert str(error.value) == "Calendar observation interval exceeds 90 days"
+
+
+async def test_exact_sixteen_calendar_boundary_and_seventeen_rejection_message():
+    ids = [f"calendar.room_{number}" for number in range(17)]
+    fake = hass({identifier: {"events": []} for identifier in ids})
+    observed = await async_observe_candidates(
+        fake, draft(), observed_calendars=ids[:16], local_zone=ZONE, context=READ_CONTEXT,
+    )
+    assert observed == ()
+    for identifier in ids[:16]:
+        fake.providers[identifier].async_get_events.assert_awaited_once()
+    fake.providers[ids[-1]].async_get_events.assert_not_awaited()
+
+    with pytest.raises(CalendarObservationError) as error:
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=ids, local_zone=ZONE, context=READ_CONTEXT,
+        )
+    assert str(error.value) == "Calendar observation exceeds 16 calendars"
+
+
+def test_calendar_title_limit_exact_boundary_preserves_title_and_failure_message():
+    precise = "T" * 512
+    item = existing(summary=precise)
+    candidate = _candidate("calendar.work", item)
+    assert candidate.title == precise
+    with pytest.raises(CalendarObservationError) as error:
+        _candidate("calendar.work", existing(summary=precise + "!"))
+    assert str(error.value) == "Calendar observation title exceeds 512 characters"
+
+
+async def test_calendar_observation_count_overflow_preserves_exact_public_message():
+    fake = hass({"calendar.work": {"events": [existing() for _ in range(501)]}})
+    with pytest.raises(CalendarObservationError) as error:
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
+            context=READ_CONTEXT,
+        )
+    assert str(error.value) == "Calendar observation exceeds 500 events"
+
+
+async def test_unavailable_provider_exact_message_and_no_false_empty_results():
+    fake = hass({"calendar.work": {"events": []}})
+    fake.providers["calendar.work"].available = False
+    with pytest.raises(CalendarObservationError) as error:
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.work"], local_zone=ZONE,
+            context=READ_CONTEXT,
+        )
+    assert str(error.value) == "Calendar observation is incomplete"
+    fake.providers["calendar.work"].async_get_events.assert_not_awaited()
