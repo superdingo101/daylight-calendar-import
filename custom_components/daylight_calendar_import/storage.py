@@ -1180,7 +1180,7 @@ class PendingImportStore:
             seen_events = self._seen_event_fingerprints
             if resolution == "not_created":
                 remaining = tuple(
-                    PendingEvent(item.id, item.draft, "pending", item.calendar_entity)
+                    replace(item, status="pending", write_attempt=None)
                     if item.id == event_id else item for item in pending.events
                 )
             else:
