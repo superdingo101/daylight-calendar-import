@@ -88,7 +88,7 @@ submit_pdf:
 
 approve_pending:
   name: Approve pending import
-  description: Create all events from a pending import after every unresolved calendar hint has been explicitly confirmed in the event editor. Unresolved routing blocks the batch before any calendar is written.
+  description: Create pending events after routing confirmation and a fresh destination-calendar exact-duplicate check before each write. Unavailable destinations or exact duplicates block the current write; earlier batch events may already have succeeded. Unresolved routing blocks the batch before any write.
   fields:
     pending_id:
       name: Pending import ID
