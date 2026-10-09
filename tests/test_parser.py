@@ -38,8 +38,9 @@ def test_parse_ai_data():
     ],
 )
 def test_parse_ai_data_rejects_bad_shapes(value, message):
-    with pytest.raises(parser.ParseResultError, match=message):
+    with pytest.raises(parser.ParseResultError) as error:
         parser.parse_ai_data(value)
+    assert str(error.value) == message
 
 
 def test_parse_ai_data_keeps_valid_events_and_reports_invalid_indices():
@@ -88,7 +89,7 @@ async def test_async_parse_text(monkeypatch):
 
 
 async def test_async_parse_text_rejects_empty_input():
-    with pytest.raises(ValueError, match="text must not be empty"):
+    with pytest.raises(ValueError, match=r"^text must not be empty$"):
         await parser.async_parse_text(object(), text="  ", ai_task_entity="ai_task.test")
 
 
@@ -100,6 +101,7 @@ async def test_provider_rejects_source_without_text():
             empty, reference_datetime="2026-09-25T14:30:00-07:00", time_zone="America/Los_Angeles"
         )
     assert str(caught.value) == "Source must contain text or attachments"
+    assert caught.value.code == "empty_source"
 
 
 def test_parser_capabilities_reject_unsupported_source_before_invocation():
