@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -10,6 +9,8 @@ import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
+
+from tests.hosted_contract import _decode_strict
 
 ROOT = Path(__file__).resolve().parents[1]
 if not (ROOT / "schemas").is_dir():
@@ -69,7 +70,7 @@ INVALID_FIXTURES = (
 
 
 def _load(path: Path) -> object:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _decode_strict(path.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")

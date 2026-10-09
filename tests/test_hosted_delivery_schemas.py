@@ -5,13 +5,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from hashlib import sha256
 import json
-import math
 from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
+
+from tests.hosted_contract import _decode_strict, _source_evidence_sha256
 
 from custom_components.daylight_calendar_import.dedup import source_fingerprint
 from custom_components.daylight_calendar_import.sources import (
@@ -25,64 +26,8 @@ SCHEMA_DIR = ROOT / "schemas" / "hosted" / "v1"
 FIXTURE_DIR = ROOT / "tests" / "fixtures" / "hosted" / "v1"
 
 
-def _strict_pairs(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate JSON member")
-        result[key] = value
-    return result
-
-
-def _reject_constant(value):
-    raise ValueError(f"non-finite JSON constant: {value}")
-
-
-def _reject_surrogates(value):
-    if isinstance(value, str):
-        if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
-            raise ValueError("unpaired Unicode surrogate")
-    elif isinstance(value, float) and not math.isfinite(value):
-        raise ValueError("non-finite JSON number")
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            _reject_surrogates(key)
-            _reject_surrogates(item)
-    elif isinstance(value, list):
-        for item in value:
-            _reject_surrogates(item)
-
-
-def _decode_strict(raw):
-    result = json.loads(raw, object_pairs_hook=_strict_pairs, parse_constant=_reject_constant)
-    _reject_surrogates(result)
-    return result
-
-
 def _read(path: Path) -> dict:
     return _decode_strict(path.read_text(encoding="utf-8"))
-
-
-def _source_evidence_sha256(source: dict) -> str:
-    """Canonical complete-source evidence independent of namespaced dedup ID."""
-    def integer_values(value):
-        # JSON Schema permits 1024.0 for an integer field; normalize its value.
-        if isinstance(value, float):
-            if not value.is_integer():
-                raise ValueError("source numbers must be integers")
-            return int(value)
-        if isinstance(value, dict):
-            return {key: integer_values(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [integer_values(item) for item in value]
-        return value
-
-    _reject_surrogates(source)
-    canonical = json.dumps(
-        integer_values(source), ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return sha256(canonical).hexdigest()
 
 
 @pytest.fixture(scope="module")
@@ -357,7 +302,6 @@ def test_hosted_delivery_fingerprint_keys_are_installation_namespaced():
     '{"schema_version":1,"schema_version":1}',
     '{"schema_version":NaN}',
     '{"schema_version":Infinity}',
-    '{"size_bytes":1e999}',
     '{"source":{"text":"\\ud800"}}',
     '{"\\udfff":"value"}',
 ])
@@ -433,3 +377,23 @@ def test_response_enforces_requested_limit(limit):
     page['deliveries'].append(dict(deepcopy(template), delivery_id='delivery_extra', source_id='source_extra'))
     with pytest.raises(ValueError, match='requested limit'):
         _validate_delivery_page_semantics(page, request={'limit': limit})
+
+@pytest.mark.parametrize('lexical', ['10485760.0000000001', '1024.00000000000001', '1e999'])
+def test_exact_wire_numbers_cannot_round_into_valid_sizes(lexical, schema_registry):
+    schemas, registry = schema_registry
+    raw = json.dumps(_read(FIXTURE_DIR / 'valid/delivery-page-attachment.json'))
+    raw = raw.replace('"size_bytes": 1024', '"size_bytes": ' + lexical)
+    page = _decode_strict(raw)
+    with pytest.raises(ValidationError):
+        _validate('delivery-page.schema.json', page, schemas, registry)
+
+
+@pytest.mark.parametrize('lexical', ['1024.0', '1.024e3', '1024.00000000000000'])
+def test_exact_integer_equivalents_share_canonical_evidence(lexical, schema_registry):
+    schemas, registry = schema_registry
+    page = _read(FIXTURE_DIR / 'valid/delivery-page-attachment.json')
+    expected = _source_evidence_sha256(page['deliveries'][0]['source'])
+    raw = json.dumps(page).replace('"size_bytes": 1024', '"size_bytes": ' + lexical)
+    decoded = _decode_strict(raw)
+    _validate('delivery-page.schema.json', decoded, schemas, registry)
+    assert _source_evidence_sha256(decoded['deliveries'][0]['source']) == expected
