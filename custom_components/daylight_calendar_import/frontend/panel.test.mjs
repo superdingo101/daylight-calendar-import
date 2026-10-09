@@ -4381,8 +4381,10 @@ test("failed and stale calendar checks never masquerade as current results", asy
   assert.equal(error.attributes.role, "alert");
   failed = false;
   const check = panel.checkCalendarEvent(event);
-  assert.equal(panel._content.querySelectorAll("button")
-    .find(item => item.dataset.calendarCheckEventId === "event-1").disabled, true);
+  const loading = panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "event-1");
+  assert.equal(loading.disabled, undefined);
+  assert.equal(loading.attributes["aria-disabled"], "true");
   panel._detail = {...panel._detail, events: [{...event, title: "Edited"}]};
   panel.render();
   release({response: {pending_id: "import-1", event_id: "event-1",
@@ -4414,6 +4416,8 @@ test("keyboard calendar checks preserve button focus and announce the result", a
   const loadingButton = panel._content.querySelectorAll("button")
     .find(item => item.dataset.calendarCheckEventId === "e1");
   assert.equal(globalThis.focusedNode, loadingButton);
+  assert.equal(loadingButton.attributes["aria-disabled"], "true");
+  assert.equal(loadingButton.attributes["aria-busy"], "true");
   assert.match(panel._announcement.children[0].textContent, /Checking selected calendars/);
   panel.shadowRoot.activeElement = loadingButton;
   resolveCheck({response: {pending_id: "imp", event_id: "e1",
@@ -4422,6 +4426,8 @@ test("keyboard calendar checks preserve button focus and announce the result", a
   await pending;
   assert.equal(globalThis.focusedNode, panel._content.querySelectorAll("button")
     .find(item => item.dataset.calendarCheckEventId === "e1"));
+  assert.equal(globalThis.focusedNode.attributes["aria-disabled"], undefined);
+  assert.equal(globalThis.focusedNode.attributes["aria-busy"], undefined);
   assert.match(panel._announcement.children[0].textContent, /found 1 match/);
   assert.equal(panel._content.querySelector(".calendar-matches").attributes.role, "region");
 });
