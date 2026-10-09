@@ -3283,3 +3283,42 @@ def test_legacy_expected_event_snapshot_ignores_new_disclosure_metadata():
     ]
     # This field is never an optimistic-concurrency or calendar-write token.
     assert PendingEvent.from_dict(event.as_dict()) == legacy
+
+
+@pytest.mark.parametrize("invalid_notes", [
+    None, "not a list", 123, ["valid", 42], [""],
+    ["x" * 161], ["note"] * 9, {"unexpected": "object"},
+])
+async def test_malformed_optional_assumptions_never_block_store_restart(
+    monkeypatch, invalid_notes,
+):
+    """A corrupt AI-only field must not strand durable review decisions."""
+    item = PendingImport.create(
+        source_text="Calendar flyer",
+        events=[draft(), second_draft()],
+        event_assumptions=[("Valid calendar inference",), ()],
+    )
+    raw = item.as_dict()
+    raw["events"][0]["date_time_assumptions"] = invalid_notes
+    backend = FakeStoreBackend(load_result={"items": [raw]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    loaded = store.get(item.id)
+    assert loaded is not None
+    assert len(loaded.events) == 2
+    assert loaded.events[0].date_time_assumptions == ()
+    assert loaded.events[1].draft == second_draft()
+    assert loaded.events[0].as_service_dict().get("date_time_assumptions") is None
+
+
+async def test_valid_bounded_assumptions_survive_storage_restart(monkeypatch):
+    item = PendingImport.create(
+        source_text="Schedule", events=[draft()],
+        event_assumptions=[("  Normalized local time  ",)],
+    )
+    backend = FakeStoreBackend(load_result={"items": [item.as_dict()]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    event = store.get(item.id).events[0]
+    assert event.date_time_assumptions == ("Normalized local time",)
+    assert event.as_service_dict()["date_time_assumptions"] == ["Normalized local time"]
