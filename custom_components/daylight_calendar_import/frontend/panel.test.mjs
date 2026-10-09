@@ -4684,3 +4684,74 @@ test("failed calendar checks re-enable other events for retry", async () => {
   assert.equal(attempts, 2);
   assert.equal(panel._calendarCheck.status, "ready");
 });
+
+test("Email allowlist keeps quoted commas within one RFC-valid address", async () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {}};
+  panel._settings = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    email: {enabled: true, host: "imap.example.test", port: 993,
+      username: "mail@example.test", password_configured: true,
+      mailbox: "INBOX", verify_ssl: true, sender_allowlist: []},
+  };
+  panel._view = "settings";
+  panel._settingsTab = "email";
+  panel._status = "ready";
+  panel.render();
+  const form = find(panel._content, "form");
+  const textarea = form.elements.namedItem("email_sender_allowlist");
+  textarea.value = '"last,first"@example.com\nAnother@Example.com';
+  const draft = panel._emailDraftFromForm(form);
+  assert.deepEqual(draft.sender_allowlist,
+    ['"last,first"@example.com', "Another@Example.com"]);
+  textarea.value = "Alice@example.com\r\nBob@example.com";
+  assert.deepEqual(panel._emailDraftFromForm(form).sender_allowlist,
+    ["Alice@example.com", "Bob@example.com"]);
+});
+
+test("ambiguous IMAP allowlist save reconciles casefolded and deduplicated addresses", async () => {
+  let saved = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    email: {enabled: true, host: "imap.example.test", port: 993,
+      username: "user@example.test", password_configured: true,
+      mailbox: "INBOX", verify_ssl: true, sender_allowlist: []},
+  };
+  let readCount = 0;
+  let submitted;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        readCount++;
+        return saved;
+      }
+      if (message.type === "daylight_calendar_import/settings/email/update") {
+        submitted = message.sender_allowlist;
+        saved = {...saved, email: {...saved.email,
+          sender_allowlist: ['a@example.test', '"last,first"@example.com']}};
+        // Simulate a committed save whose WebSocket response was lost.
+        throw 3;
+      }
+      throw Error("Unexpected settings request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+  const form = find(panel._content, "form");
+  form.elements.namedItem("email_sender_allowlist").value =
+    'A@Example.test\na@example.test\n"last,first"@Example.com';
+  await panel.saveEmailSettingsForm(form);
+  assert.deepEqual(submitted,
+    ["A@Example.test", "a@example.test", '"last,first"@Example.com']);
+  assert.equal(readCount, 2);
+  assert.equal(panel._settingsError, null);
+  assert.equal(panel._settingsDrafts.email, null);
+  assert.match(panel._settingsReloadWarning, /could not confirm/i);
+  assert.equal(find(panel._content, "form").elements
+    .namedItem("email_sender_allowlist").value,
+    'a@example.test\n"last,first"@example.com');
+});
