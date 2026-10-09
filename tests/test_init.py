@@ -2249,7 +2249,7 @@ async def test_rollback_email_stop_failure_keeps_runtime_for_retry(monkeypatch, 
     hass = FakeHass()
     _fake_lifecycle_store(monkeypatch)
     config_entry = entry()
-    runtime = SimpleNamespace(async_stop=AsyncMock(side_effect=RuntimeError("email stop failed")))
+    runtime = SimpleNamespace(async_stop=AsyncMock(side_effect=RuntimeError("email stop failed")), on_entry_ready=Mock())
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.async_setup_email_runtime",
         AsyncMock(return_value=runtime),
