@@ -96,6 +96,10 @@ class EmailPollingRuntime:
         )
         self._schedule_poll(None)
 
+    def on_entry_ready(self) -> None:
+        """Launch the first poll once service admission opens after setup."""
+        self._schedule_poll(None)
+
     async def async_stop(self) -> None:
         """Stop future polls and finish cancellation of an active poll."""
         if self._cancel_interval is not None:
@@ -110,6 +114,8 @@ class EmailPollingRuntime:
     @callback
     def _schedule_poll(self, _now: object) -> None:
         """Start a poll unless one is already active."""
+        if not getattr(self._store, "accepting_services", True):
+            return
         if self._task is not None and not self._task.done():
             return
         self._task = self._hass.async_create_task(

@@ -101,9 +101,14 @@ class FakeConnection:
 
 
 def hass_for(config_entry):
+    runtime_store = SimpleNamespace(
+        _lock=asyncio.Lock(), list=lambda: (),
+        active_submissions=set(), active_service_handlers=set(),
+        accepting_services=True, email_runtime=None,
+    )
     return SimpleNamespace(
         config_entries=FakeConfigEntries(config_entry),
-        data={},
+        data={DOMAIN: {config_entry.entry_id: runtime_store}},
     )
 
 
@@ -1179,3 +1184,372 @@ async def test_invalid_default_calendar_save_has_stable_code_and_message():
     )
     assert hass.config_entries.updates == []
     assert hass.config_entries.reloads == []
+
+
+@pytest.mark.asyncio
+async def test_calendar_change_cannot_strand_pending_explicit_destination():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    pending = SimpleNamespace(events=[SimpleNamespace(calendar_entity="calendar.work")])
+    hass.data[DOMAIN] = {config_entry.entry_id: SimpleNamespace(
+        _lock=asyncio.Lock(), list=lambda: (pending,),
+    )}
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert err.value.code == "pending_destination_not_allowed"
+    assert not hass.config_entries.updates
+    assert not hass.config_entries.reloads
+
+
+@pytest.mark.asyncio
+async def test_calendar_change_rejects_implicit_default_retargeting():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    pending = SimpleNamespace(events=[SimpleNamespace(calendar_entity=None)])
+    hass.data[DOMAIN] = {config_entry.entry_id: SimpleNamespace(
+        _lock=asyncio.Lock(), list=lambda: (pending,),
+    )}
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITY: "calendar.work",
+        })
+    assert err.value.code == "pending_default_would_change"
+    assert not hass.config_entries.updates
+
+
+@pytest.mark.asyncio
+async def test_safe_calendar_scope_update_retains_pending_destinations():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    pending = SimpleNamespace(events=[SimpleNamespace(calendar_entity="calendar.family")])
+    hass.data[DOMAIN] = {config_entry.entry_id: SimpleNamespace(
+        _lock=asyncio.Lock(), list=lambda: (pending,),
+    )}
+    await async_save_option_patch(hass, config_entry, {
+        CONF_CALENDAR_ENTITIES: ["calendar.family"],
+    })
+    assert config_entry.options[CONF_CALENDAR_ENTITIES] == ["calendar.family"]
+    assert hass.config_entries.reloads == [config_entry.entry_id]
+
+
+@pytest.mark.asyncio
+async def test_calendar_changes_fail_closed_if_runtime_queue_cannot_be_checked():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    hass.data[DOMAIN].clear()  # Unloaded integration, durable state may remain.
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert err.value.code == "pending_store_unavailable"
+    assert hass.config_entries.updates == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active_field", ["active_submissions", "active_service_handlers"])
+async def test_calendar_scope_change_rejects_live_processing(active_field):
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    runtime_store = hass.data[DOMAIN][config_entry.entry_id]
+    getattr(runtime_store, active_field).add(object())
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert err.value.code == "calendar_change_busy"
+    assert runtime_store.accepting_services is True
+    assert not hass.config_entries.updates
+
+
+@pytest.mark.asyncio
+async def test_calendar_scope_change_rejects_running_imap_poll():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    runtime_store = hass.data[DOMAIN][config_entry.entry_id]
+    runtime_store.email_runtime = SimpleNamespace(_task=SimpleNamespace(done=lambda: False))
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert err.value.code == "calendar_change_busy"
+    runtime_store.email_runtime._task = SimpleNamespace(done=lambda: True)
+    await async_save_option_patch(hass, config_entry, {
+        CONF_CALENDAR_ENTITIES: ["calendar.family"],
+    })
+    assert runtime_store.accepting_services is True
+
+
+@pytest.mark.asyncio
+async def test_calendar_admission_is_paused_during_reload_and_restored_on_failure():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    runtime_store = hass.data[DOMAIN][config_entry.entry_id]
+    observed = []
+
+    async def reload_while_blocked(_entry_id):
+        observed.append(runtime_store.accepting_services)
+        return False
+
+    hass.config_entries.async_reload = reload_while_blocked
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert err.value.code == "reload_failed"
+    assert observed == [False]
+    assert runtime_store.accepting_services is False
+
+
+@pytest.mark.asyncio
+async def test_ai_only_setting_does_not_need_running_queue():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    hass.data[DOMAIN].clear()
+    await async_save_option_patch(hass, config_entry, {
+        CONF_AI_TASK_ENTITY: "ai_task.new",
+    })
+    assert config_entry.options[CONF_AI_TASK_ENTITY] == "ai_task.new"
+
+
+@pytest.mark.asyncio
+async def test_calendar_scope_changes_refuse_unloading_runtime():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+    store.accepting_services = False
+    with pytest.raises(SettingsValidationError) as err:
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert err.value.code == "pending_store_unavailable"
+    assert not hass.config_entries.updates
+
+
+@pytest.mark.asyncio
+async def test_failed_calendar_reload_exception_leaves_old_runtime_closed():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+
+    async def broken_reload(_entry_id):
+        assert store.accepting_services is False
+        raise RuntimeError("reload exploded")
+
+    hass.config_entries.async_reload = broken_reload
+    with pytest.raises(RuntimeError, match="reload exploded"):
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert store.accepting_services is False
+    assert config_entry.options[CONF_CALENDAR_ENTITIES] == ["calendar.family"]
+
+@pytest.mark.asyncio
+async def test_calendar_option_save_failure_restores_original_ingress():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+
+    def fail_before_persist(_entry, *, options):
+        assert store.accepting_services is False
+        raise RuntimeError("cannot persist options")
+
+    hass.config_entries.async_update_entry = fail_before_persist
+    with pytest.raises(RuntimeError, match="cannot persist"):
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert store.accepting_services is True
+    assert config_entry.options == {}
+    assert hass.config_entries.reloads == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["false", "exception"])
+async def test_actual_calendar_reload_unload_failure_preserves_ingress_barrier(failure):
+    from custom_components.daylight_calendar_import import async_unload_entry
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+    hass.config_entries.async_unload_platforms = AsyncMock(
+        return_value=False if failure == "false" else True,
+    )
+    if failure == "exception":
+        hass.config_entries.async_unload_platforms.side_effect = RuntimeError(
+            "platform unload failed"
+        )
+
+    async def actual_unload(_entry_id):
+        assert store.calendar_settings_reload_guard is True
+        assert store.accepting_services is False
+        return await async_unload_entry(hass, config_entry)
+
+    hass.config_entries.async_reload = actual_unload
+    if failure == "false":
+        with pytest.raises(SettingsValidationError) as raised:
+            await async_save_option_patch(hass, config_entry, {
+                CONF_CALENDAR_ENTITIES: ["calendar.family"],
+            })
+        assert raised.value.code == "reload_failed"
+    else:
+        with pytest.raises(RuntimeError, match="platform unload failed"):
+            await async_save_option_patch(hass, config_entry, {
+                CONF_CALENDAR_ENTITIES: ["calendar.family"],
+            })
+    assert config_entry.options[CONF_CALENDAR_ENTITIES] == ["calendar.family"]
+    assert hass.data[DOMAIN][config_entry.entry_id] is store
+    assert store.calendar_settings_reload_guard is True
+    assert store.accepting_services is False
+
+
+@pytest.mark.asyncio
+async def test_calendar_option_save_failure_clears_reload_barrier():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+
+    def fail(_entry, *, options):
+        assert store.calendar_settings_reload_guard is True
+        raise RuntimeError("save failed")
+
+    hass.config_entries.async_update_entry = fail
+    with pytest.raises(RuntimeError, match="save failed"):
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert store.calendar_settings_reload_guard is False
+    assert store.accepting_services is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scenario", "change", "code", "message"),
+    [
+        (
+            "unloaded",
+            {CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+            "pending_store_unavailable",
+            "Load Daylight Calendar Import before changing writable calendars. "
+            "The stored pending queue could not be checked.",
+        ),
+        (
+            "unloading",
+            {CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+            "pending_store_unavailable",
+            "Daylight is unloading or reloading. Retry after it is loaded.",
+        ),
+        (
+            "submitting",
+            {CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+            "calendar_change_busy",
+            "Daylight is processing a submission. Retry the calendar "
+            "change after ingestion finishes.",
+        ),
+        (
+            "handling",
+            {CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+            "calendar_change_busy",
+            "Daylight is processing a submission. Retry the calendar "
+            "change after ingestion finishes.",
+        ),
+        (
+            "polling",
+            {CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+            "calendar_change_busy",
+            "Daylight is processing a submission. Retry the calendar "
+            "change after ingestion finishes.",
+        ),
+        (
+            "explicit",
+            {CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+            "pending_destination_not_allowed",
+            "A pending event targets a calendar being removed. "
+            "Reassign or reject the event before saving settings.",
+        ),
+        (
+            "implicit",
+            {CONF_CALENDAR_ENTITY: "calendar.work"},
+            "pending_default_would_change",
+            "A pending event uses the current default calendar. "
+            "Assign it an explicit destination before changing the default.",
+        ),
+    ],
+)
+async def test_calendar_scope_rejection_preserves_exact_user_facing_contract(
+    scenario, change, code, message,
+):
+    """Rejected calendar changes must preserve both the code and actionable text."""
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+    if scenario == "unloaded":
+        hass.data[DOMAIN].clear()
+    elif scenario == "unloading":
+        store.accepting_services = False
+    elif scenario == "submitting":
+        store.active_submissions.add(object())
+    elif scenario == "handling":
+        store.active_service_handlers.add(object())
+    elif scenario == "polling":
+        store.email_runtime = SimpleNamespace(
+            _task=SimpleNamespace(done=lambda: False)
+        )
+    elif scenario in ("explicit", "implicit"):
+        destination = "calendar.work" if scenario == "explicit" else None
+        store.list = lambda: (
+            SimpleNamespace(events=[SimpleNamespace(calendar_entity=destination)]),
+        )
+    else:
+        pytest.fail(f"unhandled scenario: {scenario}")
+
+    with pytest.raises(SettingsValidationError) as error:
+        await async_save_option_patch(hass, config_entry, change)
+
+    assert error.value.code == code
+    assert str(error.value) == message
+    assert config_entry.options == {}
+    assert hass.config_entries.updates == []
+    assert hass.config_entries.reloads == []
+
+
+
+@pytest.mark.asyncio
+async def test_explicit_pending_destination_survives_default_calendar_change():
+    """Only legacy implicit destinations prohibit changing the default calendar."""
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+    pending = SimpleNamespace(
+        events=[SimpleNamespace(calendar_entity="calendar.family")]
+    )
+    store.list = lambda: (pending,)
+
+    await async_save_option_patch(
+        hass,
+        config_entry,
+        {CONF_CALENDAR_ENTITY: "calendar.work"},
+    )
+
+    assert config_entry.options[CONF_CALENDAR_ENTITY] == "calendar.work"
+    assert config_entry.options.get(CONF_CALENDAR_ENTITIES) is None
+    assert hass.config_entries.reloads == ["entry-1"]
+    assert store.accepting_services is True
+    assert store.calendar_settings_reload_guard is False

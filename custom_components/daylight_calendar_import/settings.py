@@ -275,8 +275,91 @@ async def async_save_option_patch(
         raise SettingsValidationError(
             "default_not_allowed", "The default calendar must be included in the allowed calendars."
         )
-    hass.config_entries.async_update_entry(entry, options=merged)
-    if not await hass.config_entries.async_reload(entry.entry_id):
+    # A calendar scope change is rejected when its authoritative queue or
+    # admission state is unavailable; no speculative second storage instance.
+    old_default, old_allowed = effective_calendar_options(entry)
+    calendar_scope_changed = (
+        default != old_default or set(allowed) != set(old_allowed)
+    )
+    pending_store = getattr(hass, "data", {}).get(DOMAIN, {}).get(entry.entry_id)
+    if calendar_scope_changed and pending_store is None:
+        raise SettingsValidationError(
+            "pending_store_unavailable",
+            "Load Daylight Calendar Import before changing writable calendars. "
+            "The stored pending queue could not be checked.",
+        )
+
+    def verify_pending_and_admission() -> None:
+        if not getattr(pending_store, "accepting_services", True):
+            raise SettingsValidationError(
+                "pending_store_unavailable",
+                "Daylight is unloading or reloading. Retry after it is loaded.",
+            )
+        runtime = getattr(pending_store, "email_runtime", None)
+        poll = getattr(runtime, "_task", None)
+        if (
+            getattr(pending_store, "active_submissions", ())
+            or getattr(pending_store, "active_service_handlers", ())
+            or (poll is not None and not poll.done())
+        ):
+            raise SettingsValidationError(
+                "calendar_change_busy",
+                "Daylight is processing a submission. Retry the calendar "
+                "change after ingestion finishes.",
+            )
+        for pending in pending_store.list():
+            for event in pending.events:
+                destination = event.calendar_entity or old_default
+                if destination not in allowed:
+                    raise SettingsValidationError(
+                        "pending_destination_not_allowed",
+                        "A pending event targets a calendar being removed. "
+                        "Reassign or reject the event before saving settings.",
+                    )
+                if event.calendar_entity is None and default != old_default:
+                    raise SettingsValidationError(
+                        "pending_default_would_change",
+                        "A pending event uses the current default calendar. "
+                        "Assign it an explicit destination before changing the default.",
+                    )
+
+    was_accepting = True
+    if calendar_scope_changed:
+        # The store lock serializes this validation against durable pending edits.
+        # Closing service/poll admission until reload prevents new work from
+        # committing an old destination in the update-to-unload interval.
+        async with pending_store._lock:
+            verify_pending_and_admission()
+            was_accepting = getattr(pending_store, "accepting_services", True)
+            pending_store.accepting_services = False
+            # HA's unload path normally reopens admission after failed platform
+            # unload. Suppress that rollback while persisted options may differ
+            # from the old entry's captured calendar routing.
+            pending_store.calendar_settings_reload_guard = True
+            try:
+                hass.config_entries.async_update_entry(entry, options=merged)
+            except BaseException:
+                # Persistence failed before the new options were committed.
+                # Restore service admission only while the old runtime is valid.
+                pending_store.calendar_settings_reload_guard = False
+                pending_store.accepting_services = was_accepting
+                raise
+    else:
+        hass.config_entries.async_update_entry(entry, options=merged)
+    reloaded = False
+    try:
+        reloaded = await hass.config_entries.async_reload(entry.entry_id)
+    finally:
+        if (
+            calendar_scope_changed
+            and hass.data.get(DOMAIN, {}).get(entry.entry_id) is pending_store
+        ):
+            # Restore only after a successful reload. A failed unload must
+            # never reopen the old closures under newly persisted options.
+            pending_store.accepting_services = was_accepting if reloaded else False
+            if reloaded:
+                pending_store.calendar_settings_reload_guard = False
+    if not reloaded:
         raise SettingsValidationError(
             "reload_failed",
             "Settings were saved, but Daylight could not reload. "

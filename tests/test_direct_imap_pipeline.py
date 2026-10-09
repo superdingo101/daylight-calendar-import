@@ -6,7 +6,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, Callable, NamedTuple
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -210,7 +210,7 @@ class PipelineEnvironment:
 
         async def capture_runtime(hass, entry, store, processor):
             self.runtime_setups.append((hass, entry, store, processor))
-            return SimpleNamespace(async_stop=AsyncMock())
+            return SimpleNamespace(async_stop=AsyncMock(), on_entry_ready=Mock())
 
         monkeypatch.setattr(storage_module, "_PendingStore", fake_store)
         monkeypatch.setattr(

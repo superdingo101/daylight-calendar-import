@@ -94,3 +94,18 @@ def test_unresolved_route_is_explicitly_flagged():
     from custom_components.daylight_calendar_import.sources import TextSourceAdapter
     assert plan(TextSourceAdapter().create("Calendar: missing\nPractice")).requires_confirmation
     assert plan(TextSourceAdapter().create("Calendar: kids\nPractice")).requires_confirmation is False
+
+
+def test_conflicting_calendar_hints_require_review_without_granting_write_access():
+    """A conflict must not be downgraded into an ordinary default route."""
+    source = TextSourceAdapter().create(
+        "Calendar: kids\nCalendar: family\nPractice"
+    )
+    result = plan(source)
+    assert result.calendar_entity == "calendar.family"
+    assert result.requires_confirmation is True
+    assert result.warnings == (
+        "Conflicting calendar routing hints. "
+        "Check the destination calendar during review.",
+    )
+    assert result.parser_source.text == "Practice"
