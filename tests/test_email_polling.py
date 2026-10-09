@@ -1741,3 +1741,37 @@ async def test_terminal_failure_without_disposition_needs_no_acknowledgement() -
     assert result.acknowledgement_failures == 0
     assert source.ack_calls == []
     assert store.is_source_durable("<terminal-no-ack@example.test>") is True
+
+
+@pytest.mark.parametrize("ack_fails", (False, True))
+async def test_multiple_terminal_errors_have_independent_durable_outcomes(
+    ack_fails: bool,
+) -> None:
+    """Batch terminal failures must increment counters, not reset them."""
+    disposition = EmailDisposition(mark_seen=True)
+    source_ids = ("<terminal-one@example.test>", "<terminal-two@example.test>")
+    source = FakeSource(
+        [[
+            _envelope("terminal-one@example.test"),
+            _envelope("terminal-two@example.test"),
+        ]],
+        disposition=disposition,
+        ack_error=RuntimeError("imap write failed") if ack_fails else None,
+    )
+    store = FakeStore()
+
+    async def processor(_document, _activity_id):
+        raise SourceValidationError("empty_source", "No extractable text")
+
+    result = await async_poll_email_source(source, store, processor)
+
+    assert result.discovered == 2
+    assert result.claimed == 2
+    assert result.terminal_failures == 2
+    assert result.processing_failures == 0
+    assert result.acknowledged == (0 if ack_fails else 2)
+    assert result.acknowledgement_failures == (2 if ack_fails else 0)
+    assert len(store.terminal_failures) == 2
+    assert [event[1] for event in store.terminal_failures] == list(source_ids)
+    assert all(store.is_source_durable(source_id) for source_id in source_ids)
+    assert len(source.ack_calls) == 2
