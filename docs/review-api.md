@@ -137,9 +137,14 @@ Duplicate/empty submissions do not publish a new pending-added event.
 
 The response-enabled `daylight_calendar_import.check_pending_event` action accepts
 `pending_id` and `event_id`. It observes the event's configured destination
-and the independently selected conflict-observation calendars. The requested
-user must be authorized to view these calendars; observation never confers
-write permissions.
+and the independently selected conflict-observation calendars. The action uses the **same reviewer access check** as `get_pending_event`:
+the caller must have Home Assistant `POLICY_CONTROL` on the configured AI
+Task and **every calendar in the integration's allowed writable list**.
+Additionally, the observer requires `POLICY_READ` on the destination and each
+configured conflict calendar. Read-only access to observation calendars alone
+does not grant access to the action; the existing reviewer permissions are
+intentionally unchanged. Observing calendars never performs a write or grants
+new permissions.
 
 A successful response contains `observed_calendars` and a `matches` list
 of bounded entries with `kind` (`exact_duplicate`, `possible_duplicate`, or
@@ -156,6 +161,11 @@ although providers may themselves allocate an over-limit response before
 Daylight validates its size.
 
 The read is a *point-in-time advisory check*: results can change before
-approval. Calendar access failures are explicit errors, **not** a signal that
+approval. The action accepts an optional `expected_event` from
+`get_pending_event` to reject an already-stale review snapshot, and always
+rechecks the event after the asynchronous provider reads. If the draft,
+destination, status or identity changed—or it was approved/rejected—while
+observation was in progress, the action fails with a refresh error instead of
+returning matches for the old draft. Calendar access failures are explicit errors, **not** a signal that
 the schedule is empty. This API does not yet enforce a write-time duplicate
 guard or add conflict UI; those are separate scoped changes.
