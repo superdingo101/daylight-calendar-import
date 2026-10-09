@@ -30,6 +30,7 @@ class SourceRoutingPlan:
     parser_source: SourceDocument
     calendar_entity: str
     warnings: tuple[str, ...] = ()
+    requires_confirmation: bool = False
 
 
 def plan_source_routing(
@@ -63,4 +64,7 @@ def plan_source_routing(
         source,
         text=extracted.body if source.text is not None else None,
     )
-    return SourceRoutingPlan(parser_source, destination, warnings)
+    return SourceRoutingPlan(
+        parser_source, destination, warnings,
+        requires_confirmation=resolution.status in ("unresolved", "conflicting"),
+    )
