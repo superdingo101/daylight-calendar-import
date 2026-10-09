@@ -155,7 +155,9 @@ async def async_observe_candidates(
     providers = []
     for entity_id in identifiers:
         provider = component.get_entity(entity_id)
-        if provider is None:
+        if provider is None or getattr(provider, "available", True) is False:
+            # HA may retain an unavailable CalendarEntity in its registry.
+            # A cached or empty get_events response must not imply no conflicts.
             raise CalendarObservationError("Calendar observation is incomplete")
         providers.append((entity_id, provider))
 
