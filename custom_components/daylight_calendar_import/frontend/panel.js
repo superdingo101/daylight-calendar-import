@@ -1353,7 +1353,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (!["pending", "write_uncertain"].includes(event.status) ||
         this._saving || this._editingId || this._decision ||
         this._batchAction || this._resolution || !this._detail?.events.includes(event) ||
-        (this._calendarCheck?.event === event && this._calendarCheck.status === "loading")) return;
+        this._calendarCheck?.status === "loading") return;
     const pendingId = this._selectedId;
     const generation = this._generation;
     const focused = this.shadowRoot.activeElement?.dataset.calendarCheckEventId === event.id;
@@ -1387,13 +1387,16 @@ export class DaylightImportPanel extends HTMLElement {
     const section = this._content.querySelector(".calendar-matches");
     if (!section) return;
     this.renderCalendarCheckDetails(section, this._calendarCheck);
-    const button = Array.from(this._content.querySelectorAll("button")).find(
-      item => item.dataset.calendarCheckEventId === event.id);
-    if (button) {
+    // A check is deliberately single-flight. Re-enable all per-event controls,
+    // not just the active event, without replacing any focused DOM elements.
+    for (const button of this._content.querySelectorAll("button")) {
+      if (button.dataset.calendarCheckEventId === undefined) continue;
       button.removeAttribute("aria-disabled");
       button.removeAttribute("aria-busy");
-      button.textContent = "Check calendars";
-      button.setAttribute("aria-label", `Check calendars for ${event.title || "event"}`);
+      if (button.dataset.calendarCheckEventId === event.id) {
+        button.textContent = "Check calendars";
+        button.setAttribute("aria-label", `Check calendars for ${event.title || "event"}`);
+      }
     }
     const summary = next.status === "error" ?
       `Calendar check incomplete: ${next.message}` :
@@ -2227,19 +2230,17 @@ export class DaylightImportPanel extends HTMLElement {
         }
         if (["pending", "write_uncertain"].includes(event.status) &&
             !this._editingId && !this._decision && !this._batchAction && !this._resolution) {
-          const checking = this._calendarCheck?.event === event &&
-            this._calendarCheck.status === "loading";
+          const busy = this._calendarCheck?.status === "loading";
+          const checking = busy && this._calendarCheck.event === event;
           const check = element("button", checking ? "Checking calendars…" : "Check calendars");
           check.type = "button";
           check.dataset.calendarCheckEventId = event.id;
           check.setAttribute("aria-label",
             `${checking ? "Checking" : "Check"} calendars for ${event.title || "event"}`);
-          // A disabled HTML button cannot retain keyboard focus. Use aria-disabled
-          // and reject repeat invocations in checkCalendarEvent instead.
-          if (checking) {
-            check.setAttribute("aria-disabled", "true");
-            check.setAttribute("aria-busy", "true");
-          }
+          // A natively disabled button cannot retain keyboard focus. Keep
+          // controls focusable with ARIA and reject concurrent calls in the handler.
+          if (busy) check.setAttribute("aria-disabled", "true");
+          if (checking) check.setAttribute("aria-busy", "true");
           check.addEventListener("click", () => void this.checkCalendarEvent(event));
           card.append(check);
         }
