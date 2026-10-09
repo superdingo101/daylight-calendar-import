@@ -19,6 +19,7 @@ from .const import (
     CONF_EMAIL_PORT,
     CONF_EMAIL_USERNAME,
     CONF_EMAIL_VERIFY_SSL,
+    CONF_EMAIL_SENDER_ALLOWLIST,
 )
 from .direct_imap import DirectImapError, DirectImapSettings, DirectImapSource
 from .email_attachments import async_stage_email_attachments
@@ -47,6 +48,7 @@ def direct_imap_settings_from_options(
         password=options[CONF_EMAIL_PASSWORD],
         mailbox=options.get(CONF_EMAIL_MAILBOX, DEFAULT_EMAIL_MAILBOX),
         verify_ssl=options.get(CONF_EMAIL_VERIFY_SSL, True),
+        sender_allowlist=tuple(options.get(CONF_EMAIL_SENDER_ALLOWLIST, ())),
         disposition=EmailDisposition(mark_seen=True),
     )
 
