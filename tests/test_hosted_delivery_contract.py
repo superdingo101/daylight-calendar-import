@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from hashlib import sha256
 import json
+import math
+import re
 from pathlib import Path
 
 import pytest
@@ -40,6 +42,8 @@ def _reject_surrogates(value):
     if isinstance(value, str):
         if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
             raise ValueError("unpaired Unicode surrogate")
+    elif isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("non-finite JSON number")
     elif isinstance(value, dict):
         for key, item in value.items():
             _reject_surrogates(key)
@@ -61,8 +65,21 @@ def _read(path: Path) -> dict:
 
 def _source_evidence_sha256(source: dict) -> str:
     """Canonical complete-source evidence independent of namespaced dedup ID."""
+    def integer_values(value):
+        # JSON Schema permits 1024.0 for an integer field; normalize its value.
+        if isinstance(value, float):
+            if not value.is_integer():
+                raise ValueError("source numbers must be integers")
+            return int(value)
+        if isinstance(value, dict):
+            return {key: integer_values(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [integer_values(item) for item in value]
+        return value
+
+    _reject_surrogates(source)
     canonical = json.dumps(
-        source, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        integer_values(source), ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
     return sha256(canonical).hexdigest()
@@ -80,14 +97,26 @@ def _ack_path_from_recovered_checkpoint(
 
     assert recovered["local_config_entry_id"] == expected_local_entry_id
     delivery_id = recovered["delivery_id"]
-    assert isinstance(delivery_id, str) and delivery_id
+    assert isinstance(delivery_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{16,128}", delivery_id)
     assert recovered["source_fingerprint"] == source_fingerprint(
         f"hosted:{expected_local_entry_id}:{delivery_id}"
     )
-    assert len(recovered["source_evidence_sha256"]) == 64
-    assert recovered["lease_token"]
-    assert datetime.fromisoformat(recovered["source_expires_at"]).utcoffset() is not None
-    assert isinstance(recovered["verified_attachments"], dict)
+    def matches(value, pattern):
+        return isinstance(value, str) and re.fullmatch(pattern, value) is not None
+
+    digest = r"[a-f0-9]{64}"
+    assert matches(recovered["source_evidence_sha256"], digest)
+    assert matches(recovered["lease_token"], r"[A-Za-z0-9_-]{32,256}")
+    expiry = recovered["source_expires_at"]
+    assert matches(expiry, r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})")
+    assert FormatChecker().conforms(expiry, "date-time")
+    assert datetime.fromisoformat(expiry.upper()).utcoffset() is not None
+    manifest = recovered["verified_attachments"]
+    assert isinstance(manifest, dict) and len(manifest) <= 4
+    assert all(
+        matches(key, r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}") and matches(value, digest)
+        for key, value in manifest.items()
+    )
     assert recovered["attachments_verification_complete"] is True
     return f"/v1/sources/{delivery_id}/ack"
 
@@ -201,9 +230,11 @@ def test_h3_schema_enforces_page_bounds_and_wire_field_allowlist(schema_registry
         _validate("delivery-page.schema.json", leaked, schemas, registry)
 
 
-def _validate_delivery_page_semantics(page: dict) -> None:
+def _validate_delivery_page_semantics(page: dict, *, request: dict | None = None) -> None:
     """Semantic invariants the JSON Schema cannot express by property."""
     deliveries = page["deliveries"]
+    if len(deliveries) > (request or {}).get("limit", 20):
+        raise ValueError("page exceeds requested limit")
     delivery_ids = [item["delivery_id"] for item in deliveries]
     if len(delivery_ids) != len(set(delivery_ids)):
         raise ValueError("delivery IDs must be unique within a page")
@@ -301,8 +332,10 @@ def test_h3_semantic_fixture_checks_immutability_integrity_and_retention():
     for item in all_items:
         claimed = datetime.fromisoformat(item["lease_expires_at"])
         expires = datetime.fromisoformat(item["source_expires_at"])
-        received = datetime.fromisoformat(item["source"]["received_at"])
-        assert received < claimed < expires
+        _validate_lease_window(
+            claim_started_at=datetime.fromisoformat("2026-10-08T16:00:00Z"),
+            lease_expires_at=claimed, source_expires_at=expires,
+        )
         attachments = item["source"]["attachments"]
         assert len({att["id"] for att in attachments}) == len(attachments)
         assert sum(att["size_bytes"] for att in attachments) <= 10 * 1024 * 1024
@@ -711,6 +744,7 @@ def test_durable_pending_checkpoint_requires_content_evidence_after_restart():
     '{"schema_version":1,"schema_version":1}',
     '{"schema_version":NaN}',
     '{"schema_version":Infinity}',
+    '{"size_bytes":1e999}',
     '{"source":{"text":"\\ud800"}}',
     '{"\\udfff":"value"}',
 ])
@@ -930,15 +964,33 @@ def test_recovered_ack_path_requires_durable_delivery_id_and_entry():
         )
 
 
-def test_cursor_tenant_isolation_has_one_non_enumerating_error():
-    """Only delivery/attachment/ACK path resources use the non-owner 404 rule."""
-    trace = _read(FIXTURE_DIR / "valid" / "delivery-cursor-isolation-trace.json")
+def _validate_cursor_isolation_trace(trace, schemas, registry):
+    errors = []
+    assert {step["scenario"] for step in trace["steps"]} == {
+        "other_installation", "unknown", "expired", "tampered",
+    }
     for step in trace["steps"]:
         assert step["op"] == "claim_with_cursor"
         assert step["authenticated"] is True
         assert step["status"] == 400
-        assert step["code"] == "invalid_cursor"
-        assert step["retryable"] is False
+        _validate("error.schema.json", step["response"], schemas, registry)
+        observable = {key: value for key, value in step["response"].items() if key != "request_id"}
+        assert observable["error"]["code"] == "invalid_cursor"
+        assert observable["error"]["retryable"] is False
+        errors.append(observable)
+    assert all(error == errors[0] for error in errors)
+
+
+def test_cursor_tenant_isolation_has_one_non_enumerating_error(schema_registry):
+    import copy
+
+    schemas, registry = schema_registry
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-cursor-isolation-trace.json")
+    _validate_cursor_isolation_trace(trace, schemas, registry)
+    leaked = copy.deepcopy(trace)
+    leaked["steps"][0]["response"]["error"]["message"] = "cursor belongs to another installation"
+    with pytest.raises(AssertionError):
+        _validate_cursor_isolation_trace(leaked, schemas, registry)
 
 
 def test_ack_response_rejects_ending_line_break(schema_registry):
@@ -948,3 +1000,90 @@ def test_ack_response_rejects_ending_line_break(schema_registry):
     valid["delivery_id"] += "\n"
     with pytest.raises(ValidationError):
         _validate("delivery-ack-response.schema.json", valid, schemas, registry)
+
+
+def _validate_lease_window(*, claim_started_at, lease_expires_at, source_expires_at):
+    if not (claim_started_at < lease_expires_at <= min(
+        claim_started_at + timedelta(minutes=30), source_expires_at,
+    )):
+        raise ValueError("lease exceeds claim-relative deadline")
+
+
+@pytest.mark.parametrize("seconds,valid", [(0, False), (1, True), (1800, True), (1801, False), (86400, False)])
+def test_claim_relative_lease_deadline(seconds, valid):
+    start = datetime.fromisoformat("2026-10-08T16:00:00Z")
+    kwargs = dict(claim_started_at=start, lease_expires_at=start + timedelta(seconds=seconds),
+                  source_expires_at=start + timedelta(days=7))
+    if valid:
+        _validate_lease_window(**kwargs)
+    else:
+        with pytest.raises(ValueError, match="claim-relative"):
+            _validate_lease_window(**kwargs)
+    with pytest.raises(ValueError):
+        _validate_lease_window(claim_started_at=start, lease_expires_at=start + timedelta(minutes=5),
+                               source_expires_at=start + timedelta(minutes=4))
+
+
+@pytest.mark.parametrize("limit", [None, 1, 20, 50])
+def test_claim_page_respects_effective_requested_limit(limit, schema_registry):
+    import copy
+
+    schemas, registry = schema_registry
+    item = _read(FIXTURE_DIR / "valid" / "delivery-page-text.json")["deliveries"][0]
+    request = _read(FIXTURE_DIR / "valid" / "delivery-claim-request.json")
+    request.pop("limit", None)
+    if limit is not None:
+        request["limit"] = limit
+    _validate("delivery-claim-request.schema.json", request, schemas, registry)
+    bound = request.get("limit", 20)
+    page = {"schema_version": 1, "deliveries": [], "next_cursor": None}
+    for index in range(bound + 1):
+        entry = copy.deepcopy(item)
+        entry["delivery_id"] = f"delivery_{index:024d}"
+        entry["source_id"] = f"source_{index:024d}"
+        page["deliveries"].append(entry)
+    if bound < 50:
+        _validate("delivery-page.schema.json", page, schemas, registry)
+    with pytest.raises(ValueError, match="requested limit"):
+        _validate_delivery_page_semantics(page, request=request)
+    page["deliveries"].pop()
+    _validate("delivery-page.schema.json", page, schemas, registry)
+    _validate_delivery_page_semantics(page, request=request)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("delivery_id", "../unsafe"), ("delivery_id", "A" * 16 + "\n"),
+    ("lease_token", True), ("lease_token", "short"), ("lease_token", "A" * 32 + "\n"),
+    ("source_evidence_sha256", "z" * 64), ("source_evidence_sha256", "A" * 64),
+    ("source_evidence_sha256", 123), ("source_expires_at", "2026-10-08"),
+    ("source_expires_at", "2026-10-08T16:00:00"),
+    ("source_expires_at", "2026-10-08 16:00:00+00:00"),
+    ("verified_attachments", {"../unsafe": "a" * 64}),
+    ("verified_attachments", {"flyer.pdf": "z" * 64}),
+    ("verified_attachments", {"flyer.pdf": True}),
+    ("verified_attachments", {str(i): "a" * 64 for i in range(5)}),
+])
+def test_standalone_recovered_ack_rejects_malformed_proof(field, value):
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    recovered = _read(FIXTURE_DIR / "valid" / "delivery-ack-retry-after-cleanup.json")["steps"][5]
+    recovered[field] = value
+    if field == "delivery_id":
+        recovered["source_fingerprint"] = source_fingerprint(f"hosted:entry-one:{value}")
+    with pytest.raises(AssertionError):
+        _ack_path_from_recovered_checkpoint(recovered, expected_local_entry_id="entry-one")
+
+
+def test_source_evidence_string_escaping_vector(schema_registry):
+    schemas, registry = schema_registry
+    vector = _read(FIXTURE_DIR / "valid" / "delivery-evidence-canonical-vector.json")
+    _validate("delivery-source.schema.json", vector["source"], schemas, registry)
+    assert _source_evidence_sha256(vector["source"]) == vector["sha256"]
+    assert sha256(vector["canonical_utf8"].encode("utf-8")).hexdigest() == vector["sha256"]
+    # Alternate legal JSON escaping and member order decode to the same evidence.
+    alternate = json.dumps(vector["source"], ensure_ascii=True).replace("/", "\\/")
+    assert _source_evidence_sha256(_decode_strict(alternate)) == vector["sha256"]
+    source = _read(FIXTURE_DIR / "valid" / "delivery-page-attachment.json")["deliveries"][0]["source"]
+    original = _source_evidence_sha256(source)
+    source["attachments"][0]["size_bytes"] = 1024.0
+    assert _source_evidence_sha256(source) == original
