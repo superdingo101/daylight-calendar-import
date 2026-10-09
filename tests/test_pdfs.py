@@ -870,3 +870,42 @@ async def test_maximum_allowed_pdf_is_accepted(uploaded_file, monkeypatch):
     monkeypatch.setattr(pdfs, "_extract_pdf_text", lambda _data: ("Meeting Friday", False))
     async with pdfs.async_pdf_source(UploadHass({}), "a" * 32) as source:
         assert source.metadata["sha256"] == sha256(data).hexdigest()
+
+
+def test_pdf_worker_process_is_bounded_and_never_raises_before_mapping(monkeypatch):
+    """Worker failures are normalized only if the subprocess does not raise for exit codes."""
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout=b'{"text":"Lesson","needs_attachment":false}')
+
+    monkeypatch.setattr(pdfs.subprocess, "run", run)
+    assert pdfs._extract_pdf_text(b"%PDF-test") == ("Lesson", False)
+    assert len(seen) == 1
+    command, kwargs = seen[0]
+    assert command[0] == pdfs.sys.executable
+    assert command[1].endswith("pdf_worker.py")
+    assert kwargs == {
+        "input": b"%PDF-test",
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.DEVNULL,
+        "timeout": 20,
+        "check": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_message"),
+    [
+        (SimpleNamespace(returncode=1, stdout=b""), "PDF could not be read"),
+        (SimpleNamespace(returncode=0, stdout=b"not json"), "PDF could not be read"),
+        (SimpleNamespace(returncode=0, stdout=b"{}"), "PDF could not be read"),
+    ],
+)
+def test_pdf_worker_failure_messages_are_stable(monkeypatch, response, expected_message):
+    monkeypatch.setattr(pdfs.subprocess, "run", lambda *_args, **_kwargs: response)
+    with pytest.raises(SourceValidationError) as error:
+        pdfs._extract_pdf_text(b"%PDF-invalid")
+    assert error.value.code == "invalid_pdf"
+    assert str(error.value) == expected_message
