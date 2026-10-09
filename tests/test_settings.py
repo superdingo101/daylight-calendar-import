@@ -1527,3 +1527,29 @@ async def test_calendar_scope_rejection_preserves_exact_user_facing_contract(
     assert hass.config_entries.updates == []
     assert hass.config_entries.reloads == []
 
+
+
+@pytest.mark.asyncio
+async def test_explicit_pending_destination_survives_default_calendar_change():
+    """Only legacy implicit destinations prohibit changing the default calendar."""
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+    pending = SimpleNamespace(
+        events=[SimpleNamespace(calendar_entity="calendar.family")]
+    )
+    store.list = lambda: (pending,)
+
+    await async_save_option_patch(
+        hass,
+        config_entry,
+        {CONF_CALENDAR_ENTITY: "calendar.work"},
+    )
+
+    assert config_entry.options[CONF_CALENDAR_ENTITY] == "calendar.work"
+    assert config_entry.options.get(CONF_CALENDAR_ENTITIES) is None
+    assert hass.config_entries.reloads == ["entry-1"]
+    assert store.accepting_services is True
+    assert store.calendar_settings_reload_guard is False
