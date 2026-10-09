@@ -162,7 +162,10 @@ Daylight validates its size.
 
 The read is a *point-in-time advisory check*: results can change before
 approval. The action accepts an optional `expected_event` from
-`get_pending_event` to reject an already-stale review snapshot, and always
+`get_pending_event` to reject an already-stale review snapshot, including
+`write_uncertain` events with their original write-attempt identifiers for
+read-only inspection. This does not permit approval without explicit
+uncertain-write recovery. The action always
 rechecks the event after the asynchronous provider reads. If the draft,
 destination, status or identity changed—or it was approved/rejected—while
 observation was in progress, the action fails with a refresh error instead of
