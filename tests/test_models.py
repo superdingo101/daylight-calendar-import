@@ -60,8 +60,9 @@ def test_valid_all_day_event_and_optional_cleanup():
     ],
 )
 def test_invalid_event(changes, message):
-    with pytest.raises(DraftValidationError, match=message):
+    with pytest.raises(DraftValidationError) as error:
         EventDraft.from_mapping(timed(**changes))
+    assert str(error.value) == message
 
 
 def test_missing_and_zero_confidence_use_safe_boundary_values():
