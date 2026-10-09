@@ -142,6 +142,14 @@ of bounded entries with `kind` (`exact_duplicate`, `possible_duplicate`, or
 `conflict`), `calendar_entity` and `existing_title`. The response does not
 include event descriptions, attendees, or meeting credentials.
 
+To prevent expensive or misleading partial observations, the action rejects
+drafts spanning more than 90 elapsed days, scopes exceeding 16 distinct
+calendars, or provider responses containing more than 500 events combined.
+These limits raise explicit incomplete-observation errors; matching results
+are never silently truncated. Provider calls use the bounded draft window,
+although providers may themselves allocate an over-limit response before
+Daylight validates its size.
+
 The read is a *point-in-time advisory check*: results can change before
 approval. Calendar access failures are explicit errors, **not** a signal that
 the schedule is empty. This API does not yet enforce a write-time duplicate
