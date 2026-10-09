@@ -438,7 +438,9 @@ function emailDraftMatches(settings, draft) {
   if (!email || !draft) return false;
   if (draft.password) return false;
   return Object.entries(draft).every(([key, value]) =>
-    key === "password" || value === email[key]);
+    key === "password" || (key === "sender_allowlist"
+      ? JSON.stringify(value) === JSON.stringify(email[key] ?? [])
+      : value === email[key]));
 }
 
 function settingsDraftMatches(settings, tab, draft) {
