@@ -267,6 +267,7 @@ def test_email_and_complete_settings_snapshots_hide_secret():
         "password_configured": True,
         "mailbox": "Calendar",
         "verify_ssl": False,
+        "sender_allowlist": [],
     }
     assert "super-secret" not in str(email)
 
@@ -1592,3 +1593,48 @@ def test_conflict_calendar_scope_rejection_keeps_exact_actionable_error():
     assert calendar_intelligence_patch(
         entry(), {"conflict_calendar_entities": options["conflict_calendar_entities"][:15]}
     ) == {"conflict_calendar_entities": options["conflict_calendar_entities"][:15]}
+
+async def test_enabled_email_validation_accepts_and_normalizes_sender_allowlist(monkeypatch):
+    from custom_components.daylight_calendar_import.const import CONF_EMAIL_SENDER_ALLOWLIST
+    from custom_components.daylight_calendar_import.settings import async_validate_email_options
+    from custom_components.daylight_calendar_import.direct_imap import DirectImapSource
+    monkeypatch.setattr(DirectImapSource, "async_validate", AsyncMock())
+    options = {
+        CONF_EMAIL_HOST: "imap.example.test",
+        CONF_EMAIL_PORT: 993,
+        CONF_EMAIL_USERNAME: "calendar@example.test",
+        CONF_EMAIL_PASSWORD: "app-secret",
+    }
+    patch = await async_validate_email_options(
+        "entry-1", options,
+        {CONF_EMAIL_SENDER_ALLOWLIST: ["A@Example.test", "a@example.test"]},
+    )
+    assert patch[CONF_EMAIL_SENDER_ALLOWLIST] == ["a@example.test"]
+
+
+async def test_enabled_email_validation_rejects_invalid_sender_allowlist(monkeypatch):
+    from custom_components.daylight_calendar_import.const import CONF_EMAIL_SENDER_ALLOWLIST
+    from custom_components.daylight_calendar_import.settings import async_validate_email_options
+    from custom_components.daylight_calendar_import.direct_imap import DirectImapSource
+    validator = AsyncMock()
+    monkeypatch.setattr(DirectImapSource, "async_validate", validator)
+    with pytest.raises(SettingsValidationError, match="valid, complete sender"):
+        await async_validate_email_options(
+            "entry-1", {},
+            {CONF_EMAIL_SENDER_ALLOWLIST: ["not an email address"]},
+        )
+    validator.assert_not_awaited()
+
+
+async def test_enabled_email_validation_rejects_non_iterable_sender_allowlist(monkeypatch):
+    from custom_components.daylight_calendar_import.const import CONF_EMAIL_SENDER_ALLOWLIST
+    from custom_components.daylight_calendar_import.settings import async_validate_email_options
+    from custom_components.daylight_calendar_import.direct_imap import DirectImapSource
+    validator = AsyncMock()
+    monkeypatch.setattr(DirectImapSource, "async_validate", validator)
+    with pytest.raises(SettingsValidationError, match="valid, complete sender"):
+        await async_validate_email_options(
+            "entry-1", {},
+            {CONF_EMAIL_SENDER_ALLOWLIST: None},
+        )
+    validator.assert_not_awaited()
