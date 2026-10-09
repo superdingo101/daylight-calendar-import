@@ -154,6 +154,21 @@ get_pending_event:
       selector:
         text:
 
+check_pending_event:
+  name: Check pending event against calendars
+  description: Read selected calendars for exact duplicates, possible duplicates, and conflicts without writing events. An unavailable calendar returns an error, not an empty match list.
+  fields:
+    pending_id:
+      name: Pending import ID
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      required: true
+      selector:
+        text:
+
 edit_pending_event:
   name: Edit pending event
   description: Replace a pending draft or select its allowed destination calendar while keeping its event ID. An uncertain calendar write must be resolved before editing.
