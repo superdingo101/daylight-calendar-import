@@ -280,6 +280,7 @@ def test_email_and_complete_settings_snapshots_hide_secret():
         "password_configured": False,
         "mailbox": "INBOX",
         "verify_ssl": True,
+        "sender_allowlist": [],
     }
 
     snapshot = settings_snapshot(entry(options=options))
