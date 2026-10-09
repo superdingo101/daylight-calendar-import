@@ -33,7 +33,7 @@ A poll processes matching UIDs sequentially. If a large unread backlog makes one
 
 ### Optional exact sender allowlist (v0.6)
 
-In **Daylight imports → Settings → Email**, enter one complete sender email address per line (or separate them with commas). Matching is exact after address normalization and case folding, not fuzzy, domain-only, or display-name matching. Leave the field empty to allow every sender. The integration validates the list before saving it and retains it when disabling and re-enabling Direct IMAP.
+In **Daylight imports → Settings → Email**, enter exactly one complete sender email address per line. Do not separate addresses with commas: a comma may be valid inside a quoted local part (for example, `"last,first"@example.com`). Matching is exact after address normalization and case folding, not fuzzy, domain-only, or display-name matching. Leave the field empty to allow every sender. The integration validates the list before saving it and retains it when disabling and re-enabling Direct IMAP.
 
 Rejected messages **remain unread and undeleted** and are rediscovered on each subsequent poll; Daylight records a generic rejection activity entry but does not normalize their body, stage attachments, call the parser or acknowledge the message. To prevent repeat polling, use a dedicated folder or manage those messages outside the Daylight mailbox. Do not rely on the allowlist to authenticate email senders; the `From` header is user-supplied and can be spoofed.
 
