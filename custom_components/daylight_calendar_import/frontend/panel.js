@@ -558,6 +558,10 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._editingId || this._batchAction || this._resolution) return;
     this._batchResults = [];
     this._batchContext = null;
+    // Any refresh invalidates the loaded snapshot and its in-flight observation.
+    // Clear loading before bumping generation so a discarded response cannot
+    // leave the Check calendars control permanently aria-disabled.
+    this._calendarCheck = null;
     const generation = ++this._generation;
     this._status = "loading";
     this.render();
