@@ -661,7 +661,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     raise PendingEventResolutionError("Event changed since it was loaded; refresh before resolving")
                 expected = PendingEvent(event_id, EventDraft.from_mapping(snapshot),
                                         snapshot["status"], snapshot.get(CONF_CALENDAR_ENTITY),
-                                        snapshot.get("write_attempt"))
+                                        snapshot.get("write_attempt"),
+                                        snapshot.get("routing_unresolved", False))
             if expected is None:
                 resolved = await pending_store.async_resolve_uncertain(pending_id, event_id, resolution)
             else:
