@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 
 test("uncertain recovery sends a scoped explicit resolution and validates the response", async () => {
   const requests = [];
@@ -185,4 +185,28 @@ test("12-hour ranges preserve locale-specific day-period ordering", () => {
     end: "2026-10-07T21:00:00-07:00",
   }, {language: "zh-CN", time_format: "12"}, "America/Los_Angeles");
   assert.match(value, /下午8时–9时/);
+});
+
+test("calendar checks send the loaded snapshot and reject malformed responses", async () => {
+  const event = {id: "event-1", status: "pending", title: "School"};
+  let request;
+  const response = {pending_id: "import-1", event_id: "event-1",
+    matches: [{kind: "exact_duplicate", calendar_entity: "calendar.family",
+      existing_title: "School"}], observed_calendars: ["calendar.family"]};
+  assert.deepEqual(await checkEvent({callWS: async message => {
+    request = message;
+    return {response};
+  }}, "import-1", event), response);
+  assert.deepEqual(request, {type: "call_service", domain: "daylight_calendar_import",
+    service: "check_pending_event", service_data: {
+      pending_id: "import-1", event_id: "event-1", expected_event: event},
+    return_response: true});
+  await assert.rejects(checkEvent({callWS: async () => ({
+    response: {...response, matches: [{kind: "unrecognized", calendar_entity: "calendar.family",
+      existing_title: "x"}]},
+  })}, "import-1", event), /unexpected response/);
+  await assert.rejects(checkEvent({callWS: async () => ({response: {...response,
+    observed_calendars: null}})}, "import-1", event), /unexpected response/);
+  await assert.rejects(checkEvent({callWS: async () => {throw new Error("Calendar unavailable");}},
+    "import-1", event), /Calendar unavailable/);
 });
