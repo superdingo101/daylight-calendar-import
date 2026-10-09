@@ -69,12 +69,30 @@ def _step(trace: dict, operation: str) -> dict:
     return matches[0]
 
 
+class _RecoveredLocalRecords(dict):
+    """Independent fixture snapshot exposing the production store's read API."""
+
+    def __init__(self, records, seen_sources):
+        super().__init__((record.id, record) for record in records)
+        self.seen_sources = set(seen_sources)
+
+    def list(self):
+        return tuple(self.values())
+
+    def is_source_durable(self, identity):
+        from custom_components.daylight_calendar_import.dedup import source_fingerprint
+        fingerprint = source_fingerprint(identity)
+        return fingerprint in self.seen_sources or any(
+            record.source_fingerprint == fingerprint for record in self.values()
+        )
+
+
 def _pending_records(trace: dict) -> dict:
     from custom_components.daylight_calendar_import.storage import PendingImport
 
     records = [PendingImport.from_dict(raw) for raw in trace.get("local_store_after_restart", {}).get("items", [])]
     assert len({record.id for record in records}) == len(records)
-    return {record.id: record for record in records}
+    return _RecoveredLocalRecords(records, trace.get("local_store_after_restart", {}).get("seen_source_fingerprints", []))
 
 
 def _source_evidence_sha256(source: dict) -> str:
@@ -145,20 +163,33 @@ def _ack_path_from_recovered_checkpoint(
     assert recovered["attachments_verification_complete"] is True
     disposition = recovered["disposition"]
     assert isinstance(disposition, dict)
-    assert disposition.get("status") in {"pending", "no_events", "duplicate"}
+    assert disposition.get("status") in {"pending", "no_events", "duplicate", "handled"}
     if disposition["status"] == "pending":
         assert set(disposition) == {"status", "pending_import_id"}
         pending_id = disposition["pending_import_id"]
         assert isinstance(pending_id, str) and 0 < len(pending_id) <= 128
         # This is a separately recovered local pending-store snapshot, not a
         # record manufactured from the checkpoint being authorized.
-        record = (pending_records or {}).get(pending_id)
-        assert record is not None and record.id == pending_id
-        assert record.source_fingerprint == recovered["source_fingerprint"]
-        assert record.events
+        record = pending_records.get(pending_id) if pending_records is not None else None
+        if record is not None:
+            assert record.id == pending_id
+            assert record.source_fingerprint == recovered["source_fingerprint"]
+            assert record.events
+        else:
+            _require_handled_source(recovered, pending_records, expected_local_entry_id)
     else:
         assert set(disposition) == {"status"}
+        if disposition["status"] == "handled":
+            _require_handled_source(recovered, pending_records, expected_local_entry_id)
     return f"/v1/sources/{delivery_id}/ack"
+
+
+def _require_handled_source(checkpoint, store, local_entry_id):
+    assert store is not None
+    # is_source_durable includes pending records; require no such record so
+    # a dangling ID cannot borrow another pending record's identity.
+    assert not any(record.source_fingerprint == checkpoint["source_fingerprint"] for record in store.list())
+    assert store.is_source_durable(f"hosted:{local_entry_id}:{checkpoint['delivery_id']}")
 
 
 def _check_recovered_checkpoint(
@@ -174,7 +205,9 @@ def _check_recovered_checkpoint(
     assert saved["source_expires_at"] == recovered["source_expires_at"]
     assert saved["lease_token"] == recovered["lease_token"]
     assert saved["verified_attachments"] == recovered["verified_attachments"]
-    assert saved["disposition"] == recovered["disposition"]
+    if saved["disposition"] != recovered["disposition"]:
+        assert saved["disposition"]["status"] == "pending"
+        assert recovered["disposition"] == {"status": "handled"}
     assert saved["attachment_descriptors"] == recovered["attachment_descriptors"]
     assert saved["attachment_descriptors_sha256"] == recovered["attachment_descriptors_sha256"]
 
@@ -873,13 +906,23 @@ def _check_claim_idempotency_trace(trace: dict, schemas: dict, registry: Registr
         if step["status"] == 200:
             _validate("delivery-page.schema.json", step["response"], schemas, registry)
             _validate_delivery_page_semantics(step["response"], request=parameters)
+            claim_started_at = now if step["op"] == "claim" else originals[request_id][2]
+            for item in step["response"]["deliveries"]:
+                source_expiry = datetime.fromisoformat(item["source_expires_at"])
+                lease_expiry = datetime.fromisoformat(item["lease_expires_at"])
+                enqueued_at = datetime.fromisoformat(trace["source_enqueued_at"][item["delivery_id"]])
+                assert enqueued_at <= claim_started_at
+                _validate_source_retention_window(enqueued_at=enqueued_at, source_expires_at=source_expiry)
+                _validate_claim_retention_window(claim_received_at=now, source_expires_at=source_expiry)
+                _validate_lease_window(claim_started_at=claim_started_at, lease_expires_at=lease_expiry, source_expires_at=source_expiry)
+                assert now < lease_expiry
         if step["op"] == "claim":
             assert deadline <= now + timedelta(minutes=5)
             assert request_id not in originals
             assert step["status"] == 200
-            originals[request_id] = (parameters, step["response"])
+            originals[request_id] = (parameters, step["response"], now)
         else:
-            prior_parameters, prior_response = originals[request_id]
+            prior_parameters, prior_response, _ = originals[request_id]
             assert step["new_leases_issued"] is False
             if step["op"] == "retry_same":
                 assert parameters == prior_parameters
@@ -1261,4 +1304,73 @@ def test_claim_replay_rejects_partial_wire_pages(step_index, field, schema_regis
     else:
         del response["deliveries"][0][field]
     with pytest.raises(ValidationError):
+        _check_claim_idempotency_trace(trace, schemas, registry)
+
+
+@pytest.mark.parametrize("action", ["reject", "approve"])
+async def test_handled_source_can_retry_lost_ack_after_review_and_restart(hass, monkeypatch, action):
+    from unittest.mock import AsyncMock
+    from custom_components.daylight_calendar_import.storage import PendingImportStore
+
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-ack-retry-after-cleanup.json")
+    recovered = _step(trace, "recover_checkpoint")
+    pending_id = recovered["disposition"]["pending_import_id"]
+    store = PendingImportStore(hass)
+    monkeypatch.setattr(store._store, "async_load", AsyncMock(return_value=trace["local_store_after_restart"]))
+    save = AsyncMock()
+    monkeypatch.setattr(store._store, "async_save", save)
+    await store.async_load()
+    item = store.get(pending_id)
+    assert item is not None
+    if action == "reject":
+        assert await store.async_remove(pending_id)
+    else:
+        assert await store.async_approve_event(pending_id, item.events[0].id, AsyncMock())
+    assert store.get(pending_id) is None
+    # Both review paths commit the handled fingerprint atomically with removal.
+    snapshot = save.call_args.args[0]
+    assert recovered["source_fingerprint"] in snapshot["seen_source_fingerprints"]
+    restarted = PendingImportStore(hass)
+    monkeypatch.setattr(restarted._store, "async_load", AsyncMock(return_value=snapshot))
+    await restarted.async_load()
+    assert _ack_path_from_recovered_checkpoint(
+        recovered, expected_local_entry_id="entry-one", pending_records=restarted,
+    ) == "/v1/sources/delivery_00000000000000000002/ack"
+    # An explicit handled checkpoint has the same eligibility and still needs
+    # the independently durable handled-source evidence plus original proofs.
+    recovered["disposition"] = {"status": "handled"}
+    assert _ack_path_from_recovered_checkpoint(
+        recovered, expected_local_entry_id="entry-one", pending_records=restarted,
+    )
+
+
+def test_handled_recovery_trace_keeps_source_and_attachment_evidence():
+    import copy
+
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-handled-client-trace.json")
+    saved = _step(trace, "persist_local_checkpoint")
+    recovered = _step(trace, "recover_checkpoint")
+    _check_recovered_checkpoint(saved, recovered, expected_local_entry_id="entry-one", pending_records=_pending_records(trace))
+    for damage in ([], ["v1:source:" + "0" * 64]):
+        changed = copy.deepcopy(trace)
+        changed["local_store_after_restart"]["seen_source_fingerprints"] = damage
+        with pytest.raises(AssertionError):
+            _ack_path_from_recovered_checkpoint(recovered, expected_local_entry_id="entry-one", pending_records=_pending_records(changed))
+    changed = copy.deepcopy(recovered)
+    changed["verified_attachments"] = {}
+    with pytest.raises(AssertionError):
+        _ack_path_from_recovered_checkpoint(changed, expected_local_entry_id="entry-one", pending_records=_pending_records(trace))
+
+
+@pytest.mark.parametrize("step_index", [0, 1])
+@pytest.mark.parametrize("field,value", [
+    ("source_expires_at", "2026-10-15T16:00:00Z"),
+    ("lease_expires_at", "2026-10-08T15:30:11Z"),
+    ("lease_expires_at", "2026-10-10T15:00:00Z"),
+])
+def test_claim_replay_checks_retention_and_original_lease_clocks(step_index, field, value, schema_registry):
+    schemas, registry = schema_registry
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-idempotent-claim-trace.json")
+    trace["steps"][step_index]["response"]["deliveries"][0][field] = value
+    with pytest.raises(ValueError):
         _check_claim_idempotency_trace(trace, schemas, registry)

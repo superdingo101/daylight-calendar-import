@@ -19,7 +19,7 @@
             "source_id": "source_000000000000000000000001",
             "lease_token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
             "lease_expires_at": "2026-10-08T15:05:00Z",
-            "source_expires_at": "2026-10-15T16:00:00Z",
+            "source_expires_at": "2026-10-15T15:00:00Z",
             "source": {
               "kind": "email",
               "received_at": "2026-10-08T15:00:00Z",
@@ -54,7 +54,7 @@
             "source_id": "source_000000000000000000000001",
             "lease_token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
             "lease_expires_at": "2026-10-08T15:05:00Z",
-            "source_expires_at": "2026-10-15T16:00:00Z",
+            "source_expires_at": "2026-10-15T15:00:00Z",
             "source": {
               "kind": "email",
               "received_at": "2026-10-08T15:00:00Z",
@@ -130,5 +130,8 @@
       "code": "claim_request_expired",
       "new_leases_issued": false
     }
-  ]
+  ],
+  "source_enqueued_at": {
+    "delivery_00000000000000000001": "2026-10-08T15:00:00Z"
+  }
 }

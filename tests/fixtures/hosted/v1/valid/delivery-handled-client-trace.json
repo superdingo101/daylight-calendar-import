@@ -1,0 +1,131 @@
+{
+  "description": "Lost ACK recovery remains eligible after review completes and the pending record is replaced atomically by durable handled-source state",
+  "delivery_id": "delivery_00000000000000000002",
+  "steps": [
+    {
+      "op": "claim",
+      "local_config_entry_id": "entry-one",
+      "delivery_id": "delivery_00000000000000000002",
+      "token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
+      "source_expires_at": "2026-10-15T16:00:00Z",
+      "source": {
+        "kind": "email",
+        "received_at": "2026-10-08T15:00:00Z",
+        "title": "School picture day",
+        "text": null,
+        "attachments": [
+          {
+            "id": "flyer.pdf",
+            "filename": "School schedule.pdf",
+            "media_type": "application/pdf",
+            "size_bytes": 1024,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "metadata": {
+          "sender": "teacher@example.test"
+        }
+      }
+    },
+    {
+      "op": "download_and_verify",
+      "verified_attachments": {
+        "flyer.pdf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "op": "parse_success",
+      "event_count": 1
+    },
+    {
+      "op": "persist_local_checkpoint",
+      "checkpoint_id": "local-store-attachments-01",
+      "source_fingerprint": "v1:source:44f19ced0914e953b0aa90f5a3c2a3d5b5eec0641c4247c7ec408b58a2b656e8",
+      "source_evidence_sha256": "b322428c2f8dc724c0da0323452ecbaa56daf840382b27608728701d959b4fe2",
+      "source_expires_at": "2026-10-15T16:00:00Z",
+      "lease_token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
+      "verified_attachments": {
+        "flyer.pdf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "attachments_verification_complete": true,
+      "delivery_id": "delivery_00000000000000000002",
+      "local_config_entry_id": "entry-one",
+      "disposition": {
+        "status": "pending",
+        "pending_import_id": "local-store-attachments-01"
+      },
+      "attachment_descriptors": [
+        {
+          "id": "flyer.pdf",
+          "filename": "School schedule.pdf",
+          "media_type": "application/pdf",
+          "size_bytes": 1024,
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "attachment_descriptors_sha256": "9ab099d50626896093ce60a9c7fd781c56e384c09ad81748b617e45b38559e22"
+    },
+    {
+      "op": "ack_applied",
+      "token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
+      "acknowledged_at": "2026-10-08T16:01:00Z"
+    },
+    {
+      "op": "delete_cloud_source"
+    },
+    {
+      "op": "review_completed",
+      "outcome": "rejected",
+      "durable_seen_source_fingerprint": "v1:source:44f19ced0914e953b0aa90f5a3c2a3d5b5eec0641c4247c7ec408b58a2b656e8"
+    },
+    {
+      "op": "persist_handled_checkpoint",
+      "disposition": {
+        "status": "handled"
+      }
+    },
+    {
+      "op": "restart_ha"
+    },
+    {
+      "op": "recover_checkpoint",
+      "checkpoint_id": "local-store-attachments-01",
+      "source_fingerprint": "v1:source:44f19ced0914e953b0aa90f5a3c2a3d5b5eec0641c4247c7ec408b58a2b656e8",
+      "source_evidence_sha256": "b322428c2f8dc724c0da0323452ecbaa56daf840382b27608728701d959b4fe2",
+      "source_expires_at": "2026-10-15T16:00:00Z",
+      "lease_token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
+      "verified_attachments": {
+        "flyer.pdf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "attachments_verification_complete": true,
+      "cloud_attachment_bytes_available": false,
+      "delivery_id": "delivery_00000000000000000002",
+      "local_config_entry_id": "entry-one",
+      "disposition": {
+        "status": "handled"
+      },
+      "attachment_descriptors": [
+        {
+          "id": "flyer.pdf",
+          "filename": "School schedule.pdf",
+          "media_type": "application/pdf",
+          "size_bytes": 1024,
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "attachment_descriptors_sha256": "9ab099d50626896093ce60a9c7fd781c56e384c09ad81748b617e45b38559e22"
+    },
+    {
+      "op": "retry_same_ack",
+      "token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
+      "status": 200,
+      "acknowledged_at": "2026-10-08T16:01:00Z"
+    }
+  ],
+  "local_store_after_restart": {
+    "items": [],
+    "seen_source_fingerprints": [
+      "v1:source:44f19ced0914e953b0aa90f5a3c2a3d5b5eec0641c4247c7ec408b58a2b656e8"
+    ]
+  }
+}
