@@ -275,7 +275,38 @@ async def async_save_option_patch(
         raise SettingsValidationError(
             "default_not_allowed", "The default calendar must be included in the allowed calendars."
         )
-    hass.config_entries.async_update_entry(entry, options=merged)
+    # Calendar option writes and pending-event edits share the store lock:
+    # no concurrent edit can strand a destination between validation and update.
+    old_default, _ = effective_calendar_options(entry)
+    pending_store = getattr(hass, "data", {}).get(DOMAIN, {}).get(entry.entry_id)
+
+    def commit_after_pending_check() -> None:
+        if pending_store is not None and (
+            default != old_default
+            or set(allowed) != set(effective_calendar_options(entry)[1])
+        ):
+            for pending in pending_store.list():
+                for event in pending.events:
+                    destination = event.calendar_entity or old_default
+                    if destination not in allowed:
+                        raise SettingsValidationError(
+                            "pending_destination_not_allowed",
+                            "A pending event targets a calendar being removed. "
+                            "Reassign or reject the event before saving settings.",
+                        )
+                    if event.calendar_entity is None and default != old_default:
+                        raise SettingsValidationError(
+                            "pending_default_would_change",
+                            "A pending event uses the current default calendar. "
+                            "Assign it an explicit destination before changing the default.",
+                        )
+        hass.config_entries.async_update_entry(entry, options=merged)
+
+    if pending_store is not None:
+        async with pending_store._lock:
+            commit_after_pending_check()
+    else:
+        commit_after_pending_check()
     if not await hass.config_entries.async_reload(entry.entry_id):
         raise SettingsValidationError(
             "reload_failed",
