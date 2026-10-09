@@ -1052,3 +1052,26 @@ async def test_unavailable_provider_exact_message_and_no_false_empty_results():
         )
     assert str(error.value) == "Calendar observation is incomplete"
     fake.providers["calendar.work"].async_get_events.assert_not_awaited()
+
+
+@pytest.mark.parametrize("context", [None, Context(user_id=None)])
+async def test_trusted_internal_observation_preserves_automations_without_user(context):
+    fake = hass({"calendar.work": {"events": [existing()]}})
+    result = await async_classify_conflicts(
+        fake, draft(), observed_calendars=["calendar.work"],
+        local_zone=ZONE, context=context, trusted_internal=True,
+    )
+    assert len(result) == 1
+    assert result[0].kind == "exact_duplicate"
+    fake.auth.async_get_user.assert_not_awaited()
+    fake.user.permissions.check_entity.assert_not_called()
+
+
+async def test_trusted_internal_flag_never_bypasses_authenticated_read_permissions():
+    fake = hass({"calendar.work": {"events": []}})
+    fake.user.permissions.check_entity.return_value = False
+    with pytest.raises(Unauthorized):
+        await async_classify_conflicts(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT, trusted_internal=True,
+        )
