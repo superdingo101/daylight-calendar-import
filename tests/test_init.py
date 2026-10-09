@@ -2750,9 +2750,11 @@ async def test_approval_writer_rechecks_destination_before_calendar_write(monkey
     handler, _ = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)]
     call = SimpleNamespace(data={ATTR_PENDING_ID: item.id}, context=Context(user_id="reviewer"))
     if outcome in ("exact", "unavailable"):
-        with pytest.raises(ServiceValidationError, match=(
-            "Exact duplicate" if outcome == "exact" else "Cannot verify destination"
-        )):
+        with pytest.raises(
+            ServiceValidationError,
+            match="Approval rejected before calendar write: "
+            + ("Exact duplicate" if outcome == "exact" else "Cannot verify destination"),
+        ):
             await handler(call)
         assert hass.services.calls == []
     else:
