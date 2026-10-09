@@ -1320,28 +1320,28 @@ export class DaylightImportPanel extends HTMLElement {
   /** Update only check results; keep unrelated focused controls in the DOM. */
   renderCalendarCheckDetails(section, result) {
     section.replaceChildren();
-          if (result.status === "loading") {
-            section.append(element("p", "Checking selected calendars…"));
-          } else if (result.status === "error") {
-            const error = element("p", `Calendar check incomplete: ${result.message}`, "error");
-            error.setAttribute("role", "alert");
-            section.append(error);
-          } else if (result.status === "ready") {
-            if (!result.matches.length) {
-              section.append(element("p", "No matches found in the observed calendars."));
-            } else {
-              const labels = {exact_duplicate: "Exact duplicate",
-                possible_duplicate: "Possible duplicate", conflict: "Scheduling conflict"};
-              const list = document.createElement("ul");
-              for (const match of result.matches) {
-                list.append(element("li",
-                  `${labels[match.kind]}: ${match.existing_title} (${match.calendar_entity})`));
-              }
-              section.append(list);
-            }
-            section.append(element("p",
-              "These results are advisory and may change before approval. An incomplete check is not a clear calendar."));
-          }
+    if (result.status === "loading") {
+      section.append(element("p", "Checking selected calendars…"));
+    } else if (result.status === "error") {
+      const error = element("p", `Calendar check incomplete: ${result.message}`, "error");
+      error.setAttribute("role", "alert");
+      section.append(error);
+    } else if (result.status === "ready") {
+      if (!result.matches.length) {
+        section.append(element("p", "No matches found in the observed calendars."));
+      } else {
+        const labels = {exact_duplicate: "Exact duplicate",
+          possible_duplicate: "Possible duplicate", conflict: "Scheduling conflict"};
+        const list = document.createElement("ul");
+        for (const match of result.matches) {
+          list.append(element("li",
+            `${labels[match.kind]}: ${match.existing_title} (${match.calendar_entity})`));
+        }
+        section.append(list);
+      }
+      section.append(element("p",
+        "These results are advisory and may change before approval. An incomplete check is not a clear calendar."));
+    }
   }
 
   /** Results are transient and belong only to the exact loaded draft object. */
@@ -1384,8 +1384,10 @@ export class DaylightImportPanel extends HTMLElement {
     const button = this._content.querySelectorAll("button").find(
       item => item.dataset.calendarCheckEventId === event.id);
     if (button) {
-      button.disabled = false;
+      button.removeAttribute("aria-disabled");
+      button.removeAttribute("aria-busy");
       button.textContent = "Check calendars";
+      button.setAttribute("aria-label", `Check calendars for ${event.title || "event"}`);
     }
     const summary = next.status === "error" ?
       `Calendar check incomplete: ${next.message}` :
@@ -2219,13 +2221,19 @@ export class DaylightImportPanel extends HTMLElement {
         }
         if (["pending", "write_uncertain"].includes(event.status) &&
             !this._editingId && !this._decision && !this._batchAction && !this._resolution) {
-          const check = element("button",
-            this._calendarCheck?.event === event && this._calendarCheck.status === "loading" ?
-              "Checking calendars…" : "Check calendars");
+          const checking = this._calendarCheck?.event === event &&
+            this._calendarCheck.status === "loading";
+          const check = element("button", checking ? "Checking calendars…" : "Check calendars");
           check.type = "button";
           check.dataset.calendarCheckEventId = event.id;
-          check.disabled = this._calendarCheck?.event === event &&
-            this._calendarCheck.status === "loading";
+          check.setAttribute("aria-label",
+            `${checking ? "Checking" : "Check"} calendars for ${event.title || "event"}`);
+          // A disabled HTML button cannot retain keyboard focus. Use aria-disabled
+          // and reject repeat invocations in checkCalendarEvent instead.
+          if (checking) {
+            check.setAttribute("aria-disabled", "true");
+            check.setAttribute("aria-busy", "true");
+          }
           check.addEventListener("click", () => void this.checkCalendarEvent(event));
           card.append(check);
         }
