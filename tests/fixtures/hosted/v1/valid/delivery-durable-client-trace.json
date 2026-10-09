@@ -44,7 +44,9 @@
       "disposition": {
         "status": "pending",
         "pending_import_id": "local-store-001"
-      }
+      },
+      "attachment_descriptors": [],
+      "attachment_descriptors_sha256": "ebd556927e470484600924709baa4e88a21379e9163bc37ab00e4aad4886bea8"
     },
     {
       "op": "restart_ha"
@@ -63,11 +65,37 @@
       "disposition": {
         "status": "pending",
         "pending_import_id": "local-store-001"
-      }
+      },
+      "attachment_descriptors": [],
+      "attachment_descriptors_sha256": "ebd556927e470484600924709baa4e88a21379e9163bc37ab00e4aad4886bea8"
     },
     {
       "op": "ack",
       "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456"
     }
-  ]
+  ],
+  "local_store_after_restart": {
+    "items": [
+      {
+        "id": "local-store-001",
+        "created_at": "2026-10-08T16:00:00Z",
+        "source_text": "Picture day on October 15, 2026 at 9am",
+        "source_fingerprint": "v1:source:a4766efbcbf0979ea400270284e26e437e446ae5736865a2e44d61f56b97b92e",
+        "source_kind": "email",
+        "events": [
+          {
+            "id": "pending-event-001",
+            "status": "pending",
+            "draft": {
+              "title": "School picture day",
+              "start": "2026-10-15T09:00:00-07:00",
+              "end": "2026-10-15T10:00:00-07:00",
+              "all_day": false,
+              "confidence": 0.9
+            }
+          }
+        ]
+      }
+    ]
+  }
 }

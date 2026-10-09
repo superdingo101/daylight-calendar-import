@@ -35,7 +35,9 @@
       "local_config_entry_id": "entry-one",
       "disposition": {
         "status": "duplicate"
-      }
+      },
+      "attachment_descriptors": [],
+      "attachment_descriptors_sha256": "ebd556927e470484600924709baa4e88a21379e9163bc37ab00e4aad4886bea8"
     },
     {
       "op": "restart_ha"
@@ -52,7 +54,9 @@
       "local_config_entry_id": "entry-one",
       "disposition": {
         "status": "duplicate"
-      }
+      },
+      "attachment_descriptors": [],
+      "attachment_descriptors_sha256": "ebd556927e470484600924709baa4e88a21379e9163bc37ab00e4aad4886bea8"
     },
     {
       "op": "ack",
