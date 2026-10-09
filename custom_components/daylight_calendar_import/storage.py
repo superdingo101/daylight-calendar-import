@@ -58,14 +58,17 @@ class PendingEvent:
     calendar_entity: str | None = None
     write_attempt: str | None = None
     routing_unresolved: bool = False
+    date_time_assumptions: tuple[str, ...] = ()
 
     @classmethod
     def create(
         cls, draft: EventDraft, calendar_entity: str | None = None,
         *, routing_unresolved: bool = False,
+        date_time_assumptions: tuple[str, ...] = (),
     ) -> PendingEvent:
         return cls(str(uuid4()), draft, calendar_entity=calendar_entity,
-                   routing_unresolved=routing_unresolved)
+                   routing_unresolved=routing_unresolved,
+                   date_time_assumptions=date_time_assumptions)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> PendingEvent:
@@ -73,7 +76,8 @@ class PendingEvent:
             raise ValueError("invalid pending event status")
         return cls(raw["id"], EventDraft.from_mapping(raw["draft"]), raw["status"],
                    raw.get("calendar_entity"), raw.get("write_attempt"),
-                   raw.get("routing_unresolved", False))
+                   raw.get("routing_unresolved", False),
+                   tuple(raw.get("date_time_assumptions", ())))
 
     def as_dict(self) -> dict[str, Any]:
         result = {"id": self.id, "draft": self.draft.as_dict(), "status": self.status,
@@ -83,6 +87,8 @@ class PendingEvent:
         # Explicit False distinguishes confirmed legacy events from records
         # that predate the per-event routing flag entirely.
         result["routing_unresolved"] = self.routing_unresolved
+        if self.date_time_assumptions:
+            result["date_time_assumptions"] = list(self.date_time_assumptions)
         return result
 
     def as_service_dict(self) -> dict[str, Any]:
@@ -93,6 +99,8 @@ class PendingEvent:
             result["write_attempt"] = self.write_attempt
         if self.routing_unresolved:
             result["routing_unresolved"] = True
+        if self.date_time_assumptions:
+            result["date_time_assumptions"] = list(self.date_time_assumptions)
         return result
 
 
@@ -154,6 +162,7 @@ class PendingImport:
         source_title: str | None = None,
         source_sender: str | None = None,
         warnings: Iterable[str] = (),
+        event_assumptions: Iterable[tuple[str, ...]] | None = None,
         duplicate_events: int = 0,
         activity_id: str | None = None,
         received_at: str | None = None,
@@ -163,9 +172,15 @@ class PendingImport:
         if not source_text:
             raise ValueError("source_text must be a non-empty string")
 
+        drafts = tuple(events)
+        assumptions = (tuple(event_assumptions) if event_assumptions is not None
+                       else ((),) * len(drafts))
+        if len(assumptions) != len(drafts):
+            raise ValueError("event assumptions must match the event count")
         event_tuple = tuple(PendingEvent.create(event, calendar_entity,
-                                              routing_unresolved=routing_unresolved)
-                            for event in events)
+                                              routing_unresolved=routing_unresolved,
+                                              date_time_assumptions=notes)
+                            for event, notes in zip(drafts, assumptions, strict=True))
         if not event_tuple:
             raise ValueError("pending import must contain at least one event")
 
@@ -862,8 +877,15 @@ class PendingImportStore:
             if fingerprint in self._seen_event_fingerprints or fingerprint in other_active:
                 raise PendingEventEditError("Edited event duplicates a pending or handled event")
 
+            temporal_changed = any((
+                event.draft.start != draft.start,
+                event.draft.end != draft.end,
+                event.draft.all_day != draft.all_day,
+            ))
             edited = replace(event, draft=draft, calendar_entity=target,
-                             routing_unresolved=unresolved)
+                             routing_unresolved=unresolved,
+                             date_time_assumptions=(() if temporal_changed
+                                                    else event.date_time_assumptions))
             updated = replace(pending, events=tuple(
                 edited if item.id == event_id else item for item in pending.events
             ))
@@ -896,6 +918,7 @@ class PendingImportStore:
         *,
         source_text: str,
         events: Iterable[EventDraft],
+        event_assumptions: Iterable[tuple[str, ...]] | None = None,
         source_id: str | None = None,
         calendar_entity: str | None = None,
         routing_unresolved: bool = False,
@@ -910,6 +933,7 @@ class PendingImportStore:
             self._async_add_transaction(
                 source_text=source_text,
                 events=events,
+                event_assumptions=event_assumptions,
                 source_id=source_id,
                 calendar_entity=calendar_entity,
                 routing_unresolved=routing_unresolved,
@@ -929,6 +953,7 @@ class PendingImportStore:
         *,
         source_text: str,
         events: Iterable[EventDraft],
+        event_assumptions: Iterable[tuple[str, ...]] | None = None,
         source_id: str | None = None,
         calendar_entity: str | None = None,
         routing_unresolved: bool = False,
@@ -944,6 +969,10 @@ class PendingImportStore:
             raise ValueError("source_text must be a non-empty string")
 
         event_tuple = tuple(events)
+        assumptions = (tuple(event_assumptions) if event_assumptions is not None
+                       else ((),) * len(event_tuple))
+        if len(assumptions) != len(event_tuple):
+            raise ValueError("event assumptions must match the event count")
         source_fp = (
             build_source_fingerprint(source_id)
             if source_id is not None
@@ -986,10 +1015,11 @@ class PendingImportStore:
             known_events = set(self._seen_event_fingerprints)
             known_events.update(self._active_event_fingerprints())
             accepted_events: list[EventDraft] = []
+            accepted_assumptions: list[tuple[str, ...]] = []
             accepted_fingerprints: set[str] = set()
             duplicate_events = 0
 
-            for event in event_tuple:
+            for event, notes in zip(event_tuple, assumptions, strict=True):
                 fingerprint = event_fingerprint(event)
                 if (
                     fingerprint in known_events
@@ -998,6 +1028,7 @@ class PendingImportStore:
                     duplicate_events += 1
                     continue
                 accepted_events.append(event)
+                accepted_assumptions.append(notes)
                 accepted_fingerprints.add(fingerprint)
 
             if not accepted_events:
@@ -1046,6 +1077,7 @@ class PendingImportStore:
             pending = PendingImport.create(
                 source_text=source_text,
                 events=accepted_events,
+                event_assumptions=accepted_assumptions,
                 source_fingerprint=source_fp,
                 calendar_entity=calendar_entity,
                 routing_unresolved=routing_unresolved,
