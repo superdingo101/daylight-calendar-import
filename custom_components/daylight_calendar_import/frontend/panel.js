@@ -1112,6 +1112,8 @@ export class DaylightImportPanel extends HTMLElement {
       password: fields.namedItem("email_password").value,
       mailbox: fields.namedItem("email_mailbox").value.trim(),
       verify_ssl: fields.namedItem("email_verify_ssl").checked,
+      sender_allowlist: fields.namedItem("email_sender_allowlist").value
+        .split(/[,\n]/).map(value => value.trim()).filter(Boolean),
     };
   }
 
@@ -1130,6 +1132,7 @@ export class DaylightImportPanel extends HTMLElement {
         password: draft.password,
         mailbox: draft.mailbox,
         verify_ssl: draft.verify_ssl,
+        sender_allowlist: draft.sender_allowlist,
       });
     }
 
@@ -1160,6 +1163,7 @@ export class DaylightImportPanel extends HTMLElement {
           username: draft.username,
           mailbox: draft.mailbox,
           verify_ssl: draft.verify_ssl,
+          sender_allowlist: draft.sender_allowlist,
           password_configured:
             previousEmail.password_configured || Boolean(draft.password),
         } : {enabled: false};
@@ -1276,6 +1280,15 @@ export class DaylightImportPanel extends HTMLElement {
       "email_mailbox", "Mailbox / folder", "mailbox", email.mailbox ?? "INBOX",
     );
 
+    const allowlistLabel = element("label", "Allowed sender email addresses (optional; one per line)");
+    const allowlist = document.createElement("textarea");
+    allowlist.name = "email_sender_allowlist";
+    allowlist.rows = 3;
+    allowlist.value = value("sender_allowlist", email.sender_allowlist ?? []).join("\n");
+    allowlistLabel.append(allowlist);
+    connection.append(allowlistLabel);
+    connection.append(element("p", "If left empty, all senders in this mailbox are eligible. Sender checking uses the From header, not authentication.", "settings-help"));
+
     const sslLabel = document.createElement("label");
     const verifySsl = document.createElement("input");
     verifySsl.type = "checkbox";
@@ -1291,7 +1304,7 @@ export class DaylightImportPanel extends HTMLElement {
     enabled.addEventListener("change", updateDraft);
     verifySsl.addEventListener("change", updateDraft);
     for (const input of [host, port, username, password,
-      form.elements.namedItem("email_mailbox")]) {
+      form.elements.namedItem("email_mailbox"), allowlist]) {
       input.addEventListener("input", updateDraft);
     }
 
