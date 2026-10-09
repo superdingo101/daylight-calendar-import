@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import selector
 from homeassistant.util import dt as dt_util
 
-from .models import DraftValidationError, EventDraft
+from .models import DraftValidationError, EventDraft, normalize_date_time_assumptions
 from .sources import SourceDocument, TextSourceAdapter
 
 TASK_NAME = "Extract calendar event drafts"
@@ -154,14 +154,12 @@ def parse_ai_data(data: Any) -> ParseOutcome:
             continue
         try:
             draft = EventDraft.from_mapping(raw)
-            assumptions = raw.get("assumptions", [])
-            if not isinstance(assumptions, list) or len(assumptions) > 8 or any(
-                not isinstance(value, str) or not value.strip() or len(value) > 160
-                for value in assumptions
-            ):
-                raise DraftValidationError("assumptions must be up to eight short strings")
+            try:
+                assumptions = normalize_date_time_assumptions(raw.get("assumptions", []))
+            except ValueError as err:
+                raise DraftValidationError(str(err)) from err
             drafts.append(draft)
-            event_assumptions.append(tuple(value.strip() for value in assumptions))
+            event_assumptions.append(assumptions)
         except DraftValidationError as err:
             warnings.append(f"event {index} is invalid: {err}")
     return ParseOutcome(drafts, warnings, event_assumptions)
