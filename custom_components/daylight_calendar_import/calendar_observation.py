@@ -156,14 +156,26 @@ async def async_observe_candidates(
     for entity_id in identifiers:
         provider = component.get_entity(entity_id)
         if provider is None or getattr(provider, "available", True) is False:
-            # HA may retain an unavailable CalendarEntity in its registry.
-            # A cached or empty get_events response must not imply no conflicts.
+            # HA can retain unavailable entities and return cached/empty events.
             raise CalendarObservationError("Calendar observation is incomplete")
         providers.append((entity_id, provider))
 
+    def ensure_available(entity_id: str, provider: Any) -> None:
+        """Require the same registered, available provider throughout this read."""
+        if (
+            hass.data.get(DATA_COMPONENT) is not component
+            or component.get_entity(entity_id) is not provider
+            or getattr(provider, "available", True) is False
+        ):
+            raise CalendarObservationError("Calendar observation is incomplete")
+
     candidates: list[CalendarCandidate] = []
     for entity_id, provider in providers:
+        # A later provider might have become unavailable while earlier reads
+        # awaited; a provider can also become unavailable during its own read.
+        ensure_available(entity_id, provider)
         response = await provider.async_get_events(hass, start, end)
+        ensure_available(entity_id, provider)
         if not isinstance(response, list):
             raise CalendarObservationError("Calendar observation is incomplete")
         if len(response) > MAX_OBSERVATION_EVENTS - len(candidates):
@@ -185,6 +197,10 @@ async def async_observe_candidates(
                     if isinstance(event_end, (date, datetime)) else event_end
                 ),
             }))
+    # An earlier provider may have gone unavailable while a later one awaited.
+    # Never report the combined observation as complete in that case.
+    for entity_id, provider in providers:
+        ensure_available(entity_id, provider)
     return tuple(candidates)
 
 
