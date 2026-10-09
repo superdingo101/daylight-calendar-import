@@ -1354,3 +1354,23 @@ async def test_failed_calendar_reload_exception_leaves_old_runtime_closed():
         })
     assert store.accepting_services is False
     assert config_entry.options[CONF_CALENDAR_ENTITIES] == ["calendar.family"]
+
+@pytest.mark.asyncio
+async def test_calendar_option_save_failure_restores_original_ingress():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+
+    def fail_before_persist(_entry, *, options):
+        assert store.accepting_services is False
+        raise RuntimeError("cannot persist options")
+
+    hass.config_entries.async_update_entry = fail_before_persist
+    with pytest.raises(RuntimeError, match="cannot persist"):
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert store.accepting_services is True
+    assert config_entry.options == {}
+    assert hass.config_entries.reloads == []
