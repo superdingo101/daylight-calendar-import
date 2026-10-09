@@ -194,5 +194,11 @@ without a user context; its internal preflight retains the established
 internal-service trust boundary. The single-event `approve_pending_event`
 action still requires an authenticated user through the existing review
 access check.
-Authenticated callers still need their existing entity permissions. The
-legacy immediate `import_text` action does not use the pending-approval guard.
+Authenticated callers still need their existing entity-control permissions.
+The approval preflight runs an internal, destination-only calendar observation
+**after** the control check, preserving approval for control-only users who
+lack calendar read permission. The preflight exposes only whether approval is
+blocked; it never returns private existing-event details to the approver. The
+separate on-demand `check_pending_event` action continues to require
+explicit calendar read permission. The legacy immediate `import_text`
+action does not use the pending-approval guard.
