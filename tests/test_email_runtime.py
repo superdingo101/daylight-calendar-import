@@ -517,3 +517,15 @@ async def test_runtime_logs_terminal_failures_separately_from_retryable_failures
         "Direct IMAP poll permanently rejected 2 message(s); "
         "their source identities were recorded as handled"
     )
+
+
+async def test_scheduled_poll_does_not_start_during_calendar_settings_reload():
+    hass = FakeHass()
+    store = SimpleNamespace(accepting_services=False)
+    runtime = EmailPollingRuntime(hass, SimpleNamespace(), store, AsyncMock())
+    runtime._schedule_poll(None)
+    assert hass.created_tasks == []
+    store.accepting_services = True
+    runtime._schedule_poll(None)
+    assert len(hass.created_tasks) == 1
+    await runtime.async_stop()
