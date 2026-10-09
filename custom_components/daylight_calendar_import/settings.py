@@ -332,11 +332,16 @@ async def async_save_option_patch(
             verify_pending_and_admission()
             was_accepting = getattr(pending_store, "accepting_services", True)
             pending_store.accepting_services = False
+            # HA's unload path normally reopens admission after failed platform
+            # unload. Suppress that rollback while persisted options may differ
+            # from the old entry's captured calendar routing.
+            pending_store.calendar_settings_reload_guard = True
             try:
                 hass.config_entries.async_update_entry(entry, options=merged)
             except BaseException:
                 # Persistence failed before the new options were committed.
                 # Restore service admission only while the old runtime is valid.
+                pending_store.calendar_settings_reload_guard = False
                 pending_store.accepting_services = was_accepting
                 raise
     else:
@@ -346,12 +351,14 @@ async def async_save_option_patch(
         reloaded = await hass.config_entries.async_reload(entry.entry_id)
     finally:
         if (
-            calendar_scope_changed and reloaded
+            calendar_scope_changed
             and hass.data.get(DOMAIN, {}).get(entry.entry_id) is pending_store
         ):
-            pending_store.accepting_services = was_accepting
-        # A failed reload leaves persisted new options with old runtime closures.
-        # Keep the old store closed rather than accepting writes to removed calendars.
+            # Restore only after a successful reload. A failed unload must
+            # never reopen the old closures under newly persisted options.
+            pending_store.accepting_services = was_accepting if reloaded else False
+            if reloaded:
+                pending_store.calendar_settings_reload_guard = False
     if not reloaded:
         raise SettingsValidationError(
             "reload_failed",
