@@ -3263,3 +3263,23 @@ async def test_wrong_event_assumption_count_is_rejected_without_any_write(monkey
             event_assumptions=[(), ()],
         )
     assert backend.saved == []
+
+
+def test_legacy_expected_event_snapshot_ignores_new_disclosure_metadata():
+    """A v0.5 client snapshot must still identify the same review event."""
+    event = PendingEvent.create(
+        draft(), date_time_assumptions=("Friday inferred from source reference",)
+    )
+    old_client_snapshot = event.as_service_dict()
+    old_client_snapshot.pop("date_time_assumptions")
+    legacy = PendingEvent(
+        event.id, EventDraft.from_mapping(old_client_snapshot),
+        old_client_snapshot["status"], old_client_snapshot["calendar_entity"],
+    )
+    assert event == legacy
+    assert legacy == event
+    assert event.as_dict()["date_time_assumptions"] == [
+        "Friday inferred from source reference"
+    ]
+    # This field is never an optimistic-concurrency or calendar-write token.
+    assert PendingEvent.from_dict(event.as_dict()) == legacy
