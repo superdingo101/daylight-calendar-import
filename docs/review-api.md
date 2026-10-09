@@ -21,7 +21,10 @@ calendars, editable draft fields and, when the parser reports temporal context,
 a bounded `date_time_assumptions` list belonging to that specific event.
 Those disclosures survive deduplication and persistence, and are cleared if
 the event's start/end or all-day state is edited. Older events have no
-assumption list. A write-uncertain event must be resolved
+assumption list. This optional, advisory-only field is deliberately excluded
+from optimistic-concurrency event comparison: older API clients may omit it
+from `expected_event` without falsely invalidating an otherwise unchanged
+review snapshot. A write-uncertain event must be resolved
 with `resolve_pending_event` before it can be edited, rejected, or retried.
 Recovery controls send the loaded `expected_event` snapshot. The backend
 compares it under the storage lock so an older calendar check cannot resolve
