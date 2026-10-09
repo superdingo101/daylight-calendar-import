@@ -442,8 +442,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     event.draft,
                     observed_calendars=[destination],
                     local_zone=dt_util.get_time_zone(hass.config.time_zone),
-                    context=self.context,
-                    trusted_internal=self.context is None or self.context.user_id is None,
+                    # Control authorization was checked above. This trusted
+                    # internal read must not add a POLICY_READ requirement to
+                    # historically control-only calendar approval actions.
+                    context=None,
+                    trusted_internal=True,
                     approval_start_only=True,
                 )
             except CalendarObservationError as err:
