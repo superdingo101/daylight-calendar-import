@@ -2062,18 +2062,6 @@ export class DaylightImportPanel extends HTMLElement {
         }
         if (event.location) card.append(element("p", `Location: ${event.location}`));
         if (event.description) card.append(element("p", event.description));
-        if (["pending", "write_uncertain"].includes(event.status) &&
-            !this._editingId && !this._decision && !this._batchAction && !this._resolution) {
-          const check = element("button",
-            this._calendarCheck?.event === event && this._calendarCheck.status === "loading" ?
-              "Checking calendars…" : "Check calendars");
-          check.type = "button";
-          check.dataset.calendarCheckEventId = event.id;
-          check.disabled = this._calendarCheck?.event === event &&
-            this._calendarCheck.status === "loading";
-          check.addEventListener("click", () => void this.checkCalendarEvent(event));
-          card.append(check);
-        }
         if (this._calendarCheck?.event === event) {
           const result = this._calendarCheck;
           const section = element("section", "", "calendar-matches");
@@ -2186,6 +2174,18 @@ export class DaylightImportPanel extends HTMLElement {
           });
           actions.append(confirm, cancel);
           card.append(actions);
+        }
+        if (["pending", "write_uncertain"].includes(event.status) &&
+            !this._editingId && !this._decision && !this._batchAction && !this._resolution) {
+          const check = element("button",
+            this._calendarCheck?.event === event && this._calendarCheck.status === "loading" ?
+              "Checking calendars…" : "Check calendars");
+          check.type = "button";
+          check.dataset.calendarCheckEventId = event.id;
+          check.disabled = this._calendarCheck?.event === event &&
+            this._calendarCheck.status === "loading";
+          check.addEventListener("click", () => void this.checkCalendarEvent(event));
+          card.append(check);
         }
         content.append(card);
       }
