@@ -2624,6 +2624,10 @@ async def test_check_pending_event_refuses_result_after_concurrent_review_change
         with pytest.raises(ServiceValidationError, match="changed since it was loaded"):
             await handler(request)
         observer.assert_awaited_once()
+        request.data["expected_event"] = {**original.as_service_dict(), "id": "another"}
+        with pytest.raises(ServiceValidationError, match="Event changed"):
+            await handler(request)
+        observer.assert_awaited_once()
 
 
 async def test_check_pending_event_does_not_hide_unavailable_calendars(monkeypatch):
