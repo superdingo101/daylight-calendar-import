@@ -681,6 +681,18 @@ async def test_resolve_uncertain_action_enforces_permissions_and_state(monkeypat
     store.async_resolve_uncertain.assert_awaited_with(
         item.id, event_id, "created", expected_event=uncertain,
     )
+    # A previously persisted unknown-calendar warning can migrate an already
+    # uncertain write. Recovery must preserve its unresolved-route snapshot.
+    routed_uncertain = PendingEvent(
+        event_id, uncertain.draft, "write_uncertain",
+        uncertain.calendar_entity, "attempt-a", True,
+    )
+    call.data["expected_event"] = routed_uncertain.as_service_dict()
+    assert (await handler(call))["resolution"] == "created"
+    store.async_resolve_uncertain.assert_awaited_with(
+        item.id, event_id, "created", expected_event=routed_uncertain,
+    )
+
     for snapshot in ({**uncertain.as_service_dict(), "id": "other"},
                      {**uncertain.as_service_dict(), "status": "pending"}):
         call.data["expected_event"] = snapshot
