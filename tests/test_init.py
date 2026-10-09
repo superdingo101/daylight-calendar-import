@@ -2760,6 +2760,7 @@ async def test_approval_writer_rechecks_destination_before_calendar_write(monkey
         assert response["approved"] is True
         assert len(hass.services.calls) == 1
     assert observer.await_args.kwargs["observed_calendars"] == ["calendar.family"]
+    assert observer.await_args.kwargs["approval_start_only"] is True
 
 
 @pytest.mark.parametrize("context", [None, Context(user_id=None)])
