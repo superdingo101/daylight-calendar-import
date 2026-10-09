@@ -166,6 +166,7 @@ def _expected_event(
         raw.get(CONF_CALENDAR_ENTITY),
         raw.get("write_attempt") if allow_uncertain else None,
         raw.get("routing_unresolved", False),
+        tuple(raw.get("date_time_assumptions", ())),
     )
 
 
@@ -280,6 +281,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await pending_store.async_add(
             source_text=email_review_source_text(source),
             events=outcome.events,
+            event_assumptions=outcome.event_assumptions or None,
             source_id=source.upstream_source_id,
             calendar_entity=route.calendar_entity,
             source_kind=source.kind.value,
@@ -350,6 +352,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             result = await pending_store.async_add(
                 source_text=source.text,
                 events=outcome.events,
+            event_assumptions=outcome.event_assumptions or None,
                 source_id=source.upstream_source_id,
                 calendar_entity=route.calendar_entity,
                 warnings=[*outcome.warnings, *route.warnings],
@@ -390,6 +393,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             result = await pending_store.async_add(
                 source_text="\n\n".join(part for part in (source.text, attachment_note) if part),
                 events=outcome.events,
+            event_assumptions=outcome.event_assumptions or None,
                 source_id=source.upstream_source_id,
                 calendar_entity=route.calendar_entity,
                 source_kind=source.kind.value,
@@ -613,6 +617,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     event_id, EventDraft.from_mapping(expected), expected["status"],
                     expected.get(CONF_CALENDAR_ENTITY),
                     routing_unresolved=expected.get("routing_unresolved", False),
+                    date_time_assumptions=tuple(expected.get("date_time_assumptions", ())),
                 )
             calendar_entity = call.data.get(CONF_CALENDAR_ENTITY)
             if calendar_entity is not None and calendar_entity not in allowed_calendars:
@@ -714,7 +719,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 expected = PendingEvent(event_id, EventDraft.from_mapping(snapshot),
                                         snapshot["status"], snapshot.get(CONF_CALENDAR_ENTITY),
                                         snapshot.get("write_attempt"),
-                                        snapshot.get("routing_unresolved", False))
+                                        snapshot.get("routing_unresolved", False),
+                                        tuple(snapshot.get("date_time_assumptions", ())))
             if expected is None:
                 resolved = await pending_store.async_resolve_uncertain(pending_id, event_id, resolution)
             else:
