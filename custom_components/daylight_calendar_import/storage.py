@@ -6,7 +6,7 @@ import asyncio
 import logging
 from copy import deepcopy
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -58,7 +58,8 @@ class PendingEvent:
     calendar_entity: str | None = None
     write_attempt: str | None = None
     routing_unresolved: bool = False
-    date_time_assumptions: tuple[str, ...] = ()
+    # Metadata is advisory, not part of the optimistic concurrency identity.
+    date_time_assumptions: tuple[str, ...] = field(default=(), compare=False)
 
     @classmethod
     def create(
