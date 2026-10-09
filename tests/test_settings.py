@@ -1306,7 +1306,7 @@ async def test_calendar_admission_is_paused_during_reload_and_restored_on_failur
         })
     assert err.value.code == "reload_failed"
     assert observed == [False]
-    assert runtime_store.accepting_services is True
+    assert runtime_store.accepting_services is False
 
 
 @pytest.mark.asyncio
@@ -1334,3 +1334,23 @@ async def test_calendar_scope_changes_refuse_unloading_runtime():
         })
     assert err.value.code == "pending_store_unavailable"
     assert not hass.config_entries.updates
+
+
+@pytest.mark.asyncio
+async def test_failed_calendar_reload_exception_leaves_old_runtime_closed():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+
+    async def broken_reload(_entry_id):
+        assert store.accepting_services is False
+        raise RuntimeError("reload exploded")
+
+    hass.config_entries.async_reload = broken_reload
+    with pytest.raises(RuntimeError, match="reload exploded"):
+        await async_save_option_patch(hass, config_entry, {
+            CONF_CALENDAR_ENTITIES: ["calendar.family"],
+        })
+    assert store.accepting_services is False
+    assert config_entry.options[CONF_CALENDAR_ENTITIES] == ["calendar.family"]
