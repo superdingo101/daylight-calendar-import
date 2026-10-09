@@ -99,7 +99,7 @@ def test_naive_timed_provider_values_fail_closed():
         ("2026-10-08T17:00:00", "2026-10-08T18:00:00+00:00"),
         ("2026-10-09T00:00:00+00:00", "2026-10-09T01:00:00"),
     ):
-        with pytest.raises(ValueError, match="timezone offsets"):
+        with pytest.raises(ValueError, match=r"^Timed calendar events must include timezone offsets$"):
             classify(draft(), existing(start=start, end=end))
 
 
@@ -112,5 +112,5 @@ def test_invalid_provider_ranges_fail_closed():
         existing(start="2026-10-10", end="2026-10-09", all_day=True),
     )
     for candidate in invalid_ranges:
-        with pytest.raises(ValueError, match="end must be after start"):
+        with pytest.raises(ValueError, match=r"^Calendar event end must be after start$"):
             classify(draft(), candidate)
