@@ -1316,6 +1316,33 @@ export class DaylightImportPanel extends HTMLElement {
     return section;
   }
 
+  /** Update only check results; keep unrelated focused controls in the DOM. */
+  renderCalendarCheckDetails(section, result) {
+    section.replaceChildren();
+          if (result.status === "loading") {
+            section.append(element("p", "Checking selected calendars…"));
+          } else if (result.status === "error") {
+            const error = element("p", `Calendar check incomplete: ${result.message}`, "error");
+            error.setAttribute("role", "alert");
+            section.append(error);
+          } else if (result.status === "ready") {
+            if (!result.matches.length) {
+              section.append(element("p", "No matches found in the observed calendars."));
+            } else {
+              const labels = {exact_duplicate: "Exact duplicate",
+                possible_duplicate: "Possible duplicate", conflict: "Scheduling conflict"};
+              const list = document.createElement("ul");
+              for (const match of result.matches) {
+                list.append(element("li",
+                  `${labels[match.kind]}: ${match.existing_title} (${match.calendar_entity})`));
+              }
+              section.append(list);
+            }
+            section.append(element("p",
+              "These results are advisory and may change before approval. An incomplete check is not a clear calendar."));
+          }
+  }
+
   /** Results are transient and belong only to the exact loaded draft object. */
   async checkCalendarEvent(event) {
     if (!["pending", "write_uncertain"].includes(event.status) ||
@@ -1349,14 +1376,20 @@ export class DaylightImportPanel extends HTMLElement {
       this._calendarCheck = null;
       return;
     }
-    const restoreFocus = this.shadowRoot.activeElement?.dataset.calendarCheckEventId === event.id;
     this._calendarCheck = {...check, ...next};
-    this.render();
-    if (restoreFocus) this.focusCalendarCheck(event.id);
+    const section = this._content.querySelector(".calendar-matches");
+    if (!section) return;
+    this.renderCalendarCheckDetails(section, this._calendarCheck);
+    const button = this._content.querySelectorAll("button").find(
+      item => item.dataset.calendarCheckEventId === event.id);
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Check calendars";
+    }
     const summary = next.status === "error" ?
       `Calendar check incomplete: ${next.message}` :
       next.matches.length ?
-        `Calendar check found ${next.matches.length} possible matches. Review the advisory results below.` :
+        `Calendar check found ${next.matches.length} ${next.matches.length === 1 ? "match" : "matches"}. Review the advisory results below.` :
         `Calendar check complete: no matches in ${next.observed_calendars.length} observed calendars.`;
     this._announcement.replaceChildren(element("span", summary));
   }
@@ -2088,32 +2121,10 @@ export class DaylightImportPanel extends HTMLElement {
         if (event.location) card.append(element("p", `Location: ${event.location}`));
         if (event.description) card.append(element("p", event.description));
         if (this._calendarCheck?.event === event) {
-          const result = this._calendarCheck;
           const section = element("section", "", "calendar-matches");
           section.setAttribute("role", "region");
           section.setAttribute("aria-label", "Calendar check results");
-          if (result.status === "loading") {
-            section.append(element("p", "Checking selected calendars…"));
-          } else if (result.status === "error") {
-            const error = element("p", `Calendar check incomplete: ${result.message}`, "error");
-            error.setAttribute("role", "alert");
-            section.append(error);
-          } else if (result.status === "ready") {
-            if (!result.matches.length) {
-              section.append(element("p", "No matches found in the observed calendars."));
-            } else {
-              const labels = {exact_duplicate: "Exact duplicate",
-                possible_duplicate: "Possible duplicate", conflict: "Scheduling conflict"};
-              const list = document.createElement("ul");
-              for (const match of result.matches) {
-                list.append(element("li",
-                  `${labels[match.kind]}: ${match.existing_title} (${match.calendar_entity})`));
-              }
-              section.append(list);
-            }
-            section.append(element("p",
-              "These results are advisory and may change before approval. An incomplete check is not a clear calendar."));
-          }
+          this.renderCalendarCheckDetails(section, this._calendarCheck);
           card.append(section);
         }
         if (event.status === "write_uncertain") {
