@@ -68,33 +68,43 @@ def _source_evidence_sha256(source: dict) -> str:
     return sha256(canonical).hexdigest()
 
 
-def _check_recovered_checkpoint(
-    saved: dict, recovered: dict, *, expected_local_entry_id: str
-) -> None:
-    """Validate an ACK checkpoint using only locally available identity.
+def _ack_path_from_recovered_checkpoint(
+    recovered: dict, *, expected_local_entry_id: str
+) -> str:
+    """Rebuild the ACK path after a restart using ONLY the recovered checkpoint.
 
-    The pre-restart claim and Cloud source may both be unavailable after ACK.
-    The caller obtains expected_local_entry_id from the current HA config entry,
-    never from an untrusted stored checkpoint.
+    Production HA supplies expected_local_entry_id from its active config entry.
+    Neither the original claim nor Cloud source bytes are required.
     """
     from custom_components.daylight_calendar_import.dedup import source_fingerprint
 
-    assert saved["local_config_entry_id"] == expected_local_entry_id
     assert recovered["local_config_entry_id"] == expected_local_entry_id
-    assert saved["delivery_id"] and recovered["delivery_id"]
-    assert saved["delivery_id"] == recovered["delivery_id"]
-    expected_fingerprint = source_fingerprint(
-        f"hosted:{expected_local_entry_id}:{recovered['delivery_id']}"
+    delivery_id = recovered["delivery_id"]
+    assert isinstance(delivery_id, str) and delivery_id
+    assert recovered["source_fingerprint"] == source_fingerprint(
+        f"hosted:{expected_local_entry_id}:{delivery_id}"
     )
-    assert saved["source_fingerprint"] == expected_fingerprint
-    assert recovered["source_fingerprint"] == expected_fingerprint
-    assert saved["source_evidence_sha256"] == recovered["source_evidence_sha256"]
     assert len(recovered["source_evidence_sha256"]) == 64
+    assert recovered["lease_token"]
+    assert datetime.fromisoformat(recovered["source_expires_at"]).utcoffset() is not None
+    assert isinstance(recovered["verified_attachments"], dict)
+    assert recovered["attachments_verification_complete"] is True
+    return f"/v1/sources/{delivery_id}/ack"
+
+
+def _check_recovered_checkpoint(
+    saved: dict, recovered: dict, *, expected_local_entry_id: str
+) -> None:
+    """Ensure a durable saved fixture reconstructs the same standalone ACK."""
+    assert _ack_path_from_recovered_checkpoint(
+        saved, expected_local_entry_id=expected_local_entry_id
+    ) == _ack_path_from_recovered_checkpoint(
+        recovered, expected_local_entry_id=expected_local_entry_id
+    )
+    assert saved["source_evidence_sha256"] == recovered["source_evidence_sha256"]
     assert saved["source_expires_at"] == recovered["source_expires_at"]
     assert saved["lease_token"] == recovered["lease_token"]
     assert saved["verified_attachments"] == recovered["verified_attachments"]
-    assert saved["attachments_verification_complete"] is True
-    assert recovered["attachments_verification_complete"] is True
 
 
 def _check_checkpoint_evidence(claim: dict, saved: dict, recovered: dict) -> None:
@@ -802,9 +812,9 @@ def test_lost_ack_response_after_attachment_cleanup_uses_durable_proof():
     _check_recovered_checkpoint(
         saved, recovered, expected_local_entry_id="entry-one"
     )
-    assert f"/v1/sources/{recovered['delivery_id']}/ack" == (
-        "/v1/sources/delivery_00000000000000000002/ack"
-    )
+    assert _ack_path_from_recovered_checkpoint(
+        recovered, expected_local_entry_id="entry-one"
+    ) == "/v1/sources/delivery_00000000000000000002/ack"
     assert steps[6]["token"] == recovered["lease_token"]
     assert steps[6]["status"] == 200
     assert steps[6]["acknowledged_at"] == steps[3]["acknowledged_at"]
@@ -828,6 +838,9 @@ def test_recovered_ack_path_requires_durable_delivery_id_and_entry():
     trace = _read(FIXTURE_DIR / "valid" / "delivery-ack-retry-after-cleanup.json")
     saved, recovered = trace["steps"][2], trace["steps"][5]
     _check_recovered_checkpoint(saved, recovered, expected_local_entry_id="entry-one")
+    assert _ack_path_from_recovered_checkpoint(
+        recovered, expected_local_entry_id="entry-one"
+    ) == "/v1/sources/delivery_00000000000000000002/ack"
 
     # A fingerprint is one-way; it cannot supply an omitted delivery ID.
     for field in ("delivery_id", "local_config_entry_id"):
