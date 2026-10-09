@@ -796,8 +796,16 @@ def test_lost_ack_response_after_attachment_cleanup_uses_durable_proof():
         "ack_applied", "delete_cloud_source", "recover_checkpoint", "retry_same_ack",
     ]
     claim, saved, recovered = steps[0], steps[2], steps[5]
+    # First ACK was based on the full claim, before Cloud deleted bytes.
     _check_checkpoint_evidence(claim, saved, recovered)
-    assert steps[6]["token"] == saved["lease_token"]
+    # The ambiguous *retry* must be decidable using recovered local data alone.
+    _check_recovered_checkpoint(
+        saved, recovered, expected_local_entry_id="entry-one"
+    )
+    assert f"/v1/sources/{recovered['delivery_id']}/ack" == (
+        "/v1/sources/delivery_00000000000000000002/ack"
+    )
+    assert steps[6]["token"] == recovered["lease_token"]
     assert steps[6]["status"] == 200
     assert steps[6]["acknowledged_at"] == steps[3]["acknowledged_at"]
     assert recovered["cloud_attachment_bytes_available"] is False
@@ -811,6 +819,54 @@ def test_lost_ack_response_after_attachment_cleanup_uses_durable_proof():
         corrupt[field] = value
         with pytest.raises(AssertionError):
             _check_checkpoint_evidence(claim, saved, corrupt)
+
+
+def test_recovered_ack_path_requires_durable_delivery_id_and_entry():
+    """Recovery works without Cloud source, pre-restart claim or any ID reversal."""
+    import copy
+
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-ack-retry-after-cleanup.json")
+    saved, recovered = trace["steps"][2], trace["steps"][5]
+    _check_recovered_checkpoint(saved, recovered, expected_local_entry_id="entry-one")
+
+    # A fingerprint is one-way; it cannot supply an omitted delivery ID.
+    for field in ("delivery_id", "local_config_entry_id"):
+        for target in ("saved", "recovered"):
+            saved_copy, recovered_copy = copy.deepcopy(saved), copy.deepcopy(recovered)
+            del (saved_copy if target == "saved" else recovered_copy)[field]
+            with pytest.raises(KeyError):
+                _check_recovered_checkpoint(
+                    saved_copy, recovered_copy, expected_local_entry_id="entry-one"
+                )
+
+    for field, wrong_value in (
+        ("delivery_id", "delivery_00000000000000000099"),
+        ("local_config_entry_id", "entry-two"),
+    ):
+        for target in ("saved", "recovered"):
+            saved_copy, recovered_copy = copy.deepcopy(saved), copy.deepcopy(recovered)
+            (saved_copy if target == "saved" else recovered_copy)[field] = wrong_value
+            with pytest.raises(AssertionError):
+                _check_recovered_checkpoint(
+                    saved_copy, recovered_copy, expected_local_entry_id="entry-one"
+                )
+
+    # Even a consistently mislabeled namespace is rejected using the HA entry.
+    with pytest.raises(AssertionError):
+        _check_recovered_checkpoint(
+            saved, recovered, expected_local_entry_id="another-config-entry"
+        )
+
+
+def test_cursor_tenant_isolation_has_one_non_enumerating_error():
+    """Only delivery/attachment/ACK path resources use the non-owner 404 rule."""
+    trace = _read(FIXTURE_DIR / "valid" / "delivery-cursor-isolation-trace.json")
+    for step in trace["steps"]:
+        assert step["op"] == "claim_with_cursor"
+        assert step["authenticated"] is True
+        assert step["status"] == 400
+        assert step["code"] == "invalid_cursor"
+        assert step["retryable"] is False
 
 
 def test_ack_response_rejects_ending_line_break(schema_registry):
