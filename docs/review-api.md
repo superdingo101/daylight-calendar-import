@@ -131,3 +131,44 @@ guarantee: an abrupt shutdown between store commit and bus publication can
 lose a notification, and events are not replayed when Home Assistant
 restarts. The pending queue and its sensors remain the authoritative state.
 Duplicate/empty submissions do not publish a new pending-added event.
+
+
+## On-demand existing-calendar checks (v0.6)
+
+The response-enabled `daylight_calendar_import.check_pending_event` action accepts
+`pending_id` and `event_id`. It observes the event's configured destination
+and the independently selected conflict-observation calendars. The action uses the **same reviewer access check** as `get_pending_event`:
+the caller must have Home Assistant `POLICY_CONTROL` on the configured AI
+Task and **every calendar in the integration's allowed writable list**.
+Additionally, the observer requires `POLICY_READ` on the destination and each
+configured conflict calendar. Read-only access to observation calendars alone
+does not grant access to the action; the existing reviewer permissions are
+intentionally unchanged. Observing calendars never performs a write or grants
+new permissions.
+
+A successful response contains `observed_calendars` and a `matches` list
+of bounded entries with `kind` (`exact_duplicate`, `possible_duplicate`, or
+`conflict`), `calendar_entity` and `existing_title`. The response does not
+include event descriptions, attendees, or meeting credentials.
+
+To prevent expensive or misleading partial observations, the action rejects
+drafts spanning more than 90 elapsed days, scopes exceeding 16 distinct
+calendars (up to 15 configured conflict calendars plus the selected destination), provider responses containing more than 500 events combined, or provider
+event titles longer than 512 characters.
+These limits raise explicit incomplete-observation errors; matching results
+are never silently truncated. Provider calls use the bounded draft window,
+although providers may themselves allocate an over-limit response before
+Daylight validates its size.
+
+The read is a *point-in-time advisory check*: results can change before
+approval. The action accepts an optional `expected_event` from
+`get_pending_event` to reject an already-stale review snapshot, including
+`write_uncertain` events with their original write-attempt identifiers for
+read-only inspection. This does not permit approval without explicit
+uncertain-write recovery. The action always
+rechecks the event after the asynchronous provider reads. If the draft,
+destination, status or identity changed—or it was approved/rejected—while
+observation was in progress, the action fails with a refresh error instead of
+returning matches for the old draft. Calendar access failures are explicit errors, **not** a signal that
+the schedule is empty. This API does not yet enforce a write-time duplicate
+guard or add conflict UI; those are separate scoped changes.

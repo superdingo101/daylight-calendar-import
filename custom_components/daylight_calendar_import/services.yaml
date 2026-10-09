@@ -154,6 +154,26 @@ get_pending_event:
       selector:
         text:
 
+check_pending_event:
+  name: Check pending event against calendars
+  description: Read calendars for duplicates and conflicts without writing. Requires CONTROL permission for the configured AI Task and all writable calendars, plus READ permission for every observed calendar. Unavailable or oversized observations fail, and results are rejected if the pending event changes during the check.
+  fields:
+    pending_id:
+      name: Pending import ID
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      required: true
+      selector:
+        text:
+    expected_event:
+      name: Previously loaded event
+      description: Optional draft snapshot from get_pending_event; reject if it changes.
+      selector:
+        object:
+
 edit_pending_event:
   name: Edit pending event
   description: Replace a pending draft or select its allowed destination calendar while keeping its event ID. An uncertain calendar write must be resolved before editing.

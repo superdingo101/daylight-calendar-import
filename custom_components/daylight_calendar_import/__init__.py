@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DESCRIPTION
 from homeassistant.core import Context, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError, Unauthorized, UnknownUser
+from homeassistant.util import dt as dt_util
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
@@ -31,6 +32,7 @@ from .const import (
     SERVICE_EDIT_PENDING_EVENT,
     SERVICE_GET_PENDING,
     SERVICE_GET_PENDING_EVENT,
+    SERVICE_CHECK_PENDING_EVENT,
     SERVICE_IMPORT_TEXT,
     SERVICE_LIST_PENDING,
     SERVICE_LIST_ACTIVITY,
@@ -48,6 +50,7 @@ from .email_runtime import (
     email_review_source_text,
 )
 from .models import DraftValidationError, EventDraft
+from .calendar_observation import CalendarObservationError, async_classify_conflicts
 from .parser import ParseOutcome, async_parse_source as parse_source_with_provider
 from .pdfs import async_pdf_source
 from .providers import SourceValidationError
@@ -82,6 +85,7 @@ _ENTRY_SERVICES = (
     SERVICE_GET_ACTIVITY,
     SERVICE_GET_PENDING,
     SERVICE_GET_PENDING_EVENT,
+    SERVICE_CHECK_PENDING_EVENT,
     SERVICE_EDIT_PENDING_EVENT,
     SERVICE_REJECT_PENDING_EVENT,
     SERVICE_APPROVE_PENDING_EVENT,
@@ -146,16 +150,22 @@ RESOLVE_EVENT_SCHEMA = vol.Schema(
 )
 
 
-def _expected_event(raw: dict | None, event_id: str) -> PendingEvent | None:
-    """Decode an optional review snapshot for atomic decision checks."""
+def _expected_event(
+    raw: dict | None, event_id: str, *, allow_uncertain: bool = False,
+) -> PendingEvent | None:
+    """Decode a review snapshot; decisions require pending, reads may be uncertain."""
     if raw is None:
         return None
-    if raw.get("id") != event_id or raw.get("status") != "pending":
+    status = raw.get("status")
+    if raw.get("id") != event_id or (
+        status != "pending" and not (allow_uncertain and status == "write_uncertain")
+    ):
         raise PendingEventEditError("Event changed since it was loaded; refresh before deciding")
     return PendingEvent(
-        event_id, EventDraft.from_mapping(raw), raw["status"],
+        event_id, EventDraft.from_mapping(raw), status,
         raw.get(CONF_CALENDAR_ENTITY),
-        routing_unresolved=raw.get("routing_unresolved", False),
+        raw.get("write_attempt") if allow_uncertain else None,
+        raw.get("routing_unresolved", False),
     )
 
 
@@ -544,6 +554,48 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         return {"pending_id": pending_id, "event": event.as_service_dict()}
 
+    async def handle_check_pending_event(call: ServiceCall) -> ServiceResponse:
+        """Read-only, user-authorized on-demand calendar observation."""
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+        event = pending_store.get_event(pending_id, event_id)
+        if event is None:
+            raise ServiceValidationError(f"Pending event not found: {pending_id}/{event_id}")
+        try:
+            expected = _expected_event(
+                call.data.get("expected_event"), event_id, allow_uncertain=True,
+            )
+        except (DraftValidationError, PendingEventEditError) as err:
+            raise ServiceValidationError(str(err)) from err
+        if expected is not None and expected != event:
+            raise ServiceValidationError("Event changed since it was loaded; refresh before checking")
+        destination = event_calendar(event)
+        _, conflict_calendars = effective_calendar_intelligence(entry)
+        scope = list(dict.fromkeys([destination, *conflict_calendars]))
+        try:
+            matches = await async_classify_conflicts(
+                hass, event.draft, observed_calendars=scope,
+                local_zone=dt_util.get_time_zone(hass.config.time_zone),
+                context=call.context,
+            )
+        except CalendarObservationError as err:
+            raise ServiceValidationError(f"Calendar check incomplete: {err}") from err
+        # Provider reads await external entities; edits and review decisions
+        # can occur meanwhile. Never label an old result as the current draft.
+        if pending_store.get_event(pending_id, event_id) != event:
+            raise ServiceValidationError("Pending event changed during calendar check; refresh")
+        return {
+            "pending_id": pending_id,
+            "event_id": event_id,
+            "matches": [
+                {"kind": item.kind, "calendar_entity": item.calendar_entity,
+                 "existing_title": item.existing_title}
+                for item in matches
+            ],
+            "observed_calendars": scope,
+        }
+
     async def handle_edit_pending_event(call: ServiceCall) -> ServiceResponse:
         await check_read_permission(call)
         pending_id = call.data[ATTR_PENDING_ID]
@@ -740,6 +792,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         hass.services.async_register(
             DOMAIN, SERVICE_GET_PENDING_EVENT, tracked(handle_get_pending_event),
+            schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_CHECK_PENDING_EVENT, tracked(handle_check_pending_event),
             schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
         )
         hass.services.async_register(

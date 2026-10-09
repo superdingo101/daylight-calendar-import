@@ -1280,6 +1280,7 @@ async def test_service_registration_contracts(monkeypatch):
         SERVICE_LIST_PENDING: (None, SupportsResponse.ONLY),
         SERVICE_GET_PENDING: (PENDING_SCHEMA, SupportsResponse.ONLY),
         SERVICE_GET_PENDING_EVENT: (PENDING_EVENT_SCHEMA, SupportsResponse.ONLY),
+        "check_pending_event": (PENDING_EVENT_SCHEMA, SupportsResponse.ONLY),
         SERVICE_EDIT_PENDING_EVENT: (EDIT_EVENT_SCHEMA, SupportsResponse.ONLY),
         SERVICE_REJECT_PENDING_EVENT: (
             PENDING_EVENT_SCHEMA,
@@ -2530,3 +2531,189 @@ async def test_bulk_approval_rejects_unresolved_routing_before_writes(monkeypatc
             context=Context(user_id="reviewer"),
         ))
     assert hass.services.calls == []
+
+
+async def test_check_pending_event_uses_read_only_observer_and_configured_scope(monkeypatch):
+    from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
+    from custom_components.daylight_calendar_import.calendar_match import CalendarMatch
+    item = pending()
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get_event=Mock(return_value=item.events[0]),
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    hass.config = SimpleNamespace(time_zone="America/Los_Angeles")
+    observer = AsyncMock(return_value=(CalendarMatch(
+        "exact_duplicate", "calendar.family", "Practice"
+    ),))
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_classify_conflicts", observer
+    )
+    cfg = entry({"conflict_calendar_entities": ["calendar.school", "calendar.family"]})
+    assert await async_setup_entry(hass, cfg)
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_CHECK_PENDING_EVENT)]
+    response = await handler(SimpleNamespace(
+        data={ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: item.events[0].id},
+        context=Context(user_id="test-user"),
+    ))
+    assert response["observed_calendars"] == ["calendar.family", "calendar.school"]
+    assert response["matches"] == [
+        {"kind": "exact_duplicate", "calendar_entity": "calendar.family",
+         "existing_title": "Practice"}
+    ]
+    observer.assert_awaited_once()
+    assert observer.await_args.kwargs["context"].user_id == "test-user"
+
+
+
+@pytest.mark.parametrize("change", ["edit", "removed"])
+async def test_check_pending_event_refuses_result_after_concurrent_review_change(
+    monkeypatch, change,
+):
+    """A provider read cannot return old matches under a reused pending ID."""
+    from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
+
+    item = pending()
+    original = item.events[0]
+    current = {"event": original}
+    began, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_observation(*_args, **_kwargs):
+        began.set()
+        await release.wait()
+        return ()
+
+    store = SimpleNamespace(
+        async_load=AsyncMock(),
+        get_event=Mock(side_effect=lambda _pending_id, _event_id: current["event"]),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store,
+    )
+    observer = AsyncMock(side_effect=delayed_observation)
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_classify_conflicts", observer,
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    hass.config = SimpleNamespace(time_zone="America/Los_Angeles")
+    assert await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_CHECK_PENDING_EVENT)]
+    request = SimpleNamespace(
+        data={
+            ATTR_PENDING_ID: item.id,
+            ATTR_EVENT_ID: original.id,
+            "expected_event": original.as_service_dict(),
+        },
+        context=Context(user_id="reviewer"),
+    )
+    request_task = asyncio.create_task(handler(request))
+    await asyncio.wait_for(began.wait(), timeout=1)
+    current["event"] = (
+        replace(original, draft=replace(original.draft, title="Changed during check"))
+        if change == "edit" else None
+    )
+    release.set()
+    with pytest.raises(ServiceValidationError, match="changed during calendar check"):
+        await request_task
+    observer.assert_awaited_once()
+
+    # Old snapshots must also be rejected *before* dispatching another read.
+    if change == "edit":
+        with pytest.raises(ServiceValidationError, match="changed since it was loaded"):
+            await handler(request)
+        observer.assert_awaited_once()
+        request.data["expected_event"] = {**original.as_service_dict(), "id": "another"}
+        with pytest.raises(ServiceValidationError, match="Event changed"):
+            await handler(request)
+        observer.assert_awaited_once()
+
+
+async def test_check_pending_event_does_not_hide_unavailable_calendars(monkeypatch):
+    from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
+    from custom_components.daylight_calendar_import.calendar_observation import CalendarObservationError
+    item = pending()
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get_event=Mock(return_value=item.events[0]),
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    hass.config = SimpleNamespace(time_zone="America/Los_Angeles")
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_classify_conflicts",
+        AsyncMock(side_effect=CalendarObservationError("Calendar observation is incomplete")),
+    )
+    assert await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_CHECK_PENDING_EVENT)]
+    with pytest.raises(ServiceValidationError, match="Calendar check incomplete"):
+        await handler(SimpleNamespace(
+            data={ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: item.events[0].id},
+            context=Context(user_id="test-user"),
+        ))
+
+
+
+async def test_check_pending_event_rejects_missing_review_event(monkeypatch):
+    from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get_event=Mock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    assert await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_CHECK_PENDING_EVENT)]
+    with pytest.raises(ServiceValidationError, match="Pending event not found"):
+        await handler(SimpleNamespace(
+            data={ATTR_PENDING_ID: "not-found", ATTR_EVENT_ID: "missing"},
+            context=Context(user_id="reviewer"),
+        ))
+
+
+
+async def test_calendar_check_accepts_uncertain_write_snapshot_without_decision_side_effect(monkeypatch):
+    """Read-only checks can inspect uncertainty while approval remains blocked."""
+    from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
+    original = pending().events[0]
+    uncertain = replace(original, status="write_uncertain", write_attempt="attempt-one",
+                        routing_unresolved=True)
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get_event=Mock(return_value=uncertain),
+    )
+    observer = AsyncMock(return_value=())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store,
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_classify_conflicts", observer,
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    hass.config = SimpleNamespace(time_zone="America/Los_Angeles")
+    assert await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_CHECK_PENDING_EVENT)]
+    request = SimpleNamespace(
+        data={
+            ATTR_PENDING_ID: "pending",
+            ATTR_EVENT_ID: uncertain.id,
+            "expected_event": uncertain.as_service_dict(),
+        },
+        context=Context(user_id="reviewer"),
+    )
+    response = await handler(request)
+    assert response["matches"] == []
+    observer.assert_awaited_once()
+    # A prior write attempt cannot be silently treated as the same snapshot.
+    request.data["expected_event"] = {
+        **uncertain.as_service_dict(), "write_attempt": "different-attempt",
+    }
+    with pytest.raises(ServiceValidationError, match="changed since it was loaded"):
+        await handler(request)
+    observer.assert_awaited_once()
+    # Decision handlers remain pending-only; expanding read access must not
+    # allow a write-uncertain event to bypass explicit recovery.
+    with pytest.raises(PendingEventEditError, match="refresh before deciding"):
+        _expected_event(uncertain.as_service_dict(), uncertain.id)

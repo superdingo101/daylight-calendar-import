@@ -49,6 +49,9 @@ Aliases are exact after whitespace, Unicode NFKC and case normalization.
 Alias names must be nonempty, no more than 64 normalized characters,
 unique after normalization, and must target a configured writable calendar.
 Conflict-observation calendars have **no write authorization**.
+Select at most 15 conflict calendars: the pending event's writable destination
+is always observed in addition, for a maximum scope of 16. Older settings
+with more selected calendars remain readable and can be reduced in Settings.
 
 Use `calendar_aliases: {}` to clear aliases. When removing a writable calendar
 used by an alias, remove/remap that alias first in a separate settings request.
@@ -103,6 +106,7 @@ Validation failures use stable WebSocket error codes:
 - `pending_default_would_change`
 - `pending_store_unavailable`
 - `calendar_change_busy`
+- `conflict_calendar_limit`
 - `reload_failed`
 
 The API intentionally keeps config-entry options as the source of truth. The

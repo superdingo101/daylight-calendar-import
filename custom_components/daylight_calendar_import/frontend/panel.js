@@ -968,7 +968,7 @@ export class DaylightImportPanel extends HTMLElement {
     section.append(
       heading,
       element("p", "Map exact aliases used in forwarded messages to writable calendars. " +
-        "Conflict calendars are read-only observation targets; they do not grant write access.", "settings-help"),
+        "Choose up to 15 read-only conflict calendars. The event destination is checked separately; these selections do not grant write access.", "settings-help"),
     );
     const form = document.createElement("form");
     const draft = this._settingsDrafts.routing;
@@ -1062,6 +1062,10 @@ export class DaylightImportPanel extends HTMLElement {
     }
     const selected = Array.from(form.querySelectorAll("input"))
       .filter(input => input.checked).map(input => input.value);
+    if (selected.length > 15) {
+      showEditError(form, "Select at most 15 conflict calendars; the event destination is also checked.");
+      return;
+    }
     const patch = {};
     if (!aliasesEquivalent(parsed, this._settings.calendar_aliases ?? {})) {
       patch.calendar_aliases = parsed;

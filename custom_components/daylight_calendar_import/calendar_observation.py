@@ -6,7 +6,7 @@ upon. A missing/failed provider response is not equivalent to an empty agenda.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone, tzinfo
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from collections.abc import Sequence
 from typing import Any
 
@@ -21,6 +21,12 @@ from .models import EventDraft
 
 class CalendarObservationError(ValueError):
     """Calendar responses cannot be trusted to prove no overlap."""
+
+
+MAX_OBSERVATION_WINDOW = timedelta(days=90)
+MAX_OBSERVATION_EVENTS = 500
+MAX_OBSERVATION_CALENDARS = 16
+MAX_OBSERVATION_TITLE_CHARS = 512
 
 
 def _as_utc(value: datetime, *, message: str) -> datetime:
@@ -56,10 +62,12 @@ def observation_window(
             raise CalendarObservationError("Invalid timed observation interval") from exc
     # Python compares datetimes sharing a tzinfo by wall clock, which is
     # incorrect across the repeated hour of the autumn DST transition.
-    if _as_utc(end, message="Invalid event interval") <= _as_utc(
-        start, message="Invalid event interval"
-    ):
+    start_utc = _as_utc(start, message="Invalid event interval")
+    end_utc = _as_utc(end, message="Invalid event interval")
+    if end_utc <= start_utc:
         raise CalendarObservationError("Invalid event interval")
+    if end_utc - start_utc > MAX_OBSERVATION_WINDOW:
+        raise CalendarObservationError("Calendar observation interval exceeds 90 days")
     return start, end
 
 
@@ -72,6 +80,8 @@ def _candidate(calendar_entity: str, raw: Any) -> CalendarCandidate:
     end = raw.get("end")
     if not isinstance(title, str) or not isinstance(start, str) or not isinstance(end, str):
         raise CalendarObservationError("Missing calendar event fields")
+    if len(title) > MAX_OBSERVATION_TITLE_CHARS:
+        raise CalendarObservationError("Calendar observation title exceeds 512 characters")
     all_day = len(start) == 10 and len(end) == 10
     if all_day:
         try:
@@ -120,6 +130,8 @@ async def async_observe_candidates(
            for identifier in observed_calendars):
         raise CalendarObservationError("Invalid observation calendar")
     identifiers = list(dict.fromkeys(observed_calendars))
+    if len(identifiers) > MAX_OBSERVATION_CALENDARS:
+        raise CalendarObservationError("Calendar observation exceeds 16 calendars")
     start, end = observation_window(draft, local_zone=local_zone)
     # Home Assistant's calendar.get_events *service* requires POLICY_CONTROL
     # because generic entity services are control-scoped. Read-only reviewers
@@ -143,15 +155,36 @@ async def async_observe_candidates(
     providers = []
     for entity_id in identifiers:
         provider = component.get_entity(entity_id)
-        if provider is None:
+        if provider is None or getattr(provider, "available", True) is False:
+            # HA can retain unavailable entities and return cached/empty events.
             raise CalendarObservationError("Calendar observation is incomplete")
         providers.append((entity_id, provider))
 
+    def ensure_available(entity_id: str, provider: Any) -> None:
+        """Require the same registered, available provider throughout this read."""
+        if (
+            hass.data.get(DATA_COMPONENT) is not component
+            or component.get_entity(entity_id) is not provider
+            or getattr(provider, "available", True) is False
+        ):
+            raise CalendarObservationError("Calendar observation is incomplete")
+
     candidates: list[CalendarCandidate] = []
     for entity_id, provider in providers:
-        response = await provider.async_get_events(hass, start, end)
+        # A later provider might have become unavailable while earlier reads
+        # awaited; a provider can also become unavailable during its own read.
+        ensure_available(entity_id, provider)
+        try:
+            response = await provider.async_get_events(hass, start, end)
+        except Exception as exc:
+            # Provider errors are not proof of an empty schedule. Do not
+            # surface provider-specific messages in the user-facing response.
+            raise CalendarObservationError("Calendar observation is incomplete") from exc
+        ensure_available(entity_id, provider)
         if not isinstance(response, list):
             raise CalendarObservationError("Calendar observation is incomplete")
+        if len(response) > MAX_OBSERVATION_EVENTS - len(candidates):
+            raise CalendarObservationError("Calendar observation exceeds 500 events")
         for event in response:
             # CalendarEvent exposes native date/datetime fields. Do not retain
             # descriptions, attendees or other private provider metadata.
@@ -169,6 +202,10 @@ async def async_observe_candidates(
                     if isinstance(event_end, (date, datetime)) else event_end
                 ),
             }))
+    # An earlier provider may have gone unavailable while a later one awaited.
+    # Never report the combined observation as complete in that case.
+    for entity_id, provider in providers:
+        ensure_available(entity_id, provider)
     return tuple(candidates)
 
 

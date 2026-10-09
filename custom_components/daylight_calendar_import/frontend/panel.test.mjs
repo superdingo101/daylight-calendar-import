@@ -4278,3 +4278,39 @@ test("unresolved routing disables bulk approval but not rejection", () => {
   assert.equal(approve.disabled, true);
   assert.equal(reject.disabled, undefined);
 });
+
+
+test("routing settings reject an oversized conflict scope before saving", async () => {
+  const configured = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.test",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const states = Object.fromEntries(Array.from({length: 16}, (_, i) =>
+    [`calendar.observed_${i}`, {
+      entity_id: `calendar.observed_${i}`, state: "off",
+      attributes: {friendly_name: `Room ${i}`, supported_features: 0},
+    }]));
+  const requests = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true}, states,
+    callWS: async request => {
+      requests.push(request);
+      if (request.type === "call_service") return {response: {imports: []}};
+      if (request.type === "daylight_calendar_import/settings/get") return configured;
+      throw new Error("Oversized scope must never be submitted");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value.startsWith("calendar.observed_");
+  }
+  await panel.saveRoutingSettings(form);
+  assert.match(form.querySelector(".error").textContent, /at most 15 conflict calendars/);
+  assert.equal(requests.some(request => request.type.includes("/update")), false);
+});

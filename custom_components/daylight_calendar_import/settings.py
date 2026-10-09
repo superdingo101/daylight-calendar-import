@@ -222,6 +222,15 @@ def calendar_intelligence_patch(
             patch[CONF_CALENDAR_ALIASES] = aliases
     if CONF_CONFLICT_CALENDAR_ENTITIES in submitted:
         conflicts = normalize_conflict_calendars(submitted[CONF_CONFLICT_CALENDAR_ENTITIES])
+        # Every check also reads its writable destination, which may not be
+        # in the read-only conflict list. Keep that union within the bounded
+        # 16-calendar observation budget for every possible destination.
+        if len(conflicts) > 15:
+            raise SettingsValidationError(
+                "conflict_calendar_limit",
+                "Select no more than 15 conflict calendars; the destination "
+                "calendar is checked separately.",
+            )
         if conflicts != effective_calendar_intelligence(entry)[1]:
             patch[CONF_CONFLICT_CALENDAR_ENTITIES] = conflicts
     return patch
