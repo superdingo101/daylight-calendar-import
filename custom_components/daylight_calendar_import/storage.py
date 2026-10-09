@@ -19,7 +19,7 @@ from .dedup import (
     event_fingerprint,
     source_fingerprint as build_source_fingerprint,
 )
-from .models import EventDraft
+from .models import EventDraft, normalize_date_time_assumptions
 from .source_routing import LEGACY_UNRESOLVED_WARNINGS
 
 _LOGGER = logging.getLogger(__name__)
@@ -75,10 +75,17 @@ class PendingEvent:
     def from_dict(cls, raw: dict[str, Any]) -> PendingEvent:
         if raw["status"] not in ("pending", "write_uncertain"):
             raise ValueError("invalid pending event status")
+        # Optional AI disclosures must never make durable calendar decisions
+        # inaccessible after a restart. Only discard malformed advisory data.
+        try:
+            assumptions = normalize_date_time_assumptions(
+                raw.get("date_time_assumptions", ())
+            )
+        except ValueError:
+            assumptions = ()
         return cls(raw["id"], EventDraft.from_mapping(raw["draft"]), raw["status"],
                    raw.get("calendar_entity"), raw.get("write_attempt"),
-                   raw.get("routing_unresolved", False),
-                   tuple(raw.get("date_time_assumptions", ())))
+                   raw.get("routing_unresolved", False), assumptions)
 
     def as_dict(self) -> dict[str, Any]:
         result = {"id": self.id, "draft": self.draft.as_dict(), "status": self.status,
