@@ -10,7 +10,7 @@ This guide documents the intentionally bounded v0.5.0 behavior, how to enable it
 
 For that reason, **we strongly recommend using a dedicated email address or dedicated mailbox/folder used only for Daylight calendar imports**, rather than pointing Direct IMAP at a personal inbox. This both limits the private mail Daylight can access and reduces the chance that an unrelated unread message is processed unexpectedly.
 
-Processable message body text and supported attachments may be sent to the **Home Assistant AI Task entity/provider you configured**. That provider's privacy, retention, network, and billing policies apply to the content it receives. Direct IMAP v0.5 does not provide a sender allowlist, so mailbox separation is the primary way to constrain what can enter the ingestion pipeline.
+Processable message body text and supported attachments may be sent to the **Home Assistant AI Task entity/provider you configured**. That provider's privacy, retention, network, and billing policies apply to the content it receives. Starting in v0.6, the administrator may optionally configure exact sender addresses in **Daylight imports → Settings → Email**. Non-matching and malformed From headers are rejected *before normalization, staging or AI parsing* and the messages remain unread and untouched. Daylight must still fetch each unread message to inspect its headers; the sender check does **not** prevent Daylight from accessing the mailbox. The `From` field can be spoofed, so this is not an authentication or anti-phishing boundary. A dedicated mailbox/folder remains strongly recommended.
 
 The first poll runs immediately after Direct IMAP is enabled, so any unread, undeleted backlog already present in the configured mailbox is eligible immediately. Review or clear that backlog before enabling the integration if you are not using a dedicated mailbox or folder.
 
@@ -24,12 +24,18 @@ For one configured mailbox, Daylight:
 4. searches for messages that are both **unseen** and **not deleted**;
 5. fetches each matching message without marking it seen during fetch;
 6. normalizes the message into the existing Daylight source-document model;
-7. runs the existing AI parser, lifecycle tracking, deduplication, pending-review storage, default-calendar selection, and attachment staging;
+7. when a v0.6 sender allowlist is configured, rejects messages whose From mailbox is not an exact match (without marking them read), then runs the existing AI parser, lifecycle tracking, deduplication, pending-review storage, default-calendar selection, and attachment staging for allowed messages;
 8. marks the upstream message **seen only after Daylight has a durable local outcome**.
 
 Only one poll runs at a time for the configured integration entry.
 
 A poll processes matching UIDs sequentially. If a large unread backlog makes one poll run longer than five minutes, scheduled ticks that occur while that poll is still active are skipped rather than starting an overlapping poll. The next later tick can continue with whatever remains unread.
+
+### Optional exact sender allowlist (v0.6)
+
+In **Daylight imports → Settings → Email**, enter one complete sender email address per line (or separate them with commas). Matching is exact after address normalization and case folding, not fuzzy, domain-only, or display-name matching. Leave the field empty to allow every sender. The integration validates the list before saving it and retains it when disabling and re-enabling Direct IMAP.
+
+Rejected messages **remain unread and undeleted** and are rediscovered on each subsequent poll; Daylight records a generic rejection activity entry but does not normalize their body, stage attachments, call the parser or acknowledge the message. To prevent repeat polling, use a dedicated folder or manage those messages outside the Daylight mailbox. Do not rely on the allowlist to authenticate email senders; the `From` header is user-supplied and can be spoofed.
 
 ## Important behavior before you enable it
 
@@ -259,7 +265,7 @@ Check DNS/network access, server name, port, implicit-TLS compatibility, TLS set
 
 Email normalization reuses Daylight's existing bounded attachment pipeline.
 
-- Processable normalized email body text and supported staged attachments are passed to the **configured Home Assistant AI Task entity/provider** for event extraction. That provider's own privacy, retention, network, and billing behavior therefore applies to the email content it receives. Because v0.5 has no sender allowlist, any processable unread message in the configured mailbox can reach that AI Task provider.
+- Processable normalized email body text and supported staged attachments are passed to the **configured Home Assistant AI Task entity/provider** for event extraction. That provider's own privacy, retention, network, and billing behavior therefore applies to the email content it receives. In v0.6, an optional exact sender allowlist blocks nonmatching and malformed From headers before they reach the AI Task provider. When no senders are configured, all processable unread messages remain eligible. Filtering does not avoid downloading messages or protect against forged From headers.
 - Supported attachment bytes are temporarily written to the selected Home Assistant local media directory so AI Task can access them. Treat that media storage as sensitive while processing is in flight.
 - Raw email bytes are not stored in pending-import storage.
 - Temporary supported attachments are staged only for processing. Cleanup is best-effort: a deletion failure or an abrupt Home Assistant shutdown can leave a staged `daylight-email-*` file behind in the selected media directory. Cleanup failures are logged when Daylight observes them; after an unclean shutdown there may be no cleanup log, so stale `daylight-email-*` files can be removed manually after confirming no import is using them.
@@ -272,7 +278,6 @@ Email normalization reuses Daylight's existing bounded attachment pipeline.
 
 The first Direct IMAP release deliberately does **not** expose:
 
-- sender allowlists or sender filtering;
 - arbitrary IMAP search expressions;
 - "leave successfully handled mail unread";
 - configurable polling intervals;
