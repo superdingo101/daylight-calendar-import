@@ -3188,7 +3188,6 @@ async def test_approval_preflight_rejection_keeps_pending_ready_without_checkpoi
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
     await store.async_load()
-    item = PendingImport.create(source_text="Calendar notice", events=[draft()])
     await store.async_add(source_text="Calendar notice", events=[draft()])
     saved_before = backend.save_attempts
     calls = []
