@@ -1433,3 +1433,97 @@ async def test_calendar_option_save_failure_clears_reload_barrier():
         })
     assert store.calendar_settings_reload_guard is False
     assert store.accepting_services is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scenario", "change", "code", "message"),
+    [
+        (
+            "unloaded",
+            {CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+            "pending_store_unavailable",
+            "Load Daylight Calendar Import before changing writable calendars. "
+            "The stored pending queue could not be checked.",
+        ),
+        (
+            "unloading",
+            {CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+            "pending_store_unavailable",
+            "Daylight is unloading or reloading. Retry after it is loaded.",
+        ),
+        (
+            "submitting",
+            {CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+            "calendar_change_busy",
+            "Daylight is processing a submission. Retry the calendar "
+            "change after ingestion finishes.",
+        ),
+        (
+            "handling",
+            {CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+            "calendar_change_busy",
+            "Daylight is processing a submission. Retry the calendar "
+            "change after ingestion finishes.",
+        ),
+        (
+            "polling",
+            {CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+            "calendar_change_busy",
+            "Daylight is processing a submission. Retry the calendar "
+            "change after ingestion finishes.",
+        ),
+        (
+            "explicit",
+            {CONF_CALENDAR_ENTITIES: ["calendar.family"]},
+            "pending_destination_not_allowed",
+            "A pending event targets a calendar being removed. "
+            "Reassign or reject the event before saving settings.",
+        ),
+        (
+            "implicit",
+            {CONF_CALENDAR_ENTITY: "calendar.work"},
+            "pending_default_would_change",
+            "A pending event uses the current default calendar. "
+            "Assign it an explicit destination before changing the default.",
+        ),
+    ],
+)
+async def test_calendar_scope_rejection_preserves_exact_user_facing_contract(
+    scenario, change, code, message,
+):
+    """Rejected calendar changes must preserve both the code and actionable text."""
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    store = hass.data[DOMAIN][config_entry.entry_id]
+    if scenario == "unloaded":
+        hass.data[DOMAIN].clear()
+    elif scenario == "unloading":
+        store.accepting_services = False
+    elif scenario == "submitting":
+        store.active_submissions.add(object())
+    elif scenario == "handling":
+        store.active_service_handlers.add(object())
+    elif scenario == "polling":
+        store.email_runtime = SimpleNamespace(
+            _task=SimpleNamespace(done=lambda: False)
+        )
+    elif scenario in ("explicit", "implicit"):
+        destination = "calendar.work" if scenario == "explicit" else None
+        store.list = lambda: (
+            SimpleNamespace(events=[SimpleNamespace(calendar_entity=destination)]),
+        )
+    else:
+        pytest.fail(f"unhandled scenario: {scenario}")
+
+    with pytest.raises(SettingsValidationError) as error:
+        await async_save_option_patch(hass, config_entry, change)
+
+    assert error.value.code == code
+    assert str(error.value) == message
+    assert config_entry.options == {}
+    assert hass.config_entries.updates == []
+    assert hass.config_entries.reloads == []
+
