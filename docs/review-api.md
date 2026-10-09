@@ -175,12 +175,20 @@ calendar check, not as an approval decision. At **approval time**, the
 single-event and bulk approval actions make a fresh read of *each event's
 destination calendar only* before recording its durable write checkpoint.
 An exact match blocks that event's write; possible duplicates and scheduling
-overlaps remain advisory. An unavailable or malformed destination calendar
+overlaps remain advisory. For long events, the mandatory exact-duplicate
+preflight queries a bounded window covering the draft's start (at most 89
+days), then compares any candidates against the **original full event
+interval**. This does not claim to detect all scheduling overlaps during a
+long event and does not relax the 90-day limit for the optional
+`check_pending_event` review action. An unavailable or malformed destination calendar
 also blocks writing, leaving the event pending rather than write-uncertain.
 Earlier events in a bulk approval may already have been created before a
 later event fails, so callers should refresh the remaining pending queue.
 
-Trusted Home Assistant automations may invoke approval without a user context;
-the internal preflight retains the established internal-service trust boundary.
+Trusted Home Assistant automations may invoke **bulk `approve_pending`**
+without a user context; its internal preflight retains the established
+internal-service trust boundary. The single-event `approve_pending_event`
+action still requires an authenticated user through the existing review
+access check.
 Authenticated callers still need their existing entity permissions. The
 legacy immediate `import_text` action does not use the pending-approval guard.
