@@ -290,6 +290,11 @@ async def async_save_option_patch(
         )
 
     def verify_pending_and_admission() -> None:
+        if not getattr(pending_store, "accepting_services", True):
+            raise SettingsValidationError(
+                "pending_store_unavailable",
+                "Daylight is unloading or reloading. Retry after it is loaded.",
+            )
         runtime = getattr(pending_store, "email_runtime", None)
         poll = getattr(runtime, "_task", None)
         if (
