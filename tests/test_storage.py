@@ -3181,3 +3181,85 @@ async def test_store_add_persists_sender_and_source_kind_across_restart(monkeypa
     assert restored.source_title == "School digest"
     assert restored.source_sender == "Teacher <teacher@example.test>"
     assert restored.events[0].routing_unresolved is True
+
+
+def test_pending_assumption_metadata_roundtrip_and_legacy_compatibility():
+    item = PendingImport.create(
+        source_text="Flyer", events=[draft()],
+        event_assumptions=[("Friday resolved using calendar context",)],
+    )
+    event = item.events[0]
+    assert event.as_service_dict()["date_time_assumptions"] == [
+        "Friday resolved using calendar context"
+    ]
+    assert PendingImport.from_dict(item.as_dict()) == item
+    old = event.as_dict()
+    old.pop("date_time_assumptions")
+    assert PendingEvent.from_dict(old).date_time_assumptions == ()
+    with pytest.raises(ValueError, match="event assumptions must match"):
+        PendingImport.create(source_text="Flyer", events=[draft()], event_assumptions=[])
+
+
+async def test_duplicate_filter_keeps_only_accepted_event_assumptions(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    await store.async_add(source_text="Previous", events=[draft()])
+    outcome = await store.async_add(
+        source_text="Second", events=[draft(), second_draft()],
+        event_assumptions=[
+            ("Old event assumptions should not appear",),
+            ("Picture Day derived from relative date",),
+        ],
+    )
+    assert outcome.pending is not None
+    assert outcome.duplicate_events == 1
+    assert len(outcome.pending.events) == 1
+    assert outcome.pending.events[0].draft == second_draft()
+    assert outcome.pending.events[0].date_time_assumptions == (
+        "Picture Day derived from relative date",
+    )
+    assert outcome.pending.warnings == ()
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    restored = restarted.get(outcome.pending.id)
+    assert restored == outcome.pending
+    assert restored.as_service_dict()["events"][0]["date_time_assumptions"] == [
+        "Picture Day derived from relative date"
+    ]
+
+
+async def test_temporal_edits_clear_stale_assumptions_but_title_edits_keep_them(monkeypatch):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    await store.async_load()
+    pending_item = (await store.async_add(
+        source_text="Schedule", events=[draft()],
+        event_assumptions=[("Clock time normalized",)],
+    )).pending
+    assert pending_item is not None
+    original = pending_item.events[0]
+    renamed = await store.async_edit_event(
+        pending_item.id, original.id, replace(original.draft, title="Revised"),
+        expected_event=original,
+    )
+    assert renamed.date_time_assumptions == ("Clock time normalized",)
+    updated = await store.async_edit_event(
+        pending_item.id, original.id,
+        replace(renamed.draft, start="2026-10-08T16:30:00-07:00"),
+        expected_event=renamed,
+    )
+    assert updated.date_time_assumptions == ()
+    assert "date_time_assumptions" not in updated.as_service_dict()
+
+
+async def test_wrong_event_assumption_count_is_rejected_without_any_write(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    with pytest.raises(ValueError, match="event assumptions must match"):
+        await store.async_add(
+            source_text="Schedule", events=[draft()],
+            event_assumptions=[(), ()],
+        )
+    assert backend.saved == []
