@@ -26,6 +26,7 @@ class CalendarObservationError(ValueError):
 MAX_OBSERVATION_WINDOW = timedelta(days=90)
 MAX_OBSERVATION_EVENTS = 500
 MAX_OBSERVATION_CALENDARS = 16
+MAX_OBSERVATION_TITLE_CHARS = 512
 
 
 def _as_utc(value: datetime, *, message: str) -> datetime:
@@ -79,6 +80,8 @@ def _candidate(calendar_entity: str, raw: Any) -> CalendarCandidate:
     end = raw.get("end")
     if not isinstance(title, str) or not isinstance(start, str) or not isinstance(end, str):
         raise CalendarObservationError("Missing calendar event fields")
+    if len(title) > MAX_OBSERVATION_TITLE_CHARS:
+        raise CalendarObservationError("Calendar observation title exceeds 512 characters")
     all_day = len(start) == 10 and len(end) == 10
     if all_day:
         try:
