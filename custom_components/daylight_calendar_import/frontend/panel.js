@@ -1,5 +1,5 @@
 import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
-import {decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, settingsErrorMessage} from "./settings.js";
 
 const css = `
@@ -477,6 +477,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._generation = 0;
     this._selectedId = null;
     this._detail = null;
+    this._calendarCheck = null;
     this._returnFocusId = null;
     this._editingId = null;
     this._editError = null;
@@ -613,6 +614,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._view = "inbox";
     this._selectedId = null;
     this._detail = null;
+    this._calendarCheck = null;
     this._activityId = null;
     this._activityDetail = null;
     const refresh = this.refresh();
@@ -628,6 +630,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._settingsTab = tab;
     this._selectedId = null;
     this._detail = null;
+    this._calendarCheck = null;
     this._activityId = null;
     this._activityDetail = null;
     this._settingsError = null;
@@ -1313,12 +1316,38 @@ export class DaylightImportPanel extends HTMLElement {
     return section;
   }
 
+  /** Results are transient and belong only to the exact loaded draft object. */
+  async checkCalendarEvent(event) {
+    if (!["pending", "write_uncertain"].includes(event.status) ||
+        this._saving || this._editingId || this._decision ||
+        this._batchAction || this._resolution || !this._detail?.events.includes(event)) return;
+    const pendingId = this._selectedId;
+    const generation = this._generation;
+    const check = {pendingId, event, status: "loading"};
+    this._calendarCheck = check;
+    this.render();
+    try {
+      const response = await checkEvent(this._hass, pendingId, event);
+      if (this._calendarCheck !== check || generation !== this._generation ||
+          this._selectedId !== pendingId || !this._detail?.events.includes(event)) return;
+      this._calendarCheck = {...check, status: "ready",
+        matches: response.matches, observed_calendars: response.observed_calendars};
+    } catch (error) {
+      if (this._calendarCheck !== check || generation !== this._generation ||
+          this._selectedId !== pendingId || !this._detail?.events.includes(event)) return;
+      this._calendarCheck = {...check, status: "error",
+        message: typeof error?.message === "string" ? error.message : "Calendar check failed"};
+    }
+    this.render();
+  }
+
   async showImport(id) {
     if (this._saving || this._editingId || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
     const generation = ++this._generation;
     this._selectedId = id;
     this._detail = null;
+    this._calendarCheck = null;
     this._editingId = null;
     this._editError = null;
     this._decision = null;
@@ -1349,6 +1378,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._batchResults = [];
     this._batchContext = null;
     this._returnFocusId = this._selectedId;
+    this._calendarCheck = null;
     ++this._generation;
     this._selectedId = null;
     this._detail = null;
@@ -2032,6 +2062,46 @@ export class DaylightImportPanel extends HTMLElement {
         }
         if (event.location) card.append(element("p", `Location: ${event.location}`));
         if (event.description) card.append(element("p", event.description));
+        if (["pending", "write_uncertain"].includes(event.status) &&
+            !this._editingId && !this._decision && !this._batchAction && !this._resolution) {
+          const check = element("button",
+            this._calendarCheck?.event === event && this._calendarCheck.status === "loading" ?
+              "Checking calendars…" : "Check calendars");
+          check.type = "button";
+          check.dataset.calendarCheckEventId = event.id;
+          check.disabled = this._calendarCheck?.event === event &&
+            this._calendarCheck.status === "loading";
+          check.addEventListener("click", () => void this.checkCalendarEvent(event));
+          card.append(check);
+        }
+        if (this._calendarCheck?.event === event) {
+          const result = this._calendarCheck;
+          const section = element("section", "", "calendar-matches");
+          section.setAttribute("aria-label", "Calendar check results");
+          if (result.status === "loading") {
+            section.append(element("p", "Checking selected calendars…"));
+          } else if (result.status === "error") {
+            const error = element("p", `Calendar check incomplete: ${result.message}`, "error");
+            error.setAttribute("role", "alert");
+            section.append(error);
+          } else if (result.status === "ready") {
+            if (!result.matches.length) {
+              section.append(element("p", "No matches found in the observed calendars."));
+            } else {
+              const labels = {exact_duplicate: "Exact duplicate",
+                possible_duplicate: "Possible duplicate", conflict: "Scheduling conflict"};
+              const list = document.createElement("ul");
+              for (const match of result.matches) {
+                list.append(element("li",
+                  `${labels[match.kind]}: ${match.existing_title} (${match.calendar_entity})`));
+              }
+              section.append(list);
+            }
+            section.append(element("p",
+              "These results are advisory and may change before approval. An incomplete check is not a clear calendar."));
+          }
+          card.append(section);
+        }
         if (event.status === "write_uncertain") {
           card.append(element("p", "Calendar write could not be confirmed. Check the destination calendar before choosing an outcome. Retrying without checking may create a duplicate."));
           if (this._resolution?.id === event.id) {
