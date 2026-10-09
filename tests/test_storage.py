@@ -2946,3 +2946,155 @@ async def test_terminal_source_failure_propagates_deferred_cancellation(monkeypa
             source_id="<terminal@example.test>",
             guidance="Terminal",
         )
+
+
+async def test_routing_confirmation_is_durable_and_blocks_single_and_bulk_writes(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(
+        source_text="Calendar: unknown\nPractice", events=[draft(), second_draft()],
+        calendar_entity="calendar.family", routing_unresolved=True,
+    )).pending
+    assert item is not None
+    first, second = item.events
+    writes = []
+
+    async def write(event):
+        writes.append(event.id)
+
+    with pytest.raises(PendingEventEditError, match="Confirm the destination"):
+        await store.async_approve_event(item.id, first.id, write)
+    with pytest.raises(PendingEventEditError, match="Confirm all event destinations"):
+        await store.async_process_events(item.id, write)
+    assert writes == []
+    assert await store.async_edit_event(item.id, first.id, draft()) == first
+    confirmed = await store.async_edit_event(
+        item.id, first.id, draft(), calendar_entity="calendar.family",
+        expected_event=first,
+    )
+    assert confirmed is not None and not confirmed.routing_unresolved
+    assert store.get_event(item.id, second.id).routing_unresolved
+    backend.load_result = backend.saved[-1]
+    restored = make_store(monkeypatch, backend)
+    await restored.async_load()
+    assert not restored.get_event(item.id, first.id).routing_unresolved
+    assert restored.get_event(item.id, second.id).routing_unresolved
+    await restored.async_approve_event(item.id, first.id, write)
+    assert writes == [first.id]
+    with pytest.raises(PendingEventEditError, match="Confirm the destination"):
+        await restored.async_approve_event(item.id, second.id, write)
+
+
+async def test_bulk_route_preflight_refuses_mixed_events_before_first_side_effect(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(
+        source_text="Calendar: unresolved\nTwo events",
+        events=[draft(), second_draft()],
+        calendar_entity="calendar.family", routing_unresolved=True,
+    )).pending
+    first, second = item.events
+    await store.async_edit_event(item.id, first.id, first.draft,
+                                 calendar_entity="calendar.family")
+    writes = []
+
+    async def write(event):
+        writes.append(event.id)
+
+    with pytest.raises(PendingEventEditError, match="Confirm all event destinations"):
+        await store.async_process_events(item.id, write)
+    assert writes == []
+    assert store.get_event(item.id, second.id).routing_unresolved
+    assert store.get_event(item.id, first.id).status == "pending"
+
+
+@pytest.mark.parametrize("warning", [
+    "Calendar routing hint is not configured or allowed. "
+    "Check the destination calendar during review.",
+    "Conflicting calendar routing hints. "
+    "Check the destination calendar during review.",
+])
+def test_legacy_unresolved_route_is_migrated_without_reflagging_confirmation(warning):
+    original = PendingImport.create(
+        source_text="Practice",
+        events=[draft(), second_draft()],
+        calendar_entity="calendar.family",
+        warnings=[warning],
+    )
+    old_payload = original.as_dict()
+    for event in old_payload["events"]:
+        del event["routing_unresolved"]  # Old release has no per-event field.
+    loaded = PendingImport.from_dict(old_payload)
+    assert all(event.routing_unresolved for event in loaded.events)
+    # An intentional destination save clears the warning only on that event,
+    # even while the parent import's historical routing warning is retained.
+    old_payload["events"][0]["routing_unresolved"] = False
+    restarted = PendingImport.from_dict(old_payload)
+    assert restarted.events[0].routing_unresolved is False
+    assert restarted.events[1].routing_unresolved is True
+    assert restarted.as_dict()["events"][0]["routing_unresolved"] is False
+    assert restarted.as_dict()["events"][1]["routing_unresolved"] is True
+    assert PendingImport.from_dict(restarted.as_dict()) == restarted
+
+
+def test_legacy_regular_pending_import_keeps_approved_routing_compatibility():
+    original = PendingImport.create(
+        source_text="Practice", events=[draft()], calendar_entity="calendar.family",
+        warnings=["Review extracted times"],
+    )
+    raw = original.as_dict()
+    del raw["events"][0]["routing_unresolved"]
+    assert PendingImport.from_dict(raw).events[0].routing_unresolved is False
+
+
+async def test_migrated_uncertain_route_stays_blocked_after_not_created(monkeypatch):
+    """Resolving a legacy uncertain write never silently accepts its fallback."""
+    warning = (
+        "Calendar routing hint is not configured or allowed. "
+        "Check the destination calendar during review."
+    )
+    original = PendingImport.create(
+        source_text="Practice", events=[draft()],
+        calendar_entity="calendar.family", warnings=[warning],
+    )
+    legacy = original.as_dict()
+    event_id = original.events[0].id
+    legacy["events"][0]["status"] = "write_uncertain"
+    legacy["events"][0]["write_attempt"] = "attempt-before-upgrade"
+    del legacy["events"][0]["routing_unresolved"]
+    backend = FakeStoreBackend(load_result={"items": [legacy]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    migrated = store.get_event(original.id, event_id)
+    assert migrated is not None
+    assert migrated.routing_unresolved is True
+    assert migrated.status == "write_uncertain"
+
+    assert await store.async_resolve_uncertain(
+        original.id, event_id, "not_created", expected_event=migrated,
+    )
+    recovered = store.get_event(original.id, event_id)
+    assert recovered is not None
+    assert recovered.status == "pending"
+    assert recovered.write_attempt is None
+    assert recovered.routing_unresolved is True
+    assert backend.saved[-1]["items"][0]["events"][0]["routing_unresolved"] is True
+
+    writes = []
+
+    async def write(event):
+        writes.append(event)
+
+    with pytest.raises(PendingEventEditError, match="Confirm"):
+        await store.async_approve_event(original.id, event_id, write)
+    assert writes == []
+
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_event(original.id, event_id).routing_unresolved is True
+    with pytest.raises(PendingEventEditError, match="Confirm"):
+        await restarted.async_process_events(original.id, write)
+    assert writes == []

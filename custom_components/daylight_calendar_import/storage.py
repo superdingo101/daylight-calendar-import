@@ -20,6 +20,7 @@ from .dedup import (
     source_fingerprint as build_source_fingerprint,
 )
 from .models import EventDraft
+from .source_routing import LEGACY_UNRESOLVED_WARNINGS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,23 +57,32 @@ class PendingEvent:
     status: str = "pending"
     calendar_entity: str | None = None
     write_attempt: str | None = None
+    routing_unresolved: bool = False
 
     @classmethod
-    def create(cls, draft: EventDraft, calendar_entity: str | None = None) -> PendingEvent:
-        return cls(str(uuid4()), draft, calendar_entity=calendar_entity)
+    def create(
+        cls, draft: EventDraft, calendar_entity: str | None = None,
+        *, routing_unresolved: bool = False,
+    ) -> PendingEvent:
+        return cls(str(uuid4()), draft, calendar_entity=calendar_entity,
+                   routing_unresolved=routing_unresolved)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> PendingEvent:
         if raw["status"] not in ("pending", "write_uncertain"):
             raise ValueError("invalid pending event status")
         return cls(raw["id"], EventDraft.from_mapping(raw["draft"]), raw["status"],
-                   raw.get("calendar_entity"), raw.get("write_attempt"))
+                   raw.get("calendar_entity"), raw.get("write_attempt"),
+                   raw.get("routing_unresolved", False))
 
     def as_dict(self) -> dict[str, Any]:
         result = {"id": self.id, "draft": self.draft.as_dict(), "status": self.status,
                   "calendar_entity": self.calendar_entity}
         if self.write_attempt is not None:
             result["write_attempt"] = self.write_attempt
+        # Explicit False distinguishes confirmed legacy events from records
+        # that predate the per-event routing flag entirely.
+        result["routing_unresolved"] = self.routing_unresolved
         return result
 
     def as_service_dict(self) -> dict[str, Any]:
@@ -81,6 +91,8 @@ class PendingEvent:
                   "calendar_entity": self.calendar_entity}
         if self.write_attempt is not None:
             result["write_attempt"] = self.write_attempt
+        if self.routing_unresolved:
+            result["routing_unresolved"] = True
         return result
 
 
@@ -137,6 +149,7 @@ class PendingImport:
         events: Iterable[EventDraft],
         source_fingerprint: str | None = None,
         calendar_entity: str | None = None,
+        routing_unresolved: bool = False,
         source_kind: str = "manual_text",
         source_title: str | None = None,
         source_sender: str | None = None,
@@ -150,7 +163,9 @@ class PendingImport:
         if not source_text:
             raise ValueError("source_text must be a non-empty string")
 
-        event_tuple = tuple(PendingEvent.create(event, calendar_entity) for event in events)
+        event_tuple = tuple(PendingEvent.create(event, calendar_entity,
+                                              routing_unresolved=routing_unresolved)
+                            for event in events)
         if not event_tuple:
             raise ValueError("pending import must contain at least one event")
 
@@ -174,7 +189,15 @@ class PendingImport:
             id=raw["id"],
             created_at=raw["created_at"],
             source_text=raw["source_text"],
-            events=tuple(PendingEvent.from_dict(event) for event in raw["events"]),
+            events=tuple(
+                replace(PendingEvent.from_dict(event), routing_unresolved=True)
+                if (
+                    "routing_unresolved" not in event
+                    and any(warning in LEGACY_UNRESOLVED_WARNINGS
+                            for warning in raw.get("warnings", ()))
+                ) else PendingEvent.from_dict(event)
+                for event in raw["events"]
+            ),
             source_fingerprint=raw.get("source_fingerprint"),
             source_kind=raw.get("source_kind", "manual_text"),
             source_title=raw.get("source_title"),
@@ -823,7 +846,10 @@ class PendingImportStore:
             if event.status != "pending":
                 raise PendingEventEditError("Uncertain calendar write must be resolved before editing")
             target = calendar_entity or event.calendar_entity
-            if event.draft == draft and target == event.calendar_entity:
+            # Only an explicit destination selection resolves an unknown route.
+            unresolved = event.routing_unresolved and calendar_entity is None
+            if (event.draft == draft and target == event.calendar_entity
+                    and unresolved == event.routing_unresolved):
                 return event
 
             fingerprint = event_fingerprint(draft)
@@ -836,7 +862,8 @@ class PendingImportStore:
             if fingerprint in self._seen_event_fingerprints or fingerprint in other_active:
                 raise PendingEventEditError("Edited event duplicates a pending or handled event")
 
-            edited = PendingEvent(event.id, draft, event.status, target)
+            edited = replace(event, draft=draft, calendar_entity=target,
+                             routing_unresolved=unresolved)
             updated = replace(pending, events=tuple(
                 edited if item.id == event_id else item for item in pending.events
             ))
@@ -871,6 +898,7 @@ class PendingImportStore:
         events: Iterable[EventDraft],
         source_id: str | None = None,
         calendar_entity: str | None = None,
+        routing_unresolved: bool = False,
         source_kind: str = "manual_text",
         source_title: str | None = None,
         source_sender: str | None = None,
@@ -884,6 +912,7 @@ class PendingImportStore:
                 events=events,
                 source_id=source_id,
                 calendar_entity=calendar_entity,
+                routing_unresolved=routing_unresolved,
                 source_kind=source_kind,
                 source_title=source_title,
                 source_sender=source_sender,
@@ -902,6 +931,7 @@ class PendingImportStore:
         events: Iterable[EventDraft],
         source_id: str | None = None,
         calendar_entity: str | None = None,
+        routing_unresolved: bool = False,
         source_kind: str = "manual_text",
         source_title: str | None = None,
         source_sender: str | None = None,
@@ -1018,6 +1048,7 @@ class PendingImportStore:
                 events=accepted_events,
                 source_fingerprint=source_fp,
                 calendar_entity=calendar_entity,
+                routing_unresolved=routing_unresolved,
                 source_kind=source_kind,
                 source_title=source_title,
                 source_sender=source_sender,
@@ -1149,7 +1180,7 @@ class PendingImportStore:
             seen_events = self._seen_event_fingerprints
             if resolution == "not_created":
                 remaining = tuple(
-                    PendingEvent(item.id, item.draft, "pending", item.calendar_entity)
+                    replace(item, status="pending", write_attempt=None)
                     if item.id == event_id else item for item in pending.events
                 )
             else:
@@ -1193,6 +1224,11 @@ class PendingImportStore:
                 return None
             if pending.approval_in_flight:
                 raise PendingImportApprovalUncertainError(pending_id)
+            # Reject a mixed-resolution batch before its first external write.
+            if any(event.routing_unresolved for event in pending.events):
+                raise PendingEventEditError(
+                    "Confirm all event destinations in the editor before bulk approval"
+                )
 
             original = pending
             while pending is not None:
@@ -1226,9 +1262,12 @@ class PendingImportStore:
         processor: Callable[[PendingEvent], Awaitable[None]],
     ) -> PendingImport | None:
         """Checkpoint the selected event around its external calendar write."""
+        if event.routing_unresolved:
+            raise PendingEventEditError(
+                "Confirm the destination calendar in the event editor before approval"
+            )
         in_flight = replace(pending, events=tuple(
-                PendingEvent(item.id, item.draft, "write_uncertain", item.calendar_entity,
-                             str(uuid4()))
+                replace(item, status="write_uncertain", write_attempt=str(uuid4()))
                 if item.id == event.id else item
                 for item in pending.events
             ))

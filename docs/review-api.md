@@ -44,6 +44,29 @@ the complete loaded `expected_event`. The backend compares it under the store
 lock before any calendar write or rejection; stale decisions fail with a refresh
 message. Existing action callers may omit the snapshot for compatibility.
 
+### Explicit calendar routing confirmation
+
+An unknown or contradictory `Calendar:` directive retains the configured
+fallback destination for display, but the newly queued events carry a
+`routing_unresolved: true` flag. They **cannot** be approved with either
+`approve_pending_event` or `approve_pending` until each destination is
+explicitly selected in the event editor. Bulk approval checks every event
+before any calendar side effect, so a mixed-resolution batch fails as a unit.
+
+The editor renders an unselected calendar placeholder for unresolved events.
+Saving unrelated draft edits is insufficient: the reviewer must select a
+writable destination, including when confirming the displayed fallback. The
+`edit_pending_event` action saves the selected `calendar_entity` in the same
+durable transaction that clears the unresolved flag. API callers must send a
+non-null allowed calendar explicitly to confirm; omitting `calendar_entity`
+leaves the flag set. A stale-state `expected_event` snapshot from
+`get_pending` must retain `routing_unresolved` when present. For storage created before this field existed, Daylight recognizes the two
+historical unresolved/conflicting routing warnings on the parent import and
+migrates its unmarked events to require explicit confirmation. Legacy imports
+without either warning continue to default to resolved. A deliberate calendar
+confirmation is persisted as `routing_unresolved: false` so repeated restarts
+cannot re-flag a confirmed event merely because the parent warning remains.
+
 Existing stored imports without source metadata load as `manual_text` with no
 source title or sender, warnings, or skipped duplicate count. Upload bytes, temporary
 media paths, upstream source IDs, and source fingerprints are not exposed by

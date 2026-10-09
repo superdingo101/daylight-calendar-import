@@ -23,6 +23,10 @@ _CONFLICTING = (
 )
 
 
+# Prior versions stored these warning texts before per-event routing flags.
+LEGACY_UNRESOLVED_WARNINGS = frozenset((_UNKNOWN, _CONFLICTING))
+
+
 @dataclass(frozen=True, slots=True)
 class SourceRoutingPlan:
     """Parser evidence, bounded destination, and review-only warnings."""
@@ -30,6 +34,7 @@ class SourceRoutingPlan:
     parser_source: SourceDocument
     calendar_entity: str
     warnings: tuple[str, ...] = ()
+    requires_confirmation: bool = False
 
 
 def plan_source_routing(
@@ -63,4 +68,7 @@ def plan_source_routing(
         source,
         text=extracted.body if source.text is not None else None,
     )
-    return SourceRoutingPlan(parser_source, destination, warnings)
+    return SourceRoutingPlan(
+        parser_source, destination, warnings,
+        requires_confirmation=resolution.status in ("unresolved", "conflicting"),
+    )

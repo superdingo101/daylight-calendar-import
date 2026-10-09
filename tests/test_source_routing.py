@@ -88,3 +88,9 @@ def test_quoted_history_directive_is_not_routing_control():
     result = plan(source)
     assert result.calendar_entity == "calendar.family"
     assert result.parser_source.text == source.text
+
+
+def test_unresolved_route_is_explicitly_flagged():
+    from custom_components.daylight_calendar_import.sources import TextSourceAdapter
+    assert plan(TextSourceAdapter().create("Calendar: missing\nPractice")).requires_confirmation
+    assert plan(TextSourceAdapter().create("Calendar: kids\nPractice")).requires_confirmation is False

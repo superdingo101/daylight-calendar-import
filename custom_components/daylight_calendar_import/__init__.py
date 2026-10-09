@@ -155,6 +155,7 @@ def _expected_event(raw: dict | None, event_id: str) -> PendingEvent | None:
     return PendingEvent(
         event_id, EventDraft.from_mapping(raw), raw["status"],
         raw.get(CONF_CALENDAR_ENTITY),
+        routing_unresolved=raw.get("routing_unresolved", False),
     )
 
 
@@ -275,6 +276,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             source_title=source.title,
             source_sender=source.metadata.get("sender"),
             warnings=[*outcome.warnings, *route.warnings],
+            routing_unresolved=route.requires_confirmation,
             activity_id=activity_id,
         )
 
@@ -341,6 +343,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 source_id=source.upstream_source_id,
                 calendar_entity=route.calendar_entity,
                 warnings=[*outcome.warnings, *route.warnings],
+                routing_unresolved=route.requires_confirmation,
                 activity_id=activity_id,
             )
         finally:
@@ -382,6 +385,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 source_kind=source.kind.value,
                 source_title=source.title,
                 warnings=[*outcome.warnings, *route.warnings],
+                routing_unresolved=route.requires_confirmation,
                 activity_id=activity_id,
             )
         finally:
@@ -439,6 +443,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             pending = await pending_store.async_process_events(
                 pending_id, create_event
             )
+        except PendingEventEditError as err:
+            raise ServiceValidationError(str(err)) from err
         except PendingImportApprovalUncertainError as err:
             raise ServiceValidationError(
                 "Pending import has an unfinished approval attempt; "
@@ -554,6 +560,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 expected_event = PendingEvent(
                     event_id, EventDraft.from_mapping(expected), expected["status"],
                     expected.get(CONF_CALENDAR_ENTITY),
+                    routing_unresolved=expected.get("routing_unresolved", False),
                 )
             calendar_entity = call.data.get(CONF_CALENDAR_ENTITY)
             if calendar_entity is not None and calendar_entity not in allowed_calendars:
@@ -654,7 +661,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     raise PendingEventResolutionError("Event changed since it was loaded; refresh before resolving")
                 expected = PendingEvent(event_id, EventDraft.from_mapping(snapshot),
                                         snapshot["status"], snapshot.get(CONF_CALENDAR_ENTITY),
-                                        snapshot.get("write_attempt"))
+                                        snapshot.get("write_attempt"),
+                                        snapshot.get("routing_unresolved", False))
             if expected is None:
                 resolved = await pending_store.async_resolve_uncertain(pending_id, event_id, resolution)
             else:

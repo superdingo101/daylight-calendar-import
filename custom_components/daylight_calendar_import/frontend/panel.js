@@ -1537,7 +1537,15 @@ export class DaylightImportPanel extends HTMLElement {
       description: fields.namedItem("description").value,
       confidence: event.confidence,
     };
-    const calendarEntity = fields.namedItem("calendar_entity")?.value ||
+    const calendarSelect = fields.namedItem("calendar_entity");
+    if (event.routing_unresolved && !calendarSelect?.value) {
+      const message = "Select and confirm a destination calendar before saving this event.";
+      this._editError = message;
+      this._announcement.replaceChildren(element("span", message));
+      showEditError(form, message);
+      return;
+    }
+    const calendarEntity = calendarSelect?.value ||
       event.calendar_entity || this._detail?.default_calendar || null;
     const generation = this._generation;
     const pendingId = this._selectedId;
@@ -1735,6 +1743,14 @@ export class DaylightImportPanel extends HTMLElement {
       const label = element("label", "Calendar");
       const select = document.createElement("select");
       select.name = "calendar_entity";
+      if (event.routing_unresolved) {
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Choose a destination to confirm routing";
+        placeholder.disabled = true;
+        select.append(placeholder);
+        select.required = true;
+      }
       for (const calendar of calendars) {
         const option = document.createElement("option");
         option.value = calendar;
@@ -1742,7 +1758,7 @@ export class DaylightImportPanel extends HTMLElement {
         option.textContent = friendly ? `${friendly} (${calendar})` : calendar;
         select.append(option);
       }
-      select.value = selectedCalendar || calendars[0];
+      select.value = event.routing_unresolved ? "" : (selectedCalendar || calendars[0]);
       label.append(select);
       form.append(label);
     }
@@ -1976,6 +1992,10 @@ export class DaylightImportPanel extends HTMLElement {
             const button = element("button", `${action === "approve" ? "Approve" : "Reject"} all ${ready.length}`);
             button.type = "button";
             button.dataset.batchAction = action;
+            if (action === "approve" && ready.some(item => item.routing_unresolved)) {
+              button.disabled = true;
+              button.title = "Confirm every unresolved destination before bulk approval";
+            }
             button.addEventListener("click", () => {
               if (this._saving) return;
               this._batchResults = [];
@@ -2000,6 +2020,9 @@ export class DaylightImportPanel extends HTMLElement {
         card.append(element("h3", event.title || "Untitled event"));
         card.append(element("p", `${eventRange(event, this._hass)}${event.all_day ? " · All day" : ""}`));
         card.append(element("p", `Calendar: ${event.calendar_entity || "Default"} · Status: ${event.status}`));
+        if (event.routing_unresolved) {
+          card.append(element("p", "Routing hint was unrecognized or conflicting. Edit this event, choose its destination calendar, then save before approval.", "error"));
+        }
         if (typeof event.confidence === "number") {
           card.append(element("p", `AI extraction confidence: ${Math.round(event.confidence * 100)}% (estimate)`));
         }
@@ -2060,6 +2083,7 @@ export class DaylightImportPanel extends HTMLElement {
             button.type = "button";
             button.dataset.action = action;
             button.dataset.eventId = event.id;
+            if (action === "approve" && event.routing_unresolved) button.disabled = true;
             button.addEventListener("click", () => {
               if (this._saving || this._editingId || this._decision) return;
               this._decision = {id: event.id, action};
