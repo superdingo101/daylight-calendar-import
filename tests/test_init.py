@@ -2556,6 +2556,64 @@ async def test_check_pending_event_uses_read_only_observer_and_configured_scope(
 
 
 
+@pytest.mark.parametrize("change", ["edit", "removed"])
+async def test_check_pending_event_refuses_result_after_concurrent_review_change(
+    monkeypatch, change,
+):
+    """A provider read cannot return old matches under a reused pending ID."""
+    from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
+
+    item = pending()
+    original = item.events[0]
+    current = {"event": original}
+    began, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_observation(*_args, **_kwargs):
+        began.set()
+        await release.wait()
+        return ()
+
+    store = SimpleNamespace(
+        async_load=AsyncMock(),
+        get_event=Mock(side_effect=lambda _pending_id, _event_id: current["event"]),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store,
+    )
+    observer = AsyncMock(side_effect=delayed_observation)
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_classify_conflicts", observer,
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    hass.config = SimpleNamespace(time_zone="America/Los_Angeles")
+    assert await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_CHECK_PENDING_EVENT)]
+    request = SimpleNamespace(
+        data={
+            ATTR_PENDING_ID: item.id,
+            ATTR_EVENT_ID: original.id,
+            "expected_event": original.as_service_dict(),
+        },
+        context=Context(user_id="reviewer"),
+    )
+    request_task = asyncio.create_task(handler(request))
+    await asyncio.wait_for(began.wait(), timeout=1)
+    current["event"] = (
+        replace(original, draft=replace(original.draft, title="Changed during check"))
+        if change == "edit" else None
+    )
+    release.set()
+    with pytest.raises(ServiceValidationError, match="changed during calendar check"):
+        await request_task
+    observer.assert_awaited_once()
+
+    # Old snapshots must also be rejected *before* dispatching another read.
+    if change == "edit":
+        with pytest.raises(ServiceValidationError, match="changed since it was loaded"):
+            await handler(request)
+        observer.assert_awaited_once()
+
+
 async def test_check_pending_event_does_not_hide_unavailable_calendars(monkeypatch):
     from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
     from custom_components.daylight_calendar_import.calendar_observation import CalendarObservationError
