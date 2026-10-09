@@ -590,6 +590,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._clearEmailDraftPassword();
     const generation = ++this._generation;
     this._view = "activity";
+    this._calendarCheck = null;
     this._activityId = id;
     this._activityDetail = null;
     this._status = "loading";
@@ -2093,6 +2094,7 @@ export class DaylightImportPanel extends HTMLElement {
               this._batchResults = [];
               this._batchContext = null;
               this._decisionError = null;
+              this._calendarCheck = null;
               this._batchAction = action;
               this.render();
               this._content.querySelector(".actions button")?.focus();
@@ -2160,6 +2162,7 @@ export class DaylightImportPanel extends HTMLElement {
               button.dataset.resolution = choice.value;
               button.addEventListener("click", () => {
                 this._decisionError = null;
+                this._calendarCheck = null;
                 this._resolution = {id: event.id, choice: choice.value};
                 this.render();
                 this._content.querySelector(".actions button")?.focus();
@@ -2174,6 +2177,7 @@ export class DaylightImportPanel extends HTMLElement {
           edit.dataset.eventId = event.id;
           edit.addEventListener("click", () => { if (this._saving || this._editingId) return;
             this._decisionError = null;
+            this._calendarCheck = null;
             this._editingId = event.id; this.render();
             this._content.querySelector("form input")?.focus(); });
           card.append(edit);
@@ -2185,6 +2189,7 @@ export class DaylightImportPanel extends HTMLElement {
             if (action === "approve" && event.routing_unresolved) button.disabled = true;
             button.addEventListener("click", () => {
               if (this._saving || this._editingId || this._decision) return;
+              this._calendarCheck = null;
               this._decision = {id: event.id, action};
               this._decisionError = null;
               this.render();
