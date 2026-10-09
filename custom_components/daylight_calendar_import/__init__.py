@@ -426,6 +426,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 replace(pdf, upstream_source_id=call.data.get(ATTR_SOURCE_ID))
             )
 
+    class CalendarApprovalWriter:
+        """Perform a fresh destination-only duplicate check before creating."""
+
+        def __init__(self, context: Context | None) -> None:
+            self.context = context
+
+        async def async_preflight(self, event: PendingEvent) -> None:
+            """Fail closed without changing pending state or write-attempt state."""
+            destination = event_calendar(event)
+            await _async_check_entity_control_permission(hass, destination, self.context)
+            try:
+                matches = await async_classify_conflicts(
+                    hass,
+                    event.draft,
+                    observed_calendars=[destination],
+                    local_zone=dt_util.get_time_zone(hass.config.time_zone),
+                    context=self.context,
+                )
+            except CalendarObservationError as err:
+                raise ServiceValidationError(
+                    "Cannot verify destination calendar before approval: "
+                    "calendar observation is incomplete"
+                ) from err
+            if any(match.kind == "exact_duplicate" for match in matches):
+                raise ServiceValidationError(
+                    "Exact duplicate already exists on the destination calendar; "
+                    "review or reject the pending event"
+                )
+
+        async def __call__(self, event: PendingEvent) -> None:
+            destination = event_calendar(event)
+            await _async_check_entity_control_permission(hass, destination, self.context)
+            await _async_create_calendar_event(
+                hass, destination, event.draft, context=self.context,
+            )
+
     async def handle_approve_pending(call: ServiceCall) -> ServiceResponse:
         pending_id = call.data[ATTR_PENDING_ID]
         pending_to_approve = pending_store.get(pending_id)
@@ -437,21 +473,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             for calendar_entity in {event_calendar(event) for event in pending_to_approve.events}:
                 await _async_check_entity_control_permission(hass, calendar_entity, call.context)
 
-        async def create_event(event: PendingEvent) -> None:
-            calendar_entity = event_calendar(event)
-            await _async_check_entity_control_permission(
-                hass, calendar_entity, call.context
-            )
-            await _async_create_calendar_event(
-                hass,
-                calendar_entity,
-                event.draft,
-                context=call.context,
-            )
-
         try:
             pending = await pending_store.async_process_events(
-                pending_id, create_event
+                pending_id, CalendarApprovalWriter(call.context)
             )
         except PendingEventEditError as err:
             raise ServiceValidationError(str(err)) from err
@@ -664,24 +688,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 hass, event_calendar(event_to_approve), call.context
             )
 
-        async def create_event(event: PendingEvent) -> None:
-            calendar_entity = event_calendar(event)
-            await _async_check_entity_control_permission(
-                hass, calendar_entity, call.context
-            )
-            await _async_create_calendar_event(
-                hass, calendar_entity, event.draft, context=call.context
-            )
+        writer = CalendarApprovalWriter(call.context)
 
         try:
             expected_event = _expected_event(call.data.get("expected_event"), event_id)
             if expected_event is None:
                 event = await pending_store.async_approve_event(
-                    pending_id, event_id, create_event,
+                    pending_id, event_id, writer,
                 )
             else:
                 event = await pending_store.async_approve_event(
-                    pending_id, event_id, create_event, expected_event=expected_event,
+                    pending_id, event_id, writer, expected_event=expected_event,
                 )
         except PendingImportApprovalUncertainError as err:
             raise ServiceValidationError(
