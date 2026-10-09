@@ -133,3 +133,33 @@ def test_source_evidence_detects_tampering():
         assert _source_evidence_sha256(changed) != original
     # Wire IDs are independent of upstream dedup keys; this contract cannot
     # establish server ID allocation. Real PostgreSQL tests are required.
+
+
+def _validate_unchanged_duplicate(original, returned, *, now):
+    """Reference invariant for unchanged upstream ingestion, not queue code."""
+    if now < _time(original['source_expires_at']):
+        for field in ('delivery_id', 'source_id', 'source_expires_at', 'source'):
+            if returned[field] != original[field]:
+                raise ValueError('pre-expiry duplicate must reuse immutable delivery')
+    elif (returned['delivery_id'] == original['delivery_id']
+          or returned['source_id'] == original['source_id']):
+        raise ValueError('post-expiry ingestion requires fresh identities')
+
+
+def test_unchanged_duplicate_cannot_bypass_identity_or_retention():
+    original = _read(FIXTURE_DIR / 'valid/delivery-page-text.json')['deliveries'][0]
+    before = _time('2026-10-09T16:00:00Z')
+    _validate_unchanged_duplicate(original, deepcopy(original), now=before)
+    for field, value in [('delivery_id', 'delivery_fresh_000000000001'),
+                         ('source_id', 'source_fresh_00000000000001'),
+                         ('source_expires_at', '2026-10-16T16:00:00Z')]:
+        returned = deepcopy(original)
+        returned[field] = value
+        with pytest.raises(ValueError, match='pre-expiry'):
+            _validate_unchanged_duplicate(original, returned, now=before)
+    at_expiry = _time(original['source_expires_at'])
+    with pytest.raises(ValueError, match='fresh identities'):
+        _validate_unchanged_duplicate(original, original, now=at_expiry)
+    new = dict(deepcopy(original), delivery_id='delivery_fresh_000000000001',
+               source_id='source_fresh_00000000000001', source_expires_at='2026-10-22T16:00:00Z')
+    _validate_unchanged_duplicate(original, new, now=at_expiry)
