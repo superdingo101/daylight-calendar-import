@@ -30,6 +30,13 @@ The integration supports:
 - strict validation of AI output
 - persistent deduplication by optional upstream source ID and normalized event fingerprint
 
+For v0.6, the parser's structured-output request requires an assumptions list
+for each returned candidate, including an empty list when dates and times are
+explicit. Contextual time resolutions are shown only on their corresponding
+pending review events; edits to the event's time/date clear stale assumptions.
+This is an AI self-disclosure and **not** independent source-grounded proof that
+the parser made no unsupported inference.
+
 The parser instructs the AI not to invent missing event data. Invalid individual events are skipped with indexed `warnings` in parse, import, and submit responses; valid events in the same response remain available. An invalid top-level AI response still fails without creating calendar events. When every event is invalid, no event is imported or queued.
 
 The current minimum supported Home Assistant version is **2026.7.4**. CI tests that version explicitly alongside the current development test environment.
