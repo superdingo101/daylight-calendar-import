@@ -1369,8 +1369,10 @@ export class DaylightImportPanel extends HTMLElement {
       next = {status: "ready", matches: response.matches,
         observed_calendars: response.observed_calendars};
     } catch (error) {
-      next = {status: "error",
-        message: typeof error?.message === "string" ? error.message : "Calendar check failed"};
+      const message = typeof error?.message === "string" ? error.message : "Calendar check failed";
+      const prefix = "Calendar check incomplete: ";
+      next = {status: "error", message: message.startsWith(prefix) ?
+        message.slice(prefix.length) : message};
     }
     if (this._calendarCheck !== check || generation !== this._generation ||
         this._selectedId !== pendingId || !this._detail?.events.includes(event)) return;
@@ -1385,7 +1387,7 @@ export class DaylightImportPanel extends HTMLElement {
     const section = this._content.querySelector(".calendar-matches");
     if (!section) return;
     this.renderCalendarCheckDetails(section, this._calendarCheck);
-    const button = this._content.querySelectorAll("button").find(
+    const button = Array.from(this._content.querySelectorAll("button")).find(
       item => item.dataset.calendarCheckEventId === event.id);
     if (button) {
       button.removeAttribute("aria-disabled");
@@ -1402,7 +1404,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   focusCalendarCheck(eventId) {
-    this._content.querySelectorAll("button").find(
+    Array.from(this._content.querySelectorAll("button")).find(
       button => button.dataset.calendarCheckEventId === eventId)?.focus();
   }
 
