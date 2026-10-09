@@ -2719,3 +2719,44 @@ async def test_calendar_check_accepts_uncertain_write_snapshot_without_decision_
     # allow a write-uncertain event to bypass explicit recovery.
     with pytest.raises(PendingEventEditError, match="refresh before deciding"):
         _expected_event(uncertain.as_service_dict(), uncertain.id)
+
+@pytest.mark.parametrize("outcome", ["exact", "other", "unavailable", "empty"])
+async def test_approval_writer_rechecks_destination_before_calendar_write(monkeypatch, outcome):
+    from custom_components.daylight_calendar_import.calendar_match import CalendarMatch
+    from custom_components.daylight_calendar_import.calendar_observation import CalendarObservationError
+    item = pending(draft())
+    event = item.events[0]
+    async def approve(_id, processor):
+        assert _id == item.id
+        await processor.async_preflight(event)
+        await processor(event)
+        return item
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get=Mock(return_value=item),
+        async_process_events=AsyncMock(side_effect=approve),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _: store)
+    observer = AsyncMock(
+        side_effect=CalendarObservationError("Calendar observation is incomplete")
+        if outcome == "unavailable" else None,
+        return_value=(CalendarMatch(
+            "exact_duplicate" if outcome == "exact" else "conflict",
+            "calendar.family", "Practice",
+        ),) if outcome in ("exact", "other") else (),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_classify_conflicts", observer)
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)]
+    call = SimpleNamespace(data={ATTR_PENDING_ID: item.id}, context=Context(user_id="reviewer"))
+    if outcome in ("exact", "unavailable"):
+        with pytest.raises(ServiceValidationError, match=(
+            "Exact duplicate" if outcome == "exact" else "Cannot verify destination"
+        )):
+            await handler(call)
+        assert hass.services.calls == []
+    else:
+        response = await handler(call)
+        assert response["approved"] is True
+        assert len(hass.services.calls) == 1
+    assert observer.await_args.kwargs["observed_calendars"] == ["calendar.family"]
