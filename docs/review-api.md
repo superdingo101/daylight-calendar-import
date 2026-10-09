@@ -170,5 +170,7 @@ rechecks the event after the asynchronous provider reads. If the draft,
 destination, status or identity changed—or it was approved/rejected—while
 observation was in progress, the action fails with a refresh error instead of
 returning matches for the old draft. Calendar access failures are explicit errors, **not** a signal that
-the schedule is empty. This API does not yet enforce a write-time duplicate
-guard or add conflict UI; those are separate scoped changes.
+the schedule is empty. This API does not enforce a write-time duplicate guard. The review
+panel uses these results to display an optional, on-demand duplicate/conflict
+check; the results are advisory, not a condition for approval. Write-time
+duplicate protection is a separate scoped change.

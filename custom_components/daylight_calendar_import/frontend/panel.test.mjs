@@ -452,7 +452,9 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   await panel.showImport("one");
   const siblingEdit = panel._content.querySelectorAll("button")
     .find(button => button.dataset.eventId === "sibling");
-  const edit = find(panel._content, "section").querySelector("button");
+  const edit = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event" &&
+      button.textContent === "Edit Meeting");
   edit.click();
   const form = find(panel._content, "form");
   assert.equal(form.elements.namedItem("description").value, description);
@@ -937,7 +939,9 @@ test("focus falls back to the detail heading if the saved event disappears", asy
   }};
   await flush();
   await panel.showImport("one");
-  find(panel._content, "section").querySelector("button").click();
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event" &&
+      button.textContent === "Edit Meeting").click();
   await panel.saveEdit(event, find(panel._content, "form"));
   assert.equal(globalThis.focusedNode.tag, "h2");
 });
@@ -957,7 +961,9 @@ test("a successful save with a failed detail reload offers refresh and restores 
   }};
   await flush();
   await panel.showImport("one");
-  find(panel._content, "section").querySelector("button").click();
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event" &&
+      button.textContent === "Edit Meeting").click();
   await panel.saveEdit(event, find(panel._content, "form"));
   assert.match(find(panel._content, "p").textContent, /saved, but the detail could not be reloaded: Offline/);
   assert.equal(globalThis.focusedNode.textContent, "Back to inbox");
@@ -4313,4 +4319,367 @@ test("routing settings reject an oversized conflict scope before saving", async 
   await panel.saveRoutingSettings(form);
   assert.match(form.querySelector(".error").textContent, /at most 15 conflict calendars/);
   assert.equal(requests.some(request => request.type.includes("/update")), false);
+});
+
+test("on-demand calendar check renders classified matches without changing review state", async () => {
+  const event = {id: "event-1", title: "School", start: "2026-10-12",
+    end: "2026-10-13", all_day: true, status: "pending", calendar_entity: "calendar.family"};
+  const requests = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    requests.push(request);
+    if (request.service === "list_pending") return {response: {imports: [{id: "import-1"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "import-1", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return {response: {
+      pending_id: "import-1", event_id: "event-1",
+      observed_calendars: ["calendar.family"],
+      matches: [{kind: "exact_duplicate", calendar_entity: "calendar.family",
+        existing_title: "School"}, {kind: "conflict",
+        calendar_entity: "calendar.family", existing_title: "Dentist"}]}};
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("import-1");
+  const button = panel._content.querySelectorAll("button").find(
+    item => item.dataset.calendarCheckEventId === "event-1");
+  assert.equal(button.textContent, "Check calendars");
+  assert.equal(requests.some(item => item.service === "check_pending_event"), false);
+  await panel.checkCalendarEvent(event);
+  const results = panel._content.querySelector(".calendar-matches");
+  assert.ok(results);
+  assert.deepEqual(results.querySelectorAll("li").map(item => item.textContent), [
+    "Exact duplicate: School (calendar.family)",
+    "Scheduling conflict: Dentist (calendar.family)",
+  ]);
+  assert.equal(panel._detail.events[0].status, "pending");
+  assert.deepEqual(requests.find(item => item.service === "check_pending_event").service_data,
+    {pending_id: "import-1", event_id: "event-1", expected_event: event});
+});
+
+test("failed and stale calendar checks never masquerade as current results", async () => {
+  const event = {id: "event-1", title: "A", start: "2026-10-12",
+    end: "2026-10-13", all_day: true, status: "pending"};
+  let release;
+  let failed = true;
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "import-1"}]}};
+    if (request.service === "get_pending") return {response: {
+      pending: {id: "import-1", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") {
+      if (failed) throw new Error("Provider unavailable");
+      return new Promise(resolve => {release = resolve;});
+    }
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("import-1");
+  await panel.checkCalendarEvent(event);
+  const error = panel._content.querySelector(".calendar-matches").querySelector(".error");
+  assert.match(error.textContent, /Calendar check incomplete: Provider unavailable/);
+  assert.equal(error.attributes.role, "alert");
+  failed = false;
+  const check = panel.checkCalendarEvent(event);
+  const loading = panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "event-1");
+  assert.equal(loading.disabled, undefined);
+  assert.equal(loading.attributes["aria-disabled"], "true");
+  panel._detail = {...panel._detail, events: [{...event, title: "Edited"}]};
+  panel.render();
+  release({response: {pending_id: "import-1", event_id: "event-1",
+    matches: [], observed_calendars: ["calendar.family"]}});
+  await check;
+  assert.equal(panel._content.querySelector(".calendar-matches"), null);
+});
+
+test("keyboard calendar checks preserve button focus and announce the result", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending", calendar_entity: "calendar.family"};
+  let resolveCheck;
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return new Promise(resolve => {
+      resolveCheck = resolve;
+    });
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  const button = panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1");
+  panel.shadowRoot.activeElement = button; // Simulate focus in the shadow root.
+  const pending = panel.checkCalendarEvent(event);
+  const loadingButton = panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1");
+  assert.equal(globalThis.focusedNode, loadingButton);
+  assert.equal(loadingButton.attributes["aria-disabled"], "true");
+  assert.equal(loadingButton.attributes["aria-busy"], "true");
+  assert.match(panel._announcement.children[0].textContent, /Checking selected calendars/);
+  panel.shadowRoot.activeElement = loadingButton;
+  resolveCheck({response: {pending_id: "imp", event_id: "e1",
+    matches: [{kind: "possible_duplicate", calendar_entity: "calendar.family",
+      existing_title: "Dinner"}], observed_calendars: ["calendar.family"]}});
+  await pending;
+  assert.equal(globalThis.focusedNode, panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1"));
+  assert.equal(globalThis.focusedNode.attributes["aria-disabled"], undefined);
+  assert.equal(globalThis.focusedNode.attributes["aria-busy"], undefined);
+  assert.match(panel._announcement.children[0].textContent, /found 1 match/);
+  assert.equal(panel._content.querySelector(".calendar-matches").attributes.role, "region");
+});
+
+test("calendar check completion never replaces an in-progress edit", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending"};
+  let resolveCheck;
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return new Promise(resolve => {
+      resolveCheck = resolve;
+    });
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  const pending = panel.checkCalendarEvent(event);
+  const edit = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "e1" &&
+      button.textContent === "Edit Dinner");
+  edit.click();
+  const form = find(panel._content, "form");
+  form.elements.namedItem("title").value = "Important unsaved edit";
+  resolveCheck({response: {pending_id: "imp", event_id: "e1",
+    matches: [], observed_calendars: ["calendar.family"]}});
+  await pending;
+  assert.equal(find(panel._content, "form"), form);
+  assert.equal(form.elements.namedItem("title").value, "Important unsaved edit");
+  assert.equal(panel._calendarCheck, null);
+});
+
+test("calendar check completion doesn't steal focus after moving elsewhere", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending"};
+  let resolveCheck;
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return new Promise(resolve => {
+      resolveCheck = resolve;
+    });
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  const button = panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1");
+  panel.shadowRoot.activeElement = button;
+  const pending = panel.checkCalendarEvent(event);
+  const back = panel._content.querySelectorAll("button")
+    .find(item => item.textContent === "Back to inbox");
+  panel.shadowRoot.activeElement = back;
+  globalThis.focusedNode = back;
+  resolveCheck({response: {pending_id: "imp", event_id: "e1",
+    matches: [], observed_calendars: ["calendar.family"]}});
+  await pending;
+  assert.equal(globalThis.focusedNode, back);
+  assert.equal(panel._content.querySelectorAll("button").includes(back), true);
+  assert.match(panel._announcement.children[0].textContent, /no matches/);
+});
+
+test("inbox refresh invalidates a pending calendar check and allows a fresh check", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending"};
+  const checks = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return new Promise(resolve => {
+      checks.push(resolve);
+    });
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  const original = panel.checkCalendarEvent(event);
+  assert.equal(panel._calendarCheck.status, "loading");
+  await panel.refresh();
+  assert.equal(panel._calendarCheck, null);
+  const button = panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1");
+  assert.equal(button.attributes["aria-disabled"], undefined);
+
+  const freshCheck = panel.checkCalendarEvent(event);
+  assert.equal(checks.length, 2);
+  checks[0]({response: {pending_id: "imp", event_id: "e1",
+    matches: [{kind: "conflict", calendar_entity: "calendar.family",
+      existing_title: "Stale result"}], observed_calendars: ["calendar.family"]}});
+  await original;
+  assert.equal(panel._calendarCheck.status, "loading");
+  assert.equal(panel._content.querySelector(".calendar-matches")
+    .querySelectorAll("li").length, 0);
+  checks[1]({response: {pending_id: "imp", event_id: "e1",
+    matches: [], observed_calendars: ["calendar.family"]}});
+  await freshCheck;
+  assert.equal(panel._calendarCheck.status, "ready");
+  assert.match(panel._announcement.children[0].textContent, /no matches/);
+  assert.equal(panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1")
+    .attributes["aria-disabled"], undefined);
+});
+
+test("calendar checks work with real-browser-style NodeLists without find", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending"};
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return {response: {
+      pending_id: "imp", event_id: "e1", matches: [],
+      observed_calendars: ["calendar.family"]}};
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  const originalQuery = panel._content.querySelectorAll.bind(panel._content);
+  // Simulate a real NodeList: iterable with length and indexed access but no find.
+  panel._content.querySelectorAll = selector => {
+    const nodes = originalQuery(selector);
+    if (selector !== "button") return nodes;
+    return Object.assign(
+      {length: nodes.length, [Symbol.iterator]: function* () {yield* nodes;}},
+      Object.fromEntries(nodes.map((node, index) => [index, node])),
+    );
+  };
+  const button = originalQuery("button").find(item => item.dataset.calendarCheckEventId === "e1");
+  panel.shadowRoot.activeElement = button;
+  await panel.checkCalendarEvent(event);
+  assert.equal(panel._calendarCheck.status, "ready");
+  assert.match(panel._announcement.children[0].textContent, /no matches/);
+  assert.equal(globalThis.focusedNode.dataset.calendarCheckEventId, "e1");
+  assert.equal(globalThis.focusedNode.attributes["aria-busy"], undefined);
+});
+
+test("calendar observation errors appear once in the results and live announcement", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending"};
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") {
+      throw new Error("Calendar check incomplete: Calendar observation is unavailable");
+    }
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  await panel.checkCalendarEvent(event);
+  const message = "Calendar check incomplete: Calendar observation is unavailable";
+  assert.equal(panel._content.querySelector(".calendar-matches").querySelector(".error").textContent,
+    message);
+  assert.equal(panel._announcement.children[0].textContent, message);
+});
+
+test("checks across multiple events are single-flight and re-enable all controls", async () => {
+  const a = {id: "event-a", title: "School", start: "2026-10-12",
+    end: "2026-10-13", all_day: true, status: "pending"};
+  const b = {...a, id: "event-b", title: "Soccer"};
+  const resolves = [];
+  const requests = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "import"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "import", source_kind: "manual_text", events: [a, b]}}};
+    if (request.service === "check_pending_event") {
+      requests.push(request);
+      return new Promise(resolve => resolves.push(resolve));
+    }
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("import");
+  const control = id => panel._content.querySelectorAll("button")
+    .find(button => button.dataset.calendarCheckEventId === id);
+  const pendingA = panel.checkCalendarEvent(a);
+  assert.equal(requests.length, 1);
+  assert.equal(control("event-a").attributes["aria-disabled"], "true");
+  assert.equal(control("event-a").attributes["aria-busy"], "true");
+  assert.equal(control("event-b").attributes["aria-disabled"], "true");
+  assert.equal(control("event-b").attributes["aria-busy"], undefined);
+  // Both direct invocation and user interaction must reject duplicate work.
+  control("event-b").click();
+  await panel.checkCalendarEvent(b);
+  await panel.checkCalendarEvent(a);
+  assert.equal(requests.length, 1);
+  resolves[0]({response: {pending_id: "import", event_id: "event-a",
+    observed_calendars: ["calendar.family"], matches: [{
+      kind: "exact_duplicate", calendar_entity: "calendar.family", existing_title: "School",
+    }]}});
+  await pendingA;
+  assert.equal(panel._calendarCheck.event, a);
+  assert.equal(panel._calendarCheck.status, "ready");
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("li").textContent,
+    /Exact duplicate: School/);
+  assert.equal(control("event-a").attributes["aria-disabled"], undefined);
+  assert.equal(control("event-b").attributes["aria-disabled"], undefined);
+
+  const pendingB = panel.checkCalendarEvent(b);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].service_data.event_id, "event-b");
+  resolves[1]({response: {pending_id: "import", event_id: "event-b",
+    observed_calendars: ["calendar.family"], matches: []}});
+  await pendingB;
+  assert.equal(panel._calendarCheck.event, b);
+  assert.equal(panel._calendarCheck.status, "ready");
+  assert.equal(control("event-a").attributes["aria-disabled"], undefined);
+  assert.equal(control("event-b").attributes["aria-disabled"], undefined);
+  assert.match(panel._announcement.children[0].textContent, /no matches/);
+});
+
+test("failed calendar checks re-enable other events for retry", async () => {
+  const a = {id: "a", title: "Event A", start: "2026-10-12",
+    end: "2026-10-13", all_day: true, status: "pending"};
+  const b = {...a, id: "b", title: "Event B"};
+  let rejectRead;
+  let attempts = 0;
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "one"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "one", source_kind: "manual_text", events: [a, b]}}};
+    if (request.service === "check_pending_event") {
+      attempts++;
+      if (attempts === 1) return new Promise((_resolve, reject) => {rejectRead = reject;});
+      return {response: {pending_id: "one", event_id: "b",
+        observed_calendars: ["calendar.family"], matches: []}};
+    }
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("one");
+  const first = panel.checkCalendarEvent(a);
+  rejectRead(new Error("Calendar check incomplete: Temporarily unavailable"));
+  await first;
+  assert.equal(panel._calendarCheck.status, "error");
+  const secondButton = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.calendarCheckEventId === "b");
+  assert.equal(secondButton.attributes["aria-disabled"], undefined);
+  await panel.checkCalendarEvent(b);
+  assert.equal(attempts, 2);
+  assert.equal(panel._calendarCheck.status, "ready");
 });
