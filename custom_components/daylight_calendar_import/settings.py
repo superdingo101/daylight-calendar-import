@@ -335,14 +335,17 @@ async def async_save_option_patch(
             hass.config_entries.async_update_entry(entry, options=merged)
     else:
         hass.config_entries.async_update_entry(entry, options=merged)
+    reloaded = False
     try:
         reloaded = await hass.config_entries.async_reload(entry.entry_id)
     finally:
         if (
-            calendar_scope_changed
+            calendar_scope_changed and reloaded
             and hass.data.get(DOMAIN, {}).get(entry.entry_id) is pending_store
         ):
             pending_store.accepting_services = was_accepting
+        # A failed reload leaves persisted new options with old runtime closures.
+        # Keep the old store closed rather than accepting writes to removed calendars.
     if not reloaded:
         raise SettingsValidationError(
             "reload_failed",

@@ -66,7 +66,9 @@ loaded and its durable queue therefore cannot be checked. If a submission,
 service handler or IMAP poll is running it fails with `calendar_change_busy`
 rather than switching calendar settings under active ingestion. On successful
 validation, admission of new services and scheduled polls is suspended until
-the config entry finishes reloading (or the update fails). AI-only and
+the config entry finishes reloading successfully. If reloading fails after the new
+options are persisted, the old runtime remains closed until restart rather
+than ingesting events under stale calendar configuration. AI-only and
 unchanged-calendar updates are not subject to the queue gate.
 
 ## Update Direct IMAP settings

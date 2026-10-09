@@ -526,6 +526,6 @@ async def test_scheduled_poll_does_not_start_during_calendar_settings_reload():
     runtime._schedule_poll(None)
     assert hass.created_tasks == []
     store.accepting_services = True
-    runtime._schedule_poll(None)
+    runtime.on_entry_ready()
     assert len(hass.created_tasks) == 1
     await runtime.async_stop()

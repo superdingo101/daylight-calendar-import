@@ -88,7 +88,7 @@ submit_pdf:
 
 approve_pending:
   name: Approve pending import
-  description: Create all events from a pending import on the configured calendar, then remove it from review.
+  description: Create all events from a pending import after every unresolved calendar hint has been explicitly confirmed in the event editor. Unresolved routing blocks the batch before any calendar is written.
   fields:
     pending_id:
       name: Pending import ID
@@ -223,7 +223,7 @@ reject_pending_event:
 
 approve_pending_event:
   name: Approve pending event
-  description: Create one event on the configured calendar using durable checkpoints, leaving sibling events for review.
+  description: Create one draft on its selected calendar with durable checkpoints. An unknown or conflicting source calendar hint must first be explicitly resolved by selecting a destination in edit_pending_event.
   fields:
     pending_id:
       name: Pending import ID

@@ -96,6 +96,10 @@ class EmailPollingRuntime:
         )
         self._schedule_poll(None)
 
+    def on_entry_ready(self) -> None:
+        """Launch the first poll once service admission opens after setup."""
+        self._schedule_poll(None)
+
     async def async_stop(self) -> None:
         """Stop future polls and finish cancellation of an active poll."""
         if self._cancel_interval is not None:
