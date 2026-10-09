@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -10,6 +9,8 @@ import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
+
+from tests.hosted_contract import _decode_strict
 
 ROOT = Path(__file__).resolve().parents[1]
 if not (ROOT / "schemas").is_dir():
@@ -28,6 +29,13 @@ SCHEMA_FILES = (
     "parse-request.schema.json",
     "parse-response.schema.json",
     "error.schema.json",
+    "delivery-attachment.schema.json",
+    "delivery-source.schema.json",
+    "delivery-item.schema.json",
+    "delivery-page.schema.json",
+    "delivery-claim-request.schema.json",
+    "delivery-ack-request.schema.json",
+    "delivery-ack-response.schema.json",
 )
 
 VALID_FIXTURES = (
@@ -38,6 +46,11 @@ VALID_FIXTURES = (
     ("parse-response.schema.json", "parse-response-long-description.json"),
     ("parse-response.schema.json", "parse-response-partial.json"),
     ("error.schema.json", "error-provider-rate-limited.json"),
+    ("delivery-claim-request.schema.json", "delivery-claim-request.json"),
+    ("delivery-page.schema.json", "delivery-page-text.json"),
+    ("delivery-page.schema.json", "delivery-page-attachment.json"),
+    ("delivery-ack-request.schema.json", "delivery-ack-request.json"),
+    ("delivery-ack-response.schema.json", "delivery-ack-response.json"),
 )
 
 INVALID_FIXTURES = (
@@ -45,11 +58,19 @@ INVALID_FIXTURES = (
     ("parse-request.schema.json", "parse-request-unsupported-media.json"),
     ("parse-response.schema.json", "parse-response-invalid-confidence.json"),
     ("error.schema.json", "error-missing-retryable.json"),
+    ("delivery-claim-request.schema.json", "delivery-claim-request-missing-version.json"),
+    ("delivery-claim-request.schema.json", "delivery-claim-request-extra-field.json"),
+    ("delivery-page.schema.json", "delivery-page-missing-lease-token.json"),
+    ("delivery-page.schema.json", "delivery-page-extra-metadata.json"),
+    ("delivery-page.schema.json", "delivery-page-attachment-missing-sha256.json"),
+    ("delivery-ack-request.schema.json", "delivery-ack-request-missing-token.json"),
+    ("delivery-ack-request.schema.json", "delivery-ack-request-short-token.json"),
+    ("delivery-ack-response.schema.json", "delivery-ack-response-invalid-status.json"),
 )
 
 
 def _load(path: Path) -> object:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _decode_strict(path.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")

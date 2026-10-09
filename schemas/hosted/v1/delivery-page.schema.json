@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/delivery-page.schema.json",
+  "title": "Daylight H3 bounded source claim response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "deliveries"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "deliveries": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "$ref": "https://docs.daylightcalendar.com/schemas/hosted/v1/delivery-item.schema.json"
+      }
+    }
+  }
+}

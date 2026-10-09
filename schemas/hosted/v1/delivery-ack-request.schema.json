@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/delivery-ack-request.schema.json",
+  "title": "Daylight H3 durable acknowledgement request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "lease_token"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "lease_token": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{32,256}(?![\\s\\S])"
+    }
+  }
+}
