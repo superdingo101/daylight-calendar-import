@@ -290,8 +290,6 @@ async def async_save_option_patch(
         )
 
     def verify_pending_and_admission() -> None:
-        if not calendar_scope_changed:
-            return
         runtime = getattr(pending_store, "email_runtime", None)
         poll = getattr(runtime, "_task", None)
         if (
