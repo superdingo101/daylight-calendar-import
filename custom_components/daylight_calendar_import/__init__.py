@@ -556,6 +556,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         event = pending_store.get_event(pending_id, event_id)
         if event is None:
             raise ServiceValidationError(f"Pending event not found: {pending_id}/{event_id}")
+        try:
+            expected = _expected_event(call.data.get("expected_event"), event_id)
+        except (DraftValidationError, PendingEventEditError) as err:
+            raise ServiceValidationError(str(err)) from err
+        if expected is not None and expected != event:
+            raise ServiceValidationError("Event changed since it was loaded; refresh before checking")
         destination = event_calendar(event)
         _, conflict_calendars = effective_calendar_intelligence(entry)
         scope = list(dict.fromkeys([destination, *conflict_calendars]))
@@ -567,6 +573,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         except CalendarObservationError as err:
             raise ServiceValidationError(f"Calendar check incomplete: {err}") from err
+        # Provider reads await external entities; edits and review decisions
+        # can occur meanwhile. Never label an old result as the current draft.
+        if pending_store.get_event(pending_id, event_id) != event:
+            raise ServiceValidationError("Pending event changed during calendar check; refresh")
         return {
             "pending_id": pending_id,
             "event_id": event_id,
