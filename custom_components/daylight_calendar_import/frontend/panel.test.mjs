@@ -4537,3 +4537,59 @@ test("inbox refresh invalidates a pending calendar check and allows a fresh chec
     .find(item => item.dataset.calendarCheckEventId === "e1")
     .attributes["aria-disabled"], undefined);
 });
+
+test("calendar checks work with real-browser-style NodeLists without find", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending"};
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return {response: {
+      pending_id: "imp", event_id: "e1", matches: [],
+      observed_calendars: ["calendar.family"]}};
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  const originalQuery = panel._content.querySelectorAll.bind(panel._content);
+  // Simulate a real NodeList: iterable with length and indexed access but no find.
+  panel._content.querySelectorAll = selector => {
+    const nodes = originalQuery(selector);
+    if (selector !== "button") return nodes;
+    return Object.assign(
+      {length: nodes.length, [Symbol.iterator]: function* () {yield* nodes;}},
+      Object.fromEntries(nodes.map((node, index) => [index, node])),
+    );
+  };
+  const button = originalQuery("button").find(item => item.dataset.calendarCheckEventId === "e1");
+  panel.shadowRoot.activeElement = button;
+  await panel.checkCalendarEvent(event);
+  assert.equal(panel._calendarCheck.status, "ready");
+  assert.match(panel._announcement.children[0].textContent, /no matches/);
+  assert.equal(globalThis.focusedNode.dataset.calendarCheckEventId, "e1");
+  assert.equal(globalThis.focusedNode.attributes["aria-busy"], undefined);
+});
+
+test("calendar observation errors appear once in the results and live announcement", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending"};
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") {
+      throw new Error("Calendar check incomplete: Calendar observation is unavailable");
+    }
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  await panel.checkCalendarEvent(event);
+  const message = "Calendar check incomplete: Calendar observation is unavailable";
+  assert.equal(panel._content.querySelector(".calendar-matches").querySelector(".error").textContent,
+    message);
+  assert.equal(panel._announcement.children[0].textContent, message);
+});
