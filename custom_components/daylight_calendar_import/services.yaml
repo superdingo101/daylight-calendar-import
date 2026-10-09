@@ -228,7 +228,7 @@ reject_pending_event:
 
 approve_pending_event:
   name: Approve pending event
-  description: Create one draft on its selected calendar with durable checkpoints. An unknown or conflicting source calendar hint must first be explicitly resolved by selecting a destination in edit_pending_event.
+  description: Create one draft with durable checkpoints after checking its destination calendar for exact duplicates. Existing exact duplicates and unavailable calendar observations block approval without starting a write. Resolve unknown or conflicting source calendar hints first.
   fields:
     pending_id:
       name: Pending import ID
