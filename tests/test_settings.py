@@ -1575,3 +1575,20 @@ async def test_explicit_pending_destination_survives_default_calendar_change():
     assert hass.config_entries.reloads == ["entry-1"]
     assert store.accepting_services is True
     assert store.calendar_settings_reload_guard is False
+
+
+def test_conflict_calendar_scope_rejection_keeps_exact_actionable_error():
+    """The API must explain why the observation union is limited to fifteen."""
+    from custom_components.daylight_calendar_import.settings import calendar_intelligence_patch
+
+    options = {"conflict_calendar_entities": [f"calendar.school_{i}" for i in range(16)]}
+    with pytest.raises(SettingsValidationError) as error:
+        calendar_intelligence_patch(entry(), options)
+    assert error.value.code == "conflict_calendar_limit"
+    assert str(error.value) == (
+        "Select no more than 15 conflict calendars; the destination "
+        "calendar is checked separately."
+    )
+    assert calendar_intelligence_patch(
+        entry(), {"conflict_calendar_entities": options["conflict_calendar_entities"][:15]}
+    ) == {"conflict_calendar_entities": options["conflict_calendar_entities"][:15]}
