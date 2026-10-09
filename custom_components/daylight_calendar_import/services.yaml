@@ -156,7 +156,7 @@ get_pending_event:
 
 check_pending_event:
   name: Check pending event against calendars
-  description: Read selected calendars for exact duplicates, possible duplicates, and conflicts without writing events. An unavailable calendar returns an error, not an empty match list.
+  description: Read selected calendars for exact duplicates, possible duplicates, and conflicts without writing. Unavailable calendars, windows over 90 days, scopes over 16 calendars, or more than 500 total returned events cause an error rather than silently truncated results.
   fields:
     pending_id:
       name: Pending import ID
