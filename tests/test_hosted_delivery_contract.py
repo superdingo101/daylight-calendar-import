@@ -68,30 +68,51 @@ def _source_evidence_sha256(source: dict) -> str:
     return sha256(canonical).hexdigest()
 
 
-def _check_checkpoint_evidence(claim: dict, saved: dict, recovered: dict) -> None:
-    """A restart cannot trade a durable source identity for verified contents."""
+def _check_recovered_checkpoint(
+    saved: dict, recovered: dict, *, expected_local_entry_id: str
+) -> None:
+    """Validate an ACK checkpoint using only locally available identity.
+
+    The pre-restart claim and Cloud source may both be unavailable after ACK.
+    The caller obtains expected_local_entry_id from the current HA config entry,
+    never from an untrusted stored checkpoint.
+    """
     from custom_components.daylight_calendar_import.dedup import source_fingerprint
 
-    expected = source_fingerprint(
-        f"hosted:{claim['local_config_entry_id']}:{claim['delivery_id']}"
+    assert saved["local_config_entry_id"] == expected_local_entry_id
+    assert recovered["local_config_entry_id"] == expected_local_entry_id
+    assert saved["delivery_id"] and recovered["delivery_id"]
+    assert saved["delivery_id"] == recovered["delivery_id"]
+    expected_fingerprint = source_fingerprint(
+        f"hosted:{expected_local_entry_id}:{recovered['delivery_id']}"
     )
-    assert saved["source_fingerprint"] == expected
-    assert recovered["source_fingerprint"] == expected
+    assert saved["source_fingerprint"] == expected_fingerprint
+    assert recovered["source_fingerprint"] == expected_fingerprint
+    assert saved["source_evidence_sha256"] == recovered["source_evidence_sha256"]
+    assert len(recovered["source_evidence_sha256"]) == 64
+    assert saved["source_expires_at"] == recovered["source_expires_at"]
+    assert saved["lease_token"] == recovered["lease_token"]
+    assert saved["verified_attachments"] == recovered["verified_attachments"]
+    assert saved["attachments_verification_complete"] is True
+    assert recovered["attachments_verification_complete"] is True
+
+
+def _check_checkpoint_evidence(claim: dict, saved: dict, recovered: dict) -> None:
+    """Verify source and attachment evidence before the original ACK."""
+    _check_recovered_checkpoint(
+        saved, recovered, expected_local_entry_id=claim["local_config_entry_id"]
+    )
+    assert saved["delivery_id"] == claim["delivery_id"]
+    assert recovered["delivery_id"] == claim["delivery_id"]
     assert saved["source_expires_at"] == claim["source_expires_at"]
     assert saved["lease_token"] == claim["token"]
     assert saved["verified_attachments"] == {
         attachment["id"]: attachment["sha256"]
         for attachment in claim["source"]["attachments"]
     }
-    assert saved["attachments_verification_complete"] is True
-    assert recovered["source_expires_at"] == claim["source_expires_at"]
-    assert recovered["lease_token"] == saved["lease_token"]
-    assert recovered["verified_attachments"] == saved["verified_attachments"]
-    assert recovered["attachments_verification_complete"] is True
-    expected = _source_evidence_sha256(claim["source"])
-    assert saved["source_evidence_sha256"] == expected
-    assert recovered["source_evidence_sha256"] == expected
-
+    expected_evidence = _source_evidence_sha256(claim["source"])
+    assert saved["source_evidence_sha256"] == expected_evidence
+    assert recovered["source_evidence_sha256"] == expected_evidence
 
 @pytest.fixture(scope="module")
 def schema_registry() -> tuple[dict[str, dict], Registry]:
