@@ -150,16 +150,22 @@ RESOLVE_EVENT_SCHEMA = vol.Schema(
 )
 
 
-def _expected_event(raw: dict | None, event_id: str) -> PendingEvent | None:
-    """Decode an optional review snapshot for atomic decision checks."""
+def _expected_event(
+    raw: dict | None, event_id: str, *, allow_uncertain: bool = False,
+) -> PendingEvent | None:
+    """Decode a review snapshot; decisions require pending, reads may be uncertain."""
     if raw is None:
         return None
-    if raw.get("id") != event_id or raw.get("status") != "pending":
+    status = raw.get("status")
+    if raw.get("id") != event_id or (
+        status != "pending" and not (allow_uncertain and status == "write_uncertain")
+    ):
         raise PendingEventEditError("Event changed since it was loaded; refresh before deciding")
     return PendingEvent(
-        event_id, EventDraft.from_mapping(raw), raw["status"],
+        event_id, EventDraft.from_mapping(raw), status,
         raw.get(CONF_CALENDAR_ENTITY),
-        routing_unresolved=raw.get("routing_unresolved", False),
+        raw.get("write_attempt") if allow_uncertain else None,
+        raw.get("routing_unresolved", False),
     )
 
 
@@ -557,7 +563,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if event is None:
             raise ServiceValidationError(f"Pending event not found: {pending_id}/{event_id}")
         try:
-            expected = _expected_event(call.data.get("expected_event"), event_id)
+            expected = _expected_event(
+                call.data.get("expected_event"), event_id, allow_uncertain=True,
+            )
         except (DraftValidationError, PendingEventEditError) as err:
             raise ServiceValidationError(str(err)) from err
         if expected is not None and expected != event:
