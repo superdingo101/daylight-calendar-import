@@ -2673,3 +2673,47 @@ async def test_check_pending_event_rejects_missing_review_event(monkeypatch):
             context=Context(user_id="reviewer"),
         ))
 
+
+
+async def test_calendar_check_accepts_uncertain_write_snapshot_without_decision_side_effect(monkeypatch):
+    """Read-only checks can inspect uncertainty while approval remains blocked."""
+    from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
+    original = pending().events[0]
+    uncertain = replace(original, status="write_uncertain", write_attempt="attempt-one",
+                        routing_unresolved=True)
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get_event=Mock(return_value=uncertain),
+    )
+    observer = AsyncMock(return_value=())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store,
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_classify_conflicts", observer,
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    hass.config = SimpleNamespace(time_zone="America/Los_Angeles")
+    assert await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_CHECK_PENDING_EVENT)]
+    request = SimpleNamespace(
+        data={
+            ATTR_PENDING_ID: "pending",
+            ATTR_EVENT_ID: uncertain.id,
+            "expected_event": uncertain.as_service_dict(),
+        },
+        context=Context(user_id="reviewer"),
+    )
+    response = await handler(request)
+    assert response["matches"] == []
+    observer.assert_awaited_once()
+    # A prior write attempt cannot be silently treated as the same snapshot.
+    request.data["expected_event"] = {
+        **uncertain.as_service_dict(), "write_attempt": "different-attempt",
+    }
+    with pytest.raises(ServiceValidationError, match="changed since it was loaded"):
+        await handler(request)
+    observer.assert_awaited_once()
+    # Decision handlers remain pending-only; expanding read access must not
+    # allow a write-uncertain event to bypass explicit recovery.
+    with pytest.raises(PendingEventEditError, match="refresh before deciding"):
+        _expected_event(uncertain.as_service_dict(), uncertain.id)
