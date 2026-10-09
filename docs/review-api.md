@@ -174,6 +174,10 @@ the schedule is empty. The review panel uses these results as an optional, on-de
 calendar check, not as an approval decision. At **approval time**, the
 single-event and bulk approval actions make a fresh read of *each event's
 destination calendar only* before recording its durable write checkpoint.
+The approval action labels preflight failures with `Approval rejected before
+calendar write:` to distinguish definite non-writes from ambiguous failures
+after a durable write checkpoint. The bulk review panel preserves that
+distinction; failures without this explicit marker remain potentially uncertain.
 An exact match blocks that event's write; possible duplicates and scheduling
 overlaps remain advisory. For long events, the mandatory exact-duplicate
 preflight queries a bounded window covering the draft's start (at most 89
