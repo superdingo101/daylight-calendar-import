@@ -245,6 +245,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
         source_id="message-1",
         calendar_entity="calendar.family",
         warnings=[],
+        routing_unresolved=False,
         activity_id="activity-id",
     )
 
@@ -771,6 +772,7 @@ async def test_submit_text_without_events_records_source_handling(monkeypatch):
         source_id=None,
         calendar_entity="calendar.family",
         warnings=[],
+        routing_unresolved=False,
         activity_id="activity-id",
     )
 
@@ -1364,6 +1366,7 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
         source_id="message-42",
         calendar_entity="calendar.family",
         warnings=[],
+        routing_unresolved=False,
         activity_id="activity-id",
     )
 
@@ -1956,6 +1959,7 @@ async def test_setup_email_runtime_reuses_parser_store_and_default_calendar(
         source_title="School notice",
         source_sender="Teacher <teacher@example.test>",
         warnings=["Review time"],
+        routing_unresolved=False,
         activity_id="email-activity",
     )
 
@@ -2491,3 +2495,25 @@ async def test_unresolved_manual_hint_is_review_warning_not_writable_override(mo
 def test_routing_snapshot_preserves_confirmation_state():
     original = PendingEvent("event-id", draft(), routing_unresolved=True)
     assert _expected_event(original.as_service_dict(), original.id) == original
+
+
+async def test_bulk_approval_rejects_unresolved_routing_before_writes(monkeypatch):
+    store = SimpleNamespace(
+        async_load=AsyncMock(), async_begin_submission=AsyncMock(return_value="activity-id"),
+        get=Mock(return_value=None),
+        async_process_events=AsyncMock(side_effect=PendingEventEditError(
+            "Confirm the destination calendar in the event editor before approval")),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _: store,
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)]
+    with pytest.raises(ServiceValidationError, match="Confirm the destination"):
+        await handler(SimpleNamespace(
+            data={ATTR_PENDING_ID: "pending-1"},
+            context=Context(user_id="reviewer"),
+        ))
+    assert hass.services.calls == []
