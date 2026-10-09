@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DESCRIPTION
 from homeassistant.core import Context, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError, Unauthorized, UnknownUser
+from homeassistant.util import dt as dt_util
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
@@ -31,6 +32,7 @@ from .const import (
     SERVICE_EDIT_PENDING_EVENT,
     SERVICE_GET_PENDING,
     SERVICE_GET_PENDING_EVENT,
+    SERVICE_CHECK_PENDING_EVENT,
     SERVICE_IMPORT_TEXT,
     SERVICE_LIST_PENDING,
     SERVICE_LIST_ACTIVITY,
@@ -48,6 +50,7 @@ from .email_runtime import (
     email_review_source_text,
 )
 from .models import DraftValidationError, EventDraft
+from .calendar_observation import CalendarObservationError, async_classify_conflicts
 from .parser import ParseOutcome, async_parse_source as parse_source_with_provider
 from .pdfs import async_pdf_source
 from .providers import SourceValidationError
@@ -82,6 +85,7 @@ _ENTRY_SERVICES = (
     SERVICE_GET_ACTIVITY,
     SERVICE_GET_PENDING,
     SERVICE_GET_PENDING_EVENT,
+    SERVICE_CHECK_PENDING_EVENT,
     SERVICE_EDIT_PENDING_EVENT,
     SERVICE_REJECT_PENDING_EVENT,
     SERVICE_APPROVE_PENDING_EVENT,
@@ -544,6 +548,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         return {"pending_id": pending_id, "event": event.as_service_dict()}
 
+    async def handle_check_pending_event(call: ServiceCall) -> ServiceResponse:
+        """Read-only, user-authorized on-demand calendar observation."""
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+        event = pending_store.get_event(pending_id, event_id)
+        if event is None:
+            raise ServiceValidationError(f"Pending event not found: {pending_id}/{event_id}")
+        destination = event_calendar(event)
+        _, conflict_calendars = effective_calendar_intelligence(entry)
+        scope = list(dict.fromkeys([destination, *conflict_calendars]))
+        try:
+            matches = await async_classify_conflicts(
+                hass, event.draft, observed_calendars=scope,
+                local_zone=dt_util.get_time_zone(hass.config.time_zone),
+                context=call.context,
+            )
+        except CalendarObservationError as err:
+            raise ServiceValidationError(f"Calendar check incomplete: {err}") from err
+        return {
+            "pending_id": pending_id,
+            "event_id": event_id,
+            "matches": [
+                {"kind": item.kind, "calendar_entity": item.calendar_entity,
+                 "existing_title": item.existing_title}
+                for item in matches
+            ],
+            "observed_calendars": scope,
+        }
+
     async def handle_edit_pending_event(call: ServiceCall) -> ServiceResponse:
         await check_read_permission(call)
         pending_id = call.data[ATTR_PENDING_ID]
@@ -739,6 +773,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         hass.services.async_register(
             DOMAIN, SERVICE_GET_PENDING_EVENT, tracked(handle_get_pending_event),
+            schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_CHECK_PENDING_EVENT, tracked(handle_check_pending_event),
             schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
         )
         hass.services.async_register(
