@@ -2000,6 +2000,9 @@ export class DaylightImportPanel extends HTMLElement {
         card.append(element("h3", event.title || "Untitled event"));
         card.append(element("p", `${eventRange(event, this._hass)}${event.all_day ? " · All day" : ""}`));
         card.append(element("p", `Calendar: ${event.calendar_entity || "Default"} · Status: ${event.status}`));
+        if (event.routing_unresolved) {
+          card.append(element("p", "Routing hint was unrecognized or conflicting. Edit this event, choose its destination calendar, then save before approval.", "error"));
+        }
         if (typeof event.confidence === "number") {
           card.append(element("p", `AI extraction confidence: ${Math.round(event.confidence * 100)}% (estimate)`));
         }
@@ -2060,6 +2063,7 @@ export class DaylightImportPanel extends HTMLElement {
             button.type = "button";
             button.dataset.action = action;
             button.dataset.eventId = event.id;
+            if (action === "approve" && event.routing_unresolved) button.disabled = true;
             button.addEventListener("click", () => {
               if (this._saving || this._editingId || this._decision) return;
               this._decision = {id: event.id, action};
