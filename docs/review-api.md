@@ -108,3 +108,22 @@ guarantee: an abrupt shutdown between store commit and bus publication can
 lose a notification, and events are not replayed when Home Assistant
 restarts. The pending queue and its sensors remain the authoritative state.
 Duplicate/empty submissions do not publish a new pending-added event.
+
+
+## On-demand existing-calendar checks (v0.6)
+
+The response-enabled `daylight_calendar_import.check_pending_event` action accepts
+`pending_id` and `event_id`. It observes the event's configured destination
+and the independently selected conflict-observation calendars. The requested
+user must be authorized to view these calendars; observation never confers
+write permissions.
+
+A successful response contains `observed_calendars` and a `matches` list
+of bounded entries with `kind` (`exact_duplicate`, `possible_duplicate`, or
+`conflict`), `calendar_entity` and `existing_title`. The response does not
+include event descriptions, attendees, or meeting credentials.
+
+The read is a *point-in-time advisory check*: results can change before
+approval. Calendar access failures are explicit errors, **not** a signal that
+the schedule is empty. This API does not yet enforce a write-time duplicate
+guard or add conflict UI; those are separate scoped changes.
