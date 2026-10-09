@@ -2946,3 +2946,41 @@ async def test_terminal_source_failure_propagates_deferred_cancellation(monkeypa
             source_id="<terminal@example.test>",
             guidance="Terminal",
         )
+
+
+async def test_routing_confirmation_is_durable_and_blocks_single_and_bulk_writes(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(
+        source_text="Calendar: unknown\nPractice", events=[draft(), second_draft()],
+        calendar_entity="calendar.family", routing_unresolved=True,
+    )).pending
+    assert item is not None
+    first, second = item.events
+    writes = []
+
+    async def write(event):
+        writes.append(event.id)
+
+    with pytest.raises(PendingEventEditError, match="Confirm the destination"):
+        await store.async_approve_event(item.id, first.id, write)
+    with pytest.raises(PendingEventEditError, match="Confirm the destination"):
+        await store.async_process_events(item.id, write)
+    assert writes == []
+    assert await store.async_edit_event(item.id, first.id, draft()) == first
+    confirmed = await store.async_edit_event(
+        item.id, first.id, draft(), calendar_entity="calendar.family",
+        expected_event=first,
+    )
+    assert confirmed is not None and not confirmed.routing_unresolved
+    assert store.get_event(item.id, second.id).routing_unresolved
+    backend.load_result = backend.saved[-1]
+    restored = make_store(monkeypatch, backend)
+    await restored.async_load()
+    assert not restored.get_event(item.id, first.id).routing_unresolved
+    assert restored.get_event(item.id, second.id).routing_unresolved
+    await restored.async_approve_event(item.id, first.id, write)
+    assert writes == [first.id]
+    with pytest.raises(PendingEventEditError, match="Confirm the destination"):
+        await restored.async_approve_event(item.id, second.id, write)
