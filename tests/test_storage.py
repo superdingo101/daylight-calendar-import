@@ -2965,7 +2965,7 @@ async def test_routing_confirmation_is_durable_and_blocks_single_and_bulk_writes
 
     with pytest.raises(PendingEventEditError, match="Confirm the destination"):
         await store.async_approve_event(item.id, first.id, write)
-    with pytest.raises(PendingEventEditError, match="Confirm the destination"):
+    with pytest.raises(PendingEventEditError, match="Confirm all event destinations"):
         await store.async_process_events(item.id, write)
     assert writes == []
     assert await store.async_edit_event(item.id, first.id, draft()) == first
