@@ -3008,3 +3008,42 @@ async def test_bulk_route_preflight_refuses_mixed_events_before_first_side_effec
     assert writes == []
     assert store.get_event(item.id, second.id).routing_unresolved
     assert store.get_event(item.id, first.id).status == "pending"
+
+
+@pytest.mark.parametrize("warning", [
+    "Calendar routing hint is not configured or allowed. "
+    "Check the destination calendar during review.",
+    "Conflicting calendar routing hints. "
+    "Check the destination calendar during review.",
+])
+def test_legacy_unresolved_route_is_migrated_without_reflagging_confirmation(warning):
+    original = PendingImport.create(
+        source_text="Practice",
+        events=[draft(), second_draft()],
+        calendar_entity="calendar.family",
+        warnings=[warning],
+    )
+    old_payload = original.as_dict()
+    for event in old_payload["events"]:
+        del event["routing_unresolved"]  # Old release has no per-event field.
+    loaded = PendingImport.from_dict(old_payload)
+    assert all(event.routing_unresolved for event in loaded.events)
+    # An intentional destination save clears the warning only on that event,
+    # even while the parent import's historical routing warning is retained.
+    old_payload["events"][0]["routing_unresolved"] = False
+    restarted = PendingImport.from_dict(old_payload)
+    assert restarted.events[0].routing_unresolved is False
+    assert restarted.events[1].routing_unresolved is True
+    assert restarted.as_dict()["events"][0]["routing_unresolved"] is False
+    assert restarted.as_dict()["events"][1]["routing_unresolved"] is True
+    assert PendingImport.from_dict(restarted.as_dict()) == restarted
+
+
+def test_legacy_regular_pending_import_keeps_approved_routing_compatibility():
+    original = PendingImport.create(
+        source_text="Practice", events=[draft()], calendar_entity="calendar.family",
+        warnings=["Review extracted times"],
+    )
+    raw = original.as_dict()
+    del raw["events"][0]["routing_unresolved"]
+    assert PendingImport.from_dict(raw).events[0].routing_unresolved is False

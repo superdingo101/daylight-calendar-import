@@ -20,6 +20,7 @@ from .dedup import (
     source_fingerprint as build_source_fingerprint,
 )
 from .models import EventDraft
+from .source_routing import LEGACY_UNRESOLVED_WARNINGS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -79,8 +80,9 @@ class PendingEvent:
                   "calendar_entity": self.calendar_entity}
         if self.write_attempt is not None:
             result["write_attempt"] = self.write_attempt
-        if self.routing_unresolved:
-            result["routing_unresolved"] = True
+        # Explicit False distinguishes confirmed legacy events from records
+        # that predate the per-event routing flag entirely.
+        result["routing_unresolved"] = self.routing_unresolved
         return result
 
     def as_service_dict(self) -> dict[str, Any]:
@@ -187,7 +189,15 @@ class PendingImport:
             id=raw["id"],
             created_at=raw["created_at"],
             source_text=raw["source_text"],
-            events=tuple(PendingEvent.from_dict(event) for event in raw["events"]),
+            events=tuple(
+                replace(PendingEvent.from_dict(event), routing_unresolved=True)
+                if (
+                    "routing_unresolved" not in event
+                    and any(warning in LEGACY_UNRESOLVED_WARNINGS
+                            for warning in raw.get("warnings", ()))
+                ) else PendingEvent.from_dict(event)
+                for event in raw["events"]
+            ),
             source_fingerprint=raw.get("source_fingerprint"),
             source_kind=raw.get("source_kind", "manual_text"),
             source_title=raw.get("source_title"),
