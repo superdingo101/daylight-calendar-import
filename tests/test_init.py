@@ -1268,6 +1268,7 @@ async def test_service_registration_contracts(monkeypatch):
         SERVICE_LIST_PENDING: (None, SupportsResponse.ONLY),
         SERVICE_GET_PENDING: (PENDING_SCHEMA, SupportsResponse.ONLY),
         SERVICE_GET_PENDING_EVENT: (PENDING_EVENT_SCHEMA, SupportsResponse.ONLY),
+        "check_pending_event": (PENDING_EVENT_SCHEMA, SupportsResponse.ONLY),
         SERVICE_EDIT_PENDING_EVENT: (EDIT_EVENT_SCHEMA, SupportsResponse.ONLY),
         SERVICE_REJECT_PENDING_EVENT: (
             PENDING_EVENT_SCHEMA,
@@ -2518,3 +2519,83 @@ async def test_bulk_approval_rejects_unresolved_routing_before_writes(monkeypatc
             context=Context(user_id="reviewer"),
         ))
     assert hass.services.calls == []
+
+
+async def test_check_pending_event_uses_read_only_observer_and_configured_scope(monkeypatch):
+    from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
+    from custom_components.daylight_calendar_import.calendar_match import CalendarMatch
+    item = pending()
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get_event=Mock(return_value=item.events[0]),
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    hass.config = SimpleNamespace(time_zone="America/Los_Angeles")
+    observer = AsyncMock(return_value=(CalendarMatch(
+        "exact_duplicate", "calendar.family", "Practice"
+    ),))
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_classify_conflicts", observer
+    )
+    cfg = entry({"conflict_calendar_entities": ["calendar.school", "calendar.family"]})
+    assert await async_setup_entry(hass, cfg)
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_CHECK_PENDING_EVENT)]
+    response = await handler(SimpleNamespace(
+        data={ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: item.events[0].id},
+        context=Context(user_id="test-user"),
+    ))
+    assert response["observed_calendars"] == ["calendar.family", "calendar.school"]
+    assert response["matches"] == [
+        {"kind": "exact_duplicate", "calendar_entity": "calendar.family",
+         "existing_title": "Practice"}
+    ]
+    observer.assert_awaited_once()
+    assert observer.await_args.kwargs["context"].user_id == "test-user"
+
+
+
+async def test_check_pending_event_does_not_hide_unavailable_calendars(monkeypatch):
+    from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
+    from custom_components.daylight_calendar_import.calendar_observation import CalendarObservationError
+    item = pending()
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get_event=Mock(return_value=item.events[0]),
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    hass.config = SimpleNamespace(time_zone="America/Los_Angeles")
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_classify_conflicts",
+        AsyncMock(side_effect=CalendarObservationError("Calendar observation is incomplete")),
+    )
+    assert await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_CHECK_PENDING_EVENT)]
+    with pytest.raises(ServiceValidationError, match="Calendar check incomplete"):
+        await handler(SimpleNamespace(
+            data={ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: item.events[0].id},
+            context=Context(user_id="test-user"),
+        ))
+
+
+
+async def test_check_pending_event_rejects_missing_review_event(monkeypatch):
+    from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get_event=Mock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    assert await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_CHECK_PENDING_EVENT)]
+    with pytest.raises(ServiceValidationError, match="Pending event not found"):
+        await handler(SimpleNamespace(
+            data={ATTR_PENDING_ID: "not-found", ATTR_EVENT_ID: "missing"},
+            context=Context(user_id="reviewer"),
+        ))
+
