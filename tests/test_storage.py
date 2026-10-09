@@ -3181,3 +3181,36 @@ async def test_store_add_persists_sender_and_source_kind_across_restart(monkeypa
     assert restored.source_title == "School digest"
     assert restored.source_sender == "Teacher <teacher@example.test>"
     assert restored.events[0].routing_unresolved is True
+
+
+async def test_approval_preflight_rejection_keeps_pending_ready_without_checkpoint(monkeypatch):
+    """A failed calendar observation must not become an uncertain write."""
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    item = PendingImport.create(source_text="Calendar notice", events=[draft()])
+    await store.async_add(source_text="Calendar notice", events=[draft()])
+    saved_before = backend.save_attempts
+    calls = []
+
+    class Writer:
+        async def async_preflight(self, event):
+            calls.append(("preflight", event.id))
+            raise ValueError("exact duplicate on destination")
+
+        async def __call__(self, event):
+            calls.append(("write", event.id))
+
+    actual = store.list()[0]
+    event = actual.events[0]
+    with pytest.raises(ValueError, match="exact duplicate"):
+        await store.async_approve_event(actual.id, event.id, Writer())
+    assert calls == [("preflight", event.id)]
+    assert backend.save_attempts == saved_before
+    assert store.get_event(actual.id, event.id) == event
+    assert store.get_event(actual.id, event.id).status == "pending"
+
+    with pytest.raises(ValueError, match="exact duplicate"):
+        await store.async_process_events(actual.id, Writer())
+    assert backend.save_attempts == saved_before
+    assert store.get_event(actual.id, event.id) == event
