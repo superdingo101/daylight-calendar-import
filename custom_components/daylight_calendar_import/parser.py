@@ -24,7 +24,9 @@ Rules:
 - For all-day events, return ISO 8601 dates; end is exclusive, matching calendar semantics.
 - Preserve useful source details in description when appropriate.
 - confidence is from 0 to 1 and reflects confidence in the extracted event.
-- Resolve relative dates and local clock times using the reference datetime and Home Assistant time zone below.
+- Resolve explicitly relative dates and local clock times using the reference datetime and Home Assistant time zone below.
+- Do not infer missing event durations, end times, dates or years that are not deterministically supported by the source and reference date.
+- For each returned event, include an assumptions list explaining every contextual date/time resolution (for example a relative day or a local time zone). Use an empty list for fully explicit timestamps.
 - Return no events when the source does not contain a calendar event.
 
 Reference datetime: {reference_datetime}
@@ -70,6 +72,10 @@ EVENTS_STRUCTURE = vol.Schema(
                     "description": {
                         "label": "Useful supporting details from the source",
                         "selector": {"text": {"multiline": True}},
+                    },
+                    "assumptions": {
+                        "label": "Short disclosures of context used to resolve dates or times",
+                        "selector": {"text": {"multiple": True}},
                     },
                     "confidence": {
                         "required": True,
@@ -144,7 +150,18 @@ def parse_ai_data(data: Any) -> ParseOutcome:
             warnings.append(f"event {index} must be an object")
             continue
         try:
-            drafts.append(EventDraft.from_mapping(raw))
+            draft = EventDraft.from_mapping(raw)
+            assumptions = raw.get("assumptions", [])
+            if not isinstance(assumptions, list) or len(assumptions) > 8 or any(
+                not isinstance(value, str) or not value.strip() or len(value) > 160
+                for value in assumptions
+            ):
+                raise DraftValidationError("assumptions must be up to eight short strings")
+            drafts.append(draft)
+            warnings.extend(
+                f"event {index} date/time assumption: {value.strip()}"
+                for value in assumptions
+            )
         except DraftValidationError as err:
             warnings.append(f"event {index} is invalid: {err}")
     return ParseOutcome(drafts, warnings)
