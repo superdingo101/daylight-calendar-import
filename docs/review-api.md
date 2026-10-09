@@ -60,8 +60,12 @@ writable destination, including when confirming the displayed fallback. The
 durable transaction that clears the unresolved flag. API callers must send a
 non-null allowed calendar explicitly to confirm; omitting `calendar_entity`
 leaves the flag set. A stale-state `expected_event` snapshot from
-`get_pending` must retain `routing_unresolved` when present. Historical
-stored events default to resolved when the flag is absent.
+`get_pending` must retain `routing_unresolved` when present. For storage created before this field existed, Daylight recognizes the two
+historical unresolved/conflicting routing warnings on the parent import and
+migrates its unmarked events to require explicit confirmation. Legacy imports
+without either warning continue to default to resolved. A deliberate calendar
+confirmation is persisted as `routing_unresolved: false` so repeated restarts
+cannot re-flag a confirmed event merely because the parent warning remains.
 
 Existing stored imports without source metadata load as `manual_text` with no
 source title or sender, warnings, or skipped duplicate count. Upload bytes, temporary

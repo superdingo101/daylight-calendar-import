@@ -848,10 +848,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             platforms_unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
         except BaseException:
-            store.accepting_services = True
+            store.accepting_services = not getattr(
+                store, "calendar_settings_reload_guard", False
+            )
             raise
         if not platforms_unloaded:
-            store.accepting_services = True
+            store.accepting_services = not getattr(
+                store, "calendar_settings_reload_guard", False
+            )
             return False
 
         _unregister_entry_services(hass)

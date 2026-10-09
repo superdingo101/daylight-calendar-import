@@ -23,6 +23,10 @@ _CONFLICTING = (
 )
 
 
+# Prior versions stored these warning texts before per-event routing flags.
+LEGACY_UNRESOLVED_WARNINGS = frozenset((_UNKNOWN, _CONFLICTING))
+
+
 @dataclass(frozen=True, slots=True)
 class SourceRoutingPlan:
     """Parser evidence, bounded destination, and review-only warnings."""
