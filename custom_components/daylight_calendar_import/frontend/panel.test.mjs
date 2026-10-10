@@ -1134,13 +1134,16 @@ test("primary navigation stays above status and content in every view", async ()
       throw new Error("Unexpected request: " + request.service);
     },
   };
+  const navigation = panel._navigation;
+  const announcement = panel._announcement;
+  const viewBody = panel._viewContent;
   const checkTop = expected => {
-    const [navigation, announcement, ...body] = panel._content.children[0].children;
+    // All three elements stay mounted in this order; only viewBody changes.
+    assert.deepEqual(panel._content.children, [navigation, announcement, viewBody]);
     assert.equal(navigation.tag, "nav");
     assert.equal(navigation.attributes["aria-label"], "Daylight views");
     assert.notEqual(navigation.className, "actions");
-    assert.equal(announcement, panel._announcement);
-    assert.ok(body.length > 0);
+    assert.ok(viewBody.children.length > 0);
     assert.equal(navigation.querySelectorAll("button")
       .find(button => button.attributes["aria-current"] === "page").textContent, expected);
   };
