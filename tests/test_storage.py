@@ -3183,6 +3183,38 @@ async def test_store_add_persists_sender_and_source_kind_across_restart(monkeypa
     assert restored.events[0].routing_unresolved is True
 
 
+async def test_approval_preflight_rejection_keeps_pending_ready_without_checkpoint(monkeypatch):
+    """A failed calendar observation must not become an uncertain write."""
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    await store.async_add(source_text="Calendar notice", events=[draft()])
+    saved_before = backend.save_attempts
+    calls = []
+
+    class Writer:
+        async def async_preflight(self, event):
+            calls.append(("preflight", event.id))
+            raise ValueError("exact duplicate on destination")
+
+        async def __call__(self, event):
+            calls.append(("write", event.id))
+
+    actual = store.list()[0]
+    event = actual.events[0]
+    with pytest.raises(ValueError, match="exact duplicate"):
+        await store.async_approve_event(actual.id, event.id, Writer())
+    assert calls == [("preflight", event.id)]
+    assert backend.save_attempts == saved_before
+    assert store.get_event(actual.id, event.id) == event
+    assert store.get_event(actual.id, event.id).status == "pending"
+
+    with pytest.raises(ValueError, match="exact duplicate"):
+        await store.async_process_events(actual.id, Writer())
+    assert backend.save_attempts == saved_before
+    assert store.get_event(actual.id, event.id) == event
+
+
 def test_pending_assumption_metadata_roundtrip_and_legacy_compatibility():
     item = PendingImport.create(
         source_text="Flyer", events=[draft()],
@@ -3196,8 +3228,9 @@ def test_pending_assumption_metadata_roundtrip_and_legacy_compatibility():
     old = event.as_dict()
     old.pop("date_time_assumptions")
     assert PendingEvent.from_dict(old).date_time_assumptions == ()
-    with pytest.raises(ValueError, match="event assumptions must match"):
+    with pytest.raises(ValueError) as error:
         PendingImport.create(source_text="Flyer", events=[draft()], event_assumptions=[])
+    assert str(error.value) == "event assumptions must match the event count"
 
 
 async def test_duplicate_filter_keeps_only_accepted_event_assumptions(monkeypatch):
@@ -3257,11 +3290,12 @@ async def test_wrong_event_assumption_count_is_rejected_without_any_write(monkey
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
     await store.async_load()
-    with pytest.raises(ValueError, match="event assumptions must match"):
+    with pytest.raises(ValueError) as error:
         await store.async_add(
             source_text="Schedule", events=[draft()],
             event_assumptions=[(), ()],
         )
+    assert str(error.value) == "event assumptions must match the event count"
     assert backend.saved == []
 
 

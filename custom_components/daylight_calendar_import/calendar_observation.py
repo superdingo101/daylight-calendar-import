@@ -120,8 +120,10 @@ async def async_observe_candidates(
     observed_calendars: Sequence[str],
     local_zone: tzinfo,
     context: Context | None = None,
+    trusted_internal: bool = False,
+    approval_start_only: bool = False,
 ) -> tuple[CalendarCandidate, ...]:
-    """Read selected calendars under POLICY_READ; never create/edit events."""
+    """Read selected calendars; only trusted HA internal approval may omit a user."""
     if not observed_calendars:
         return ()
     # Validate before using identifiers as dict keys, so malformed/unhashable
@@ -132,23 +134,31 @@ async def async_observe_candidates(
     identifiers = list(dict.fromkeys(observed_calendars))
     if len(identifiers) > MAX_OBSERVATION_CALENDARS:
         raise CalendarObservationError("Calendar observation exceeds 16 calendars")
-    start, end = observation_window(draft, local_zone=local_zone)
+    start, end = (
+        _approval_start_window(draft, local_zone=local_zone)
+        if approval_start_only else observation_window(draft, local_zone=local_zone)
+    )
     # Home Assistant's calendar.get_events *service* requires POLICY_CONTROL
     # because generic entity services are control-scoped. Read-only reviewers
     # must instead use the same POLICY_READ + entity API as HA's calendar view.
     if context is None or context.user_id is None:
-        raise Unauthorized(context=context, permission=POLICY_READ)
-    user = await hass.auth.async_get_user(context.user_id)
-    if user is None:
-        raise Unauthorized(
-            context=context, permission=POLICY_READ, user_id=context.user_id,
-        )
-    for entity in identifiers:
-        if not user.permissions.check_entity(entity, POLICY_READ):
+        # HA automations and trusted in-process service calls use a userless
+        # context. The caller must explicitly opt into this internal-only path;
+        # public review reads still require an authenticated user.
+        if not trusted_internal:
+            raise Unauthorized(context=context, permission=POLICY_READ)
+    else:
+        user = await hass.auth.async_get_user(context.user_id)
+        if user is None:
             raise Unauthorized(
-                context=context, entity_id=entity, permission=POLICY_READ,
-                user_id=context.user_id,
+                context=context, permission=POLICY_READ, user_id=context.user_id,
             )
+        for entity in identifiers:
+            if not user.permissions.check_entity(entity, POLICY_READ):
+                raise Unauthorized(
+                    context=context, entity_id=entity, permission=POLICY_READ,
+                    user_id=context.user_id,
+                )
     component = hass.data.get(DATA_COMPONENT)
     if component is None:
         raise CalendarObservationError("Calendar observation is unavailable")
@@ -209,15 +219,69 @@ async def async_observe_candidates(
     return tuple(candidates)
 
 
+def _approval_start_window(
+    draft: EventDraft, *, local_zone: tzinfo,
+) -> tuple[datetime, datetime]:
+    """Query only instants at the event's start, not a synthetic full event.
+
+    HA calendar entity providers accept timezone-aware datetime bounds.
+    Approval uses UTC bounds directly for timed events: converting a short
+    synthetic probe back through the configured zone can overflow near the
+    ISO year limits despite a representable source and destination instant.
+    The returned calendar candidates are classified against the *original*
+    draft, including its full end time.
+    """
+    if draft.all_day:
+        try:
+            start_date = date.fromisoformat(draft.start)
+            end_date = date.fromisoformat(draft.end)
+            if end_date <= start_date:
+                raise CalendarObservationError("Invalid event interval")
+            # A calendar day may span 23 or 25 elapsed hours around DST.
+            probe_end = min(end_date, start_date + timedelta(days=1))
+            start = _as_utc(
+                datetime.combine(start_date, time.min, local_zone),
+                message="Invalid all-day observation interval",
+            )
+            end = _as_utc(
+                datetime.combine(probe_end, time.min, local_zone),
+                message="Invalid all-day observation interval",
+            )
+        except (OverflowError, ValueError) as exc:
+            raise CalendarObservationError("Invalid all-day observation interval") from exc
+    else:
+        try:
+            source_start = datetime.fromisoformat(draft.start)
+            source_end = datetime.fromisoformat(draft.end)
+        except ValueError as exc:
+            raise CalendarObservationError("Invalid timed observation interval") from exc
+        if source_start.utcoffset() is None or source_end.utcoffset() is None:
+            raise CalendarObservationError("Timed observations require UTC offsets")
+        start = _as_utc(source_start, message="Invalid timed observation interval")
+        original_end = _as_utc(
+            source_end, message="Invalid timed observation interval",
+        )
+        if original_end <= start:
+            raise CalendarObservationError("Invalid event interval")
+        # Both original instants are representable; min() prevents overflow.
+        end = start + min(timedelta(minutes=1), original_end - start)
+    if end <= start:
+        raise CalendarObservationError("Invalid event interval")
+    return start, end
+
 async def async_classify_conflicts(
     hass: HomeAssistant, draft: EventDraft, *,
     observed_calendars: Sequence[str], local_zone: tzinfo,
     context: Context | None = None,
+    trusted_internal: bool = False,
+    approval_start_only: bool = False,
 ) -> tuple[CalendarMatch, ...]:
     """Classify observed event intervals without hiding calendar lookup errors."""
     candidates = await async_observe_candidates(
         hass, draft, observed_calendars=observed_calendars,
         local_zone=local_zone, context=context,
+        trusted_internal=trusted_internal,
+        approval_start_only=approval_start_only,
     )
     matches: list[CalendarMatch] = []
     for existing in candidates:

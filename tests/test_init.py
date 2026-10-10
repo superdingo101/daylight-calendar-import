@@ -114,6 +114,7 @@ class FakeHass:
         self.services = FakeServices()
         self.auth = FakeAuth(user)
         self.data = {}
+        self.config = SimpleNamespace(time_zone="America/Los_Angeles")
         self.bus = SimpleNamespace(async_fire=Mock())
         self.config_entries = SimpleNamespace(
             async_forward_entry_setups=AsyncMock(),
@@ -126,6 +127,7 @@ def fake_review_panel_for_service_unit_tests(monkeypatch):
     """Service-only fakes exercise the panel separately from registration."""
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_review_panel", AsyncMock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_remove_review_panel", Mock())
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_classify_conflicts", AsyncMock(return_value=()))
 
 
 async def test_panel_registration_failure_leaves_no_services_or_store(monkeypatch):
@@ -2740,3 +2742,192 @@ async def test_calendar_check_accepts_uncertain_write_snapshot_without_decision_
     # allow a write-uncertain event to bypass explicit recovery.
     with pytest.raises(PendingEventEditError, match="refresh before deciding"):
         _expected_event(uncertain.as_service_dict(), uncertain.id)
+
+@pytest.mark.parametrize("outcome", ["exact", "other", "unavailable", "empty"])
+async def test_approval_writer_rechecks_destination_before_calendar_write(monkeypatch, outcome):
+    from custom_components.daylight_calendar_import.calendar_match import CalendarMatch
+    from custom_components.daylight_calendar_import.calendar_observation import CalendarObservationError
+    item = pending(draft())
+    event = item.events[0]
+    async def approve(_id, processor):
+        assert _id == item.id
+        await processor.async_preflight(event)
+        await processor(event)
+        return item
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get=Mock(return_value=item),
+        async_process_events=AsyncMock(side_effect=approve),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _: store)
+    observer = AsyncMock(
+        side_effect=CalendarObservationError("Calendar observation is incomplete")
+        if outcome == "unavailable" else None,
+        return_value=(CalendarMatch(
+            "exact_duplicate" if outcome == "exact" else "conflict",
+            "calendar.family", "Practice",
+        ),) if outcome in ("exact", "other") else (),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_classify_conflicts", observer)
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)]
+    call = SimpleNamespace(data={ATTR_PENDING_ID: item.id}, context=Context(user_id="reviewer"))
+    if outcome in ("exact", "unavailable"):
+        with pytest.raises(
+            ServiceValidationError,
+            match="Approval rejected before calendar write: "
+            + ("Exact duplicate" if outcome == "exact" else "Cannot verify destination"),
+        ):
+            await handler(call)
+        assert hass.services.calls == []
+    else:
+        response = await handler(call)
+        assert response["approved"] is True
+        assert len(hass.services.calls) == 1
+    assert observer.await_args.kwargs["observed_calendars"] == ["calendar.family"]
+    assert observer.await_args.kwargs["approval_start_only"] is True
+
+
+@pytest.mark.parametrize("context", [None, Context(user_id=None)])
+async def test_approval_internal_userless_service_context_is_forwarded(monkeypatch, context):
+    item = pending(draft())
+    event = item.events[0]
+
+    async def approve(_id, writer):
+        await writer.async_preflight(event)
+        await writer(event)
+        return item
+
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get=Mock(return_value=item),
+        async_process_events=AsyncMock(side_effect=approve),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store
+    )
+    observer = AsyncMock(return_value=())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_classify_conflicts", observer
+    )
+    hass = FakeHass(user=None)
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)][0]
+    response = await handler(SimpleNamespace(
+        data={ATTR_PENDING_ID: item.id}, context=context,
+    ))
+    assert response["approved"] is True
+    assert len(hass.services.calls) == 1
+    assert observer.await_args.kwargs["trusted_internal"] is True
+
+
+@pytest.mark.parametrize("action", [SERVICE_APPROVE_PENDING, SERVICE_APPROVE_PENDING_EVENT])
+async def test_control_only_reviewer_cannot_probe_private_calendar_via_approval(
+    monkeypatch, action,
+):
+    """Duplicate-safe approval needs destination READ as well as CONTROL."""
+    from homeassistant.auth.permissions.const import POLICY_READ
+    from homeassistant.components.calendar.const import DATA_COMPONENT
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        async_classify_conflicts as real_classify,
+    )
+
+    item = pending(draft())
+    event = item.events[0]
+    permission = FakePermissions()
+    permission.check_entity = Mock(
+        side_effect=lambda _entity, policy: policy == POLICY_CONTROL
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=permission))
+    provider = SimpleNamespace(async_get_events=AsyncMock(return_value=[]))
+    component = SimpleNamespace(get_entity=Mock(return_value=provider))
+    hass.data[DATA_COMPONENT] = component
+
+    async def approve(_id, *args, **kwargs):
+        writer = next(arg for arg in args if hasattr(arg, "async_preflight"))
+        await writer.async_preflight(event)
+        await writer(event)
+        return item if action == SERVICE_APPROVE_PENDING else event
+
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get=Mock(return_value=item),
+        get_event=Mock(return_value=event),
+        async_process_events=AsyncMock(side_effect=approve),
+        async_approve_event=AsyncMock(side_effect=approve),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _: store,
+    )
+    # Exercise the real permission gate rather than a mock returning matches.
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_classify_conflicts",
+        real_classify,
+    )
+    assert await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, action)][0]
+    data = {ATTR_PENDING_ID: item.id}
+    if action == SERVICE_APPROVE_PENDING_EVENT:
+        data[ATTR_EVENT_ID] = event.id
+
+    with pytest.raises(
+        ServiceValidationError,
+        match="Approval rejected before calendar write: Destination calendar "
+        "read permission is required",
+    ):
+        await handler(SimpleNamespace(data=data, context=Context(user_id="reviewer")))
+
+    assert any(
+        call.args == ("calendar.family", POLICY_READ)
+        for call in permission.check_entity.call_args_list
+    )
+    component.get_entity.assert_not_called()
+    provider.async_get_events.assert_not_awaited()
+    assert hass.services.calls == []
+
+
+async def test_control_only_reviewer_error_never_reveals_duplicate_existence(monkeypatch):
+    """Even a real existing duplicate must not reach an unauthorized reader."""
+    from homeassistant.components.calendar.const import DATA_COMPONENT
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        async_classify_conflicts as real_classify,
+    )
+    item = pending(draft())
+    event = item.events[0]
+    user = SimpleNamespace(permissions=FakePermissions(allowed=True))
+    user.permissions.check_entity = Mock(
+        side_effect=lambda _entity, policy: policy == POLICY_CONTROL
+    )
+    hass = FakeHass(user=user)
+    provider = SimpleNamespace(async_get_events=AsyncMock(
+        side_effect=AssertionError("Private provider must never be queried"),
+    ))
+    hass.data[DATA_COMPONENT] = SimpleNamespace(
+        get_entity=Mock(return_value=provider),
+    )
+
+    async def approve(_id, writer):
+        await writer.async_preflight(event)
+        await writer(event)
+        return item
+
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get=Mock(return_value=item),
+        async_process_events=AsyncMock(side_effect=approve),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _: store,
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_classify_conflicts",
+        real_classify,
+    )
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)][0]
+    with pytest.raises(ServiceValidationError, match="read permission is required"):
+        await handler(SimpleNamespace(
+            data={ATTR_PENDING_ID: item.id},
+            context=Context(user_id="reviewer"),
+        ))
+    provider.async_get_events.assert_not_awaited()
+    assert hass.services.calls == []

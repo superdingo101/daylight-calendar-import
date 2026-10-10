@@ -330,3 +330,17 @@ def test_temporal_provenance_stays_aligned_after_invalid_candidate():
     assert len(result.events) == 2
     assert result.warnings == ["event 0 must be an object"]
     assert result.event_assumptions == [("Thursday relative to source date",), ()]
+
+
+def test_temporal_assumption_limits_are_inclusive_and_errors_are_stable():
+    from custom_components.daylight_calendar_import.models import (
+        normalize_date_time_assumptions,
+    )
+
+    maximum_notes = ["x" * 160] * 8
+    assert normalize_date_time_assumptions(maximum_notes) == tuple(maximum_notes)
+
+    for invalid in (["x" * 160] * 9, ["x" * 161], ["  "], "not-a-list"):
+        with pytest.raises(ValueError) as caught:
+            normalize_date_time_assumptions(invalid)
+        assert str(caught.value) == "assumptions must be up to eight short strings"

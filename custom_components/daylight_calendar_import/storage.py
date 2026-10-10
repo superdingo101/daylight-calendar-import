@@ -1306,6 +1306,12 @@ class PendingImportStore:
             raise PendingEventEditError(
                 "Confirm the destination calendar in the event editor before approval"
             )
+        # Validate calendar safety while the event remains pending and BEFORE
+        # persisting a write-in-flight checkpoint. A read/duplicate rejection
+        # is not an ambiguous external calendar write.
+        preflight = getattr(processor, "async_preflight", None)
+        if preflight is not None:
+            await preflight(event)
         in_flight = replace(pending, events=tuple(
                 replace(item, status="write_uncertain", write_attempt=str(uuid4()))
                 if item.id == event.id else item

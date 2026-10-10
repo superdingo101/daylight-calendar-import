@@ -1639,3 +1639,19 @@ async def test_enabled_email_validation_rejects_non_iterable_sender_allowlist(mo
             {CONF_EMAIL_SENDER_ALLOWLIST: None},
         )
     validator.assert_not_awaited()
+
+
+async def test_invalid_sender_allowlist_exposes_stable_validation_code_and_message():
+    """Native Email settings must show the canonical, actionable validation failure."""
+    from custom_components.daylight_calendar_import.const import CONF_EMAIL_SENDER_ALLOWLIST
+    from custom_components.daylight_calendar_import.settings import (
+        async_validate_email_options,
+    )
+
+    with pytest.raises(SettingsValidationError) as caught:
+        await async_validate_email_options(
+            "entry-1", {},
+            {CONF_EMAIL_SENDER_ALLOWLIST: ["not an address"]},
+        )
+    assert caught.value.code == "invalid_sender_allowlist"
+    assert str(caught.value) == "Enter valid, complete sender email addresses."

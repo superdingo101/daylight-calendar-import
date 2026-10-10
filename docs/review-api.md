@@ -177,7 +177,52 @@ rechecks the event after the asynchronous provider reads. If the draft,
 destination, status or identity changed—or it was approved/rejected—while
 observation was in progress, the action fails with a refresh error instead of
 returning matches for the old draft. Calendar access failures are explicit errors, **not** a signal that
-the schedule is empty. This API does not enforce a write-time duplicate guard. The review
-panel uses these results to display an optional, on-demand duplicate/conflict
-check; the results are advisory, not a condition for approval. Write-time
-duplicate protection is a separate scoped change.
+the schedule is empty. The review panel uses these results as an optional, on-demand advisory
+calendar check, not as an approval decision. At **approval time**, the
+single-event and bulk approval actions make a fresh read of *each event's
+destination calendar only* before recording its durable write checkpoint.
+The approval service may label validation failures before checkpointing with
+`Approval rejected before calendar write:`, but **clients must never rely on
+exception-message text to determine whether writing started**. Provider errors
+can repeat arbitrary source content, including that phrase. The bulk review
+panel conservatively reports any thrown approval error as an unconfirmed
+outcome, then refreshes the pending queue. A persisted `write_uncertain`
+status requires explicit verification and recovery; if the queue cannot be
+reloaded, do not assume a write was skipped.
+An exact match blocks that event's write; possible duplicates and scheduling
+overlaps remain advisory. For **all** events, the mandatory exact-duplicate preflight queries only
+the draft's start: at most **one calendar day** for all-day events or **one
+minute** for timed events. It then compares returned candidates against
+the **original full event interval**. This avoids collecting unrelated events
+over multi-day schedules, even for relatively short drafts. This does not claim to detect all scheduling overlaps during a
+long event and does not relax the 90-day limit for the optional
+`check_pending_event` review action. An unavailable or malformed destination calendar
+also blocks writing, leaving the event pending rather than write-uncertain.
+Extreme civil dates whose local midnight cannot be represented as a Python
+UTC datetime (for example, January 1 of year 1 in a positive-offset zone)
+are intentionally outside the v0.6 duplicate-preflight support boundary.
+Their approval fails closed before any write; this release does not attempt
+historical calendar-year edge-case reconstruction.
+Earlier events in a bulk approval may already have been created before a
+later event fails, so callers should refresh the remaining pending queue.
+
+Trusted Home Assistant automations may invoke **bulk `approve_pending`**
+without a user context; its internal preflight retains the established
+internal-service trust boundary. The single-event `approve_pending_event`
+action still requires an authenticated user through the existing review
+access check.
+**Authorization change for authenticated approvals:** the destination must
+grant both Home Assistant `POLICY_CONTROL` and `POLICY_READ`. Mandatory
+duplicate checking can reveal whether a guessed title and time exist on a
+calendar, so allowing control-only users to run it would expose private
+calendar contents indirectly. Approval by a control-only user now fails
+**before any calendar observation or write** with
+`Approval rejected before calendar write: Destination calendar read permission
+is required for duplicate-safe approval`, regardless of whether a duplicate
+actually exists. Adjust the user's calendar permissions before retrying.
+Trusted in-process Home Assistant service calls with no user context retain
+their existing automation behavior and are authorized by the platform.
+
+The separate `check_pending_event` action continues to enforce explicit
+calendar read access. The legacy immediate `import_text` action does not
+use the pending-approval guard.

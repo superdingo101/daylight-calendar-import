@@ -1052,3 +1052,299 @@ async def test_unavailable_provider_exact_message_and_no_false_empty_results():
         )
     assert str(error.value) == "Calendar observation is incomplete"
     fake.providers["calendar.work"].async_get_events.assert_not_awaited()
+
+
+@pytest.mark.parametrize("context", [None, Context(user_id=None)])
+async def test_trusted_internal_observation_preserves_automations_without_user(context):
+    fake = hass({"calendar.work": {"events": [existing()]}})
+    result = await async_classify_conflicts(
+        fake, draft(), observed_calendars=["calendar.work"],
+        local_zone=ZONE, context=context, trusted_internal=True,
+    )
+    assert len(result) == 1
+    assert result[0].kind == "exact_duplicate"
+    fake.auth.async_get_user.assert_not_awaited()
+    fake.user.permissions.check_entity.assert_not_called()
+
+
+async def test_trusted_internal_flag_never_bypasses_authenticated_read_permissions():
+    fake = hass({"calendar.work": {"events": []}})
+    fake.user.permissions.check_entity.return_value = False
+    with pytest.raises(Unauthorized):
+        await async_classify_conflicts(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT, trusted_internal=True,
+        )
+
+
+@pytest.mark.parametrize("all_day", [False, True])
+async def test_approval_start_probe_supports_long_events_and_full_exact_match(all_day):
+    from dataclasses import replace
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    original = draft(all_day=all_day)
+    long_end = "2027-06-30" if all_day else "2027-06-30T18:30:00-07:00"
+    extended = replace(original, end=long_end)
+    start, end = _approval_start_window(extended, local_zone=ZONE)
+    assert start.tzinfo == timezone.utc
+    assert end.tzinfo == timezone.utc
+    assert end > start
+    assert end - start == (
+        timedelta(days=1) if all_day else timedelta(minutes=1)
+    )
+    fake = hass({"calendar.work": {"events": [{
+        "summary": extended.title, "start": extended.start, "end": extended.end,
+    }]}})
+    matches = await async_classify_conflicts(
+        fake, extended, observed_calendars=["calendar.work"],
+        local_zone=ZONE, context=READ_CONTEXT, approval_start_only=True,
+    )
+    assert [m.kind for m in matches] == ["exact_duplicate"]
+    fake.providers["calendar.work"].async_get_events.assert_awaited_once_with(
+        fake, start, end,
+    )
+
+
+@pytest.mark.parametrize("all_day", [False, True])
+def test_short_approval_probe_preserves_short_interval(all_day):
+    from dataclasses import replace
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    original = draft(all_day=all_day)
+    event = replace(original, end=(
+        "2026-11-01" if all_day else "2026-10-08T17:30:30-07:00"
+    ))
+    start, end = _approval_start_window(event, local_zone=ZONE)
+    if all_day:
+        assert end - start == timedelta(days=1)
+    else:
+        assert end - start == timedelta(seconds=30)
+
+
+@pytest.mark.parametrize("all_day", [False, True])
+async def test_approval_probe_is_minimal_even_for_short_multiday_events(all_day):
+    from dataclasses import replace
+    original = draft(all_day=all_day)
+    event = replace(original, end=(
+        "2026-11-07" if all_day else "2026-10-11T18:30:00-07:00"
+    ))
+    fake = hass({"calendar.work": {"events": [existing()]}})
+    # A dense provider rejects multi-day queries. Approval reads only the
+    # first calendar day or minute while classifying against the full draft.
+    async def provider_events(_hass, start, end):
+        bound = timedelta(days=1, hours=1) if all_day else timedelta(minutes=1)
+        if end - start > bound:
+            return [SimpleNamespace(**existing()) for _ in range(501)]
+        return [SimpleNamespace(summary=event.title, start=event.start, end=event.end)]
+    fake.providers["calendar.work"].async_get_events.side_effect = provider_events
+    matches = await async_classify_conflicts(
+        fake, event, observed_calendars=["calendar.work"],
+        local_zone=ZONE, context=READ_CONTEXT, approval_start_only=True,
+    )
+    assert [m.kind for m in matches] == ["exact_duplicate"]
+
+
+def test_approval_probe_crosses_fall_dst_fold_by_elapsed_minute():
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    folded = EventDraft(
+        "DST meeting", "2026-11-01T01:59:30-07:00",
+        "2026-11-01T01:15:00-08:00", False,
+    )
+    start, end = _approval_start_window(folded, local_zone=ZONE)
+    assert end - start == timedelta(minutes=1)
+    assert start == datetime.fromisoformat(folded.start).astimezone(timezone.utc)
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("9999-12-31T23:59:30+14:00", "9999-12-31T10:01:00+00:00"),
+    ("0001-01-01T00:00:30-12:00", "0001-01-01T13:05:00+00:00"),
+])
+async def test_approval_probe_year_boundary_different_offsets_preserves_exact_match(
+    start, end,
+):
+    """Use direct UTC bounds even when zone-local conversion would overflow."""
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    original = EventDraft("Practice", start, end, False)
+    zone = ZoneInfo("Pacific/Kiritimati")
+    begin, bound = _approval_start_window(original, local_zone=zone)
+    assert begin.tzinfo is timezone.utc
+    assert bound.tzinfo is timezone.utc
+    assert bound - begin == timedelta(minutes=1)
+    fake = hass({"calendar.work": {"events": [{
+        "summary": original.title, "start": original.start, "end": original.end,
+    }]}})
+    matches = await async_classify_conflicts(
+        fake, original, observed_calendars=["calendar.work"],
+        local_zone=zone, context=READ_CONTEXT, approval_start_only=True,
+    )
+    assert [match.kind for match in matches] == ["exact_duplicate"]
+    fake.providers["calendar.work"].async_get_events.assert_awaited_once_with(
+        fake, begin, bound,
+    )
+
+
+def test_approval_probe_unrepresentable_utc_instant_has_classified_failure():
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    draft_outside_utc = EventDraft(
+        "Out of bounds", "9999-12-31T23:59:00-12:00",
+        "9999-12-31T23:59:30-12:00", False,
+    )
+    with pytest.raises(CalendarObservationError, match="Invalid timed observation interval"):
+        _approval_start_window(draft_outside_utc, local_zone=ZONE)
+
+
+@pytest.mark.parametrize("start,end", [
+    ("2026-10-08T17:30:00-07:00", "2026-10-08T17:29:00-07:00"),
+    ("2026-10-08T17:30:00", "2026-10-08T18:30:00"),
+])
+def test_approval_probe_rejects_invalid_timed_interval(start, end):
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    with pytest.raises(CalendarObservationError):
+        _approval_start_window(EventDraft("Practice", start, end, False), local_zone=ZONE)
+
+
+def test_approval_probe_rejects_invalid_all_day_interval():
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    with pytest.raises(CalendarObservationError):
+        _approval_start_window(
+            EventDraft("Practice", "2026-11-01", "2026-11-01", True),
+            local_zone=ZONE,
+        )
+
+
+async def test_approval_does_not_use_regular_review_window_limit():
+    long = EventDraft(
+        "Practice", "2026-10-08T17:30:00-07:00",
+        "2027-10-08T17:30:00-07:00", False,
+    )
+    fake = hass({"calendar.work": {"events": [
+        {"summary": long.title, "start": long.start, "end": long.end},
+    ]}})
+    with pytest.raises(CalendarObservationError, match="exceeds 90 days"):
+        await async_classify_conflicts(
+            fake, long, observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    matches = await async_classify_conflicts(
+        fake, long, observed_calendars=["calendar.work"],
+        local_zone=ZONE, context=READ_CONTEXT, approval_start_only=True,
+    )
+    assert [m.kind for m in matches] == ["exact_duplicate"]
+
+
+def test_all_day_approval_probe_spans_fall_dst_day_in_utc():
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    event = EventDraft("Practice", "2026-11-01", "2026-12-31", True)
+    start, end = _approval_start_window(event, local_zone=ZONE)
+    assert end - start == timedelta(hours=25)
+    assert start.tzinfo is timezone.utc
+    assert end.tzinfo is timezone.utc
+
+
+def test_approval_probe_handles_unparseable_timed_input():
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    bad = EventDraft(
+        "Malformed", "not-a-timestamp", "2026-10-08T18:30:00-07:00", False,
+    )
+    with pytest.raises(CalendarObservationError, match="Invalid timed observation interval"):
+        _approval_start_window(bad, local_zone=ZONE)
+
+
+def test_approval_probe_skipped_local_calendar_day_is_not_an_empty_query():
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    # Pacific/Apia skipped December 30, 2011 entirely when crossing the
+    # international date line. Adjacent date midnights can map to one instant.
+    skipped = EventDraft("Holiday", "2011-12-30", "2011-12-31", True)
+    with pytest.raises(CalendarObservationError, match="Invalid event interval"):
+        _approval_start_window(skipped, local_zone=ZoneInfo("Pacific/Apia"))
+
+
+@pytest.mark.parametrize(("event", "message"), [
+    (
+        EventDraft("Practice", "2026-11-01", "2026-11-01", True),
+        "Invalid all-day observation interval",
+    ),
+    (
+        EventDraft("Practice", "2026-11-02", "2026-11-01", True),
+        "Invalid all-day observation interval",
+    ),
+    (
+        EventDraft("Practice", "not-a-timestamp", "2026-10-08T18:30:00-07:00", False),
+        "Invalid timed observation interval",
+    ),
+    (
+        EventDraft("Practice", "2026-10-08T17:30:00-07:00",
+                   "2026-10-08T17:30:00-07:00", False),
+        "Invalid event interval",
+    ),
+    (
+        EventDraft("Practice", "2026-10-08T17:30:00-07:00",
+                   "2026-10-08T17:29:00-07:00", False),
+        "Invalid event interval",
+    ),
+    (
+        # The first instant is earlier than Python's minimum UTC datetime.
+        EventDraft("Practice", "0001-01-01T00:00:00+14:00",
+                   "0001-01-01T01:00:00+14:00", False),
+        "Invalid timed observation interval",
+    ),
+    (
+        # The start is representable in UTC, but the end is not.
+        EventDraft("Practice", "9999-12-31T20:00:00+00:00",
+                   "9999-12-31T23:00:00-12:00", False),
+        "Invalid timed observation interval",
+    ),
+])
+def test_approval_probe_invalid_bounds_report_precise_safe_errors(event, message):
+    """Invalid approval probes must not be mistaken for an empty observation."""
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+
+    with pytest.raises(CalendarObservationError) as caught:
+        _approval_start_window(event, local_zone=ZONE)
+    assert str(caught.value) == message
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("2026-10-08T17:30:00", "2026-10-08T18:30:00-07:00"),
+    ("2026-10-08T17:30:00-07:00", "2026-10-08T18:30:00"),
+])
+def test_approval_probe_rejects_one_missing_offset_without_provider_access(start, end):
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+
+    event = EventDraft("Practice", start, end, False)
+    with pytest.raises(CalendarObservationError) as caught:
+        _approval_start_window(event, local_zone=ZONE)
+    assert str(caught.value) == "Timed observations require UTC offsets"
+
+
+async def test_conflict_read_does_not_default_to_trusted_internal():
+    """Omitting the internal-only flag must never grant anonymous calendar access."""
+    fake = hass({"calendar.work": {"events": [existing()]}})
+    with pytest.raises(Unauthorized):
+        await async_classify_conflicts(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=None,
+        )
+    fake.providers["calendar.work"].async_get_events.assert_not_awaited()
