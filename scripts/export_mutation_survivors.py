@@ -9,19 +9,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from mutmut.mutation.data import SourceFileMutationData
-from mutmut.mutation.diff_apply import get_diff_for_mutant
-from mutmut.stats import status_by_exit_code
-from mutmut.utils.file_utils import walk_mutatable_files
-
-
 RESULTS_PATH = Path("mutation-survivors.txt")
 NAMES_PATH = Path("mutation-survivor-names.txt")
 REPORT_PATH = Path("mutation-survivor-report.txt")
 
 
-def main() -> int:
-    """Generate the same diagnostics as `mutmut results` and `mutmut show`."""
+def export_survivors(*, paths, metadata_factory, diff_for_mutant, status_by_exit_code) -> int:
+    """Write all diagnostics using explicitly supplied mutmut data sources.
+
+    This core remains importable in the older Home Assistant test environment,
+    which deliberately does not install the mutmut CLI dependency.
+    """
     found_mutants = False
     survivor_count = 0
     export_failures = 0
@@ -31,8 +29,8 @@ def main() -> int:
         NAMES_PATH.open("w", encoding="utf-8") as names,
         REPORT_PATH.open("w", encoding="utf-8") as report,
     ):
-        for path in walk_mutatable_files():
-            metadata = SourceFileMutationData(path=path)
+        for path in paths:
+            metadata = metadata_factory(path=path)
             metadata.load()
             if not metadata.exit_code_by_key:
                 continue
@@ -50,7 +48,7 @@ def main() -> int:
                 survivor_count += 1
                 names.write(f"{mutant}\n")
                 try:
-                    diff = get_diff_for_mutant(mutant, path=metadata.path)
+                    diff = diff_for_mutant(mutant, path=metadata.path)
                 except Exception as exc:
                     export_failures += 1
                     print(f"ERROR: cannot export {mutant}: {exc}", file=sys.stderr)
@@ -68,6 +66,21 @@ def main() -> int:
 
     print(f"Exported {survivor_count} surviving mutants and their diffs")
     return 0
+
+
+def main() -> int:
+    """Load mutmut only when the CI exporter is actually invoked."""
+    from mutmut.mutation.data import SourceFileMutationData
+    from mutmut.mutation.diff_apply import get_diff_for_mutant
+    from mutmut.stats import status_by_exit_code
+    from mutmut.utils.file_utils import walk_mutatable_files
+
+    return export_survivors(
+        paths=walk_mutatable_files(),
+        metadata_factory=SourceFileMutationData,
+        diff_for_mutant=get_diff_for_mutant,
+        status_by_exit_code=status_by_exit_code,
+    )
 
 
 if __name__ == "__main__":
