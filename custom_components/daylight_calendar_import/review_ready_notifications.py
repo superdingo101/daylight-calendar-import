@@ -9,10 +9,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from homeassistant.core import HomeAssistant
+
 _LOGGER = logging.getLogger(__name__)
 _DELIVERY_TIMEOUT_SECONDS = 15
-
-from homeassistant.core import HomeAssistant
 
 from .ha_notification_sink import async_send_ha_notification
 from .notification_preferences import NotificationPreferences
@@ -37,13 +37,32 @@ async def async_notify_review_ready(
     event = notification_from_transition(activity, latest)
     if event is None or not preferences.permits(event.type):
         return
+    # wait_for() waits for a child to *acknowledge cancellation*. A broken HA
+    # notify handler can suppress CancelledError, leaving entry unload blocked
+    # indefinitely. Use a deadline that does not await child cancellation.
+    delivery = asyncio.create_task(async_send_ha_notification(hass, event, preferences))
+    def consume_result(task: asyncio.Task) -> None:
+        # A cancellation-resistant provider may finish after the dispatcher
+        # returns. Retrieve any exception without logging private details.
+        if not task.cancelled():
+            try:
+                task.result()
+            except Exception:
+                pass
+
+    delivery.add_done_callback(consume_result)
     try:
-        await asyncio.wait_for(
-            async_send_ha_notification(hass, event, preferences),
-            timeout=_DELIVERY_TIMEOUT_SECONDS,
-        )
+        done, _ = await asyncio.wait({delivery}, timeout=_DELIVERY_TIMEOUT_SECONDS)
+        if not done:
+            raise TimeoutError("Notification delivery exceeded its deadline")
+        delivery.result()
     except Exception:
         # Never log source content or provider exceptions; notification failure
         # is not a failure of the durable accepted import.
         _LOGGER.warning("Daylight notification delivery failed; verify the configured notify entity")
+    finally:
+        if not delivery.done():
+            # Never block this task or config-entry teardown waiting for a
+            # cancellation-resistant integration to finish.
+            delivery.cancel()
 
