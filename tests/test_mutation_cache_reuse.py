@@ -289,8 +289,10 @@ def test_new_source_recollects_stats_without_losing_cached_mutants(monkeypatch, 
     assert mutation_cache.main() == 0
     assert not mutation_cache.STATS.exists()
     assert meta_path.exists()
+    # Existing tests can start covering previously surviving mutants after
+    # they reach functions through the new production module.
     assert json.loads(meta_path.read_text())["exit_code_by_key"] == {
-        "already_killed": 1, "surviving": 0,
+        "already_killed": 1, "surviving": None,
     }
 
 
