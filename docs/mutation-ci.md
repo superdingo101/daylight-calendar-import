@@ -28,11 +28,11 @@ a uniquely keyed state for its next update. The nightly clean job publishes
 the default-branch baseline.
 
 `scripts/mutation_cache.py` tracks the exact contents of the tracked inputs
-outside mutmut's production-Python source path. It intentionally ignores
-documentation-only changes and production Python, which mutmut already
-invalidates by function hash. Existing tests, `conftest.py`, dependencies,
-fixtures, configuration, and non-Python integration files all invalidate
-previous verdicts. Missing or inconsistent provenance discards the entire
+outside mutmut's production-function bodies. It intentionally ignores
+README/docs-only changes while hashing imports, module-level constants,
+class attributes, decorators and signatures as well as existing tests,
+`conftest.py`, dependencies, fixtures, configuration, and non-Python
+integration files. Mutmut separately invalidates changed function bodies. Missing or inconsistent provenance discards the entire
 cache and starts clean.
 
 A cache miss is **not** a bypass: mutmut runs the full set, which can take
@@ -60,7 +60,9 @@ but publication always requires its own clean release validation.
 The release-preparation action calls the clean workflow after creating the
 release PR. On success, it uploads an attestation with the release tag,
 tested candidate commit, full Git tree hash, mutmut statistics, and caller
-run ID. A commit status is recorded on the release candidate.
+run ID. Both `Release Mutation Validation` and the standard required `Mutation score`
+commit statuses are recorded on the release candidate, because the
+GITHUB_TOKEN-created PR does not fire the normal `pull_request` mutation job.
 
 The publisher checks the **conclusion** and provenance of the
 `Update Integration Version` workflow run, downloads the successful
