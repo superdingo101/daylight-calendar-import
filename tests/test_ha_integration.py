@@ -269,3 +269,42 @@ async def test_pending_added_bus_failure_does_not_rollback_durable_import(hass, 
     assert response["pending"] is not None
     assert len(hass.data[DOMAIN][entry.entry_id].list()) == 1
     assert "notification could not be published" in caplog.text
+
+
+async def test_opted_in_review_ready_dispatch_is_post_commit_and_not_replayed(hass, monkeypatch):
+    """New durable pending imports notify, but duplicate source replay does not."""
+    from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.parse_source_with_provider",
+        AsyncMock(return_value=ParseOutcome([_draft()], [])),
+    )
+    emitted = []
+
+    async def capture(hass_instance, activity, preferences):
+        store = hass_instance.data[DOMAIN][entry.entry_id]
+        assert store.get_activity(activity["id"]) is not None
+        assert store.get(activity["id"]) is not None
+        assert preferences.permits("review_ready")
+        emitted.append(activity["id"])
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_notify_review_ready",
+        capture,
+    )
+    entry = _entry()
+    entry.options[CONF_NOTIFICATION_PREFERENCES] = {
+        "enabled": True, "target": "notify.phone", "classes": ["review_ready"],
+    }
+    await _setup_entry(hass, entry)
+    source = {ATTR_TEXT: "Practice with water", ATTR_SOURCE_ID: "notification-source"}
+    response = await hass.services.async_call(
+        DOMAIN, SERVICE_SUBMIT_TEXT, source, blocking=True, return_response=True,
+    )
+    await hass.async_block_till_done()
+    assert emitted == [response["pending"]["id"]]
+    await hass.services.async_call(
+        DOMAIN, SERVICE_SUBMIT_TEXT, source, blocking=True, return_response=True,
+    )
+    await hass.async_block_till_done()
+    assert emitted == [response["pending"]["id"]]
