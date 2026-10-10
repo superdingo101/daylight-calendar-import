@@ -66,6 +66,7 @@ jobs:
         run: python scripts/mutation_cache.py stamp
 
       - name: Publish nightly cache for PRs
+        id: nightly-cache
         if: ${{ github.event_name == 'schedule' && success() }}
         uses: actions/cache/save@v4
         with:
@@ -85,6 +86,20 @@ jobs:
           path: release-mutation-proof.json
           if-no-files-found: error
           retention-days: 90
+          overwrite: true
+
+      - name: Upload mutation diagnostics
+        id: diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-results
+          if-no-files-found: warn
+          path: |
+            mutants/mutmut-cicd-stats.json
+            mutation-survivors.txt
+            mutation-survivor-names.txt
+            mutation-survivor-report.txt
 
       - name: Report release validation on candidate commit
         if: ${{ always() && inputs.release_tag != '' }}
@@ -92,12 +107,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET: ${{ inputs.target_sha }}
           PROOF_OUTCOME: ${{ steps.proof.outcome }}
+          DIAGNOSTICS_OUTCOME: ${{ steps.diagnostics.outcome }}
           MUTATION_OUTCOME: ${{ steps.mutation.outcome }}
           ENFORCE_OUTCOME: ${{ steps.enforce.outcome }}
           EXPORT_OUTCOME: ${{ steps.export.outcome }}
         run: |
           state=failure
-          if [[ "$MUTATION_OUTCOME" == success && "$ENFORCE_OUTCOME" == success && "$EXPORT_OUTCOME" == success && "$PROOF_OUTCOME" == success ]]; then
+          if [[ "$MUTATION_OUTCOME" == success && "$ENFORCE_OUTCOME" == success && "$EXPORT_OUTCOME" == success && "$PROOF_OUTCOME" == success && "$DIAGNOSTICS_OUTCOME" == success ]]; then
             state=success
           fi
           gh api --method POST "repos/${{ github.repository }}/statuses/$TARGET" \
@@ -114,16 +130,7 @@ jobs:
           MUTATION_OUTCOME: ${{ steps.mutation.outcome }}
           ENFORCE_OUTCOME: ${{ steps.enforce.outcome }}
           EXPORT_OUTCOME: ${{ steps.export.outcome }}
+          DIAGNOSTICS_OUTCOME: ${{ steps.diagnostics.outcome }}
+          NIGHTLY_CACHE_OUTCOME: ${{ steps.nightly-cache.outcome }}
         run: python scripts/report_nightly_mutation.py
 
-      - name: Upload mutation diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mutation-results
-          if-no-files-found: warn
-          path: |
-            mutants/mutmut-cicd-stats.json
-            mutation-survivors.txt
-            mutation-survivor-names.txt
-            mutation-survivor-report.txt
