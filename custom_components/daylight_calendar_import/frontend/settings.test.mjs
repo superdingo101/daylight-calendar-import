@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, settingsErrorMessage} from "./settings.js";
+import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, settingsErrorMessage} from "./settings.js";
 
 const snapshot = {
   entry_id: "entry-1",
@@ -126,4 +126,25 @@ test("calendar intelligence settings only send explicit changes", async () => {
     conflict_calendar_entities: ["calendar.work"],
   }]);
   assert.deepEqual(result.calendar_aliases, {kids: "calendar.family"});
+});
+
+
+test("notification client sends only the explicit opt-in policy", async () => {
+  const calls = [];
+  const hass = {callWS: async message => {
+    calls.push(message);
+    return {entry_id: "entry-1", ai_task_entity: "ai_task.initial",
+      calendar_entity: "calendar.family", calendar_entities: ["calendar.family"], email: {}};
+  }};
+  await saveNotificationSettings(hass, {
+    entry_id: "entry-1", notifications: {
+      enabled: true, target: "notify.phone", classes: ["review_ready"],
+    },
+  });
+  assert.deepEqual(calls, [{
+    type: "daylight_calendar_import/settings/notifications/update",
+    entry_id: "entry-1", notifications: {
+      enabled: true, target: "notify.phone", classes: ["review_ready"],
+    },
+  }]);
 });
