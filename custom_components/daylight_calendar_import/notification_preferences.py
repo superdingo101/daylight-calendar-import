@@ -48,6 +48,7 @@ def normalize_notification_preferences(raw: Mapping[str, object]) -> Notificatio
     target = raw.get("target")
     if target is not None and (
         not isinstance(target, str) or len(target) > 128
+        or not target.isprintable()
         or not target.startswith("notify.") or not valid_entity_id(target)
     ):
         raise NotificationPreferencesError("Notification target must be a notify entity")
