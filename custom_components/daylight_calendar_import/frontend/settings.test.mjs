@@ -136,7 +136,8 @@ test("notification client sends only the explicit opt-in policy", async () => {
     calls.push(message);
     return {entry_id: "entry-1", ai_task_entity: "ai_task.initial",
       calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
-      notifications: {enabled: false, target: null, classes: []}, email: {}};
+      notifications: {enabled: true, target: "notify.phone",
+        classes: ["review_ready"]}, email: {}};
   }};
   await saveNotificationSettings(hass, {
     entry_id: "entry-1", notifications: {
