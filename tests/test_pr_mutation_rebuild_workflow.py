@@ -123,5 +123,9 @@ def test_successful_recovery_uses_normal_required_check_not_an_imitation() -> No
     text = _find(finish, "Publish result and rerun failed PR mutation check")["run"]
     assert '"PR Mutation Cache Rebuild"' in text
     assert "rerun-failed-jobs" in text
+    # Never rerun an older failed check for the same PR branch. GitHub's PR
+    # workflow head SHA must match the exact validated merge commit.
+    assert '.head_sha == $merge' in text
+    assert '--arg merge "$EXPECTED_MERGE"' in text
     assert '"Mutation score"' not in text
     assert "OUTCOME" in text
