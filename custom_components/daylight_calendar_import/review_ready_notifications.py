@@ -6,6 +6,12 @@ state. A later durable notification outbox handles retries and restarts.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
+_LOGGER = logging.getLogger(__name__)
+_DELIVERY_TIMEOUT_SECONDS = 15
+
 from homeassistant.core import HomeAssistant
 
 from .ha_notification_sink import NotificationDeliveryError, async_send_ha_notification
@@ -32,8 +38,12 @@ async def async_notify_review_ready(
     if event is None or not preferences.permits(event.type):
         return
     try:
-        await async_send_ha_notification(hass, event, preferences)
-    except NotificationDeliveryError:
-        # Notifications are best-effort until the separately planned durable
-        # outbox. A notify failure must not affect the persisted review item.
-        return
+        await asyncio.wait_for(
+            async_send_ha_notification(hass, event, preferences),
+            timeout=_DELIVERY_TIMEOUT_SECONDS,
+        )
+    except (NotificationDeliveryError, TimeoutError, Exception):
+        # Never log source content or provider exceptions; notification failure
+        # is not a failure of the durable accepted import.
+        _LOGGER.warning("Daylight notification delivery failed; verify the configured notify entity")
+
