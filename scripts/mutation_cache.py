@@ -104,11 +104,14 @@ def fingerprint(commit: str | None = None) -> str:
         if distribution.metadata.get("Name")
     )
     digest.update(json.dumps(installed, separators=(",", ":")).encode())
-    for path in sorted(tracked_inputs()):
+    for path in sorted(tracked_inputs(commit)):
         digest.update(b"\0")
         digest.update(path.as_posix().encode())
         digest.update(b"\0")
-        digest.update(_input_content(path))
+        digest.update(
+            _input_content(path) if commit is None
+            else _snapshot_content(path, _historical_content(commit, path))
+        )
     return digest.hexdigest()
 
 
@@ -152,7 +155,7 @@ def _same_test_execution_workflow(old: bytes, new: bytes) -> bool:
                     if not settings:
                         step.pop("with", None)
         return original == proposed
-    except (TypeError, KeyError, ValueError, yaml.YAMLError):
+    except (AttributeError, TypeError, KeyError, ValueError, yaml.YAMLError):
         return False
 
 
