@@ -789,14 +789,20 @@ export class DaylightImportPanel extends HTMLElement {
       } else if (tab === "notifications" && isSettingsErrorCode(error, "notifications_changed")) {
         // Do not retain a stale complete policy which could overwrite a
         // concurrent administrator's edit on the next attempt.
-        this._notificationDraftBaseline = null;
-        this._settingsDrafts.notifications = null;
         try {
-          this._applySettingsSnapshot(await loadSettings(this._hass));
+          const refreshed = await loadSettings(this._hass);
+          // The refreshed policy is authoritative. Discard the stale draft
+          // only after obtaining it; preserve the user's edit if the read
+          // fails, so it can be reviewed once connectivity returns.
+          this._notificationDraftBaseline = null;
+          this._settingsDrafts.notifications = null;
+          this._applySettingsSnapshot(refreshed);
+          this._settingsError = message;
         } catch {
-          this._settingsError = "Notification settings changed elsewhere. Reload Daylight settings before saving.";
+          this._settingsError =
+            "Notification settings changed elsewhere, but refresh failed. " +
+            "Your unsaved choices are retained; refresh settings before saving.";
         }
-        if (!this._settingsError) this._settingsError = message;
       } else if (isDefinitiveSettingsError(error)) {
         this._settingsError = message;
       } else {
