@@ -22,3 +22,5 @@ skip_covered = true
 [tool.mutmut]
 source_paths = ["custom_components/daylight_calendar_import/"]
 pytest_add_cli_args_test_selection = ["tests/"]
+# Test collection runs inside mutants/, so copy the unmutated CI helper imported by its tests.
+also_copy = ["scripts/export_mutation_survivors.py"]
