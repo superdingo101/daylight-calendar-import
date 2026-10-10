@@ -167,3 +167,20 @@ test("settings client rejects missing or malformed notification policy", async (
     }), /unexpected response/);
   }
 });
+
+
+test("notification snapshot validation permits Unicode decimal digits but rejects invalid edges", async () => {
+  for (const target of ["notify.phone١", "notify.phone_١"]) {
+    const valid = {...snapshot, notifications: {
+      enabled: true, target, classes: ["review_ready"],
+    }};
+    assert.equal((await loadSettings({callWS: async () => valid})).notifications.target, target);
+  }
+  for (const target of ["notify._phone", "notify.phone_"]) {
+    const invalid = {...snapshot, notifications: {
+      enabled: true, target, classes: ["review_ready"],
+    }};
+    await assert.rejects(() => loadSettings({callWS: async () => invalid}),
+      /unexpected response/);
+  }
+});
