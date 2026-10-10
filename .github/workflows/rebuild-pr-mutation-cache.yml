@@ -70,6 +70,9 @@ jobs:
           # Test the *same combined source tree* as GitHub's pull_request
           # Mutation score job (a synthetic merge of head and base).
           ref: ${{ needs.resolve.outputs.merge_sha }}
+          # Parent commits must be available for HEAD^1 / HEAD^2 checks.
+          # Checkout's default depth=1 makes those parent objects unavailable.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Verify pinned PR source
