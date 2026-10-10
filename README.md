@@ -1,5 +1,9 @@
 # Daylight Calendar Import
 
+[![Nightly clean mutation](https://github.com/superdingo101/daylight-calendar-import/actions/workflows/mutation-clean.yml/badge.svg?event=schedule)](https://github.com/superdingo101/daylight-calendar-import/actions/workflows/mutation-clean.yml?query=event%3Aschedule)
+
+The [mutation testing policy](docs/mutation-ci.md) runs cached incremental checks on PRs, nightly clean verification, and an independent clean release gate.
+
 A Home Assistant custom integration that turns unstructured text into validated calendar event drafts using the user's existing **AI Task** provider.
 
 This repository is intentionally separate from [Daylight Calendar Card](https://github.com/superdingo101/daylight-calendar-card). The import integration owns ingestion, parsing, and review; the card may later provide an optional shortcut.
