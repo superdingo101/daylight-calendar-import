@@ -341,3 +341,39 @@ async def test_review_notification_callback_skips_submissions_finishing_during_u
     await hass.async_block_till_done()
     notify.assert_not_awaited()
     assert not store.notification_tasks
+
+
+async def test_old_notification_runtime_ignores_new_saved_policy_after_reload_failure(
+    hass, monkeypatch,
+):
+    """A failed reload must not use a captured, no-longer-consented notify target."""
+    from types import SimpleNamespace
+    from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
+
+    notify = AsyncMock()
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_notify_review_ready",
+        notify,
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daylight Calendar Import",
+        data={CONF_AI_TASK_ENTITY: "ai_task.test",
+              CONF_CALENDAR_ENTITY: "calendar.family"},
+        options={CONF_NOTIFICATION_PREFERENCES: {
+            "enabled": True, "target": "notify.original", "classes": ["review_ready"],
+        }},
+    )
+    await _setup_entry(hass, entry)
+    store = hass.data[DOMAIN][entry.entry_id]
+    # Persisted options change but a failed reload leaves the old closure
+    # running, even if HA has reopened service admission.
+    hass.config_entries.async_update_entry(entry, options={
+        CONF_NOTIFICATION_PREFERENCES: {
+            "enabled": False, "target": "notify.original", "classes": ["review_ready"],
+        },
+    })
+    assert store.accepting_services
+    store.on_review_ready(SimpleNamespace(id="committed-after-failed-reload", events=()))
+    await hass.async_block_till_done()
+    notify.assert_not_awaited()
+    assert not store.notification_tasks
