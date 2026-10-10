@@ -11,10 +11,15 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  statuses: write
+  issues: write
 
 jobs:
   update-version:
     runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ steps.create-pr.outputs.pull-request-head-sha }}
+      release_tag: ${{ steps.version.outputs.tag }}
 
     steps:
       - name: Checkout main
@@ -100,6 +105,7 @@ jobs:
           PY
 
       - name: Create release prep pull request
+        id: create-pr
         uses: peter-evans/create-pull-request@v7
         with:
           branch: release-prep/${{ steps.version.outputs.tag }}
@@ -114,7 +120,26 @@ jobs:
             - `custom_components/daylight_calendar_import/manifest.json`
             - `pyproject.toml`
 
+            This workflow automatically runs a full, uncached mutation validation
+            on the release candidate and reports a Release Mutation Validation
+            commit status. Publish HACS Release independently verifies its proof.
+
             Merge only after the normal test, HACS, Hassfest, review, and release gates are green.
           add-paths: |
             custom_components/daylight_calendar_import/manifest.json
             pyproject.toml
+
+  clean-release-mutation:
+    name: Validate release candidate with a full mutation run
+    needs: update-version
+    # The PR action may produce no new commit when rerun without changes.
+    # Fail closed: no proof is produced and publishing cannot proceed.
+    if: ${{ needs.update-version.outputs.release_sha != '' }}
+    permissions:
+      contents: read
+      statuses: write
+      issues: write
+    uses: ./.github/workflows/mutation-clean.yml
+    with:
+      target_sha: ${{ needs.update-version.outputs.release_sha }}
+      release_tag: ${{ needs.update-version.outputs.release_tag }}
