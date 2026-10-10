@@ -1,16 +1,19 @@
 """Fingerprint inputs that mutmut 3.8.0 does not invalidate by source-function hash.
 
 Cached verdicts are reusable only when the test environment and fixtures match.
-Production Python changes are handled by mutmut's own per-function hashes.
+Production function bodies are handled by mutmut's own per-function hashes;
+module-level imports/constants and class attributes are tracked separately.
 """
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import platform
 import subprocess
 import sys
+import tokenize
 from pathlib import Path
 
 CACHE_SCHEMA = 1
@@ -24,10 +27,36 @@ def tracked_inputs() -> list[Path]:
     return [
         Path(path) for path in paths
         if path
-        and not (path.startswith(SOURCE) and path.endswith(".py"))
-        and not path.endswith((".md", ".rst"))
+        and path not in {"README.md", "LICENSE"}
         and not path.startswith((".git/", "docs/"))
     ]
+
+
+class _HideFunctionBodies(ast.NodeTransformer):
+    """Keep imports, constants, decorators and signatures; ignore function bodies."""
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        node.body = [ast.Pass()]
+        return node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+        node.body = [ast.Pass()]
+        return node
+
+
+def _input_content(path: Path) -> bytes:
+    if path.as_posix().startswith(SOURCE) and path.suffix == ".py" and path.is_file():
+        # Mutmut already hashes individual functions. Imports, module-level
+        # expressions, and class constants still affect tests, and need their
+        # own conservative invalidation signal.
+        try:
+            with tokenize.open(path) as source:
+                module = ast.parse(source.read())
+            outline = _HideFunctionBodies().visit(module)
+            return ast.dump(outline, include_attributes=False).encode("utf-8")
+        except (SyntaxError, UnicodeError, OSError, LookupError):
+            return path.read_bytes()
+    return path.read_bytes() if path.is_file() else b"<missing>"
 
 
 def fingerprint() -> str:
@@ -37,7 +66,7 @@ def fingerprint() -> str:
         digest.update(b"\0")
         digest.update(path.as_posix().encode())
         digest.update(b"\0")
-        digest.update(path.read_bytes() if path.is_file() else b"<missing>")
+        digest.update(_input_content(path))
     return digest.hexdigest()
 
 
