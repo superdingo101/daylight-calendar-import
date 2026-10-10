@@ -14,8 +14,9 @@
   runs normal CI through explicit workflow dispatch, and calls the clean
   mutation workflow against the release candidate's exact SHA.
 - **Publish HACS Release** fails closed unless a successful Update Integration
-  Version run has an unexpired clean mutation artifact for the identical Git
-  source tree and release version. Matching only a score, PR status, or old SHA
+  Version run (or a manually dispatched clean revalidation on main) has an
+  unexpired clean mutation artifact for the identical Git source tree and
+  release version. Matching only a score, PR status, or old SHA
   is insufficient.
 - If a release-preparation branch changes after testing, the earlier proof
   cannot authorize publishing unless the source trees still match. Repeat
