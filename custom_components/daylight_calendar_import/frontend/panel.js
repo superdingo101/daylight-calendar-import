@@ -433,12 +433,29 @@ function parseCalendarAliases(source) {
 }
 
 
+function normalizedSenderList(addresses) {
+  // Match the server's ordered, case-insensitive deduplication of exact
+  // mailbox addresses for comparing a submitted draft to the saved snapshot.
+  // Validation and full RFC mailbox normalization remain server-owned.
+  if (!Array.isArray(addresses)) return null;
+  return [...new Set(addresses.map(address => address.trim().toLowerCase()))];
+}
+
+function senderListsMatch(draft, persisted) {
+  const requested = normalizedSenderList(draft);
+  const saved = normalizedSenderList(persisted);
+  return requested !== null && saved !== null &&
+    JSON.stringify(requested) === JSON.stringify(saved);
+}
+
 function emailDraftMatches(settings, draft) {
   const email = settings?.email;
   if (!email || !draft) return false;
   if (draft.password) return false;
   return Object.entries(draft).every(([key, value]) =>
-    key === "password" || value === email[key]);
+    key === "password" || (key === "sender_allowlist"
+      ? senderListsMatch(value, email[key] ?? [])
+      : value === email[key]));
 }
 
 function settingsDraftMatches(settings, tab, draft) {
@@ -1112,6 +1129,8 @@ export class DaylightImportPanel extends HTMLElement {
       password: fields.namedItem("email_password").value,
       mailbox: fields.namedItem("email_mailbox").value.trim(),
       verify_ssl: fields.namedItem("email_verify_ssl").checked,
+      sender_allowlist: fields.namedItem("email_sender_allowlist").value
+        .split(/\r\n|\r|\n/).map(value => value.trim()).filter(Boolean),
     };
   }
 
@@ -1130,6 +1149,7 @@ export class DaylightImportPanel extends HTMLElement {
         password: draft.password,
         mailbox: draft.mailbox,
         verify_ssl: draft.verify_ssl,
+        sender_allowlist: draft.sender_allowlist,
       });
     }
 
@@ -1160,6 +1180,7 @@ export class DaylightImportPanel extends HTMLElement {
           username: draft.username,
           mailbox: draft.mailbox,
           verify_ssl: draft.verify_ssl,
+          sender_allowlist: draft.sender_allowlist,
           password_configured:
             previousEmail.password_configured || Boolean(draft.password),
         } : {enabled: false};
@@ -1276,6 +1297,15 @@ export class DaylightImportPanel extends HTMLElement {
       "email_mailbox", "Mailbox / folder", "mailbox", email.mailbox ?? "INBOX",
     );
 
+    const allowlistLabel = element("label", "Allowed sender email addresses (optional; one per line)");
+    const allowlist = document.createElement("textarea");
+    allowlist.name = "email_sender_allowlist";
+    allowlist.rows = 3;
+    allowlist.value = value("sender_allowlist", email.sender_allowlist ?? []).join("\n");
+    allowlistLabel.append(allowlist);
+    connection.append(allowlistLabel);
+    connection.append(element("p", "If left empty, all senders in this mailbox are eligible. Sender checking uses the From header, not authentication.", "settings-help"));
+
     const sslLabel = document.createElement("label");
     const verifySsl = document.createElement("input");
     verifySsl.type = "checkbox";
@@ -1291,7 +1321,7 @@ export class DaylightImportPanel extends HTMLElement {
     enabled.addEventListener("change", updateDraft);
     verifySsl.addEventListener("change", updateDraft);
     for (const input of [host, port, username, password,
-      form.elements.namedItem("email_mailbox")]) {
+      form.elements.namedItem("email_mailbox"), allowlist]) {
       input.addEventListener("input", updateDraft);
     }
 
@@ -2131,6 +2161,9 @@ export class DaylightImportPanel extends HTMLElement {
         card.append(element("p", `Calendar: ${event.calendar_entity || "Default"} · Status: ${event.status}`));
         if (event.routing_unresolved) {
           card.append(element("p", "Routing hint was unrecognized or conflicting. Edit this event, choose its destination calendar, then save before approval.", "error"));
+        }
+        for (const assumption of event.date_time_assumptions || []) {
+          card.append(element("p", `Date/time assumption: ${assumption}`));
         }
         if (typeof event.confidence === "number") {
           card.append(element("p", `AI extraction confidence: ${Math.round(event.confidence * 100)}% (estimate)`));

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased (v0.6.0)
+
+- Add an optional, administrator-configured exact sender allowlist for Direct IMAP in the native Email settings panel. Normalize/validate addresses and enforce the policy before email normalization or AI processing. Nonmatching messages remain unread; filtering by the untrusted From header is not sender authentication and does not avoid mailbox access. Empty allowlists retain the existing allow-all behavior.
+
 ## 0.5.0
 
 - Add optional self-hosted **Direct IMAP** ingestion, configurable from the integration's Options flow with host, port, username, password/app password, mailbox, and TLS certificate verification.

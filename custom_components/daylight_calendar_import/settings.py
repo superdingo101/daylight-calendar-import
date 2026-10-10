@@ -23,6 +23,7 @@ from .const import (
     CONF_EMAIL_PORT,
     CONF_EMAIL_USERNAME,
     CONF_EMAIL_VERIFY_SSL,
+    CONF_EMAIL_SENDER_ALLOWLIST,
     DOMAIN,
 )
 from .direct_imap import (
@@ -31,6 +32,7 @@ from .direct_imap import (
     DirectImapMailboxError,
     DirectImapSource,
 )
+from .email_safety import normalize_sender_allowlist
 from .email_runtime import (
     DEFAULT_EMAIL_MAILBOX,
     DEFAULT_EMAIL_PORT,
@@ -246,6 +248,7 @@ def email_settings_snapshot(options: Mapping[str, Any]) -> dict[str, Any]:
         "password_configured": bool(options.get(CONF_EMAIL_PASSWORD)),
         "mailbox": options.get(CONF_EMAIL_MAILBOX, DEFAULT_EMAIL_MAILBOX),
         "verify_ssl": options.get(CONF_EMAIL_VERIFY_SSL, True),
+        "sender_allowlist": list(options.get(CONF_EMAIL_SENDER_ALLOWLIST, ())),
     }
 
 
@@ -391,6 +394,15 @@ async def async_validate_email_options(
         normalized.get(CONF_EMAIL_PASSWORD)
         or current.get(CONF_EMAIL_PASSWORD, "")
     )
+    if CONF_EMAIL_SENDER_ALLOWLIST in normalized:
+        try:
+            normalized[CONF_EMAIL_SENDER_ALLOWLIST] = list(normalize_sender_allowlist(
+                normalized[CONF_EMAIL_SENDER_ALLOWLIST]
+            ))
+        except (TypeError, ValueError) as err:
+            raise SettingsValidationError(
+                "invalid_sender_allowlist", "Enter valid, complete sender email addresses."
+            ) from err
     email_patch = {
         CONF_EMAIL_ENABLED: True,
         **normalized,

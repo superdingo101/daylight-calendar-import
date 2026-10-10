@@ -480,6 +480,13 @@ async def test_edit_pending_event_validates_and_checks_permissions(monkeypatch):
     store.async_edit_event.assert_awaited_once_with(
         item.id, original.id, replacement, calendar_entity=None, expected_event=original
     )
+    # The optional disclosure is not a concurrency token. Older or generic
+    # API clients may send null as well as omit it.
+    call.data["expected_event"]["date_time_assumptions"] = None
+    await handler(call)
+    store.async_edit_event.assert_awaited_with(
+        item.id, original.id, replacement, calendar_entity=None, expected_event=original
+    )
     call.data["expected_event"]["id"] = "wrong"
     with pytest.raises(ServiceValidationError, match="changed since"):
         await handler(call)
@@ -628,11 +635,21 @@ async def test_event_decisions_validate_and_forward_optional_snapshot(monkeypatc
     assert store.async_approve_event.await_args.args[:2] == (item.id, selected.id)
     assert callable(store.async_approve_event.await_args.args[2])
     assert store.async_approve_event.await_args.kwargs == {"expected_event": selected}
+    call.data["expected_event"]["date_time_assumptions"] = None
+    for handler in (reject, approve):
+        response = await handler(call)
+        assert response.get("approved") is True or response.get("rejected") is True
+    assert store.async_approve_event.await_args.kwargs == {"expected_event": selected}
+    assert store.async_reject_event.await_args.kwargs == {"expected_event": selected}
 
     routed = {**selected.as_service_dict(), CONF_CALENDAR_ENTITY: "calendar.work"}
     decoded = _expected_event(routed, selected.id)
     assert decoded is not None and decoded.calendar_entity == "calendar.work"
     assert _expected_event(None, selected.id) is None
+    assert _expected_event(
+        {**selected.as_service_dict(), "date_time_assumptions": None},
+        selected.id,
+    ) == selected
 
     for invalid in ({**selected.as_service_dict(), "id": "other"},
                     {**selected.as_service_dict(), "status": "write_uncertain"},
@@ -680,6 +697,11 @@ async def test_resolve_uncertain_action_enforces_permissions_and_state(monkeypat
     call.data["expected_event"] = uncertain.as_service_dict()
     assert await handler(call) == {"pending_id": item.id, "event_id": event_id,
                                    "resolution": "created"}
+    store.async_resolve_uncertain.assert_awaited_with(
+        item.id, event_id, "created", expected_event=uncertain,
+    )
+    call.data["expected_event"]["date_time_assumptions"] = None
+    assert (await handler(call))["resolution"] == "created"
     store.async_resolve_uncertain.assert_awaited_with(
         item.id, event_id, "created", expected_event=uncertain,
     )
@@ -2705,6 +2727,7 @@ async def test_calendar_check_accepts_uncertain_write_snapshot_without_decision_
         },
         context=Context(user_id="reviewer"),
     )
+    request.data["expected_event"]["date_time_assumptions"] = None
     response = await handler(request)
     assert response["matches"] == []
     observer.assert_awaited_once()

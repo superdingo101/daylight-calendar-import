@@ -293,3 +293,40 @@ async def test_async_parse_text_preserves_ai_task_and_timezone_contract(monkeypa
     assert kwargs["entity_id"] == "ai_task.test"
     get_time_zone.assert_called_once_with("America/Los_Angeles")
     now.assert_called_once_with(time_zone=local_tz)
+
+def test_parser_surfaces_bounded_temporal_assumptions():
+    from custom_components.daylight_calendar_import.parser import parse_ai_data
+    item = {
+        "title": "Practice", "start": "2026-10-09T17:00:00-07:00",
+        "end": "2026-10-09T18:00:00-07:00", "all_day": False,
+        "confidence": 0.8, "assumptions": ["Friday resolved from reference date"],
+    }
+    outcome = parse_ai_data({"events": [item]})
+    assert len(outcome.events) == 1
+    assert outcome.warnings == []
+    assert outcome.event_assumptions == [("Friday resolved from reference date",)]
+    assert parser.EVENTS_STRUCTURE.schema["events"].config["fields"]["assumptions"]["required"] is True
+
+
+@pytest.mark.parametrize("assumptions", ["guess", [""], ["x" * 161], ["x"] * 9])
+def test_parser_rejects_malformed_assumption_metadata(assumptions):
+    from custom_components.daylight_calendar_import.parser import parse_ai_data
+    item = {
+        "title": "Practice", "start": "2026-10-09T17:00:00-07:00",
+        "end": "2026-10-09T18:00:00-07:00", "all_day": False,
+        "confidence": 0.8, "assumptions": assumptions,
+    }
+    outcome = parse_ai_data({"events": [item]})
+    assert outcome.events == []
+    assert "assumptions must be" in outcome.warnings[0]
+
+
+def test_temporal_provenance_stays_aligned_after_invalid_candidate():
+    result = parser.parse_ai_data({"events": [
+        "invalid",
+        {**VALID, "assumptions": ["  Thursday relative to source date  "]},
+        {**VALID, "title": "Sibling", "assumptions": []},
+    ]})
+    assert len(result.events) == 2
+    assert result.warnings == ["event 0 must be an object"]
+    assert result.event_assumptions == [("Thursday relative to source date",), ()]

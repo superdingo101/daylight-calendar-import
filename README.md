@@ -30,6 +30,13 @@ The integration supports:
 - strict validation of AI output
 - persistent deduplication by optional upstream source ID and normalized event fingerprint
 
+For v0.6, the parser's structured-output request requires an assumptions list
+for each returned candidate, including an empty list when dates and times are
+explicit. Contextual time resolutions are shown only on their corresponding
+pending review events; edits to the event's time/date clear stale assumptions.
+This is an AI self-disclosure and **not** independent source-grounded proof that
+the parser made no unsupported inference.
+
 The parser instructs the AI not to invent missing event data. Invalid individual events are skipped with indexed `warnings` in parse, import, and submit responses; valid events in the same response remain available. An invalid top-level AI response still fails without creating calendar events. When every event is invalid, no event is imported or queued.
 
 The current minimum supported Home Assistant version is **2026.7.4**. CI tests that version explicitly alongside the current development test environment.
@@ -37,13 +44,13 @@ The current minimum supported Home Assistant version is **2026.7.4**. CI tests t
 
 ## v0.5.0 Direct IMAP ingestion
 
-v0.5.0 adds optional self-hosted Direct IMAP ingestion. Administrators can configure it from **Daylight imports → Settings → Email** (with the Home Assistant integration **Configure** flow retained as a fallback) and provide an IMAP host, port, username, password/app password, mailbox, and TLS verification setting. Saved passwords remain server-side; the panel only shows whether a password is configured, and leaving the replacement field blank keeps the existing credential.
+v0.5.0 adds optional self-hosted Direct IMAP ingestion. Administrators can configure it from **Daylight imports → Settings → Email** (with the Home Assistant integration **Configure** flow retained as a fallback) and provide an IMAP host, port, username, password/app password, mailbox, TLS verification setting, and (in v0.6) an optional exact sender allowlist. Saved passwords remain server-side; the panel only shows whether a password is configured, and leaving the replacement field blank keeps the existing credential.
 
 **Before enabling it, read [Direct IMAP setup and recovery](docs/direct-imap.md).** The first poll runs immediately and the fixed v0.5 search selects every unread, undeleted message already present in the configured mailbox. Transient failures before a durable local outcome are left unread for retry. Deterministic source-validation failures are recorded as durable failed outcomes so unchanged poison messages do not retry forever; Daylight then attempts to mark them read just like other durable outcomes. An acknowledgement transport failure can leave the upstream read state uncertain while preserving the local result.
 
 The v0.5 Direct IMAP runtime uses a deliberately bounded transport policy: it polls the selected mailbox for unseen, undeleted messages immediately at setup and every five minutes, does not overlap polling cycles, and attempts to mark a message seen only after its source identity is durably handled locally. Normalized messages reuse the existing parser, pending-review store, default calendar, lifecycle history, deduplication, and temporary attachment-staging pipeline. Normalization failures, transient parser/provider failures, storage failures, and acknowledgement failures remain retryable. Deterministic source-validation errors such as empty/unsupported input, empty attachments, and hard size/count limits are terminal for that source identity and are not sent through AI repeatedly. Completed polls summarize retryable failures separately from terminal rejections; unexpected storage or poll exceptions use the generic error path instead.
 
-Sender allowlisting, leaving successfully handled messages unread, custom IMAP searches/flags, MOVE rules, OAuth/provider-specific setup, multiple mailboxes/accounts, and hosted forwarding are intentionally not part of this bounded v0.5 Direct IMAP surface; those require additional transport checkpoint/search semantics rather than another UI toggle.
+v0.6 adds an optional exact sender allowlist to Email settings. Non-matching messages are skipped before parsing, remain unread and can be rediscovered on later polls. Matching the `From` header is not sender authentication and does not prevent Daylight from fetching unread messages; a dedicated mailbox/folder remains strongly recommended. Leaving successfully handled messages unread, custom IMAP searches/flags, MOVE rules, OAuth/provider-specific setup, multiple mailboxes/accounts, and hosted forwarding remain unsupported.
 
 ## Installation
 

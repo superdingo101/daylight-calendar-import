@@ -79,8 +79,15 @@ unchanged-calendar updates are not subject to the queue gate.
 `daylight_calendar_import/settings/email/update`
 
 The request contains `entry_id` and `enabled`. When enabled, the request may
-also contain `host`, `port`, `username`, `password`, `mailbox`, and
-`verify_ssl`.
+also contain `host`, `port`, `username`, `password`, `mailbox`,
+`verify_ssl`, and `sender_allowlist` (an array of complete exact mailbox
+addresses; an empty array disables sender filtering). Addresses are validated
+with the standard email address parser, case-folded, and deduplicated in their
+original order before persistence. The settings read returns the canonical
+array (default `[]`). Native Email settings accepts one address per line,
+including RFC-valid quoted local parts such as `"last,first"@example.com`.
+The policy checks only the untrusted `From` header, does not authenticate the
+sender, and leaves filtered messages unread.
 
 A blank or omitted password preserves the existing stored password. Enabling or
 changing Direct IMAP validates the connection before settings are persisted.
@@ -91,6 +98,7 @@ Validation failures use stable WebSocket error codes:
 - `invalid_auth`
 - `invalid_mailbox`
 - `invalid_email_config`
+- `invalid_sender_allowlist`
 - `cannot_connect`
 - `default_not_allowed`
 - `invalid_ai_task`

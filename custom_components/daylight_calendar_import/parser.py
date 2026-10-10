@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import voluptuous as vol
@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import selector
 from homeassistant.util import dt as dt_util
 
-from .models import DraftValidationError, EventDraft
+from .models import DraftValidationError, EventDraft, normalize_date_time_assumptions
 from .sources import SourceDocument, TextSourceAdapter
 
 TASK_NAME = "Extract calendar event drafts"
@@ -24,7 +24,9 @@ Rules:
 - For all-day events, return ISO 8601 dates; end is exclusive, matching calendar semantics.
 - Preserve useful source details in description when appropriate.
 - confidence is from 0 to 1 and reflects confidence in the extracted event.
-- Resolve relative dates and local clock times using the reference datetime and Home Assistant time zone below.
+- Resolve explicitly relative dates and local clock times using the reference datetime and Home Assistant time zone below.
+- Do not infer missing event durations, end times, dates or years that are not deterministically supported by the source and reference date.
+- For each returned event, include an assumptions list explaining every contextual date/time resolution (for example a relative day or a local time zone). Use an empty list for fully explicit timestamps.
 - Return no events when the source does not contain a calendar event.
 
 Reference datetime: {reference_datetime}
@@ -71,6 +73,11 @@ EVENTS_STRUCTURE = vol.Schema(
                         "label": "Useful supporting details from the source",
                         "selector": {"text": {"multiline": True}},
                     },
+                    "assumptions": {
+                        "required": True,
+                        "label": "Short disclosures of context used to resolve dates or times",
+                        "selector": {"text": {"multiple": True}},
+                    },
                     "confidence": {
                         "required": True,
                         "label": "Confidence from 0 through 1",
@@ -93,6 +100,7 @@ class ParseOutcome:
 
     events: list[EventDraft]
     warnings: list[str]
+    event_assumptions: list[tuple[str, ...]] = field(default_factory=list)
 
 
 async def async_parse_text(
@@ -138,13 +146,20 @@ def parse_ai_data(data: Any) -> ParseOutcome:
         raise ParseResultError("AI Task result must contain an events list")
 
     drafts: list[EventDraft] = []
+    event_assumptions: list[tuple[str, ...]] = []
     warnings: list[str] = []
     for index, raw in enumerate(events):
         if not isinstance(raw, dict):
             warnings.append(f"event {index} must be an object")
             continue
         try:
-            drafts.append(EventDraft.from_mapping(raw))
+            draft = EventDraft.from_mapping(raw)
+            try:
+                assumptions = normalize_date_time_assumptions(raw.get("assumptions", []))
+            except ValueError as err:
+                raise DraftValidationError(str(err)) from err
+            drafts.append(draft)
+            event_assumptions.append(assumptions)
         except DraftValidationError as err:
             warnings.append(f"event {index} is invalid: {err}")
-    return ParseOutcome(drafts, warnings)
+    return ParseOutcome(drafts, warnings, event_assumptions)
