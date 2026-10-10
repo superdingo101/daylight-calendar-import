@@ -7,7 +7,6 @@ upon. A missing/failed provider response is not equivalent to an empty agenda.
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
-from dataclasses import replace
 from collections.abc import Sequence
 from typing import Any
 
@@ -122,6 +121,7 @@ async def async_observe_candidates(
     local_zone: tzinfo,
     context: Context | None = None,
     trusted_internal: bool = False,
+    approval_start_only: bool = False,
 ) -> tuple[CalendarCandidate, ...]:
     """Read selected calendars; only trusted HA internal approval may omit a user."""
     if not observed_calendars:
@@ -134,7 +134,10 @@ async def async_observe_candidates(
     identifiers = list(dict.fromkeys(observed_calendars))
     if len(identifiers) > MAX_OBSERVATION_CALENDARS:
         raise CalendarObservationError("Calendar observation exceeds 16 calendars")
-    start, end = observation_window(draft, local_zone=local_zone)
+    start, end = (
+        _approval_start_window(draft, local_zone=local_zone)
+        if approval_start_only else observation_window(draft, local_zone=local_zone)
+    )
     # Home Assistant's calendar.get_events *service* requires POLICY_CONTROL
     # because generic entity services are control-scoped. Read-only reviewers
     # must instead use the same POLICY_READ + entity API as HA's calendar view.
@@ -216,38 +219,55 @@ async def async_observe_candidates(
     return tuple(candidates)
 
 
-def _approval_start_window(draft: EventDraft) -> EventDraft:
-    """Read only the start of a candidate, then compare full original intervals.
+def _approval_start_window(
+    draft: EventDraft, *, local_zone: tzinfo,
+) -> tuple[datetime, datetime]:
+    """Query only instants at the event's start, not a synthetic full event.
 
-    An exact duplicate necessarily shares the draft's start. Calendar providers
-    report events intersecting the query interval, so a one-day (all-day) or
-    one-minute (timed) start window is enough for the exact-duplicate guard.
-    Keep the full draft untouched for classification against those candidates.
+    HA calendar entity providers accept timezone-aware datetime bounds.
+    Approval uses UTC bounds directly for timed events: converting a short
+    synthetic probe back through the configured zone can overflow near the
+    ISO year limits despite a representable source and destination instant.
+    The returned calendar candidates are classified against the *original*
+    draft, including its full end time.
     """
     if draft.all_day:
-        start = date.fromisoformat(draft.start)
-        end = date.fromisoformat(draft.end)
-        window = timedelta(days=1)
+        try:
+            start_date = date.fromisoformat(draft.start)
+            end_date = date.fromisoformat(draft.end)
+            if end_date <= start_date:
+                raise CalendarObservationError("Invalid event interval")
+            # A calendar day may span 23 or 25 elapsed hours around DST.
+            probe_end = min(end_date, start_date + timedelta(days=1))
+            start = _as_utc(
+                datetime.combine(start_date, time.min, local_zone),
+                message="Invalid all-day observation interval",
+            )
+            end = _as_utc(
+                datetime.combine(probe_end, time.min, local_zone),
+                message="Invalid all-day observation interval",
+            )
+        except (OverflowError, ValueError) as exc:
+            raise CalendarObservationError("Invalid all-day observation interval") from exc
     else:
-        # Different UTC offsets can make a valid instant later than the
-        # start even when its wall clock is earlier. Build the short probe
-        # in UTC: adding one minute to a year-9999 wall time may overflow,
-        # although both event instants and their UTC probe are representable.
-        start = _as_utc(
-            datetime.fromisoformat(draft.start),
-            message="Invalid timed observation interval",
+        try:
+            source_start = datetime.fromisoformat(draft.start)
+            source_end = datetime.fromisoformat(draft.end)
+        except ValueError as exc:
+            raise CalendarObservationError("Invalid timed observation interval") from exc
+        if source_start.utcoffset() is None or source_end.utcoffset() is None:
+            raise CalendarObservationError("Timed observations require UTC offsets")
+        start = _as_utc(source_start, message="Invalid timed observation interval")
+        original_end = _as_utc(
+            source_end, message="Invalid timed observation interval",
         )
-        end = _as_utc(
-            datetime.fromisoformat(draft.end),
-            message="Invalid timed observation interval",
-        )
-        window = timedelta(minutes=1)
-    if end - start <= window:
-        return draft
-    # end is a representable instant at least one window after start, so
-    # start + window cannot overflow the ISO year bounds.
-    return replace(draft, end=(start + window).isoformat())
-
+        if original_end <= start:
+            raise CalendarObservationError("Invalid event interval")
+        # Both original instants are representable; min() prevents overflow.
+        end = start + min(timedelta(minutes=1), original_end - start)
+    if end <= start:
+        raise CalendarObservationError("Invalid event interval")
+    return start, end
 
 async def async_classify_conflicts(
     hass: HomeAssistant, draft: EventDraft, *,
@@ -257,11 +277,11 @@ async def async_classify_conflicts(
     approval_start_only: bool = False,
 ) -> tuple[CalendarMatch, ...]:
     """Classify observed event intervals without hiding calendar lookup errors."""
-    observation_draft = _approval_start_window(draft) if approval_start_only else draft
     candidates = await async_observe_candidates(
-        hass, observation_draft, observed_calendars=observed_calendars,
+        hass, draft, observed_calendars=observed_calendars,
         local_zone=local_zone, context=context,
         trusted_internal=trusted_internal,
+        approval_start_only=approval_start_only,
     )
     matches: list[CalendarMatch] = []
     for existing in candidates:
