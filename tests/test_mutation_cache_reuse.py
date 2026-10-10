@@ -37,6 +37,15 @@ def _baseline(monkeypatch, tmp_path):
         "tests/test_mutation_ci_strategy.py": "# CI-only test helper\n",
         "scripts/mutation_cache.py": "# original cache helper\n",
         "requirements_test.txt": "pytest\n",
+        "pyproject.toml": (
+            '[project]\nname = "daylight-calendar-import"\n'
+            'version = "0.6.0"\nrequires-python = ">=3.14.2"\n'
+            '[tool.mutmut]\nsource_paths = ["custom_components/daylight_calendar_import/"]\n'
+        ),
+        "custom_components/daylight_calendar_import/manifest.json": (
+            '{"domain":"daylight_calendar_import","version":"0.6.0",'
+            '"requirements":["pypdf==6.14.2"]}\n'
+        ),
         ".github/workflows/mutation.yml": (
             "name: Incremental mutation testing\n"
             "jobs:\n  mutation:\n    steps:\n"
@@ -327,3 +336,50 @@ def test_cache_only_regression_module_added_and_modified_keeps_cache(monkeypatch
     assert mutation_cache.cache_validation() == (True, [], [])
     _write("tests/test_mutation_cache_reuse.py", "def test_second(): assert True\n")
     assert mutation_cache.cache_validation() == (True, [], [])
+
+
+def test_version_bumps_do_not_invalidate_existing_clean_baseline(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    pyproject = Path("pyproject.toml")
+    original_pyproject = pyproject.read_text()
+    pyproject.write_text(original_pyproject.replace('version = "0.6.0"', 'version = "0.6.1"'))
+    manifest = Path("custom_components/daylight_calendar_import/manifest.json")
+    old = json.loads(manifest.read_text())
+    old["version"] = "0.6.1"
+    manifest.write_text(json.dumps(old, indent=2) + "\n")
+    assert mutation_cache.cache_validation() == (True, [], [])
+
+
+def test_version_bumps_also_preserve_self_contained_pr_cache(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    monkeypatch.setattr("sys.argv", ["mutation_cache.py", "stamp"])
+    assert mutation_cache.main() == 0
+    manifest = Path("custom_components/daylight_calendar_import/manifest.json")
+    old = json.loads(manifest.read_text())
+    old["version"] = "0.6.1"
+    manifest.write_text(json.dumps(old, indent=2))
+    pyproject = Path("pyproject.toml")
+    pyproject.write_text(pyproject.read_text().replace('version = "0.6.0"', 'version = "0.6.1"'))
+    assert mutation_cache.cache_validation() == (True, [], [])
+
+
+@pytest.mark.parametrize("path,old,new", [
+    ("pyproject.toml", 'requires-python = ">=3.14.2"', 'requires-python = ">=3.15"'),
+    ("pyproject.toml", 'source_paths = ["custom_components/daylight_calendar_import/"]',
+     'source_paths = ["custom_components/"]'),
+    ("custom_components/daylight_calendar_import/manifest.json",
+     '"requirements":["pypdf==6.14.2"]', '"requirements":["pypdf==6.15.0"]'),
+])
+def test_metadata_changes_other_than_version_invalidate(monkeypatch, tmp_path, path, old, new):
+    _baseline(monkeypatch, tmp_path)
+    file = Path(path)
+    original = file.read_text()
+    assert old in original
+    file.write_text(original.replace(old, new))
+    assert not mutation_cache.validate()
+
+
+def test_version_metadata_that_cannot_be_parsed_fails_closed(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    Path("pyproject.toml").write_text("invalid toml syntax !!!")
+    assert not mutation_cache.validate()
