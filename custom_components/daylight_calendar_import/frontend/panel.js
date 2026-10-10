@@ -522,6 +522,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._settingsError = null;
     this._settingsReloadWarning = null;
     this._settingsDrafts = {general: null, calendars: null, routing: null, email: null, notifications: null};
+    this._notificationDraftBaseline = null;
     this._routingRawDraft = null;
     this._settingsSaving = false;
     const style = element("style", css);
@@ -757,6 +758,7 @@ export class DaylightImportPanel extends HTMLElement {
     try {
       const saved = await save();
       if (tab === "routing") this._routingRawDraft = null;
+      if (tab === "notifications") this._notificationDraftBaseline = null;
       this._settingsDrafts[tab] = null;
       this._applySettingsSnapshot(saved);
       if (changesPersistedSettings) this._settingsReloadWarning = null;
@@ -776,6 +778,17 @@ export class DaylightImportPanel extends HTMLElement {
             "The saved settings could not be refreshed. Try again after restarting Home Assistant.",
           );
         }
+      } else if (tab === "notifications" && isSettingsErrorCode(error, "notifications_changed")) {
+        // Do not retain a stale complete policy which could overwrite a
+        // concurrent administrator's edit on the next attempt.
+        this._notificationDraftBaseline = null;
+        this._settingsDrafts.notifications = null;
+        try {
+          this._applySettingsSnapshot(await loadSettings(this._hass));
+        } catch {
+          this._settingsError = "Notification settings changed elsewhere. Reload Daylight settings before saving.";
+        }
+        if (!this._settingsError) this._settingsError = message;
       } else if (isDefinitiveSettingsError(error)) {
         this._settingsError = message;
       } else {
@@ -807,8 +820,14 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   _setSettingsDraft(tab, patch) {
-    this._settingsDrafts[tab] =
-      settingsDraftMatches(this._settings, tab, patch) ? null : patch;
+    const matches = settingsDraftMatches(this._settings, tab, patch);
+    if (tab === "notifications") {
+      if (!matches && !this._notificationDraftBaseline) {
+        const policy = this._settings.notifications;
+        this._notificationDraftBaseline = {...policy, classes: [...policy.classes]};
+      } else if (matches) this._notificationDraftBaseline = null;
+    }
+    this._settingsDrafts[tab] = matches ? null : patch;
   }
 
   _clearEmailDraftPassword() {
@@ -1261,10 +1280,16 @@ export class DaylightImportPanel extends HTMLElement {
     enableLabel.append(enabled, element("span", "Enable notifications"));
     form.append(enableLabel);
     const targetLabel = element("label", "Home Assistant notify entity");
-    const target = document.createElement("input");
+    const target = document.createElement("select");
     target.name = "notification_target";
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "Select a notify entity";
+    target.append(empty);
+    const notifyChoices = entityChoices(this._hass, "notify", 0,
+      saved.target ? [saved.target] : []);
+    appendOptions(target, notifyChoices, draft.target);
     target.value = draft.target ?? "";
-    target.placeholder = "notify.mobile_app_phone";
     targetLabel.append(target);
     form.append(targetLabel);
     const classes = document.createElement("fieldset");
@@ -1290,11 +1315,12 @@ export class DaylightImportPanel extends HTMLElement {
     const policy = () => ({
       enabled: enabled.checked,
       target: target.value.trim() || null,
-      classes: [...classes.querySelectorAll("input:checked")].map(input => input.value),
+      classes: Array.from(classes.querySelectorAll("input"))
+        .filter(input => input.checked).map(input => input.value),
     });
     const changed = () => this._setSettingsDraft("notifications", {notifications: policy()});
     form.addEventListener("change", changed);
-    target.addEventListener("input", changed);
+    target.addEventListener("change", changed);
     const save = element("button", this._settingsSaving ? "Saving…" : "Save notification settings");
     save.type = "submit";
     save.disabled = this._settingsSaving;
@@ -1302,8 +1328,10 @@ export class DaylightImportPanel extends HTMLElement {
     form.addEventListener("submit", event => {
       event.preventDefault();
       const notifications = policy();
-      if (notifications.enabled && !notifications.target) {
-        this._settingsError = "Select a Home Assistant notify entity before enabling notifications.";
+      if (notifications.enabled && (!notifications.target || !notifications.classes.length)) {
+        this._settingsError = !notifications.target ?
+          "Select a Home Assistant notify entity before enabling notifications." :
+          "Choose at least one notification type before enabling notifications.";
         this.render();
         this._content.querySelector("[data-settings-save-error]")?.focus();
         return;
@@ -1311,6 +1339,7 @@ export class DaylightImportPanel extends HTMLElement {
       void this._saveSettings("notifications", {notifications},
         () => saveNotificationSettings(this._hass, {
           entry_id: this._settings.entry_id, notifications,
+          expected_notifications: this._notificationDraftBaseline ?? this._settings.notifications,
         }), "Notification settings saved", "Could not save notification settings.");
     });
     setSettingsFormBusy(form, this._settingsSaving);
