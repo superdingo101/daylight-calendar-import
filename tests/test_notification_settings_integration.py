@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from tests.test_settings import entry, hass_for, FakeConnection, invoke
+from custom_components.daylight_calendar_import import settings_api
 
 
 def test_notification_settings_legacy_defaults_and_corrupt_state_fail_closed():
