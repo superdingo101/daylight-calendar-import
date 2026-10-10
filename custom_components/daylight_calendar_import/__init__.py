@@ -442,13 +442,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     event.draft,
                     observed_calendars=[destination],
                     local_zone=dt_util.get_time_zone(hass.config.time_zone),
-                    # Control authorization was checked above. This trusted
-                    # internal read must not add a POLICY_READ requirement to
-                    # historically control-only calendar approval actions.
-                    context=None,
-                    trusted_internal=True,
+                    # A duplicate verdict reveals private calendar state.
+                    # Authenticated approvals therefore need both CONTROL
+                    # (checked above) and READ on the destination. Only trusted
+                    # userless HA service calls may bypass the user read check.
+                    context=self.context,
+                    trusted_internal=self.context is None or self.context.user_id is None,
                     approval_start_only=True,
                 )
+            except Unauthorized as err:
+                # This refusal happens before any checkpoint or provider write.
+                # Do not expose whether the guessed event exists on the calendar.
+                raise ServiceValidationError(
+                    "Approval rejected before calendar write: Destination calendar "
+                    "read permission is required for duplicate-safe approval"
+                ) from err
             except CalendarObservationError as err:
                 raise ServiceValidationError(
                     "Approval rejected before calendar write: Cannot verify destination calendar before approval: "
