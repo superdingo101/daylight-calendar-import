@@ -247,7 +247,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # An already accepted submission may commit while entry teardown is
         # awaiting other services. Never enqueue using superseded preferences
         # after unload has closed admission.
-        if not pending_store.accepting_services or not notify_preferences.permits("review_ready"):
+        if (
+            not pending_store.accepting_services
+            or notify_preferences != effective_notification_preferences(entry)
+            or not notify_preferences.permits("review_ready")
+        ):
+            # A settings update may persist before a failed config-entry reload.
+            # The old callback must not send with superseded preferences even
+            # if Home Assistant reopens the old store after platform failure.
             return
         # A review-ready callback is fired only after its durable activity
         # transaction commits, so its lifecycle record is guaranteed present.
