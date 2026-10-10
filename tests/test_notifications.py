@@ -57,7 +57,7 @@ def test_golden_idempotency_key_protects_encoding_across_upgrades():
         {"id": "import-private-123"},
         {"type": "review_ready", "at": "2026-10-09T12:00:00+00:00",
          "event_id": "event-private-456"},
-    ).idempotency_key == "66bdcb5dacfa0159d38985ebdebb5177733a9d5e896d0fba140a2a066a18f046"
+    ).idempotency_key == "482b3e673894b1ef48fc4f7c9ad23bf3891200e9ff3fcfd041dd16de1f292c1d"
 
 
 def test_only_supported_stored_transitions_emit_notifications():
@@ -114,3 +114,33 @@ def test_prunable_write_started_checkpoint_never_implies_uncertainty():
     # Transition history may later discard this checkpoint entirely.
     assert notification_from_transition(activity, {"type": "review_ready",
            "at": "2026-10-09T12:00:01+00:00", "event_id": None}).type == "review_ready"
+
+
+@pytest.mark.parametrize("field", ["import_id", "occurred_at", "event_id"])
+def test_unpaired_utf8_surrogates_are_skipped(field):
+    activity = {"id": "import"}
+    transition = {"type": "review_ready", "at": "2026-10-09T12:00:00+00:00",
+                  "event_id": "valid-event"}
+    damaged = chr(0xD800)
+    if field == "import_id":
+        activity["id"] = damaged
+    elif field == "occurred_at":
+        transition["at"] = damaged
+    else:
+        transition["event_id"] = damaged
+    assert notification_from_transition(activity, transition) is None
+
+
+def test_identity_encoding_separates_null_text_and_embedded_delimiters():
+    # Canonical JSON is unambiguous even with damaged or legacy JSON values.
+    def key(import_id, timestamp, event_id):
+        return notification_from_transition(
+            {"id": import_id},
+            {"type": "review_ready", "at": timestamp, "event_id": event_id},
+        ).idempotency_key
+
+    assert key("a", "x", None) != key("a", "x", "None")
+    assert key("a\\x00review_ready\\x00x", "y", "event") != key(
+        "a", "x\\x00review_ready\\x00y", "event"
+    )
+    assert key("a", "x", "event") != key("a", "x", "event\\x00")
