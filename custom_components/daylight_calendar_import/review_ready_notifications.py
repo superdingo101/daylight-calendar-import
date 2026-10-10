@@ -14,7 +14,7 @@ _DELIVERY_TIMEOUT_SECONDS = 15
 
 from homeassistant.core import HomeAssistant
 
-from .ha_notification_sink import NotificationDeliveryError, async_send_ha_notification
+from .ha_notification_sink import async_send_ha_notification
 from .notification_preferences import NotificationPreferences
 from .notifications import notification_from_transition
 
@@ -42,7 +42,7 @@ async def async_notify_review_ready(
             async_send_ha_notification(hass, event, preferences),
             timeout=_DELIVERY_TIMEOUT_SECONDS,
         )
-    except (NotificationDeliveryError, TimeoutError, Exception):
+    except Exception:
         # Never log source content or provider exceptions; notification failure
         # is not a failure of the durable accepted import.
         _LOGGER.warning("Daylight notification delivery failed; verify the configured notify entity")
