@@ -27,9 +27,10 @@ CACHE_META = Path("mutants/mutation-cache-provenance.json")
 STATS = Path("mutants/mutmut-stats.json")
 SOURCE = "custom_components/daylight_calendar_import/"
 FRONTEND = SOURCE + "frontend/"
-# CI-only helpers and their tests do not affect mutation verdicts for the
-# production package; pytest still exercises them on every mutmut run.
+# Repository guidance and CI-only helper tests cannot affect behavior
+# of the production integration during the mutmut runner.
 CACHE_HELPERS = {
+    "AGENTS.md",
     "scripts/mutation_cache.py",
     "tests/test_mutation_ci_strategy.py",
     "tests/test_mutation_cache_reuse.py",
