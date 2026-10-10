@@ -211,6 +211,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         runtime = getattr(previous_store, "email_runtime", None)
         if runtime is not None:
             await runtime.async_stop()
+        await _async_cancel_notification_tasks(previous_store)
         if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
             raise RuntimeError("Previous Daylight sensor rollback is incomplete")
         hass.data[DOMAIN].pop(entry.entry_id, None)
