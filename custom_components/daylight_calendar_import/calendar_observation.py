@@ -227,14 +227,15 @@ def _approval_start_window(draft: EventDraft) -> EventDraft:
     if draft.all_day:
         start = date.fromisoformat(draft.start)
         end = date.fromisoformat(draft.end)
-        limit = start + timedelta(days=1)
+        window = timedelta(days=1)
     else:
         start = datetime.fromisoformat(draft.start)
         end = datetime.fromisoformat(draft.end)
-        limit = start + timedelta(minutes=1)
-    if end <= limit:
+        window = timedelta(minutes=1)
+    # Do not add time to a timestamp near datetime.max unless necessary.
+    if end - start <= window:
         return draft
-    return replace(draft, end=limit.isoformat())
+    return replace(draft, end=(start + window).isoformat())
 
 
 async def async_classify_conflicts(
