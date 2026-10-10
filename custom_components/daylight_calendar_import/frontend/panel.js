@@ -710,6 +710,13 @@ export class DaylightImportPanel extends HTMLElement {
     // All server snapshots (including saves from other tabs) must rebase
     // untouched Routing fields before the next render or save.
     this._settings = settings;
+    // Any refresh or recovered save which confirms the drafted policy has
+    // persisted must also discard its obsolete optimistic concurrency token.
+    if (!this._settingsDrafts.notifications ||
+        settingsDraftMatches(settings, "notifications", this._settingsDrafts.notifications)) {
+      this._settingsDrafts.notifications = null;
+      this._notificationDraftBaseline = null;
+    }
     this._reconcileRoutingDraft(settings);
   }
 
@@ -770,6 +777,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._settingsReloadWarning = message;
         this._settings = {...this._settings, ...patch};
         this._settingsDrafts[tab] = null;
+        if (tab === "notifications") this._notificationDraftBaseline = null;
         try {
           this._applySettingsSnapshot(await loadSettings(this._hass));
         } catch (refreshError) {
@@ -797,6 +805,7 @@ export class DaylightImportPanel extends HTMLElement {
           this._applySettingsSnapshot(reconciled);
           if (settingsDraftMatches(reconciled, tab, patch)) {
             this._settingsDrafts[tab] = null;
+            if (tab === "notifications") this._notificationDraftBaseline = null;
             if (changesPersistedSettings) {
               this._settingsReloadWarning = SETTINGS_RUNTIME_UNCERTAIN_WARNING;
             }
@@ -1267,7 +1276,7 @@ export class DaylightImportPanel extends HTMLElement {
     const heading = element("h2", "Notifications");
     heading.tabIndex = -1;
     section.append(heading, element("p",
-      "Notifications are off by default. Choose a Home Assistant notify entity and event types; messages omit private event details.",
+      "Notifications are off by default. Review-ready alerts are available now; other event types will be enabled when their delivery paths ship. Messages omit private event details.",
       "settings-help"));
     const form = document.createElement("form");
     const saved = this._settings.notifications ?? {enabled: false, target: null, classes: []};
@@ -1287,20 +1296,17 @@ export class DaylightImportPanel extends HTMLElement {
     empty.textContent = "Select a notify entity";
     target.append(empty);
     const notifyChoices = entityChoices(this._hass, "notify", 0,
-      saved.target ? [saved.target] : []);
+      [saved.target, draft.target].filter(Boolean));
     appendOptions(target, notifyChoices, draft.target);
     target.value = draft.target ?? "";
     targetLabel.append(target);
     form.append(targetLabel);
     const classes = document.createElement("fieldset");
     classes.append(element("legend", "Notify me about"));
+    // Other lifecycle classes exist in the domain contract, but have no
+    // delivery path until a later v0.7 PR. Do not advertise them yet.
     for (const [value, description] of [
       ["review_ready", "Imports ready for review"],
-      ["calendar_created", "Calendar events added"],
-      ["calendar_create_failed", "Calendar write failures"],
-      ["calendar_write_uncertain", "Uncertain calendar writes"],
-      ["conflict_detected", "Calendar conflicts"],
-      ["parse_failed", "Processing failures"],
     ]) {
       const label = document.createElement("label");
       const checkbox = document.createElement("input");
