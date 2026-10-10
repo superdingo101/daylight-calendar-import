@@ -36,7 +36,11 @@ does not automatically revisit decided mutants, newly added test files reset
 cached **surviving, uncovered, timeout, and otherwise non-killed verdicts**
 before mutmut runs. Kills by unchanged existing tests remain valid. New tests
 are then collected and the invalidated mutants rerun using their refreshed
-test associations. The validator also accepts strictly cache-only changes to the
+test associations. When a new production Python module is added, the validator
+also discards only `mutmut-stats.json` so mutmut recollects test-to-function
+associations from **all** tests. Per-mutant verdict files remain available for
+incremental reuse. This avoids incorrectly treating new functions as uncovered
+when already-existing tests execute them. The validator also accepts strictly cache-only changes to the
 mutation workflow while rejecting changes to its test runner or mutmut command.
 
 **Existing** test files, `conftest.py`, fixtures, dependencies, non-Python
