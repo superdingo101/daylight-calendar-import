@@ -1,6 +1,10 @@
 """Regression tests for the bulk mutation survivor exporter."""
 
 from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tomllib
 
 from scripts import export_mutation_survivors as exporter
 
@@ -100,3 +104,32 @@ def test_diff_failure_retains_other_survivors(monkeypatch, tmp_path, capsys):
     assert "failed to export 1 survivor diffs" in capsys.readouterr().err
     assert exporter.NAMES_PATH.read_text() == "a.x__mutmut_1\na.x__mutmut_2\n"
     assert "# a.x__mutmut_2: survived\nvalid diff" in exporter.REPORT_PATH.read_text()
+
+
+def test_mutmut_sandbox_copies_exporter_without_missing_parents(tmp_path):
+    """Prevent collection failures when mutmut mirrors tests into mutants/."""
+    project_root = Path(__file__).resolve().parents[1]
+    config = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
+    also_copy = config["tool"]["mutmut"]["also_copy"]
+    sandbox = tmp_path / "mutants"
+    sandbox.mkdir()
+
+    # Mirror mutmut 3.8.0's actual copy_also_copy_files behavior: it does not
+    # create parent directories for individual files, but copytree does.
+    for item in also_copy:
+        source = project_root / item
+        destination = sandbox / item
+        if source.is_dir():
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+        else:
+            shutil.copy2(source, destination)
+
+    assert (sandbox / "scripts/export_mutation_survivors.py").is_file()
+    result = subprocess.run(
+        [sys.executable, "-c", "from scripts import export_mutation_survivors"],
+        cwd=sandbox,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
