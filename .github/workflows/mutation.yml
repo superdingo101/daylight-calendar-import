@@ -61,6 +61,8 @@ jobs:
           path: mutants
           key: mutmut-v2-linux-py314-v380-rebuild-pr-${{ github.event.pull_request.number }}-${{ github.sha }}-${{ github.run_id }}
           restore-keys: |
+            # Prefer recovery built for this exact synthetic PR merge tree.
+            mutmut-v2-linux-py314-v380-rebuild-pr-${{ github.event.pull_request.number }}-${{ github.sha }}-
             mutmut-v2-linux-py314-v380-rebuild-pr-${{ github.event.pull_request.number }}-
 
       - name: Validate rebuilt PR mutation baseline
