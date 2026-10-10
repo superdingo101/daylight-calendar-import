@@ -244,7 +244,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     def on_review_ready_with_notification(pending: Any) -> None:
         """Keep HA automation event separate from opt-in delivery."""
         on_review_ready(pending)
-        if not notify_preferences.permits("review_ready"):
+        # An already accepted submission may commit while entry teardown is
+        # awaiting other services. Never enqueue using superseded preferences
+        # after unload has closed admission.
+        if not pending_store.accepting_services or not notify_preferences.permits("review_ready"):
             return
         # A review-ready callback is fired only after its durable activity
         # transaction commits, so its lifecycle record is guaranteed present.
