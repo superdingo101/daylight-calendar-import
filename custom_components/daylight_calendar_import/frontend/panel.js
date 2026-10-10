@@ -1923,7 +1923,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton.disabled = this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     const content = document.createDocumentFragment();
-    const navigation = element("nav", "", "actions");
+    const navigation = element("nav");
     navigation.setAttribute("aria-label", "Daylight views");
     const review = element("button", "Review inbox");
     review.type = "button";
