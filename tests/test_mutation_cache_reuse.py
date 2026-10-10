@@ -37,6 +37,7 @@ def _baseline(monkeypatch, tmp_path):
         "tests/test_mutation_ci_strategy.py": "# CI-only test helper\n",
         "scripts/mutation_cache.py": "# original cache helper\n",
         "requirements_test.txt": "pytest\n",
+        "AGENTS.md": "# Developer guidance\n",
         "pyproject.toml": (
             '[project]\nname = "daylight-calendar-import"\n'
             'version = "0.6.0"\nrequires-python = ">=3.14.2"\n'
@@ -383,3 +384,15 @@ def test_version_metadata_that_cannot_be_parsed_fails_closed(monkeypatch, tmp_pa
     _baseline(monkeypatch, tmp_path)
     Path("pyproject.toml").write_text("invalid toml syntax !!!")
     assert not mutation_cache.validate()
+
+
+def test_agents_guidance_is_not_a_mutation_test_dependency(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    _write("AGENTS.md", "# New PR contribution and CI guidance\n")
+    assert mutation_cache.cache_validation() == (True, [], [])
+
+    # The newer self-contained manifests must also ignore guidance edits.
+    monkeypatch.setattr("sys.argv", ["mutation_cache.py", "stamp"])
+    assert mutation_cache.main() == 0
+    _write("AGENTS.md", "# More project documentation\n")
+    assert mutation_cache.cache_validation() == (True, [], [])
