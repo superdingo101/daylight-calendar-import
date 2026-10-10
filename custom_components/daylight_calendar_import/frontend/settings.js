@@ -49,7 +49,7 @@ export async function saveEmailSettings(hass, settings) {
     entry_id: settings.entry_id,
     enabled: settings.enabled,
   };
-  for (const key of ["host", "port", "username", "password", "mailbox", "verify_ssl"]) {
+  for (const key of ["host", "port", "username", "password", "mailbox", "verify_ssl", "sender_allowlist"]) {
     if (settings[key] !== undefined) payload[key] = settings[key];
   }
   return validateSettings(await hass.callWS(payload));

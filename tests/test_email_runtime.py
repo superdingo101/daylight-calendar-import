@@ -529,3 +529,11 @@ async def test_scheduled_poll_does_not_start_during_calendar_settings_reload():
     runtime.on_entry_ready()
     assert len(hass.created_tasks) == 1
     await runtime.async_stop()
+
+def test_direct_imap_settings_from_options_reads_sender_allowlist():
+    from custom_components.daylight_calendar_import.const import CONF_EMAIL_SENDER_ALLOWLIST
+    settings = direct_imap_settings_from_options(
+        "entry-1",
+        _options(**{CONF_EMAIL_SENDER_ALLOWLIST: ["a@example.test"]}),
+    )
+    assert settings.sender_allowlist == ("a@example.test",)
