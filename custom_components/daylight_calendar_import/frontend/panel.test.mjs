@@ -150,6 +150,7 @@ test("uncertain recovery requires confirmation, retains errors, and restores rev
   const choice = panel._content.querySelectorAll("button")
     .find(button => button.dataset.resolution === "not_created");
   choice.click();
+  assert.equal(globalThis.focusedNode.textContent, "Confirm recovery choice");
   assert.equal(calls.filter(call => call.service === "resolve_pending_event").length, 0);
   panel._content.querySelectorAll("button")
     .find(button => button.textContent === "Cancel recovery").click();
@@ -369,7 +370,7 @@ test("opens detail, renders source and events as text, and returns to inbox", as
     "Calendar: calendar.family · Status: pending");
   assert.equal(find(panel._content, "section").children[3].textContent,
     "AI extraction confidence: 0% (estimate)");
-  find(panel._content, "button").click();
+  panel._content.querySelector("[data-import-back]").click();
   await flush();
   assert.equal(find(panel._content, "h2").children[0].textContent, "Picnic");
   assert.equal(globalThis.focusedNode.textContent, "Picnic");
@@ -703,7 +704,7 @@ test("invalid active ranges block mode switches instead of exposing stale values
   panel.hass = {
     config: {time_zone: "America/Los_Angeles"},
     callWS: async request => {
-      if (request.type === "call_service" && request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "list_pending") return {response: {imports: []}};
       return {response: {pending: {id: "one", events: [timed, allDayEvent]}}};
     },
   };
@@ -985,6 +986,7 @@ test("approval requires explicit confirmation and returns to the inbox", async (
   const approve = find(panel._content, "section").querySelectorAll("button")
     .find(button => button.textContent === "Approve Picnic");
   approve.click();
+  assert.equal(globalThis.focusedNode.textContent, "Confirm approve: Picnic");
   assert.equal(calls.filter(call => call.service === "approve_pending_event").length, 0);
   find(panel._content, "section").querySelectorAll("button")[1].click();
   assert.equal(globalThis.focusedNode.dataset.action, "approve");
@@ -1047,6 +1049,7 @@ test("bulk approval reports each result and leaves failed events in review", asy
   const bulk = panel._content.querySelectorAll("button")
     .find(button => button.dataset.batchAction === "approve");
   bulk.click();
+  assert.equal(globalThis.focusedNode.textContent, "Confirm approve all");
   assert.equal(calls.filter(call => call.service === "approve_pending_event").length, 0);
   assert.equal(panel._content.querySelectorAll("button")
     .some(button => button.textContent === "Edit Practice"), false);
@@ -1135,6 +1138,7 @@ test("primary navigation stays above status and content in every view", async ()
     const [navigation, announcement, ...body] = panel._content.children[0].children;
     assert.equal(navigation.tag, "nav");
     assert.equal(navigation.attributes["aria-label"], "Daylight views");
+    assert.notEqual(navigation.className, "actions");
     assert.equal(announcement, panel._announcement);
     assert.ok(body.length > 0);
     assert.equal(navigation.querySelectorAll("button")
