@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Mapping
+from collections.abc import Mapping
 
 
 # The types here are stable user-facing preference categories. Stored lifecycle
@@ -43,59 +43,43 @@ class NotificationEvent:
 def notification_from_transition(
     activity: Mapping[str, object], transition: Mapping[str, object],
 ) -> NotificationEvent | None:
-    """Project a persisted lifecycle transition without copying source details.
+    """Project a validated committed transition, never live write-started state.
 
-    The key uses stable stored transition fields, never a list offset (history
-    is bounded/pruned), and cannot reveal the import/event identifiers to an
-    external notification destination.
+    Persisted activity may be legacy or damaged. Malformed records are ignored
+    so one record cannot interrupt later delivery. Recovery of ambiguous writes
+    is *not* inferred from this prunable history: a future durable notification
+    outbox must observe persisted PendingEvent.write_attempt and status after
+    PendingImportStore.async_load, with explicit recovery provenance.
     """
+    if not isinstance(activity, Mapping) or not isinstance(transition, Mapping):
+        return None
     raw_type = transition.get("type")
     if not isinstance(raw_type, str):
         return None
     template = _TEMPLATES.get(raw_type)
     if template is None:
         return None
-    kind, title, message, severity = template
-    import_id = activity["id"]
-    occurred_at = transition["at"]
+    import_id = activity.get("id")
+    occurred_at = transition.get("at")
     event_id = transition.get("event_id")
-    # Activity/transition records come from the validated durable local store.
-    identity = "\x00".join((str(import_id), raw_type, str(occurred_at), str(event_id)))
+    if (
+        not isinstance(import_id, str) or not import_id.strip()
+        or not isinstance(occurred_at, str) or not occurred_at.strip()
+        or (event_id is not None and (not isinstance(event_id, str) or not event_id.strip()))
+    ):
+        return None
+    kind, title, message, severity = template
+    # The stored identity is immutable. Do not use a transition's position in a
+    # bounded history as an idempotency key.
+    identity = "\\x00".join((import_id, raw_type, occurred_at, str(event_id)))
     key = sha256(identity.encode("utf-8")).hexdigest()
     return NotificationEvent(
         type=kind,
         idempotency_key=key,
-        occurred_at=str(occurred_at),
-        import_id=str(import_id),
-        event_id=str(event_id) if event_id is not None else None,
+        occurred_at=occurred_at,
+        import_id=import_id,
+        event_id=event_id,
         title=title,
         message=message,
         severity=severity,
     )
-
-
-def notification_from_recovered_write(
-    activity: Mapping[str, object], *, event_id: str, persisted_status: str,
-) -> NotificationEvent | None:
-    """Project a write-started checkpoint after loading an uncertain event.
-
-    Use only during recovery from durable pending storage, never while an
-    external calendar write is still running. A write-started transition alone
-    is *not* evidence of failure or uncertainty during normal processing.
-    The synthesized notification retains the checkpoint's stable timestamp,
-    so later outbox replay can deduplicate notifications across restarts.
-    """
-    if persisted_status != "write_uncertain":
-        return None
-    for transition in reversed(activity["transitions"]):
-        if transition["event_id"] != event_id:
-            continue
-        # The latest transition for this event takes precedence. In particular,
-        # a subsequent committed uncertainty or resolution is handled by the
-        # normal transition projector instead of duplicating a recovery warning.
-        if transition["type"] != "calendar_write_started":
-            return None
-        return notification_from_transition(
-            activity, {**transition, "type": "calendar_write_uncertain"},
-        )
-    return None
