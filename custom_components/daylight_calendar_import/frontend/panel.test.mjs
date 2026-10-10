@@ -5098,4 +5098,39 @@ test("notification conflict keeps unsaved choices when refresh is offline", asyn
   assert.deepEqual(panel._settingsDrafts.notifications.notifications, drafted);
   assert.deepEqual(panel._notificationDraftBaseline, baseline);
   assert.match(panel._settingsError, /unsaved choices are retained/);
+  assert.equal(panel._notificationConflictNeedsRebase, true);
+  const remote = {enabled: true, target: "notify.concurrent", classes: ["review_ready"]};
+  panel._applySettingsSnapshot({...panel._settings, notifications: remote});
+  assert.deepEqual(panel._settingsDrafts.notifications.notifications, drafted);
+  assert.deepEqual(panel._notificationDraftBaseline, remote);
+  assert.equal(panel._notificationConflictNeedsRebase, false);
+  assert.match(panel._settingsError, /Review your retained choices/);
+  let submitted = false;
+  await panel._saveSettings("notifications", {notifications: drafted}, async () => {
+    submitted = true;
+    assert.deepEqual(panel._notificationDraftBaseline, remote);
+    return {...panel._settings, notifications: drafted};
+  }, "Saved", "Could not save");
+  assert.equal(submitted, true);
+  assert.equal(panel._settingsDrafts.notifications, null);
+  assert.equal(panel._notificationDraftBaseline, null);
+});
+
+test("notification conflict prevents retry until remote policy has been refreshed", async () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {}};
+  panel._settings = {entry_id: "entry-1", notifications: {
+    enabled: true, target: "notify.old", classes: ["review_ready"],
+  }, email: {}};
+  panel._settingsTab = "notifications";
+  panel._view = "settings";
+  panel._status = "ready";
+  panel._notificationConflictNeedsRebase = true;
+  panel._settingsDrafts.notifications = {notifications: {
+    enabled: true, target: "notify.new", classes: ["review_ready"],
+  }};
+  panel.render();
+  const form = find(panel._content, "form");
+  form.submit({preventDefault() {}});
+  assert.match(panel._settingsError, /Refresh notification settings/);
 });
