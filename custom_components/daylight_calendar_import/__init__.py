@@ -244,12 +244,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         on_review_ready(pending)
         if not notify_preferences.permits("review_ready"):
             return
+        # A review-ready callback is fired only after its durable activity
+        # transaction commits, so its lifecycle record is guaranteed present.
         activity = pending_store.get_activity(pending.id)
-        if activity is not None:
-            hass.async_create_task(
-                async_notify_review_ready(hass, activity, notify_preferences),
-                f"Daylight review-ready notification for {pending.id}",
-            )
+        hass.async_create_task(
+            async_notify_review_ready(hass, activity, notify_preferences),
+            f"Daylight review-ready notification for {pending.id}",
+        )
 
     pending_store.on_review_ready = on_review_ready_with_notification
 
