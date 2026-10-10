@@ -4,7 +4,6 @@ import pytest
 
 from custom_components.daylight_calendar_import.notifications import (
     NotificationEvent,
-    notification_from_recovered_write,
     notification_from_transition,
 )
 
@@ -86,39 +85,32 @@ def test_transition_identity_changes_with_event_and_time_and_handles_source_leve
     ).idempotency_key
 
 
-def test_recovered_write_started_is_projected_only_from_uncertain_pending_state():
-    checkpoint = {"type": "calendar_write_started", "at": "durable-checkpoint",
-                  "event_id": "event-a"}
-    activity = {"id": "import-a", "transitions": [
-        {"type": "review_ready", "at": "before", "event_id": None}, checkpoint,
-    ]}
-    result = notification_from_recovered_write(
-        activity, event_id="event-a", persisted_status="write_uncertain",
-    )
-    expected = notification_from_transition(
-        activity, {**checkpoint, "type": "calendar_write_uncertain"},
-    )
-    assert result == expected
-    assert result.type == "calendar_write_uncertain"
-    assert result.occurred_at == "durable-checkpoint"
-    assert result == notification_from_recovered_write(
-        activity, event_id="event-a", persisted_status="write_uncertain",
-    )
-    # A live write in progress must never be misreported as already uncertain.
-    assert notification_from_recovered_write(
-        activity, event_id="event-a", persisted_status="pending",
-    ) is None
-    assert notification_from_recovered_write(
-        activity, event_id="another-event", persisted_status="write_uncertain",
-    ) is None
+@pytest.mark.parametrize(
+    ("activity", "transition"),
+    [
+        (None, {"type": "review_ready", "at": "2026-10-09T12:00:00+00:00"}),
+        ({"id": "import"}, None),
+        ({}, {"type": "review_ready", "at": "2026-10-09T12:00:00+00:00"}),
+        ({"id": ""}, {"type": "review_ready", "at": "2026-10-09T12:00:00+00:00"}),
+        ({"id": 42}, {"type": "review_ready", "at": "2026-10-09T12:00:00+00:00"}),
+        ({"id": "import"}, {"type": "review_ready"}),
+        ({"id": "import"}, {"type": "review_ready", "at": ""}),
+        ({"id": "import"}, {"type": "review_ready", "at": 123}),
+        ({"id": "import"}, {"type": "review_ready", "at": "now", "event_id": 9}),
+        ({"id": "import"}, {"type": "review_ready", "at": "now", "event_id": ""}),
+    ],
+)
+def test_malformed_durable_records_are_ignored(activity, transition):
+    assert notification_from_transition(activity, transition) is None
 
 
-def test_recovery_projection_does_not_reemit_resolved_or_explicit_uncertain_transitions():
-    checkpoint = {"type": "calendar_write_started", "at": "before", "event_id": "event-a"}
-    for next_type in ("calendar_created", "calendar_write_uncertain", "review_ready"):
-        activity = {"id": "import-a", "transitions": [
-            checkpoint, {"type": next_type, "at": "after", "event_id": "event-a"},
-        ]}
-        assert notification_from_recovered_write(
-            activity, event_id="event-a", persisted_status="write_uncertain",
-        ) is None
+def test_prunable_write_started_checkpoint_never_implies_uncertainty():
+    # Storage commits a write-uncertain pending status BEFORE the real calendar
+    # service returns; only a load-only durable outbox can determine recovery.
+    activity = {"id": "import", "transitions": []}
+    transition = {"type": "calendar_write_started", "at": "2026-10-09T12:00:00+00:00",
+                  "event_id": "event"}
+    assert notification_from_transition(activity, transition) is None
+    # Transition history may later discard this checkpoint entirely.
+    assert notification_from_transition(activity, {"type": "review_ready",
+           "at": "2026-10-09T12:00:01+00:00", "event_id": None}).type == "review_ready"
