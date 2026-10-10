@@ -27,7 +27,7 @@ FRONTEND = SOURCE + "frontend/"
 # CI-only helpers and their tests do not affect mutation verdicts for the
 # production package; pytest still exercises them on every mutmut run.
 CACHE_HELPERS = {"scripts/mutation_cache.py", "tests/test_mutation_ci_strategy.py"}
-COMMIT_SHA = re.compile(r"[0-9a-f]{40}\\Z")
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
 def tracked_inputs(commit: str | None = None) -> list[Path]:
@@ -35,7 +35,7 @@ def tracked_inputs(commit: str | None = None) -> list[Path]:
         ["git", "ls-files", "-z"] if commit is None
         else ["git", "ls-tree", "-r", "--name-only", "-z", commit]
     )
-    paths = subprocess.check_output(command).decode().split("\\0")
+    paths = subprocess.check_output(command).decode().split("\0")
     return [
         Path(path) for path in paths
         if path
