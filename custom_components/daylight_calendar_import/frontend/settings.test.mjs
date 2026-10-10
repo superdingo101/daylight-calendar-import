@@ -184,3 +184,17 @@ test("notification snapshot validation permits Unicode decimal digits but reject
       /unexpected response/);
   }
 });
+
+
+test("notification target length uses Unicode code points as on Home Assistant", async () => {
+  const target = "notify." + "𝟘".repeat(121);
+  assert.equal(Array.from(target).length, 128);
+  assert.ok(target.length > 128);
+  const valid = {...snapshot, notifications: {
+    enabled: true, classes: ["review_ready"], target,
+  }};
+  assert.equal((await loadSettings({callWS: async () => valid})).notifications.target, target);
+  const invalid = {...valid, notifications: {...valid.notifications, target: target + "𝟘"}};
+  await assert.rejects(() => loadSettings({callWS: async () => invalid}),
+    /unexpected response/);
+});
