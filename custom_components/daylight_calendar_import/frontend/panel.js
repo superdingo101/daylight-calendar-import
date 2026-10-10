@@ -1471,11 +1471,11 @@ export class DaylightImportPanel extends HTMLElement {
       } catch (error) {
         const reason = typeof error?.message === "string" ? error.message : "Review action failed";
         results.push({id: event.id, title: event.title, range: eventRange(event, this._hass),
-          // Only the explicit backend preflight marker guarantees that no
-          // calendar write checkpoint or provider call was started. Other
-          // failures can still be post-write transport errors.
-          outcome: action === "approve" &&
-            !reason.includes("Approval rejected before calendar write:") ?
+          // WebSocket error messages may contain provider-controlled text,
+          // including strings that look like an approval preflight rejection.
+          // Never infer whether a durable calendar write began from a message.
+          // The reloaded pending event status is the recovery authority.
+          outcome: action === "approve" ?
             `Approval outcome unknown; check the calendar before retrying. ${reason}` : reason});
       }
     }
