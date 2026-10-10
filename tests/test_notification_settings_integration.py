@@ -35,7 +35,7 @@ async def test_notifications_ws_opt_in_persists_and_noop_skips_reload():
     hass = hass_for(config_entry)
     connection = FakeConnection()
     payload = {"enabled": True, "target": "notify.phone",
-               "classes": ["review_ready", "parse_failed"]}
+               "classes": ["review_ready"]}
     await invoke(settings_api.websocket_update_notifications, hass, connection, {
         "id": 210, "entry_id": "entry-1", "notifications": payload,
         "expected_notifications": {"enabled": False, "classes": [], "target": None},
@@ -44,7 +44,7 @@ async def test_notifications_ws_opt_in_persists_and_noop_skips_reload():
     assert hass.config_entries.reloads == ["entry-1"]
     assert config_entry.options[CONF_NOTIFICATION_PREFERENCES] == {
         "enabled": True, "target": "notify.phone",
-        "classes": ["parse_failed", "review_ready"],
+        "classes": ["review_ready"],
     }
     assert connection.results[-1][1]["notifications"] == config_entry.options[CONF_NOTIFICATION_PREFERENCES]
     await invoke(settings_api.websocket_update_notifications, hass, connection, {
@@ -63,12 +63,14 @@ async def test_notifications_ws_validation_rejects_bad_policy_without_writes():
     for index, invalid in enumerate([
         {"enabled": True}, {"classes": ["unknown"]},
         {"target": "notify.missing", "enabled": "yes"},
+        {"enabled": True, "target": "notify.phone", "classes": ["parse_failed"]},
+        {"enabled": True, "target": "notify.phone", "classes": ["review_ready", "parse_failed"]},
     ]):
         await invoke(settings_api.websocket_update_notifications, hass, connection, {
             "id": 220 + index, "entry_id": "entry-1", "notifications": invalid,
             "expected_notifications": {"enabled": False, "classes": [], "target": None},
         })
-    assert len(connection.errors) == 3
+    assert len(connection.errors) == 5
     assert all(code == "invalid_notifications" for _, code, _ in connection.errors)
     assert not hass.config_entries.updates
     assert not hass.config_entries.reloads
@@ -115,3 +117,20 @@ async def test_notifications_reject_invalid_snapshot_and_empty_opt_in():
         "invalid_notifications", "invalid_notifications",
     ]
     assert not hass.config_entries.reloads
+
+
+@pytest.mark.asyncio
+async def test_only_supported_enabled_notifications_are_accepted():
+    """Future-domain classes remain opt-out until a delivery adapter exists."""
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    connection = FakeConnection()
+    empty = {"enabled": False, "classes": [], "target": None}
+    await invoke(settings_api.websocket_update_notifications, hass, connection, {
+        "id": 310, "entry_id": "entry-1",
+        "expected_notifications": empty,
+        "notifications": {"enabled": True, "target": "notify.phone",
+                          "classes": ["review_ready"]},
+    })
+    assert connection.errors == []
+    assert connection.results[-1][1]["notifications"]["classes"] == ["review_ready"]
