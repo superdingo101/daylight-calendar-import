@@ -111,3 +111,72 @@ async def test_cancel_entry_owned_notification_tasks():
     await _async_cancel_notification_tasks(store)
     assert task.cancelled()
     await _async_cancel_notification_tasks(SimpleNamespace(notification_tasks=set()))
+
+
+@pytest.mark.asyncio
+async def test_delivery_deadline_does_not_wait_for_cancellation_resistant_provider(
+    monkeypatch, caplog,
+):
+    import asyncio
+    import time
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.review_ready_notifications._DELIVERY_TIMEOUT_SECONDS",
+        0.002,
+    )
+    child_done = asyncio.Event()
+    allow_finish = asyncio.Event()
+
+    async def ignores_cancel(*args):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await allow_finish.wait()
+            # The child may raise only after the parent has timed out; its
+            # exception must be consumed and never reveal provider secrets.
+            raise RuntimeError("secret provider error")
+        finally:
+            child_done.set()
+
+    started = time.monotonic()
+    with patch(
+        "custom_components.daylight_calendar_import.review_ready_notifications.async_send_ha_notification",
+        ignores_cancel,
+    ):
+        await async_notify_review_ready(Mock(), activity(), preferences())
+        assert time.monotonic() - started < 0.5
+        allow_finish.set()
+        await asyncio.wait_for(child_done.wait(), timeout=1)
+        await asyncio.sleep(0)
+    assert "secret" not in caplog.text
+    assert "Daylight notification delivery failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unload_deadline_does_not_wait_for_stubborn_notification_task(
+    monkeypatch, caplog,
+):
+    import asyncio
+    from types import SimpleNamespace
+    from custom_components.daylight_calendar_import import _async_cancel_notification_tasks
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import._NOTIFICATION_CANCEL_GRACE_SECONDS",
+        0.002,
+    )
+    release = asyncio.Event()
+    started = asyncio.Event()
+    async def ignores_cancel():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+    task = asyncio.create_task(ignores_cancel())
+    await started.wait()
+    store = SimpleNamespace(notification_tasks={task})
+    await asyncio.wait_for(_async_cancel_notification_tasks(store), timeout=0.5)
+    assert not task.done()
+    assert "did not stop before unload deadline" in caplog.text
+    release.set()
+    await asyncio.wait_for(task, timeout=1)
