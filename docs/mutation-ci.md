@@ -31,8 +31,12 @@ The cache validator first verifies the saved fingerprint against the exact
 Git snapshot that produced it. A verified cached `main` snapshot is reusable
 when a PR only adds independent production modules or `test_*.py` test files,
 changes production function bodies (which mutmut hashes itself), or modifies
-frontend JS/CSS assets. New test modules are discovered by mutmut during test
-collection. The validator also accepts strictly cache-only changes to the
+frontend JS/CSS assets. Because mutmut 3.8.0 collects new-test mappings but
+does not automatically revisit decided mutants, newly added test files reset
+cached **surviving, uncovered, timeout, and otherwise non-killed verdicts**
+before mutmut runs. Kills by unchanged existing tests remain valid. New tests
+are then collected and the invalidated mutants rerun using their refreshed
+test associations. The validator also accepts strictly cache-only changes to the
 mutation workflow while rejecting changes to its test runner or mutmut command.
 
 **Existing** test files, `conftest.py`, fixtures, dependencies, non-Python
@@ -40,8 +44,11 @@ integration inputs, source imports/constants, and signatures remain
 conservatively invalidating. Unknown changes or missing Git history invalidate
 the cache. The environment fingerprint also includes the exact resolved
 installed Python dependencies so a changed package version fails closed.
-The previous nightly baseline format remains readable; it does not need to
-be rebuilt simply because this validator changed.
+The first nightly baseline format remains readable; it does not need to
+be rebuilt simply because this validator changed. Subsequent successful PR
+runs also stamp a self-contained per-file manifest and environment
+fingerprint, so their cached state does not depend on temporary GitHub
+pull-request merge commits remaining reachable after the next push.
 
 The PR job attempts its own prior cache first, then a separately restored
 trusted `main` cache if the PR cache is stale or unavailable. If both fail,
