@@ -1,13 +1,23 @@
 {
   "domain": "daylight_calendar_import",
   "name": "Daylight Calendar Import",
-  "codeowners": ["@superdingo101"],
+  "codeowners": [
+    "@superdingo101"
+  ],
   "config_flow": true,
-  "dependencies": ["file_upload", "frontend", "http", "media_source"],
+  "dependencies": [
+    "file_upload",
+    "frontend",
+    "http",
+    "media_source"
+  ],
   "documentation": "https://github.com/superdingo101/daylight-calendar-import",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/superdingo101/daylight-calendar-import/issues",
-  "requirements": ["aioimaplib>=2.0.1", "pypdf==6.14.2"],
-  "version": "0.5.4"
+  "requirements": [
+    "aioimaplib>=2.0.1",
+    "pypdf==6.14.2"
+  ],
+  "version": "0.6.0"
 }

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (v0.6.0)
+## 0.6.0
 
 - Add deterministic source-level calendar aliases, bounded directive extraction, and explicit review confirmation before any unresolved route may be approved.
 - Add independent conflict-observation calendar configuration, on-demand read-only matching and advisory duplicate/overlap results in event review.
