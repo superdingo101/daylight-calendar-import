@@ -52,6 +52,8 @@ The v0.5 Direct IMAP runtime uses a deliberately bounded transport policy: it po
 
 v0.6 adds an optional exact sender allowlist to Email settings. Non-matching messages are skipped before parsing, remain unread and can be rediscovered on later polls. Matching the `From` header is not sender authentication and does not prevent Daylight from fetching unread messages; a dedicated mailbox/folder remains strongly recommended. Leaving successfully handled messages unread, custom IMAP searches/flags, MOVE rules, OAuth/provider-specific setup, multiple mailboxes/accounts, and hosted forwarding remain unsupported.
 
+For a guided description of v0.6 calendar aliases, conflict checks, review-queue sensors, permissions and upgrade behavior, see [the v0.6 guide](docs/v0.6.md).
+
 ## Installation
 
 ### HACS custom repository
