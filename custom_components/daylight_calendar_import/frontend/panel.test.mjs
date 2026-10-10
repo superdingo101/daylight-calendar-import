@@ -4976,3 +4976,58 @@ test("ambiguous IMAP allowlist save reconciles casefolded and deduplicated addre
     .namedItem("email_sender_allowlist").value,
     'a@example.test\n"last,first"@example.com');
 });
+
+
+test("Notifications settings offer notify entity choices and keep an offline saved target", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {
+    "notify.phone": {entity_id: "notify.phone", state: "idle",
+      attributes: {friendly_name: "Phone"}},
+    "notify.unavailable": {entity_id: "notify.unavailable", state: "unavailable",
+      attributes: {friendly_name: "Offline"}},
+  }};
+  panel._settings = {entry_id: "entry-1", ai_task_entity: "ai_task.test",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: "notify.offline", classes: []},
+    email: {}};
+  const form = find(panel.notificationSettingsView(), "form");
+  const target = form.elements.namedItem("notification_target");
+  assert.equal(target.tag, "select");
+  assert.deepEqual(target.children.map(option => option.value),
+    ["", "notify.offline", "notify.phone"]);
+  assert.equal(target.value, "notify.offline");
+  assert.ok(!target.children.some(option => option.value === "notify.unavailable"));
+});
+
+test("Notifications settings require a category before enabling", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {
+    "notify.phone": {entity_id: "notify.phone", state: "idle",
+      attributes: {friendly_name: "Phone"}},
+  }};
+  panel._settings = {entry_id: "entry-1", ai_task_entity: "ai_task.test",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []}, email: {}};
+  panel._settingsTab = "notifications";
+  panel._view = "settings";
+  panel._status = "ready";
+  panel.render();
+  const form = find(panel._content, "form");
+  form.elements.namedItem("notification_enabled").checked = true;
+  form.elements.namedItem("notification_target").value = "notify.phone";
+  form.submit({preventDefault() {}});
+  assert.match(panel._settingsError, /at least one notification type/);
+});
+
+test("Notification draft retains its baseline when a refreshed policy changes", () => {
+  const panel = new DaylightImportPanel();
+  const prior = {enabled: true, target: "notify.phone", classes: ["review_ready"]};
+  panel._settings = {notifications: prior};
+  const draft = {enabled: true, target: "notify.other", classes: ["review_ready"]};
+  panel._setSettingsDraft("notifications", {notifications: draft});
+  panel._applySettingsSnapshot({notifications: {
+    enabled: true, target: "notify.phone", classes: ["parse_failed"],
+  }});
+  assert.deepEqual(panel._notificationDraftBaseline, prior);
+  assert.deepEqual(panel._settingsDrafts.notifications.notifications, draft);
+});
