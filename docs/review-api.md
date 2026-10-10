@@ -194,11 +194,18 @@ without a user context; its internal preflight retains the established
 internal-service trust boundary. The single-event `approve_pending_event`
 action still requires an authenticated user through the existing review
 access check.
-Authenticated callers still need their existing entity-control permissions.
-The approval preflight runs an internal, destination-only calendar observation
-**after** the control check, preserving approval for control-only users who
-lack calendar read permission. The preflight exposes only whether approval is
-blocked; it never returns private existing-event details to the approver. The
-separate on-demand `check_pending_event` action continues to require
-explicit calendar read permission. The legacy immediate `import_text`
-action does not use the pending-approval guard.
+**Authorization change for authenticated approvals:** the destination must
+grant both Home Assistant `POLICY_CONTROL` and `POLICY_READ`. Mandatory
+duplicate checking can reveal whether a guessed title and time exist on a
+calendar, so allowing control-only users to run it would expose private
+calendar contents indirectly. Approval by a control-only user now fails
+**before any calendar observation or write** with
+`Approval rejected before calendar write: Destination calendar read permission
+is required for duplicate-safe approval`, regardless of whether a duplicate
+actually exists. Adjust the user's calendar permissions before retrying.
+Trusted in-process Home Assistant service calls with no user context retain
+their existing automation behavior and are authorized by the platform.
+
+The separate `check_pending_event` action continues to enforce explicit
+calendar read access. The legacy immediate `import_text` action does not
+use the pending-approval guard.
