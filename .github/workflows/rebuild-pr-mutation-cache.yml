@@ -150,18 +150,17 @@ jobs:
             mutation-survivor-report.txt
 
   finish:
-    name: Report recovery and retry PR check
+    name: Report recovery and next steps
     needs: [resolve, rebuild]
     if: ${{ always() && needs.resolve.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       statuses: write
-      actions: write
     steps:
       # This job runs only trusted workflow commands on main. No PR code,
       # dependencies, or scripts are executed with the write-capable token.
-      - name: Publish result and rerun failed PR mutation check
+      - name: Report rebuild result and instruct PR check retry
         env:
           GH_TOKEN: ${{ github.token }}
           NUMBER: ${{ inputs.pr_number }}
@@ -194,31 +193,8 @@ jobs:
             exit 1
           fi
 
-          # Re-run the ordinary required Mutation score check with the newly
-          # saved cache; this recovery workflow does NOT impersonate that check.
-          runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/mutation.yml/runs?event=pull_request&per_page=100")"
-          # workflow_runs[].head_sha is the PR *head* SHA, not GITHUB_SHA
-          # (which is the synthetic merge). Match the validated head exactly;
-          # freshness of the synthetic merge was already checked above.
-          # Different PRs can share a branch/head SHA with different bases.
-          # Require an explicit PR-number association; otherwise provide manual retry.
-          run_id="$(jq -r --argjson number "$NUMBER" --arg head "$EXPECTED" '
-            [.workflow_runs[] |
-              select(
-                .status == "completed" and
-                .conclusion == "failure" and
-                .head_sha == $head
-              ) |
-              select(any(.pull_requests[]?; .number == $number))
-            ] | first | .id // empty
-          ' <<< "$runs")"
-          if [[ -n "$run_id" ]]; then
-            if gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/rerun-failed-jobs" >/dev/null; then
-              echo "Requested a rerun of Mutation score for PR #$NUMBER (run $run_id)."
-            else
-              echo "::warning::Cache saved, but GitHub could not automatically rerun check $run_id."
-              echo "::notice::Open the failed Mutation score check on PR #$NUMBER and select Re-run jobs."
-            fi
-          else
-            echo "::notice::Cache saved for PR #$NUMBER. Re-run its failed Mutation score job if one exists."
-          fi
+          # A workflow-run rerun reuses its original test merge commit, even if
+          # the PR base has advanced. Selecting the latest failed run is thus
+          # unsafe for stacked PRs. Leave the required status to an explicit
+          # rerun of the *current* PR check, not this recovery workflow.
+          echo "::notice title=Mutation cache rebuilt::The PR-specific cache is ready for PR #$NUMBER. Open the current PR's failed Mutation score check and choose Re-run jobs. Confirm the check targets the current head and base; recovery alone never satisfies required checks."
