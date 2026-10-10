@@ -119,24 +119,21 @@ def test_rebuild_cache_is_restored_before_shared_main_fallback() -> None:
     assert "exit 1" in _find(job, "Require reusable mutation baseline")["run"]
 
 
-def test_successful_recovery_uses_normal_required_check_not_an_imitation() -> None:
+def test_successful_recovery_requires_a_fresh_manual_required_check() -> None:
     workflow = _load("rebuild-pr-mutation-cache.yml")
     finish = workflow["jobs"]["finish"]
-    assert finish["permissions"]["actions"] == "write"
     assert finish["permissions"]["statuses"] == "write"
+    # The manual recovery flow only needs status reporting; it must not have
+    # broad Actions write permission or accidentally retry an obsolete merge.
+    assert "actions" not in finish["permissions"]
     assert not any("checkout" in step.get("uses", "") for step in _steps(finish))
-    text = _find(finish, "Publish result and rerun failed PR mutation check")["run"]
+    text = _find(finish, "Report rebuild result and instruct PR check retry")["run"]
     assert '"PR Mutation Cache Rebuild"' in text
-    assert "rerun-failed-jobs" in text
-    # GitHub's workflow_runs[].head_sha is the PR head, even though the
-    # event checkout runs on the synthetic test merge. Require the current
-    # validated head SHA so an older failed run cannot be accidentally retried.
-    assert '.head_sha == $head' in text
-    assert '--arg head "$EXPECTED"' in text
-    assert 'any(.pull_requests[]?; .number == $number)' in text
-    assert '.head_branch == $branch' not in text
-    assert '"Mutation score"' not in text
+    assert "Re-run jobs" in text
+    assert "rerun-failed-jobs" not in text
+    assert "actions/workflows/mutation.yml/runs" not in text
     assert "OUTCOME" in text
+
 
 
 def test_missing_workflow_fails_in_a_normal_checkout(monkeypatch, tmp_path) -> None:
