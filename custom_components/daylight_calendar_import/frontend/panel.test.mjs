@@ -5031,3 +5031,41 @@ test("Notification draft retains its baseline when a refreshed policy changes", 
   assert.deepEqual(panel._notificationDraftBaseline, prior);
   assert.deepEqual(panel._settingsDrafts.notifications.notifications, draft);
 });
+
+
+test("Notifications chooser retains a drafted target if its entity disappears", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {}};
+  panel._settings = {entry_id: "entry-1",
+    notifications: {enabled: false, target: "notify.saved", classes: []},
+    email: {}};
+  const draft = {enabled: false, target: "notify.drafted", classes: []};
+  panel._setSettingsDraft("notifications", {notifications: draft});
+  const select = panel.notificationSettingsView().querySelector("select");
+  assert.deepEqual(select.children.map(item => item.value),
+    ["", "notify.drafted", "notify.saved"]);
+  assert.equal(select.value, "notify.drafted");
+});
+
+test("Notification refresh clears an obsolete optimistic baseline when drafts match", () => {
+  const panel = new DaylightImportPanel();
+  const original = {enabled: true, target: "notify.original", classes: ["review_ready"]};
+  const drafted = {enabled: true, target: "notify.updated", classes: ["review_ready"]};
+  panel._settings = {notifications: original};
+  panel._setSettingsDraft("notifications", {notifications: drafted});
+  panel._applySettingsSnapshot({notifications: drafted});
+  assert.equal(panel._settingsDrafts.notifications, null);
+  assert.equal(panel._notificationDraftBaseline, null);
+  panel._setSettingsDraft("notifications", {notifications: original});
+  assert.deepEqual(panel._notificationDraftBaseline, drafted);
+});
+
+test("Notification settings never advertise unsupported lifecycle notification types", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {}};
+  panel._settings = {entry_id: "entry-1",
+    notifications: {enabled: false, target: null, classes: []}, email: {}};
+  const checkboxes = panel.notificationSettingsView().querySelectorAll("input")
+    .filter(input => input.name?.startsWith("notify_"));
+  assert.deepEqual(checkboxes.map(x => x.value), ["review_ready"]);
+});
