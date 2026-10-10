@@ -28,7 +28,11 @@ SOURCE = "custom_components/daylight_calendar_import/"
 FRONTEND = SOURCE + "frontend/"
 # CI-only helpers and their tests do not affect mutation verdicts for the
 # production package; pytest still exercises them on every mutmut run.
-CACHE_HELPERS = {"scripts/mutation_cache.py", "tests/test_mutation_ci_strategy.py"}
+CACHE_HELPERS = {
+    "scripts/mutation_cache.py",
+    "tests/test_mutation_ci_strategy.py",
+    "tests/test_mutation_cache_reuse.py",
+}
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -214,25 +218,28 @@ def _snapshot_signature(files: dict[str, str], environment: str) -> str:
     ).hexdigest()
 
 
-def _compare_files(before: set[Path], same: callable) -> tuple[bool, list[str]]:
+def _compare_files(before: set[Path], same: callable) -> tuple[bool, list[str], list[str]]:
     after = set(tracked_inputs())
     added_tests = []
+    added_sources = []
     for path in before | after:
         name = path.as_posix()
         if _frontend_asset(path) or name in CACHE_HELPERS:
             continue
         if path not in before:
             if not _independent_addition(path):
-                return False, []
+                return False, [], []
             if name.startswith("tests/"):
                 added_tests.append(name)
+            elif name.startswith(SOURCE):
+                added_sources.append(name)
             continue
         if path not in after or not same(path):
-            return False, []
-    return True, sorted(added_tests)
+            return False, [], []
+    return True, sorted(added_tests), sorted(added_sources)
 
 
-def _legacy_delta(commit: str) -> tuple[bool, list[str]]:
+def _legacy_delta(commit: str) -> tuple[bool, list[str], list[str]]:
     def same(path: Path) -> bool:
         old = _historical_content(commit, path)
         now = path.read_bytes()
@@ -249,11 +256,11 @@ def _legacy_delta(commit: str) -> tuple[bool, list[str]]:
     return _compare_files(set(tracked_inputs(commit)), same)
 
 
-def _manifest_delta(saved: dict) -> tuple[bool, list[str]]:
+def _manifest_delta(saved: dict) -> tuple[bool, list[str], list[str]]:
     files = saved.get("files")
     environment = saved.get("environment")
     if not isinstance(files, dict) or not isinstance(environment, str):
-        return False, []
+        return False, [], []
     if (
         saved.get("signature") != _snapshot_signature(files, environment)
         or environment != _environment_fingerprint()
@@ -263,7 +270,7 @@ def _manifest_delta(saved: dict) -> tuple[bool, list[str]]:
             for path, sha in files.items()
         )
     ):
-        return False, []
+        return False, [], []
 
     def same(path: Path) -> bool:
         return hashlib.sha256(
@@ -273,7 +280,7 @@ def _manifest_delta(saved: dict) -> tuple[bool, list[str]]:
     return _compare_files(set(map(Path, files)), same)
 
 
-def cache_validation() -> tuple[bool, list[str]]:
+def cache_validation() -> tuple[bool, list[str], list[str]]:
     try:
         saved = json.loads(CACHE_META.read_text(encoding="utf-8"))
         if not (
@@ -281,9 +288,9 @@ def cache_validation() -> tuple[bool, list[str]]:
             and isinstance(saved.get("fingerprint"), str)
             and STATS.is_file() and any(Path("mutants").rglob("*.meta"))
         ):
-            return False, []
+            return False, [], []
         if saved["fingerprint"] == fingerprint():
-            return True, []
+            return True, [], []
         if "files" in saved:
             return _manifest_delta(saved)
 
@@ -292,12 +299,12 @@ def cache_validation() -> tuple[bool, list[str]]:
         stats = json.loads(STATS.read_text(encoding="utf-8"))
         commit = saved.get("source_commit") or stats.get("git_commit")
         if not isinstance(commit, str) or not COMMIT_SHA.fullmatch(commit):
-            return False, []
+            return False, [], []
         if saved["fingerprint"] != fingerprint(commit):
-            return False, []
+            return False, [], []
         return _legacy_delta(commit)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
-        return False, []
+        return False, [], []
 
 
 def validate() -> bool:
@@ -323,12 +330,24 @@ def _invalidate_old_non_kills() -> int:
     return reset
 
 
+def _invalidate_stale_stats_for_new_sources(new_sources: list[str]) -> None:
+    """New production functions need test mappings from existing tests.
+
+    mutmut 3.8.0's incremental statistics collection discovers new tests only.
+    Removing the stats cache forces a fresh full association collection while
+    retaining existing per-mutant metadata and verdicts for reuse.
+    """
+    if new_sources:
+        STATS.unlink(missing_ok=True)
+        print(f"{len(new_sources)} new production modules; rebuilding test associations")
+
+
 def main() -> int:
     if len(sys.argv) != 2 or sys.argv[1] not in {"validate", "stamp"}:
         print("Usage: python scripts/mutation_cache.py [validate|stamp]", file=sys.stderr)
         return 2
     if sys.argv[1] == "validate":
-        valid, new_tests = cache_validation()
+        valid, new_tests, new_sources = cache_validation()
         if not valid:
             print("Mutation cache missing or stale; discarding cached state")
             shutil.rmtree("mutants", ignore_errors=True)
@@ -337,6 +356,7 @@ def main() -> int:
             if new_tests:
                 reset = _invalidate_old_non_kills()
                 print(f"{len(new_tests)} new test files; reset {reset} cached non-killed verdicts")
+            _invalidate_stale_stats_for_new_sources(new_sources)
         return 0
 
     if not STATS.is_file() or not any(Path("mutants").rglob("*.meta")):
