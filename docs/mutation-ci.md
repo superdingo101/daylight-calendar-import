@@ -15,8 +15,8 @@
   `Release Mutation Validation` status to that commit.
 - **Publish HACS Release** rejects any release for which it cannot find an
   unexpired, clean proof artifact from a successful Update Integration
-  Version workflow run on `main`, for the same release tag and Git source
-  tree. It pins the release target to the verified checked-out commit.
+  Version run or manually dispatched Clean mutation validation on `main`,
+  for the same release tag and Git source tree. It pins the release target to the verified checked-out commit.
   No incremental result or nightly result can satisfy release validation.
 
 ## Incremental cache behavior
@@ -64,8 +64,9 @@ run ID. Both `Release Mutation Validation` and the standard required `Mutation s
 commit statuses are recorded on the release candidate, because the
 GITHUB_TOKEN-created PR does not fire the normal `pull_request` mutation job.
 
-The publisher checks the **conclusion** and provenance of the
-`Update Integration Version` workflow run, downloads the successful
+The publisher checks the **conclusion** and provenance of either a
+successful `Update Integration Version` run or a manually dispatched
+`Clean mutation validation` run on `main`, and downloads the successful
 `release-clean-vX.Y.Z` artifact, checks its tag/run ID/schema/clean mode,
 and compares its tested Git tree to `main` being published. A squash merge
 can change the commit SHA but leave the Git tree identical; that is allowed.
@@ -74,8 +75,10 @@ invalid proof blocks publication. The publication target is pinned to the
 verified checked-out SHA to avoid a moving-`main` race.
 
 A version update run with no new release-preparation commit cannot create
-new evidence. Make a new release-preparation candidate and validate it if
-proof is missing or stale. New changes pushed to the release-preparation PR
+new evidence. If the version is already on `main` but other commits changed
+the source tree, manually dispatch **Clean mutation validation** from `main`,
+supplying the current release tag and (optionally) exact commit SHA. This
+runs the full uncached suite and creates fresh publishable evidence. New changes pushed to the release-preparation PR
 invalidate its status and usually its source-tree proof.
 
 ## Repository settings
