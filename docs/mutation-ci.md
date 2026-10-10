@@ -32,7 +32,8 @@ outside mutmut's production-function bodies. It intentionally ignores
 README/docs-only changes while hashing imports, module-level constants,
 class attributes, decorators and signatures as well as existing tests,
 `conftest.py`, dependencies, fixtures, configuration, and non-Python
-integration files. Mutmut separately invalidates changed function bodies. Missing or inconsistent provenance discards the entire
+integration files. The fingerprint also includes the exact resolved installed
+Python package versions, since ranged requirements can change without a\nrequirements-file edit. Mutmut separately invalidates changed function bodies. Missing or inconsistent provenance discards the entire
 cache and starts clean.
 
 A cache miss is **not** a bypass: mutmut runs the full set, which can take
