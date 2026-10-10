@@ -266,13 +266,18 @@ def _compare_files(before: set[Path], same: callable) -> tuple[bool, list[str], 
             continue
         if path not in before:
             if not _independent_addition(path):
+                print(f"Mutation cache rejected: new shared input {name}")
                 return False, [], []
             if name.startswith("tests/"):
                 added_tests.append(name)
             elif name.startswith(SOURCE):
                 added_sources.append(name)
             continue
-        if path not in after or not same(path):
+        if path not in after:
+            print(f"Mutation cache rejected: removed cached input {name}")
+            return False, [], []
+        if not same(path):
+            print(f"Mutation cache rejected: changed behavior-dependent input {name}")
             return False, [], []
     return True, sorted(added_tests), sorted(added_sources)
 
@@ -348,6 +353,7 @@ def cache_validation() -> tuple[bool, list[str], list[str]]:
             and isinstance(saved.get("fingerprint"), str)
             and STATS.is_file() and any(Path("mutants").rglob("*.meta"))
         ):
+            print("Mutation cache rejected: missing metadata, stats or mutant verdicts")
             return False, [], []
         if saved["fingerprint"] == fingerprint():
             return True, [], []
@@ -359,11 +365,14 @@ def cache_validation() -> tuple[bool, list[str], list[str]]:
         stats = json.loads(STATS.read_text(encoding="utf-8"))
         commit = saved.get("source_commit") or stats.get("git_commit")
         if not isinstance(commit, str) or not COMMIT_SHA.fullmatch(commit):
+            print("Mutation cache rejected: legacy baseline has no valid commit SHA")
             return False, [], []
         if saved["fingerprint"] != fingerprint(commit):
+            print("Mutation cache rejected: legacy source snapshot/environment fingerprint differs")
             return False, [], []
         return _legacy_delta(commit)
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        print(f"Mutation cache rejected: cannot inspect provenance ({type(error).__name__})")
         return False, [], []
 
 
