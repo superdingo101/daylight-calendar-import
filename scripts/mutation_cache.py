@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from importlib import metadata
 import json
 import platform
 import subprocess
@@ -61,7 +62,19 @@ def _input_content(path: Path) -> bytes:
 
 def fingerprint() -> str:
     digest = hashlib.sha256()
-    digest.update(f"mutation-cache-v{CACHE_SCHEMA}|python={sys.version_info[:2]}|os={platform.system()}|mutmut=3.8.0".encode())
+    digest.update(
+        f"mutation-cache-v{CACHE_SCHEMA}|python={platform.python_version()}|"
+        f"os={platform.system()}|mutmut=3.8.0".encode()
+    )
+    # Ranged dependencies in requirements_test.txt can resolve to newer
+    # packages without the requirements file changing. Their exact installed
+    # versions are part of the mutation test environment.
+    installed = sorted(
+        (distribution.metadata["Name"].lower(), distribution.version)
+        for distribution in metadata.distributions()
+        if distribution.metadata.get("Name")
+    )
+    digest.update(json.dumps(installed, separators=(",", ":")).encode())
     for path in sorted(tracked_inputs()):
         digest.update(b"\0")
         digest.update(path.as_posix().encode())
