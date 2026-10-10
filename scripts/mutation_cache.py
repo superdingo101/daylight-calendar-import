@@ -34,6 +34,7 @@ CACHE_HELPERS = {
     "scripts/mutation_cache.py",
     "tests/test_mutation_ci_strategy.py",
     "tests/test_mutation_cache_reuse.py",
+    "tests/test_pr_mutation_rebuild_workflow.py",
 }
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 VERSION_ONLY_FILES = {
