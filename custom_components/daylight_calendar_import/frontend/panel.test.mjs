@@ -5134,3 +5134,25 @@ test("notification conflict prevents retry until remote policy has been refreshe
   form.submit({preventDefault() {}});
   assert.match(panel._settingsError, /Refresh notification settings/);
 });
+
+
+test("notification settings retain hidden future classes through unrelated edits", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {
+    "notify.phone": {entity_id: "notify.phone", state: "idle", attributes: {}},
+  }};
+  panel._settings = {entry_id: "entry-1",
+    notifications: {enabled: false, target: "notify.phone", classes: ["parse_failed"]},
+    email: {}};
+  const form = find(panel.notificationSettingsView(), "form");
+  form.elements.namedItem("notification_target").change();
+  assert.deepEqual(panel._settingsDrafts.notifications, null);
+  // Selecting an additional supported class must not erase the hidden class.
+  form.elements.namedItem("notify_review_ready").checked = true;
+  form.change();
+  assert.deepEqual(panel._settingsDrafts.notifications.notifications.classes,
+    ["parse_failed", "review_ready"]);
+  form.elements.namedItem("notify_review_ready").checked = false;
+  form.change();
+  assert.equal(panel._settingsDrafts.notifications, null);
+});
