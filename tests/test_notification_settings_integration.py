@@ -65,12 +65,13 @@ async def test_notifications_ws_validation_rejects_bad_policy_without_writes():
         {"target": "notify.missing", "enabled": "yes"},
         {"enabled": True, "target": "notify.phone", "classes": ["parse_failed"]},
         {"enabled": True, "target": "notify.phone", "classes": ["review_ready", "parse_failed"]},
+        {"enabled": True, "target": "notify.phone"},
     ]):
         await invoke(settings_api.websocket_update_notifications, hass, connection, {
             "id": 220 + index, "entry_id": "entry-1", "notifications": invalid,
             "expected_notifications": {"enabled": False, "classes": [], "target": None},
         })
-    assert len(connection.errors) == 5
+    assert len(connection.errors) == 6
     assert all(code == "invalid_notifications" for _, code, _ in connection.errors)
     assert not hass.config_entries.updates
     assert not hass.config_entries.reloads
