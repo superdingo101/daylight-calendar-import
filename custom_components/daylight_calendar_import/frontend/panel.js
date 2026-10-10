@@ -1347,8 +1347,13 @@ export class DaylightImportPanel extends HTMLElement {
     const policy = () => ({
       enabled: enabled.checked,
       target: target.value.trim() || null,
-      classes: Array.from(classes.querySelectorAll("input"))
-        .filter(input => input.checked).map(input => input.value),
+      // Preserve valid classes that predate this UI but are not yet
+      // selectable. A disabled policy may intentionally retain them.
+      classes: [
+        ...draft.classes.filter(kind => kind !== "review_ready"),
+        ...Array.from(classes.querySelectorAll("input"))
+          .filter(input => input.checked).map(input => input.value),
+      ],
     });
     const changed = () => this._setSettingsDraft("notifications", {notifications: policy()});
     form.addEventListener("change", changed);
