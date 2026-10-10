@@ -537,8 +537,14 @@ export class DaylightImportPanel extends HTMLElement {
     });
     header.append(refresh);
     this._content = document.createElement("div");
+    this._navigation = element("nav");
+    this._navigation.setAttribute("aria-label", "Daylight views");
     this._announcement = document.createElement("div");
     this._announcement.setAttribute("aria-live", "polite");
+    this._viewContent = document.createElement("div");
+    // Keep the live region connected so screen readers can observe changes.
+    // Renders replace only the view body, never the navigation or announcement.
+    this._content.append(this._navigation, this._announcement, this._viewContent);
     const main = document.createElement("main");
     main.append(this._content);
     this.shadowRoot.append(style, header, main);
@@ -1923,8 +1929,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton.disabled = this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     const content = document.createDocumentFragment();
-    const navigation = element("nav");
-    navigation.setAttribute("aria-label", "Daylight views");
+    const navigation = this._navigation;
+    navigation.replaceChildren();
     const review = element("button", "Review inbox");
     review.type = "button";
     review.disabled = this._view === "inbox" || this._saving || this._settingsSaving;
@@ -1946,8 +1952,6 @@ export class DaylightImportPanel extends HTMLElement {
       settings.addEventListener("click", () => void this.showSettings());
       navigation.append(settings);
     }
-    // Navigation and its live announcement always lead every view.
-    content.append(navigation, this._announcement);
     if (this._view === "settings") {
       if (this._status === "loading") {
         const loading = element("p", "Loading settings…", "status");
@@ -1993,7 +1997,7 @@ export class DaylightImportPanel extends HTMLElement {
               this.emailSettingsView() : this.generalSettingsView(),
         );
       }
-      this._content.replaceChildren(content);
+      this._viewContent.replaceChildren(content);
       return;
     }
     if (this._view === "activity") {
@@ -2035,7 +2039,7 @@ export class DaylightImportPanel extends HTMLElement {
         }
         content.append(list);
       }
-      this._content.replaceChildren(content);
+      this._viewContent.replaceChildren(content);
       this._announcement.replaceChildren(element("span", this._status === "loading" ? "Loading activity…" :
         this._status === "ready" ? "Activity loaded" : this._status));
       return;
@@ -2312,7 +2316,7 @@ export class DaylightImportPanel extends HTMLElement {
       }
       content.append(list);
     }
-    this._content.replaceChildren(content);
+    this._viewContent.replaceChildren(content);
     this._announcement.replaceChildren();
     if (this._status === "loading") this._announcement.append(element("span", "Loading imports…"));
     else if (this._status !== "ready") this._announcement.append(element("span", this._status));
