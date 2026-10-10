@@ -292,10 +292,14 @@ async def test_opted_in_review_ready_dispatch_is_post_commit_and_not_replayed(ha
         "custom_components.daylight_calendar_import.async_notify_review_ready",
         capture,
     )
-    entry = _entry()
-    entry.options[CONF_NOTIFICATION_PREFERENCES] = {
-        "enabled": True, "target": "notify.phone", "classes": ["review_ready"],
-    }
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daylight Calendar Import",
+        data={CONF_AI_TASK_ENTITY: "ai_task.test",
+              CONF_CALENDAR_ENTITY: "calendar.family"},
+        options={CONF_NOTIFICATION_PREFERENCES: {
+            "enabled": True, "target": "notify.phone", "classes": ["review_ready"],
+        }},
+    )
     await _setup_entry(hass, entry)
     source = {ATTR_TEXT: "Practice with water", ATTR_SOURCE_ID: "notification-source"}
     response = await hass.services.async_call(
