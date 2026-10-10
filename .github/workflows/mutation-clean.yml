@@ -116,11 +116,16 @@ jobs:
           if [[ "$MUTATION_OUTCOME" == success && "$ENFORCE_OUTCOME" == success && "$EXPORT_OUTCOME" == success && "$PROOF_OUTCOME" == success && "$DIAGNOSTICS_OUTCOME" == success ]]; then
             state=success
           fi
-          gh api --method POST "repos/${{ github.repository }}/statuses/$TARGET" \
-            -f state="$state" \
-            -f context="Release Mutation Validation" \
-            -f description="Clean mutation validation for ${{ inputs.release_tag }}" \
-            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # The token-created release-prep PR does not fire the normal
+          # pull_request mutation job. One clean run supplies both its release
+          # gate and the standard required mutation context.
+          for context in "Release Mutation Validation" "Mutation score"; do
+            gh api --method POST "repos/${{ github.repository }}/statuses/$TARGET" \
+              -f state="$state" \
+              -f context="$context" \
+              -f description="Clean mutation validation for ${{ inputs.release_tag }}" \
+              -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          done
 
       - name: Update visible nightly mutation health
         if: ${{ always() && github.event_name == 'schedule' }}
