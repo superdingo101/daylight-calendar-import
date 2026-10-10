@@ -27,19 +27,56 @@ cannot generally be shared with another PR. Every successful PR run saves
 a uniquely keyed state for its next update. The nightly clean job publishes
 the default-branch baseline.
 
-`scripts/mutation_cache.py` tracks the exact contents of the tracked inputs
-outside mutmut's production-function bodies. It intentionally ignores
-README/docs-only changes while hashing imports, module-level constants,
-class attributes, decorators and signatures as well as existing tests,
-`conftest.py`, dependencies, fixtures, configuration, and non-Python
-integration files. The fingerprint also includes the exact resolved installed
-Python package versions, since ranged requirements can change without a\nrequirements-file edit. Mutmut separately invalidates changed function bodies. Missing or inconsistent provenance discards the entire
-cache and starts clean.
+The cache validator first verifies the saved fingerprint against the exact
+Git snapshot that produced it. A verified cached `main` snapshot is reusable
+when a PR only adds independent production modules or `test_*.py` test files,
+changes production function bodies (which mutmut hashes itself), or modifies
+frontend JS/CSS assets. Because mutmut 3.8.0 collects new-test mappings but
+does not automatically revisit decided mutants, newly added test files reset
+cached **surviving, uncovered, timeout, and otherwise non-killed verdicts**
+before mutmut runs. Kills by unchanged existing tests remain valid. New tests
+are then collected and the invalidated mutants rerun using their refreshed
+test associations. When a new production Python module is added, the validator
+also discards only `mutmut-stats.json` so mutmut recollects test-to-function
+associations from **all** tests. Cached non-killed verdicts are also reset
+when new source modules appear, since old surviving/uncovered functions can
+become newly reachable through the added module. Existing killed verdicts
+remain reusable. This avoids incorrectly treating new functions as uncovered
+when already-existing tests execute them. The validator also accepts strictly cache-only changes to the
+mutation workflow while rejecting changes to its test runner or mutmut command.
 
-A cache miss is **not** a bypass: mutmut runs the full set, which can take
-approximately 40–60 minutes. Restored state is never allowed to come from
-privileged release validation, and PR workflows have a read-only token.
-No cache is saved when the mutation gate fails.
+**Existing** test files, `conftest.py`, fixtures, dependencies, non-Python
+integration inputs, source imports/constants, and signatures remain
+conservatively invalidating. Version-only changes to
+`pyproject.toml`'s `[project].version` and the Home Assistant integration
+`manifest.json`'s `version` do **not** invalidate cached results.
+The validator parses both files and still invalidates on every other field,
+including requirements, Python compatibility, mutation/test configuration,
+and dependencies. Unknown changes or missing Git history invalidate
+the cache. The environment fingerprint also includes the exact resolved
+installed Python dependencies so a changed package version fails closed.
+The first nightly baseline format remains readable; it does not need to
+be rebuilt simply because this validator changed. Subsequent successful PR
+runs also stamp a self-contained per-file manifest and environment
+fingerprint, so their cached state does not depend on temporary GitHub
+pull-request merge commits remaining reachable after the next push.
+
+The PR job attempts its own prior cache first, then a separately restored
+trusted `main` cache if the PR cache is stale or unavailable. GitHub checkout
+fetches complete Git history for legacy cache verification.
+
+**PR jobs never start a full mutation run on a cache miss.** Both failed
+cache-validation attempts cause an immediate failed `Mutation score` check
+with instructions to manually run **Clean mutation validation** on `main`
+(with both optional fields empty). After that successful clean baseline is
+published, rerun the PR's mutation check. This avoids wasting 45–60 minutes
+on every PR update during cache incompatibility while still blocking a merge
+on missing validation.
+
+PR mutation jobs are capped at 25 minutes, including setup; clean nightly
+and release validation retain a 60-minute timeout. No cache is saved if
+the mutation quality gate fails. PR jobs have a read-only token and cannot
+consume privileged release proof as a baseline.
 
 The normal `python scripts/check_mutation_score.py` score enforcement
 and complete survivor artifacts are retained. If GitHub cache storage or
