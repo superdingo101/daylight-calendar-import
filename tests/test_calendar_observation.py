@@ -1091,7 +1091,7 @@ async def test_approval_start_probe_supports_long_events_and_full_exact_match(al
     assert end.tzinfo == timezone.utc
     assert end > start
     assert end - start == (
-        timedelta(days=1, hours=1) if all_day else timedelta(minutes=1)
+        timedelta(days=1) if all_day else timedelta(minutes=1)
     )
     fake = hass({"calendar.work": {"events": [{
         "summary": extended.title, "start": extended.start, "end": extended.end,
@@ -1242,3 +1242,14 @@ async def test_approval_does_not_use_regular_review_window_limit():
         local_zone=ZONE, context=READ_CONTEXT, approval_start_only=True,
     )
     assert [m.kind for m in matches] == ["exact_duplicate"]
+
+
+def test_all_day_approval_probe_spans_fall_dst_day_in_utc():
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    event = EventDraft("Practice", "2026-11-01", "2026-12-31", True)
+    start, end = _approval_start_window(event, local_zone=ZONE)
+    assert end - start == timedelta(hours=25)
+    assert start.tzinfo is timezone.utc
+    assert end.tzinfo is timezone.utc
