@@ -1,6 +1,6 @@
 name: Rebuild PR Mutation Cache
 
-run-name: Rebuild mutation baseline for PR #${{ inputs.pr_number }}
+run-name: "Rebuild mutation baseline for PR #${{ inputs.pr_number }}"
 
 on:
   workflow_dispatch:
@@ -26,6 +26,7 @@ jobs:
     outputs:
       head_sha: ${{ steps.pr.outputs.head_sha }}
       merge_sha: ${{ steps.pr.outputs.merge_sha }}
+      base_sha: ${{ steps.pr.outputs.base_sha }}
       head_branch: ${{ steps.pr.outputs.head_branch }}
     steps:
       - name: Require main dispatch and trusted same-repo PR
@@ -43,7 +44,9 @@ jobs:
           if ! jq -e --arg repo "$GITHUB_REPOSITORY" '
               .state == "open" and
               .head.repo.full_name == $repo and
+              .mergeable != false and
               (.head.sha | test("^[0-9a-f]{40}$")) and
+              (.base.sha | test("^[0-9a-f]{40}$")) and
               (.merge_commit_sha | type == "string" and test("^[0-9a-f]{40}$"))
             ' <<< "$pr" >/dev/null; then
             echo "::error::Only open, same-repository PRs with a mergeable test-merge commit can be rebuilt. Resolve merge conflicts first."
@@ -51,6 +54,7 @@ jobs:
           fi
           echo "head_sha=$(jq -r '.head.sha' <<< "$pr")" >> "$GITHUB_OUTPUT"
           echo "merge_sha=$(jq -r '.merge_commit_sha' <<< "$pr")" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$(jq -r '.base.sha' <<< "$pr")" >> "$GITHUB_OUTPUT"
           echo "head_branch=$(jq -r '.head.ref' <<< "$pr")" >> "$GITHUB_OUTPUT"
 
   rebuild:
@@ -72,9 +76,11 @@ jobs:
         env:
           EXPECTED_MERGE: ${{ needs.resolve.outputs.merge_sha }}
           EXPECTED_HEAD: ${{ needs.resolve.outputs.head_sha }}
+          EXPECTED_BASE: ${{ needs.resolve.outputs.base_sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_MERGE"
+          test "$(git rev-parse HEAD^1)" = "$EXPECTED_BASE"
           test "$(git rev-parse HEAD^2)" = "$EXPECTED_HEAD"
 
       - uses: actions/setup-python@v6
@@ -107,12 +113,14 @@ jobs:
           NUMBER: ${{ inputs.pr_number }}
           EXPECTED_HEAD: ${{ needs.resolve.outputs.head_sha }}
           EXPECTED_MERGE: ${{ needs.resolve.outputs.merge_sha }}
+          EXPECTED_BASE: ${{ needs.resolve.outputs.base_sha }}
         run: |
           set -euo pipefail
           current="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER")"
           head="$(jq -r '.head.sha' <<< "$current")"
+          base="$(jq -r '.base.sha' <<< "$current")"
           merge="$(jq -r '.merge_commit_sha' <<< "$current")"
-          if [[ "$head" != "$EXPECTED_HEAD" || "$merge" != "$EXPECTED_MERGE" ]]; then
+          if [[ "$head" != "$EXPECTED_HEAD" || "$base" != "$EXPECTED_BASE" || "$merge" != "$EXPECTED_MERGE" ]]; then
             echo "::error::PR head or base changed during the clean run. Nothing will be cached; rerun against the current merge tree."
             exit 1
           fi
@@ -158,6 +166,7 @@ jobs:
           NUMBER: ${{ inputs.pr_number }}
           EXPECTED: ${{ needs.resolve.outputs.head_sha }}
           EXPECTED_MERGE: ${{ needs.resolve.outputs.merge_sha }}
+          EXPECTED_BASE: ${{ needs.resolve.outputs.base_sha }}
           BRANCH: ${{ needs.resolve.outputs.head_branch }}
           OUTCOME: ${{ needs.rebuild.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -166,7 +175,8 @@ jobs:
           pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER")"
           actual="$(jq -r '.head.sha' <<< "$pr")"
           actual_merge="$(jq -r '.merge_commit_sha' <<< "$pr")"
-          if [[ "$actual" != "$EXPECTED" || "$actual_merge" != "$EXPECTED_MERGE" ]]; then
+          actual_base="$(jq -r '.base.sha' <<< "$pr")"
+          if [[ "$actual" != "$EXPECTED" || "$actual_base" != "$EXPECTED_BASE" || "$actual_merge" != "$EXPECTED_MERGE" ]]; then
             echo "::warning::PR head changed; the old recovery result does not apply to its latest commit."
             exit 0
           fi
