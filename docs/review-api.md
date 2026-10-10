@@ -174,10 +174,14 @@ the schedule is empty. The review panel uses these results as an optional, on-de
 calendar check, not as an approval decision. At **approval time**, the
 single-event and bulk approval actions make a fresh read of *each event's
 destination calendar only* before recording its durable write checkpoint.
-The approval action labels preflight failures with `Approval rejected before
-calendar write:` to distinguish definite non-writes from ambiguous failures
-after a durable write checkpoint. The bulk review panel preserves that
-distinction; failures without this explicit marker remain potentially uncertain.
+The approval service may label validation failures before checkpointing with
+`Approval rejected before calendar write:`, but **clients must never rely on
+exception-message text to determine whether writing started**. Provider errors
+can repeat arbitrary source content, including that phrase. The bulk review
+panel conservatively reports any thrown approval error as an unconfirmed
+outcome, then refreshes the pending queue. A persisted `write_uncertain`
+status requires explicit verification and recovery; if the queue cannot be
+reloaded, do not assume a write was skipped.
 An exact match blocks that event's write; possible duplicates and scheduling
 overlaps remain advisory. For **all** events, the mandatory exact-duplicate preflight queries only
 the draft's start: at most **one calendar day** for all-day events or **one
