@@ -200,12 +200,15 @@ jobs:
           # Re-run the ordinary required Mutation score check with the newly
           # saved cache; this recovery workflow does NOT impersonate that check.
           runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/mutation.yml/runs?event=pull_request&per_page=100")"
-          run_id="$(jq -r --argjson number "$NUMBER" --arg branch "$BRANCH" --arg merge "$EXPECTED_MERGE" '
+          # workflow_runs[].head_sha is the PR *head* SHA, not GITHUB_SHA
+          # (which is the synthetic merge). Match the validated head exactly;
+          # freshness of the synthetic merge was already checked above.
+          run_id="$(jq -r --argjson number "$NUMBER" --arg branch "$BRANCH" --arg head "$EXPECTED" '
             [.workflow_runs[] |
               select(
                 .status == "completed" and
                 .conclusion == "failure" and
-                .head_sha == $merge
+                .head_sha == $head
               ) |
               select(
                 any(.pull_requests[]?; .number == $number) or
