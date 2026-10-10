@@ -11,7 +11,10 @@
   to run **Rebuild PR Mutation Cache** from main with that PR number; never
   launch a 45-minute full run on a routine PR. The explicit rebuild checks
   the PR's exact merge tree, runs the full mutation suite once, publishes a
-  PR-specific cache, and attempts to rerun its ordinary required mutation check.
+  PR-specific cache. After it succeeds, manually rerun the current PR's
+  failed required `Mutation score` check to validate the saved cache.
+  Never automatically rerun an earlier workflow run: GitHub would retain
+  its old synthetic merge SHA if the PR base changed.
 - Do not delete mutation state in an ordinary PR job: incremental mutmut
   invalidates changed production functions itself.
 - The clean full mutation suite runs every night on `main`. The nightly
