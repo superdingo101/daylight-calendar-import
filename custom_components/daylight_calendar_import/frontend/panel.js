@@ -460,7 +460,13 @@ function emailDraftMatches(settings, draft) {
 
 function settingsDraftMatches(settings, tab, draft) {
   return tab === "notifications" ?
-    settingsPatchMatches(settings?.notifications, draft?.notifications ?? {}) :
+    Boolean(settings?.notifications && draft?.notifications) &&
+      settings.notifications.enabled === draft.notifications.enabled &&
+      settings.notifications.target === draft.notifications.target &&
+      Array.isArray(draft.notifications.classes) &&
+      draft.notifications.classes.length === settings.notifications.classes.length &&
+      draft.notifications.classes.every(value =>
+        settings.notifications.classes.includes(value)) :
     tab === "email" ?
     emailDraftMatches(settings, draft) :
     settingsPatchMatches(settings, draft);
