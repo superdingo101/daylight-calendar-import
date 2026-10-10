@@ -6,12 +6,28 @@ const SETTINGS_EMAIL_UPDATE = "daylight_calendar_import/settings/email/update";
 const SETTINGS_CALENDAR_INTELLIGENCE_UPDATE = "daylight_calendar_import/settings/calendar_intelligence/update";
 const SETTINGS_NOTIFICATIONS_UPDATE = "daylight_calendar_import/settings/notifications/update";
 
+const NOTIFICATION_CLASSES = new Set([
+  "review_ready", "calendar_created", "calendar_create_failed",
+  "calendar_write_uncertain", "conflict_detected", "parse_failed",
+]);
+
+function validNotificationPolicy(policy) {
+  return policy && typeof policy === "object" && !Array.isArray(policy) &&
+    typeof policy.enabled === "boolean" &&
+    (policy.target === null || typeof policy.target === "string" &&
+      /^notify\\.[a-z0-9_]+$/.test(policy.target) && policy.target.length <= 128) &&
+    Array.isArray(policy.classes) &&
+    policy.classes.every(value => NOTIFICATION_CLASSES.has(value)) &&
+    new Set(policy.classes).size === policy.classes.length;
+}
+
 function validateSettings(result) {
   if (!result || typeof result.entry_id !== "string" ||
       typeof result.ai_task_entity !== "string" ||
       typeof result.calendar_entity !== "string" ||
       !Array.isArray(result.calendar_entities) ||
-      typeof result.email !== "object" || result.email === null) {
+      typeof result.email !== "object" || result.email === null ||
+      !validNotificationPolicy(result.notifications)) {
     throw new Error("Daylight settings returned an unexpected response. Try again.");
   }
   return result;
@@ -61,6 +77,7 @@ export async function saveNotificationSettings(hass, settings) {
     type: SETTINGS_NOTIFICATIONS_UPDATE,
     entry_id: settings.entry_id,
     notifications: settings.notifications,
+    expected_notifications: settings.expected_notifications,
   }));
 }
 
