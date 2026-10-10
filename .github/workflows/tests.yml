@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Release-prep PRs created by GITHUB_TOKEN do not fire pull_request CI.
+  workflow_dispatch:
 
 jobs:
   frontend:
