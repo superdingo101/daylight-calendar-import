@@ -82,14 +82,14 @@ def test_export_keeps_survivors_and_other_non_killed_statuses(monkeypatch, tmp_p
 
 def test_no_mutation_data_fails(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
-    metadata = {"custom_components/a.py": {}})
+    metadata = {"custom_components/a.py": {}}
     assert _export(metadata, lambda *_args, **_kwargs: "") == 1
     assert "no mutation results found" in capsys.readouterr().err
 
 
 def test_diff_failure_retains_other_survivors(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
-    metadata = {"custom_components/a.py": {"a.x__mutmut_1": 0, "a.x__mutmut_2": 0}})
+    metadata = {"custom_components/a.py": {"a.x__mutmut_1": 0, "a.x__mutmut_2": 0}}
 
     def diff(mutant, *, path):
         if mutant.endswith("_1"):
