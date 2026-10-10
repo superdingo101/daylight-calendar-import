@@ -12,6 +12,7 @@ import hashlib
 import io
 from importlib import metadata
 import json
+import shutil
 import platform
 import re
 import subprocess
@@ -159,36 +160,120 @@ def _same_test_execution_workflow(old: bytes, new: bytes) -> bool:
         return False
 
 
-def _safe_delta(commit: str) -> bool:
-    before = set(tracked_inputs(commit))
+
+def _environment_fingerprint() -> str:
+    digest = hashlib.sha256()
+    digest.update(
+        f"mutation-cache-v{CACHE_SCHEMA}|python={platform.python_version()}|"
+        f"os={platform.system()}|mutmut=3.8.0".encode()
+    )
+    installed = sorted(
+        (dist.metadata["Name"].lower(), dist.version)
+        for dist in metadata.distributions()
+        if dist.metadata.get("Name")
+    )
+    digest.update(json.dumps(installed, separators=(",", ":")).encode())
+    return digest.hexdigest()
+
+
+def _comparison_content(path: Path, raw: bytes) -> bytes:
+    """Hash the behavior relevant to mutation testing, not cache plumbing."""
+    if path.as_posix() == ".github/workflows/mutation.yml":
+        try:
+            workflow = yaml.safe_load(raw)
+            steps = workflow["jobs"]["mutation"]["steps"]
+            workflow["jobs"]["mutation"]["steps"] = [
+                step for step in steps if step.get("name") not in _CACHE_ONLY_STEPS
+            ]
+            for step in workflow["jobs"]["mutation"]["steps"]:
+                if step.get("uses", "").startswith("actions/checkout@"):
+                    options = step.get("with", {})
+                    options.pop("fetch-depth", None)
+                    if not options:
+                        step.pop("with", None)
+            return json.dumps(workflow, sort_keys=True).encode()
+        except (AttributeError, KeyError, TypeError, ValueError, yaml.YAMLError):
+            return raw
+    return _snapshot_content(path, raw)
+
+
+def _cache_files() -> dict[str, str]:
+    files = {}
+    for path in tracked_inputs():
+        if _frontend_asset(path) or path.as_posix() in CACHE_HELPERS:
+            continue
+        files[path.as_posix()] = hashlib.sha256(
+            _comparison_content(path, path.read_bytes())
+        ).hexdigest()
+    return files
+
+
+def _snapshot_signature(files: dict[str, str], environment: str) -> str:
+    return hashlib.sha256(
+        json.dumps({"files": files, "environment": environment}, sort_keys=True).encode()
+    ).hexdigest()
+
+
+def _compare_files(before: set[Path], same: callable) -> tuple[bool, list[str]]:
     after = set(tracked_inputs())
+    added_tests = []
     for path in before | after:
         name = path.as_posix()
         if _frontend_asset(path) or name in CACHE_HELPERS:
             continue
         if path not in before:
             if not _independent_addition(path):
-                return False
+                return False, []
+            if name.startswith("tests/"):
+                added_tests.append(name)
             continue
-        if path not in after:
-            return False
+        if path not in after or not same(path):
+            return False, []
+    return True, sorted(added_tests)
+
+
+def _legacy_delta(commit: str) -> tuple[bool, list[str]]:
+    def same(path: Path) -> bool:
         old = _historical_content(commit, path)
         now = path.read_bytes()
         if old == now:
-            continue
-        if name == ".github/workflows/mutation.yml":
-            if _same_test_execution_workflow(old, now):
-                continue
-            return False
-        # Mutmut already invalidates source function-body changes by hash.
-        if name.startswith(SOURCE) and path.suffix == ".py":
-            if _snapshot_content(path, old) == _snapshot_content(path, now):
-                continue
-        return False
-    return True
+            return True
+        if path.as_posix() == ".github/workflows/mutation.yml":
+            return _same_test_execution_workflow(old, now)
+        return (
+            path.as_posix().startswith(SOURCE)
+            and path.suffix == ".py"
+            and _snapshot_content(path, old) == _snapshot_content(path, now)
+        )
+
+    return _compare_files(set(tracked_inputs(commit)), same)
 
 
-def validate() -> bool:
+def _manifest_delta(saved: dict) -> tuple[bool, list[str]]:
+    files = saved.get("files")
+    environment = saved.get("environment")
+    if not isinstance(files, dict) or not isinstance(environment, str):
+        return False, []
+    if (
+        saved.get("signature") != _snapshot_signature(files, environment)
+        or environment != _environment_fingerprint()
+        or any(
+            not isinstance(path, str) or not isinstance(sha, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", sha)
+            for path, sha in files.items()
+        )
+    ):
+        return False, []
+
+    def same(path: Path) -> bool:
+        return hashlib.sha256(
+            _comparison_content(path, path.read_bytes())
+        ).hexdigest() == files[path.as_posix()]
+
+    return _compare_files(set(map(Path, files)), same)
+
+
+def cache_validation() -> tuple[bool, list[str]]:
     try:
         saved = json.loads(CACHE_META.read_text(encoding="utf-8"))
         if not (
@@ -196,23 +281,46 @@ def validate() -> bool:
             and isinstance(saved.get("fingerprint"), str)
             and STATS.is_file() and any(Path("mutants").rglob("*.meta"))
         ):
-            return False
+            return False, []
         if saved["fingerprint"] == fingerprint():
-            return True
+            return True, []
+        if "files" in saved:
+            return _manifest_delta(saved)
 
-        # Existing nightly baselines only contain a whole-tree fingerprint.
-        # Recover the exact original Git snapshot and *verify* its fingerprint
-        # before allowing strictly scoped additions. This preserves the
-        # baseline built before this change without accepting stale metadata.
+        # First shared main cache, created before file-level manifests existed.
+        # Verify its exact original full-repository fingerprint before reuse.
         stats = json.loads(STATS.read_text(encoding="utf-8"))
         commit = saved.get("source_commit") or stats.get("git_commit")
         if not isinstance(commit, str) or not COMMIT_SHA.fullmatch(commit):
-            return False
+            return False, []
         if saved["fingerprint"] != fingerprint(commit):
-            return False
-        return _safe_delta(commit)
+            return False, []
+        return _legacy_delta(commit)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
-        return False
+        return False, []
+
+
+def validate() -> bool:
+    return cache_validation()[0]
+
+
+def _invalidate_old_non_kills() -> int:
+    """Additive tests cannot undo kills by unchanged older tests.
+
+    New tests CAN kill formerly surviving or uncovered mutants. Reset those
+    verdicts before mutmut's new-test statistics collection, so mutmut retests
+    them with its updated test-to-function mapping instead of skipping them.
+    """
+    reset = 0
+    for path in Path("mutants").rglob("*.meta"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        verdicts = data["exit_code_by_key"]
+        for name, code in verdicts.items():
+            if code is not None and code not in {1, 3, 34, 37}:
+                verdicts[name] = None
+                reset += 1
+        path.write_text(json.dumps(data, indent=4), encoding="utf-8")
+    return reset
 
 
 def main() -> int:
@@ -220,18 +328,23 @@ def main() -> int:
         print("Usage: python scripts/mutation_cache.py [validate|stamp]", file=sys.stderr)
         return 2
     if sys.argv[1] == "validate":
-        if not validate():
+        valid, new_tests = cache_validation()
+        if not valid:
             print("Mutation cache missing or stale; discarding cached state")
-            import shutil
             shutil.rmtree("mutants", ignore_errors=True)
         else:
             print("Valid mutation cache restored; reusing applicable results")
+            if new_tests:
+                reset = _invalidate_old_non_kills()
+                print(f"{len(new_tests)} new test files; reset {reset} cached non-killed verdicts")
         return 0
 
     if not STATS.is_file() or not any(Path("mutants").rglob("*.meta")):
         print("Cannot stamp missing mutation state", file=sys.stderr)
         return 1
     CACHE_META.parent.mkdir(exist_ok=True, parents=True)
+    files = _cache_files()
+    environment = _environment_fingerprint()
     CACHE_META.write_text(
         json.dumps({
             "schema": CACHE_SCHEMA,
@@ -239,6 +352,9 @@ def main() -> int:
             "source_commit": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], text=True,
             ).strip(),
+            "environment": environment,
+            "files": files,
+            "signature": _snapshot_signature(files, environment),
         }, sort_keys=True) + "\n",
         encoding="utf-8",
     )
