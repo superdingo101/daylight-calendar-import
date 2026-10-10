@@ -57,6 +57,8 @@ from .providers import SourceValidationError
 from .review_panel import async_register_review_panel, async_remove_review_panel
 from .settings import effective_ai_task_entity, effective_calendar_options, effective_calendar_intelligence
 from .settings_api import async_register_settings_api
+from .settings import effective_notification_preferences
+from .review_ready_notifications import async_notify_review_ready
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .source_routing import plan_source_routing
 from .uploads import async_image_source
@@ -235,7 +237,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception:
             _LOGGER.exception("Pending-added notification could not be published")
 
-    pending_store.on_review_ready = on_review_ready
+    notify_preferences = effective_notification_preferences(entry)
+
+    def on_review_ready_with_notification(pending: Any) -> None:
+        """Keep HA automation event separate from opt-in delivery."""
+        on_review_ready(pending)
+        if not notify_preferences.permits("review_ready"):
+            return
+        activity = pending_store.get_activity(pending.id)
+        if activity is not None:
+            hass.async_create_task(
+                async_notify_review_ready(hass, activity, notify_preferences),
+                f"Daylight review-ready notification for {pending.id}",
+            )
+
+    pending_store.on_review_ready = on_review_ready_with_notification
 
     def tracked(handler):
         async def invoke(call):
