@@ -123,9 +123,10 @@ def test_successful_recovery_uses_normal_required_check_not_an_imitation() -> No
     text = _find(finish, "Publish result and rerun failed PR mutation check")["run"]
     assert '"PR Mutation Cache Rebuild"' in text
     assert "rerun-failed-jobs" in text
-    # Never rerun an older failed check for the same PR branch. GitHub's PR
-    # workflow head SHA must match the exact validated merge commit.
-    assert '.head_sha == $merge' in text
-    assert '--arg merge "$EXPECTED_MERGE"' in text
+    # GitHub's workflow_runs[].head_sha is the PR head, even though the
+    # event checkout runs on the synthetic test merge. Require the current
+    # validated head SHA so an older failed run cannot be accidentally retried.
+    assert '.head_sha == $head' in text
+    assert '--arg head "$EXPECTED"' in text
     assert '"Mutation score"' not in text
     assert "OUTCOME" in text
