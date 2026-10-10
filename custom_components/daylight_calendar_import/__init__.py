@@ -217,6 +217,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pending_store = PendingImportStore(hass)
     await pending_store.async_load()
     pending_store.active_submissions = set()
+    pending_store.notification_tasks = set()
     # Track entry service calls *before* their first await so unload cannot
     # miss a request waiting for authorization or a source claim.
     pending_store.active_service_handlers = set()
@@ -247,10 +248,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # A review-ready callback is fired only after its durable activity
         # transaction commits, so its lifecycle record is guaranteed present.
         activity = pending_store.get_activity(pending.id)
-        hass.async_create_task(
+        task = hass.async_create_task(
             async_notify_review_ready(hass, activity, notify_preferences),
             f"Daylight review-ready notification for {pending.id}",
         )
+        pending_store.notification_tasks.add(task)
+        task.add_done_callback(pending_store.notification_tasks.discard)
 
     pending_store.on_review_ready = on_review_ready_with_notification
 
@@ -884,6 +887,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Even a failed or cancelled partial forward must not leave its sensor
         # entities pointing to a discarded store.
         pending_store.accepting_services = False
+        await _async_cancel_notification_tasks(pending_store)
         _unregister_entry_services(hass)
         cleanup_ok = True
         runtime = getattr(pending_store, "email_runtime", None)
@@ -911,12 +915,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+async def _async_cancel_notification_tasks(store: PendingImportStore) -> None:
+    """Cancel entry-owned best-effort sends without affecting durable state."""
+    tasks = tuple(getattr(store, "notification_tasks", ()))
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Finish unload atomically from the caller's perspective, even on cancellation."""
     store = hass.data[DOMAIN][entry.entry_id]
     store.accepting_services = False
 
     async def finish_unload() -> bool:
+        await _async_cancel_notification_tasks(store)
         try:
             platforms_unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
         except BaseException:
@@ -938,6 +952,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         accepted = set(store.active_submissions) | set(getattr(store, "active_service_handlers", ()))
         if accepted:
             await asyncio.gather(*accepted, return_exceptions=True)
+        await _async_cancel_notification_tasks(store)
+        store.on_review_ready = None
         hass.data[DOMAIN].pop(entry.entry_id, None)
         return True
 
