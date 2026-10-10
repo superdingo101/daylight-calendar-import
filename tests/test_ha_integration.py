@@ -281,11 +281,12 @@ async def test_opted_in_review_ready_dispatch_is_post_commit_and_not_replayed(ha
     )
     emitted = []
 
-    async def capture(hass_instance, activity, preferences):
+    async def capture(hass_instance, activity, preferences, active_tasks):
         store = hass_instance.data[DOMAIN][entry.entry_id]
         assert store.get_activity(activity["id"]) is not None
         assert store.get(activity["id"]) is not None
         assert preferences.permits("review_ready")
+        assert active_tasks is store.notification_tasks
         emitted.append(activity["id"])
 
     monkeypatch.setattr(
@@ -377,3 +378,44 @@ async def test_old_notification_runtime_ignores_new_saved_policy_after_reload_fa
     await hass.async_block_till_done()
     notify.assert_not_awaited()
     assert not store.notification_tasks
+
+
+async def test_notification_capacity_caps_active_providers_across_reload_registry(
+    hass, monkeypatch, caplog,
+):
+    """A stuck provider remains visible and stops an unbounded send backlog."""
+    import asyncio
+    from types import SimpleNamespace
+    from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
+    from custom_components.daylight_calendar_import import _MAX_NOTIFICATION_TASKS
+
+    notify = AsyncMock()
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_notify_review_ready", notify,
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daylight Calendar Import",
+        data={CONF_AI_TASK_ENTITY: "ai_task.test",
+              CONF_CALENDAR_ENTITY: "calendar.family"},
+        options={CONF_NOTIFICATION_PREFERENCES: {
+            "enabled": True, "target": "notify.phone", "classes": ["review_ready"],
+        }},
+    )
+    await _setup_entry(hass, entry)
+    store = hass.data[DOMAIN][entry.entry_id]
+    assert store.notification_tasks is hass.data[f"{DOMAIN}_notification_tasks"][entry.entry_id]
+    async def blocked():
+        await asyncio.Event().wait()
+
+    blockers = [asyncio.create_task(blocked()) for _ in range(_MAX_NOTIFICATION_TASKS)]
+    store.notification_tasks.update(blockers)
+    try:
+        store.on_review_ready(SimpleNamespace(id="committed-at-capacity", events=()))
+        await hass.async_block_till_done()
+        notify.assert_not_awaited()
+        assert "capacity reached" in caplog.text
+    finally:
+        for task in blockers:
+            task.cancel()
+        await asyncio.gather(*blockers, return_exceptions=True)
+        store.notification_tasks.difference_update(blockers)
