@@ -72,3 +72,30 @@ def notification_from_transition(
         message=message,
         severity=severity,
     )
+
+
+def notification_from_recovered_write(
+    activity: Mapping[str, object], *, event_id: str, persisted_status: str,
+) -> NotificationEvent | None:
+    """Project a write-started checkpoint after loading an uncertain event.
+
+    Use only during recovery from durable pending storage, never while an
+    external calendar write is still running. A write-started transition alone
+    is *not* evidence of failure or uncertainty during normal processing.
+    The synthesized notification retains the checkpoint's stable timestamp,
+    so later outbox replay can deduplicate notifications across restarts.
+    """
+    if persisted_status != "write_uncertain":
+        return None
+    for transition in reversed(activity["transitions"]):
+        if transition["event_id"] != event_id:
+            continue
+        # The latest transition for this event takes precedence. In particular,
+        # a subsequent committed uncertainty or resolution is handled by the
+        # normal transition projector instead of duplicating a recovery warning.
+        if transition["type"] != "calendar_write_started":
+            return None
+        return notification_from_transition(
+            activity, {**transition, "type": "calendar_write_uncertain"},
+        )
+    return None
