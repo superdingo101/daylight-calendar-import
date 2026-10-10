@@ -156,7 +156,6 @@ def _same_test_execution_workflow(old: bytes, new: bytes) -> bool:
         original, proposed = [yaml.safe_load(contents) for contents in (old, new)]
         for workflow in (original, proposed):
             workflow["jobs"]["mutation"].pop("timeout-minutes", None)
-            workflow["jobs"]["mutation"].pop("timeout-minutes", None)
             steps = workflow["jobs"]["mutation"]["steps"]
             workflow["jobs"]["mutation"]["steps"] = [
                 step for step in steps if step.get("name") not in _CACHE_ONLY_STEPS
@@ -223,6 +222,7 @@ def _comparison_content(path: Path, raw: bytes) -> bytes:
     if path.as_posix() == ".github/workflows/mutation.yml":
         try:
             workflow = yaml.safe_load(raw)
+            workflow["jobs"]["mutation"].pop("timeout-minutes", None)
             steps = workflow["jobs"]["mutation"]["steps"]
             workflow["jobs"]["mutation"]["steps"] = [
                 step for step in steps if step.get("name") not in _CACHE_ONLY_STEPS
