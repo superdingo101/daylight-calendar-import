@@ -27,7 +27,6 @@ jobs:
       head_sha: ${{ steps.pr.outputs.head_sha }}
       merge_sha: ${{ steps.pr.outputs.merge_sha }}
       base_sha: ${{ steps.pr.outputs.base_sha }}
-      head_branch: ${{ steps.pr.outputs.head_branch }}
     steps:
       - name: Require main dispatch and trusted same-repo PR
         id: pr
@@ -55,7 +54,6 @@ jobs:
           echo "head_sha=$(jq -r '.head.sha' <<< "$pr")" >> "$GITHUB_OUTPUT"
           echo "merge_sha=$(jq -r '.merge_commit_sha' <<< "$pr")" >> "$GITHUB_OUTPUT"
           echo "base_sha=$(jq -r '.base.sha' <<< "$pr")" >> "$GITHUB_OUTPUT"
-          echo "head_branch=$(jq -r '.head.ref' <<< "$pr")" >> "$GITHUB_OUTPUT"
 
   rebuild:
     name: Full mutation baseline for PR
@@ -170,7 +168,6 @@ jobs:
           EXPECTED: ${{ needs.resolve.outputs.head_sha }}
           EXPECTED_MERGE: ${{ needs.resolve.outputs.merge_sha }}
           EXPECTED_BASE: ${{ needs.resolve.outputs.base_sha }}
-          BRANCH: ${{ needs.resolve.outputs.head_branch }}
           OUTCOME: ${{ needs.rebuild.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -203,17 +200,16 @@ jobs:
           # workflow_runs[].head_sha is the PR *head* SHA, not GITHUB_SHA
           # (which is the synthetic merge). Match the validated head exactly;
           # freshness of the synthetic merge was already checked above.
-          run_id="$(jq -r --argjson number "$NUMBER" --arg branch "$BRANCH" --arg head "$EXPECTED" '
+          run_id="$(jq -r --argjson number "$NUMBER" --arg head "$EXPECTED" '
             [.workflow_runs[] |
               select(
                 .status == "completed" and
                 .conclusion == "failure" and
                 .head_sha == $head
               ) |
-              select(
-                any(.pull_requests[]?; .number == $number) or
-                (.head_branch == $branch)
-              )
+              # Do not guess from branch names: several PRs can share one
+              # branch/head SHA while targeting different base branches.
+              select(any(.pull_requests[]?; .number == $number))
             ] | first | .id // empty
           ' <<< "$runs")"
           if [[ -n "$run_id" ]]; then
