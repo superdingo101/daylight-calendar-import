@@ -27,6 +27,11 @@ from .const import (
     CONF_EMAIL_SENDER_ALLOWLIST,
     DOMAIN,
 )
+from .notification_preferences import (
+    NotificationPreferencesError,
+    normalize_notification_preferences,
+    notification_preferences_snapshot,
+)
 from .settings import (
     SettingsValidationError,
     async_save_option_patch,
@@ -34,6 +39,7 @@ from .settings import (
     core_option_patch,
     calendar_intelligence_patch,
     notification_preferences_patch,
+    effective_notification_preferences,
     effective_core_options,
     settings_lock,
     settings_snapshot,
@@ -235,6 +241,7 @@ async def websocket_update_calendar_intelligence(
     "type": WS_UPDATE_NOTIFICATIONS,
     vol.Required("entry_id"): cv.string,
     vol.Required("notifications"): dict,
+    vol.Required("expected_notifications"): dict,
 })
 @websocket_api.async_response
 async def websocket_update_notifications(
@@ -246,6 +253,18 @@ async def websocket_update_notifications(
     try:
         entry = _entry_for_message(hass, msg)
         async with settings_lock(hass, entry.entry_id):
+            try:
+                expected = notification_preferences_snapshot(
+                    normalize_notification_preferences(msg["expected_notifications"])
+                )
+            except NotificationPreferencesError as err:
+                raise SettingsValidationError("invalid_notifications", str(err)) from err
+            current = notification_preferences_snapshot(effective_notification_preferences(entry))
+            if expected != current:
+                raise SettingsValidationError(
+                    "notifications_changed",
+                    "Notification settings changed elsewhere. Refresh and review before saving.",
+                )
             patch = notification_preferences_patch(entry, msg["notifications"])
             if patch:
                 await async_save_option_patch(hass, entry, patch)
