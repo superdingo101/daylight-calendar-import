@@ -5069,3 +5069,33 @@ test("Notification settings never advertise unsupported lifecycle notification t
     .filter(input => input.name?.startsWith("notify_"));
   assert.deepEqual(checkboxes.map(x => x.value), ["review_ready"]);
 });
+
+
+test("notification conflict keeps unsaved choices when refresh is offline", async () => {
+  const panel = new DaylightImportPanel();
+  const prior = {enabled: true, target: "notify.old", classes: ["review_ready"]};
+  const drafted = {enabled: true, target: "notify.new", classes: ["review_ready"]};
+  panel._hass = {
+    user: {is_admin: true},
+    states: {},
+    callWS: async () => { throw new Error("Connection unavailable"); },
+  };
+  panel._settings = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.test",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    notifications: prior, email: {},
+  };
+  panel._settingsTab = "notifications";
+  panel._view = "settings";
+  panel._status = "ready";
+  panel._setSettingsDraft("notifications", {notifications: drafted});
+  const baseline = panel._notificationDraftBaseline;
+  await panel._saveSettings(
+    "notifications", {notifications: drafted},
+    async () => { throw {code: "notifications_changed", message: "Concurrent edit"}; },
+    "Saved", "Could not save notifications",
+  );
+  assert.deepEqual(panel._settingsDrafts.notifications.notifications, drafted);
+  assert.deepEqual(panel._notificationDraftBaseline, baseline);
+  assert.match(panel._settingsError, /unsaved choices are retained/);
+});
