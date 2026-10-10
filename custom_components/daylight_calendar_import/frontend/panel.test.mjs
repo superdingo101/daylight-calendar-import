@@ -4685,7 +4685,7 @@ test("failed calendar checks re-enable other events for retry", async () => {
 });
 
 
-test("bulk approval reports definite preflight rejections without uncertain-write warning", async () => {
+test("bulk approval never infers write certainty from preflight-looking error text", async () => {
   const panel = new DaylightImportPanel();
   const first = {id: "first", title: "Practice", start: "2026-10-01",
     end: "2026-10-02", all_day: true, status: "pending", confidence: 0};
@@ -4711,9 +4711,44 @@ test("bulk approval reports definite preflight rejections without uncertain-writ
   await panel.runBatch("approve");
   assert.equal(panel._batchResults[0].outcome, "success");
   assert.equal(panel._batchResults[1].outcome,
+    "Approval outcome unknown; check the calendar before retrying. " +
     "Approval rejected before calendar write: " +
     "Exact duplicate already exists on the destination calendar");
-  assert.doesNotMatch(panel._batchResults[1].outcome, /outcome unknown/i);
+  assert.match(panel._batchResults[1].outcome, /outcome unknown/i);
   assert.equal(panel._detail.events.length, 1);
   assert.equal(panel._detail.events[0].id, "second");
+});
+
+
+test("provider echoes preflight marker after write; bulk approval stays uncertain", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "post-write", title: "Approval rejected before calendar write: " +
+    "tricky provider text", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  const written = {...event, status: "write_uncertain", write_attempt: "attempt-123"};
+  let current = event;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") {
+      return {response: {imports: [{id: "pending-1"}]}};
+    }
+    if (request.service === "get_pending") {
+      return {response: {pending: {id: "pending-1", events: [current]}}};
+    }
+    if (request.service === "approve_pending_event") {
+      current = written; // The durable checkpoint committed before provider failure.
+      throw {message: `Calendar provider failed: ${event.title}`};
+    }
+    throw Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showImport("pending-1");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.batchAction === "approve").click();
+  await panel.runBatch("approve");
+
+  assert.equal(panel._batchResults.length, 1);
+  assert.match(panel._batchResults[0].outcome, /^Approval outcome unknown;/);
+  assert.match(panel._batchResults[0].outcome, /Approval rejected before calendar write:/);
+  assert.equal(panel._detail.events[0].status, "write_uncertain");
+  assert.equal(panel._detail.events[0].write_attempt, "attempt-123");
 });
