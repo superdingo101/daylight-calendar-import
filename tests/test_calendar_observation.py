@@ -1162,3 +1162,51 @@ def test_approval_probe_crosses_fall_dst_fold_by_elapsed_minute():
     fake_start = datetime.fromisoformat(probe.start).astimezone(timezone.utc)
     fake_end = datetime.fromisoformat(probe.end).astimezone(timezone.utc)
     assert fake_end - fake_start == timedelta(minutes=1)
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("9999-12-31T23:59:30+14:00", "9999-12-31T10:01:00+00:00"),
+    ("0001-01-01T00:00:30-12:00", "0001-01-01T13:05:00+00:00"),
+])
+async def test_approval_probe_year_boundary_different_offsets_preserves_exact_match(
+    start, end,
+):
+    """Use real UTC instants instead of overflowing the source wall clock."""
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+
+    original = EventDraft("Practice", start, end, False)
+    probe = _approval_start_window(original)
+    assert probe.start == original.start
+    assert probe.end != original.end
+    assert (
+        datetime.fromisoformat(probe.end).astimezone(timezone.utc)
+        - datetime.fromisoformat(probe.start).astimezone(timezone.utc)
+    ) == timedelta(minutes=1)
+
+    fake = hass({"calendar.work": {"events": [{
+        "summary": original.title, "start": original.start, "end": original.end,
+    }]}})
+    matches = await async_classify_conflicts(
+        fake, original, observed_calendars=["calendar.work"],
+        local_zone=ZONE, context=READ_CONTEXT, approval_start_only=True,
+    )
+    assert [match.kind for match in matches] == ["exact_duplicate"]
+    query = fake.providers["calendar.work"].async_get_events.await_args.args
+    assert (
+        query[2].astimezone(timezone.utc)
+        - query[1].astimezone(timezone.utc)
+    ) == timedelta(minutes=1)
+
+
+def test_approval_probe_unrepresentable_utc_instant_has_classified_failure():
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    draft_outside_utc = EventDraft(
+        "Out of bounds", "9999-12-31T23:59:00-12:00",
+        "9999-12-31T23:59:30-12:00", False,
+    )
+    with pytest.raises(CalendarObservationError, match="Invalid timed observation interval"):
+        _approval_start_window(draft_outside_utc)
