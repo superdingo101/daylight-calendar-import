@@ -197,7 +197,7 @@ def test_new_tests_invalidate_only_stale_non_killed_verdicts(monkeypatch, tmp_pa
     }))
     _write("tests/test_new.py", "def test_new(): assert True\n")
     _git("add", "tests/test_new.py")
-    assert mutation_cache.cache_validation() == (True, ["tests/test_new.py"])
+    assert mutation_cache.cache_validation() == (True, ["tests/test_new.py"], [])
     monkeypatch.setattr("sys.argv", ["mutation_cache.py", "validate"])
     assert mutation_cache.main() == 0
     verdicts = json.loads(meta_path.read_text())["exit_code_by_key"]
@@ -224,10 +224,10 @@ def test_pr_manifest_survives_unreachable_synthetic_merge_commit(monkeypatch, tm
     }))
     _write("custom_components/daylight_calendar_import/old.py",
            "LIMIT = 3\ndef old():\n    return LIMIT + 1\n")
-    assert mutation_cache.cache_validation() == (True, [])
+    assert mutation_cache.cache_validation() == (True, [], [])
     _write("tests/test_new.py", "def test_new(): assert True\n")
     _git("add", "tests/test_new.py")
-    assert mutation_cache.cache_validation() == (True, ["tests/test_new.py"])
+    assert mutation_cache.cache_validation() == (True, ["tests/test_new.py"], [])
     _write("tests/test_old.py", "def test_old(): assert False\n")
     assert not mutation_cache.validate()
 
@@ -265,3 +265,63 @@ def test_stamp_records_self_contained_manifest(monkeypatch, tmp_path):
     assert saved["files"] == mutation_cache._cache_files()
     assert saved["environment"] == mutation_cache._environment_fingerprint()
     assert mutation_cache.validate()
+
+
+def test_new_source_recollects_stats_without_losing_cached_mutants(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    meta_path = Path("mutants/custom_components/daylight_calendar_import/old.py.meta")
+    meta_path.write_text(json.dumps({
+        "exit_code_by_key": {"already_killed": 1, "surviving": 0},
+        "hash_by_function_name": {},
+        "durations_by_key": {},
+        "estimated_durations_by_key": {},
+        "type_check_error_by_key": {},
+    }))
+    _write(
+        "custom_components/daylight_calendar_import/helper.py",
+        "def helper():\n    return 7\n",
+    )
+    _git("add", "custom_components/daylight_calendar_import/helper.py")
+    assert mutation_cache.cache_validation() == (
+        True, [], ["custom_components/daylight_calendar_import/helper.py"]
+    )
+    monkeypatch.setattr("sys.argv", ["mutation_cache.py", "validate"])
+    assert mutation_cache.main() == 0
+    assert not mutation_cache.STATS.exists()
+    assert meta_path.exists()
+    assert json.loads(meta_path.read_text())["exit_code_by_key"] == {
+        "already_killed": 1, "surviving": 0,
+    }
+
+
+def test_new_tests_and_source_reset_survivors_and_recollect_stats(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    meta_path = Path("mutants/custom_components/daylight_calendar_import/old.py.meta")
+    meta_path.write_text(json.dumps({
+        "exit_code_by_key": {"old_survivor": 0, "old_kill": 1},
+        "hash_by_function_name": {}, "durations_by_key": {},
+        "estimated_durations_by_key": {}, "type_check_error_by_key": {},
+    }))
+    _write(
+        "custom_components/daylight_calendar_import/helper.py",
+        "def helper():\n    return 7\n",
+    )
+    _write("tests/test_helper.py", "def test_helper(): assert True\n")
+    _git("add", "custom_components/daylight_calendar_import/helper.py", "tests/test_helper.py")
+    assert mutation_cache.cache_validation() == (
+        True, ["tests/test_helper.py"], ["custom_components/daylight_calendar_import/helper.py"]
+    )
+    monkeypatch.setattr("sys.argv", ["mutation_cache.py", "validate"])
+    assert mutation_cache.main() == 0
+    assert mutation_cache.STATS.exists() is False
+    verdicts = json.loads(meta_path.read_text())["exit_code_by_key"]
+    assert verdicts == {"old_survivor": None, "old_kill": 1}
+
+
+def test_cache_only_regression_module_added_and_modified_keeps_cache(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    _write("tests/test_mutation_cache_reuse.py", "def test_first(): assert True\n")
+    _git("add", "tests/test_mutation_cache_reuse.py")
+    assert mutation_cache.cache_validation() == (True, [], [])
+    _write("tests/test_mutation_cache_reuse.py", "def test_second(): assert True\n")
+    assert mutation_cache.cache_validation() == (True, [], [])
