@@ -79,12 +79,36 @@ jobs:
         run: python scripts/export_mutation_survivors.py
 
       - name: Stamp nightly baseline
-        if: ${{ github.event_name == 'schedule' && success() }}
+        if: >-
+          ${{
+            success() &&
+            (
+              github.event_name == 'schedule' ||
+              (
+                github.event_name == 'workflow_dispatch' &&
+                github.ref == 'refs/heads/main' &&
+                inputs.release_tag == '' &&
+                inputs.target_sha == ''
+              )
+            )
+          }}
         run: python scripts/mutation_cache.py stamp
 
       - name: Publish nightly cache for PRs
         id: nightly-cache
-        if: ${{ github.event_name == 'schedule' && success() }}
+        if: >-
+          ${{
+            success() &&
+            (
+              github.event_name == 'schedule' ||
+              (
+                github.event_name == 'workflow_dispatch' &&
+                github.ref == 'refs/heads/main' &&
+                inputs.release_tag == '' &&
+                inputs.target_sha == ''
+              )
+            )
+          }}
         uses: actions/cache/save@v4
         with:
           path: mutants
