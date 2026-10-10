@@ -1151,10 +1151,16 @@ test("primary navigation stays above status and content in every view", async ()
   await flush();
   checkTop("Review inbox");
   assert.equal(find(panel._announcement, "span").textContent, "Inbox loaded");
-  await panel.showActivity();
+  const loadingActivity = panel.showActivity();
+  checkTop("Recent activity");
+  assert.equal(find(panel._announcement, "span").textContent, "Loading activity…");
+  await loadingActivity;
   checkTop("Recent activity");
   assert.equal(find(panel._announcement, "span").textContent, "Activity loaded");
-  await panel.showSettings();
+  const loadingSettings = panel.showSettings();
+  checkTop("Settings");
+  assert.equal(find(panel._announcement, "span").textContent, "Loading settings…");
+  await loadingSettings;
   checkTop("Settings");
   assert.equal(find(panel._content, "nav").querySelectorAll("button")[2].disabled, true);
   await panel.showReview();
