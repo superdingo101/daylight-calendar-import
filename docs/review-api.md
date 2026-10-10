@@ -187,6 +187,11 @@ over multi-day schedules, even for relatively short drafts. This does not claim 
 long event and does not relax the 90-day limit for the optional
 `check_pending_event` review action. An unavailable or malformed destination calendar
 also blocks writing, leaving the event pending rather than write-uncertain.
+Extreme civil dates whose local midnight cannot be represented as a Python
+UTC datetime (for example, January 1 of year 1 in a positive-offset zone)
+are intentionally outside the v0.6 duplicate-preflight support boundary.
+Their approval fails closed before any write; this release does not attempt
+historical calendar-year edge-case reconstruction.
 Earlier events in a bulk approval may already have been created before a
 later event fails, so callers should refresh the remaining pending queue.
 
