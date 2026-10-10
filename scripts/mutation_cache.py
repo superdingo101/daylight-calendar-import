@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import tokenize
+import yaml
 from pathlib import Path
 
 CACHE_SCHEMA = 1
@@ -125,6 +126,36 @@ def _frontend_asset(path: Path) -> bool:
     }
 
 
+_CACHE_ONLY_STEPS = {
+    "Restore mutation cache",
+    "Validate mutation cache provenance",
+    "Restore PR mutation cache",
+    "Validate PR mutation cache",
+    "Restore main mutation baseline",
+    "Validate main mutation baseline",
+}
+
+
+def _same_test_execution_workflow(old: bytes, new: bytes) -> bool:
+    """Accept cache plumbing updates, never changes to tests/mutmut invocation."""
+    try:
+        original, proposed = [yaml.safe_load(contents) for contents in (old, new)]
+        for workflow in (original, proposed):
+            steps = workflow["jobs"]["mutation"]["steps"]
+            workflow["jobs"]["mutation"]["steps"] = [
+                step for step in steps if step.get("name") not in _CACHE_ONLY_STEPS
+            ]
+            for step in workflow["jobs"]["mutation"]["steps"]:
+                if step.get("uses", "").startswith("actions/checkout@"):
+                    settings = step.get("with", {})
+                    settings.pop("fetch-depth", None)
+                    if not settings:
+                        step.pop("with", None)
+        return original == proposed
+    except (TypeError, KeyError, ValueError, yaml.YAMLError):
+        return False
+
+
 def _safe_delta(commit: str) -> bool:
     before = set(tracked_inputs(commit))
     after = set(tracked_inputs())
@@ -142,6 +173,10 @@ def _safe_delta(commit: str) -> bool:
         now = path.read_bytes()
         if old == now:
             continue
+        if name == ".github/workflows/mutation.yml":
+            if _same_test_execution_workflow(old, now):
+                continue
+            return False
         # Mutmut already invalidates source function-body changes by hash.
         if name.startswith(SOURCE) and path.suffix == ".py":
             if _snapshot_content(path, old) == _snapshot_content(path, now):
