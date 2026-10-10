@@ -146,6 +146,7 @@ _CACHE_ONLY_STEPS = {
     "Validate PR mutation cache",
     "Restore main mutation baseline",
     "Validate main mutation baseline",
+    "Require reusable mutation baseline",
 }
 
 
@@ -154,6 +155,8 @@ def _same_test_execution_workflow(old: bytes, new: bytes) -> bool:
     try:
         original, proposed = [yaml.safe_load(contents) for contents in (old, new)]
         for workflow in (original, proposed):
+            workflow["jobs"]["mutation"].pop("timeout-minutes", None)
+            workflow["jobs"]["mutation"].pop("timeout-minutes", None)
             steps = workflow["jobs"]["mutation"]["steps"]
             workflow["jobs"]["mutation"]["steps"] = [
                 step for step in steps if step.get("name") not in _CACHE_ONLY_STEPS
