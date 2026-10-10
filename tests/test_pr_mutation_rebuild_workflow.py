@@ -110,6 +110,9 @@ def test_rebuild_cache_is_restored_before_shared_main_fallback() -> None:
     )
     recovered = _find(job, "Restore rebuilt PR mutation baseline")
     assert "rebuild-pr-" in recovered["with"]["key"]
+    restore = recovered["with"]["restore-keys"].strip().splitlines()
+    assert "github.sha" in restore[0]
+    assert "github.sha" not in restore[-1]
     main = _find(job, "Restore main mutation baseline")
     assert "steps.rebuilt-cache.outputs.valid != 'true'" in main["if"]
     assert job["timeout-minutes"] == 25
@@ -130,6 +133,8 @@ def test_successful_recovery_uses_normal_required_check_not_an_imitation() -> No
     # validated head SHA so an older failed run cannot be accidentally retried.
     assert '.head_sha == $head' in text
     assert '--arg head "$EXPECTED"' in text
+    assert 'any(.pull_requests[]?; .number == $number)' in text
+    assert '.head_branch == $branch' not in text
     assert '"Mutation score"' not in text
     assert "OUTCOME" in text
 
