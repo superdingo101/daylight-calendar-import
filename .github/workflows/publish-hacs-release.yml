@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
   copilot-requests: write
 
 jobs:
@@ -65,6 +66,14 @@ jobs:
             exit 1
           fi
 
+      # The release-preparation workflow must have tested the same complete
+      # Git tree with an uncached mutmut run. Stale PR and nightly checks do
+      # not authorize publishing a release.
+      - name: Verify full release mutation validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/release_mutation_proof.py verify "${{ steps.version.outputs.tag }}"
+
       - name: HACS validation
         uses: hacs/action@main
         with:
@@ -85,13 +94,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
+          RELEASE_SHA="$(git rev-parse HEAD)"
 
           gh api \
             --method POST \
             -H "Accept: application/vnd.github+json" \
             "/repos/${{ github.repository }}/releases/generate-notes" \
             -f tag_name="$TAG" \
-            -f target_commitish="main" \
+            -f target_commitish="$RELEASE_SHA" \
             > generated-release-notes.json
 
           jq -r '.name' generated-release-notes.json > release-title.txt
@@ -165,6 +175,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
+          RELEASE_SHA="$(git rev-parse HEAD)"
           TITLE="$(cat release-title.txt)"
 
           PRERELEASE_ARGS=()
@@ -173,7 +184,7 @@ jobs:
           fi
 
           gh release create "$TAG" \
-            --target main \
+            --target "$RELEASE_SHA" \
             --title "$TITLE" \
             --notes-file RELEASE_NOTES.md \
             --draft \
