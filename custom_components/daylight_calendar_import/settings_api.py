@@ -266,6 +266,10 @@ async def websocket_update_notifications(
                     "Notification settings changed elsewhere. Refresh and review before saving.",
                 )
             patch = notification_preferences_patch(entry, msg["notifications"])
+            if msg["notifications"].get("enabled") is True and not msg["notifications"].get("classes"):
+                raise SettingsValidationError(
+                    "invalid_notifications", "Select at least one notification type.",
+                )
             if patch:
                 await async_save_option_patch(hass, entry, patch)
     except SettingsValidationError as err:
