@@ -1090,9 +1090,11 @@ async def test_approval_start_probe_supports_long_events_and_full_exact_match(al
     assert probe.start == extended.start
     assert probe.end != extended.end
     assert probe.end > probe.start
-    assert (datetime.fromisoformat(probe.end) - datetime.fromisoformat(probe.start)
-            if not all_day else date.fromisoformat(probe.end) - date.fromisoformat(probe.start)
-            ) <= timedelta(days=89)
+    assert (
+        date.fromisoformat(probe.end) - date.fromisoformat(probe.start)
+        if all_day else
+        datetime.fromisoformat(probe.end) - datetime.fromisoformat(probe.start)
+    ) == (timedelta(days=1) if all_day else timedelta(minutes=1))
     stored = {
         "summary": extended.title, "start": extended.start, "end": extended.end
     }
@@ -1105,13 +1107,58 @@ async def test_approval_start_probe_supports_long_events_and_full_exact_match(al
     assert result[0].kind == "exact_duplicate"
     query = fake.providers["calendar.work"].async_get_events.await_args.args
     assert query[1].isoformat().startswith(extended.start[:10])
-    assert query[2] < datetime.fromisoformat(long_end).astimezone(ZONE) if not all_day else query[2].date() < date.fromisoformat(long_end)
+    assert query[2].astimezone(timezone.utc) - query[1].astimezone(timezone.utc) <= (
+        timedelta(days=1, hours=1) if all_day else timedelta(minutes=1)
+    )
 
 
 @pytest.mark.parametrize("all_day", [False, True])
 def test_short_approval_probe_preserves_short_event(all_day):
+    from dataclasses import replace
     from custom_components.daylight_calendar_import.calendar_observation import (
         _approval_start_window,
     )
-    event = draft(all_day=all_day)
+    original = draft(all_day=all_day)
+    event = replace(original, end=(
+        "2026-11-01" if all_day else "2026-10-08T17:30:30-07:00"
+    ))
     assert _approval_start_window(event) is event
+
+
+@pytest.mark.parametrize("all_day", [False, True])
+async def test_approval_probe_is_minimal_even_for_short_multiday_events(all_day):
+    from dataclasses import replace
+    original = draft(all_day=all_day)
+    event = replace(original, end=(
+        "2026-11-07" if all_day else "2026-10-11T18:30:00-07:00"
+    ))
+    fake = hass({"calendar.work": {"events": [existing()]}})
+    # Ensure a provider with dense multi-day calendars is never asked for
+    # that entire period. The exact match itself is always returned.
+    async def provider_events(_hass, start, end):
+        bound = timedelta(days=1, hours=1) if all_day else timedelta(minutes=1)
+        if end.astimezone(timezone.utc) - start.astimezone(timezone.utc) > bound:
+            return [SimpleNamespace(**existing()) for _ in range(501)]
+        return [SimpleNamespace(summary=event.title, start=event.start, end=event.end)]
+    fake.providers["calendar.work"].async_get_events.side_effect = provider_events
+    matches = await async_classify_conflicts(
+        fake, event, observed_calendars=["calendar.work"],
+        local_zone=ZONE, context=READ_CONTEXT, approval_start_only=True,
+    )
+    assert [m.kind for m in matches] == ["exact_duplicate"]
+
+
+def test_approval_probe_crosses_fall_dst_fold_by_elapsed_minute():
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    folded = EventDraft(
+        "DST meeting", "2026-11-01T01:59:30-07:00",
+        "2026-11-01T01:15:00-08:00", False,
+    )
+    probe = _approval_start_window(folded)
+    assert probe.start == folded.start
+    assert probe.end != folded.end
+    fake_start = datetime.fromisoformat(probe.start).astimezone(timezone.utc)
+    fake_end = datetime.fromisoformat(probe.end).astimezone(timezone.utc)
+    assert fake_end - fake_start == timedelta(minutes=1)
