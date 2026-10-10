@@ -18,8 +18,10 @@ def _load(name: str) -> dict:
     # Mutmut isolates tests under mutants/ and does not copy .github/. Ordinary
     # pytest checks these workflows; mutant collection must not fail because a
     # non-production CI file is absent in mutmut's sandbox.
-    if not path.is_file():
+    if not path.is_file() and WORKFLOWS.parents[1].name == "mutants":
         pytest.skip("GitHub Actions workflow files are not in the mutmut sandbox")
+    # Outside mutmut, a missing/renamed workflow is a real regression and
+    # must raise FileNotFoundError instead of silently skipping CI contracts.
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
@@ -130,3 +132,16 @@ def test_successful_recovery_uses_normal_required_check_not_an_imitation() -> No
     assert '--arg head "$EXPECTED"' in text
     assert '"Mutation score"' not in text
     assert "OUTCOME" in text
+
+
+def test_missing_workflow_fails_in_a_normal_checkout(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(__import__(__name__), "WORKFLOWS", tmp_path / ".github" / "workflows")
+    with pytest.raises(FileNotFoundError):
+        _load("rebuild-pr-mutation-cache.yml")
+
+
+def test_missing_workflow_skips_only_inside_mutmut_sandbox(monkeypatch, tmp_path) -> None:
+    sandbox = tmp_path / "mutants" / ".github" / "workflows"
+    monkeypatch.setattr(__import__(__name__), "WORKFLOWS", sandbox)
+    with pytest.raises(pytest.skip.Exception):
+        _load("rebuild-pr-mutation-cache.yml")
