@@ -27,14 +27,26 @@ cannot generally be shared with another PR. Every successful PR run saves
 a uniquely keyed state for its next update. The nightly clean job publishes
 the default-branch baseline.
 
-`scripts/mutation_cache.py` tracks the exact contents of the tracked inputs
-outside mutmut's production-function bodies. It intentionally ignores
-README/docs-only changes while hashing imports, module-level constants,
-class attributes, decorators and signatures as well as existing tests,
-`conftest.py`, dependencies, fixtures, configuration, and non-Python
-integration files. The fingerprint also includes the exact resolved installed
-Python package versions, since ranged requirements can change without a\nrequirements-file edit. Mutmut separately invalidates changed function bodies. Missing or inconsistent provenance discards the entire
-cache and starts clean.
+The cache validator first verifies the saved fingerprint against the exact
+Git snapshot that produced it. A verified cached `main` snapshot is reusable
+when a PR only adds independent production modules or `test_*.py` test files,
+changes production function bodies (which mutmut hashes itself), or modifies
+frontend JS/CSS assets. New test modules are discovered by mutmut during test
+collection. The validator also accepts strictly cache-only changes to the
+mutation workflow while rejecting changes to its test runner or mutmut command.
+
+**Existing** test files, `conftest.py`, fixtures, dependencies, non-Python
+integration inputs, source imports/constants, and signatures remain
+conservatively invalidating. Unknown changes or missing Git history invalidate
+the cache. The environment fingerprint also includes the exact resolved
+installed Python dependencies so a changed package version fails closed.
+The previous nightly baseline format remains readable; it does not need to
+be rebuilt simply because this validator changed.
+
+The PR job attempts its own prior cache first, then a separately restored
+trusted `main` cache if the PR cache is stale or unavailable. If both fail,
+it runs mutmut uncached rather than accepting a stale result. GitHub checkout
+fetches complete Git history for this verification.
 
 A cache miss is **not** a bypass: mutmut runs the full set, which can take
 approximately 40–60 minutes. Restored state is never allowed to come from
