@@ -312,11 +312,11 @@ def validate() -> bool:
 
 
 def _invalidate_old_non_kills() -> int:
-    """Additive tests cannot undo kills by unchanged older tests.
+    """Retest decided non-kills whenever the test-to-function mapping grows.
 
-    New tests CAN kill formerly surviving or uncovered mutants. Reset those
-    verdicts before mutmut's new-test statistics collection, so mutmut retests
-    them with its updated test-to-function mapping instead of skipping them.
+    New tests and new source modules can make previously surviving or
+    uncovered mutants killable. Preserve existing kills, but clear all old
+    non-killed verdicts before mutmut re-evaluates the changed associations.
     """
     reset = 0
     for path in Path("mutants").rglob("*.meta"):
@@ -353,9 +353,14 @@ def main() -> int:
             shutil.rmtree("mutants", ignore_errors=True)
         else:
             print("Valid mutation cache restored; reusing applicable results")
-            if new_tests:
+            # New source modules can change associations for *existing* tests,
+            # so their refreshed mappings must also revisit decided non-kills.
+            if new_tests or new_sources:
                 reset = _invalidate_old_non_kills()
-                print(f"{len(new_tests)} new test files; reset {reset} cached non-killed verdicts")
+                print(
+                    f"{len(new_tests)} new test files, {len(new_sources)} new source modules; "
+                    f"reset {reset} cached non-killed verdicts"
+                )
             _invalidate_stale_stats_for_new_sources(new_sources)
         return 0
 
