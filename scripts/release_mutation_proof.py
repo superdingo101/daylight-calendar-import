@@ -1,7 +1,8 @@
 """Create and verify evidence of full release mutation testing.
 
-The publisher trusts only artifacts from successful *Update Integration Version*
-workflow runs on main, never incremental PR results or arbitrary status checks.
+The publisher trusts only successful first-party clean workflow runs on main:
+Update Integration Version or a manual Clean mutation validation recheck.
+Incremental PR results and arbitrary commit statuses never count.
 """
 
 from __future__ import annotations
@@ -47,8 +48,12 @@ def create(tag: str) -> None:
 def find_verified_run(tag: str, source_tree: str) -> tuple[int, dict]:
     """Fail closed when no successful first-party clean run tested this tree."""
     repo = os.environ["GITHUB_REPOSITORY"]
-    url = f"repos/{repo}/actions/workflows/update-integration-version.yml/runs?status=success&per_page=100"
-    runs = json.loads(subprocess.check_output(["gh", "api", url], text=True))["workflow_runs"]
+    # Revalidation is also available after the release-prep PR has merged:
+    # run Clean mutation validation manually on main with the release tag.
+    runs = []
+    for workflow in ("update-integration-version.yml", "mutation-clean.yml"):
+        url = f"repos/{repo}/actions/workflows/{workflow}/runs?status=success&per_page=100"
+        runs.extend(json.loads(subprocess.check_output(["gh", "api", url], text=True))["workflow_runs"])
     artifact_name = f"release-clean-{tag}"
     for run in runs:
         if (run.get("conclusion") != "success"
@@ -83,7 +88,7 @@ def find_verified_run(tag: str, source_tree: str) -> tuple[int, dict]:
             return run_id, proof
     raise RuntimeError(
         "No successful, unexpired clean mutation proof matches this release tree. "
-        "Run Update Integration Version again against the desired release candidate."
+        "Manually dispatch Clean mutation validation on main with this release tag and candidate SHA."
     )
 
 
