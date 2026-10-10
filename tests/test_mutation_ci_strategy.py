@@ -128,3 +128,43 @@ def test_publisher_checks_successful_first_party_run_and_matching_tree(
     else:
         with pytest.raises(RuntimeError, match="No successful"):
             release_mutation_proof.find_verified_run("v0.6.0", "correct")
+
+
+def test_mutation_workflows_keep_release_and_nightly_gates():
+    """Validate workflow wiring before the first real release dispatch."""
+    import yaml
+
+    root = Path(__file__).resolve().parents[1] / ".github/workflows"
+    if not root.exists():
+        pytest.skip("Mutation sandbox contains test helpers, not GitHub Actions files")
+
+    def load(filename):
+        return yaml.safe_load((root / filename).read_text(encoding="utf-8"))
+
+    incremental = load("mutation.yml")
+    clean = load("mutation-clean.yml")
+    updater = load("update-integration-version.yml")
+    publisher = load("publish-hacs-release.yml")
+
+    def triggers(workflow):
+        # PyYAML treats YAML 1.1 'on' as a boolean. GitHub treats it as a key.
+        return workflow.get("on", workflow.get(True, {}))
+
+    assert "pull_request" in triggers(incremental)
+    assert incremental["jobs"]["mutation"]["name"] == "Mutation score"
+    assert any("actions/cache/restore" in str(step.get("uses", "")) for step in incremental["jobs"]["mutation"]["steps"])
+
+    assert "schedule" in triggers(clean)
+    assert "workflow_call" in triggers(clean)
+    clean_job = clean["jobs"]["clean"]
+    assert clean_job["timeout-minutes"] == 60
+    assert any("rm -rf mutants" in str(step.get("run", "")) for step in clean_job["steps"])
+    assert any("Release Mutation Validation" in str(step.get("run", "")) for step in clean_job["steps"])
+
+    assert updater["jobs"]["clean-release-mutation"]["uses"] == "./.github/workflows/mutation-clean.yml"
+    updater_steps = updater["jobs"]["update-version"]["steps"]
+    assert any("gh workflow run tests.yml" in str(step.get("run", "")) for step in updater_steps)
+
+    publishing_steps = publisher["jobs"]["publish"]["steps"]
+    assert any("release_mutation_proof.py verify" in str(step.get("run", "")) for step in publishing_steps)
+    assert any('--target "$RELEASE_SHA"' in str(step.get("run", "")) for step in publishing_steps)
