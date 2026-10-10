@@ -2,6 +2,12 @@
 
 ## Unreleased (v0.6.0)
 
+- Add deterministic source-level calendar aliases, bounded directive extraction, and explicit review confirmation before any unresolved route may be approved.
+- Add independent conflict-observation calendar configuration, on-demand read-only matching and advisory duplicate/overlap results in event review.
+- Preflight pending approvals against their destination calendar; exact duplicates and incomplete observations block writes, while ordinary overlaps remain advisory. Authenticated approvals now require calendar read and control permission.
+- Add Home Assistant pending-import and pending-event sensors plus a privacy-safe event for newly durable review work.
+- Preserve bounded, per-event AI date/time assumption disclosures until the reviewer edits temporal fields.
+- Keep pending calendar destinations safe across settings changes; add a native v0.6 guide and cross-layer acceptance tests.
 - Add an optional, administrator-configured exact sender allowlist for Direct IMAP in the native Email settings panel. Normalize/validate addresses and enforce the policy before email normalization or AI processing. Nonmatching messages remain unread; filtering by the untrusted From header is not sender authentication and does not avoid mailbox access. Empty allowlists retain the existing allow-all behavior.
 
 ## 0.5.0
