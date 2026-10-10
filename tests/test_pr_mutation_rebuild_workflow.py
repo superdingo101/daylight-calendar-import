@@ -56,6 +56,7 @@ def test_recovery_pins_the_actual_pr_merge_and_never_accepts_forks() -> None:
     rebuild = workflow["jobs"]["rebuild"]
     checkout = next(step for step in _steps(rebuild) if "actions/checkout@" in step.get("uses", ""))
     assert checkout["with"]["persist-credentials"] is False
+    assert checkout["with"]["fetch-depth"] == 0
     assert "needs.resolve.outputs.merge_sha" in checkout["with"]["ref"]
     assert "contents" in rebuild["permissions"]
     assert "write" not in str(rebuild["permissions"])
