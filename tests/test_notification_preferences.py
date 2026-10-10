@@ -49,7 +49,7 @@ def test_disabled_keeps_preferences_without_delivery():
     {"target": "notify." + "a" * 129}, {"target": 3}, {"unknown": True},
     {"target": "notify."}, {"target": "notify.phone/backup"},
     {"target": "notify.phone.extra"}, {"target": "notify.phone!"},
-    {"target": "notify.Phone"}, {"target": "notify.phone\\n"},
+    {"target": "notify.Phone"}, {"target": "notify.phone\n"},
     {"target": "notify._phone"}, {"target": "notify.phone_"},
     {"classes": [42]},
 ])
@@ -115,7 +115,6 @@ def test_validation_messages_are_stable(bad, error):
     assert str(caught.value) == error
 
 
-
 @pytest.mark.parametrize("valid", [
     "notify.phone١",
     "notify.९_٣",  # HA's Unicode decimal digit rule, excluding underscore edges.
@@ -127,3 +126,15 @@ def test_ha_valid_unicode_decimal_digits_in_notify_ids(valid):
     })
     assert policy.target == valid
     assert policy.permits("review_ready")
+
+
+@pytest.mark.parametrize("suffix", ["\n", "\r", "\t", "\x00", "\u2028"])
+def test_notify_target_rejects_actual_nonprintable_characters(suffix):
+    """An HA regex with a '$' anchor can accept a real final newline."""
+    target = "notify.phone" + suffix
+    assert not target.isprintable()
+    with pytest.raises(NotificationPreferencesError) as caught:
+        normalize_notification_preferences({
+            "enabled": True, "target": target, "classes": ["review_ready"],
+        })
+    assert str(caught.value) == "Notification target must be a notify entity"
