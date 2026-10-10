@@ -15,7 +15,7 @@ function validNotificationPolicy(policy) {
   return policy && typeof policy === "object" && !Array.isArray(policy) &&
     typeof policy.enabled === "boolean" &&
     (policy.target === null || typeof policy.target === "string" &&
-      /^notify\.[a-z0-9_]+$/.test(policy.target) && policy.target.length <= 128) &&
+      /^notify\.(?!_)[\p{L}\p{N}_]+(?<!_)$/u.test(policy.target) && policy.target.length <= 128) &&
     Array.isArray(policy.classes) &&
     policy.classes.every(value => NOTIFICATION_CLASSES.has(value)) &&
     new Set(policy.classes).size === policy.classes.length;
