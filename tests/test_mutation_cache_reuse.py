@@ -81,7 +81,10 @@ def test_reuses_legacy_main_baseline_for_new_feature_modules_and_tests(monkeypat
     _write("custom_components/daylight_calendar_import/frontend/panel.js", "console.log('new')\n")
     _write("scripts/mutation_cache.py", "# updated cache validator\n")
     _write("tests/test_mutation_ci_strategy.py", "# updated cache tests\n")
-    _git("add", ".")
+    # Cache state under mutants/ is intentionally untracked in the real
+    # repository; do not stage that temporary state in this fixture.
+    _git("add", "custom_components/daylight_calendar_import/notifications.py",
+         "tests/test_notifications.py")
     assert mutation_cache.validate()
     assert mutation_cache.fingerprint() != mutation_cache.fingerprint(baseline)
 
