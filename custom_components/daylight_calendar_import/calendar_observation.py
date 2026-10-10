@@ -217,24 +217,24 @@ async def async_observe_candidates(
 
 
 def _approval_start_window(draft: EventDraft) -> EventDraft:
-    """Bound an exact-duplicate preflight to the candidate's start.
+    """Read only the start of a candidate, then compare full original intervals.
 
-    An exact duplicate must have the same start and complete end as the draft.
-    There is no reason to read years of calendar history for a long event:
-    a provider's start/overlap query covering the draft's start is sufficient.
-    Leave the original draft unchanged for full-interval classification.
+    An exact duplicate necessarily shares the draft's start. Calendar providers
+    report events intersecting the query interval, so a one-day (all-day) or
+    one-minute (timed) start window is enough for the exact-duplicate guard.
+    Keep the full draft untouched for classification against those candidates.
     """
     if draft.all_day:
         start = date.fromisoformat(draft.start)
         end = date.fromisoformat(draft.end)
-        if end - start <= timedelta(days=89):
-            return draft
-        return replace(draft, end=(start + timedelta(days=89)).isoformat())
-    start = datetime.fromisoformat(draft.start)
-    end = datetime.fromisoformat(draft.end)
-    if end - start <= timedelta(days=89):
+        limit = start + timedelta(days=1)
+    else:
+        start = datetime.fromisoformat(draft.start)
+        end = datetime.fromisoformat(draft.end)
+        limit = start + timedelta(minutes=1)
+    if end <= limit:
         return draft
-    return replace(draft, end=(start + timedelta(days=89)).isoformat())
+    return replace(draft, end=limit.isoformat())
 
 
 async def async_classify_conflicts(
