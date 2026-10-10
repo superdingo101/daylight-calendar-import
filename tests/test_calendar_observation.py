@@ -1084,36 +1084,30 @@ async def test_approval_start_probe_supports_long_events_and_full_exact_match(al
         _approval_start_window,
     )
     original = draft(all_day=all_day)
-    long_end = ("2027-06-30" if all_day else "2027-06-30T18:30:00-07:00")
+    long_end = "2027-06-30" if all_day else "2027-06-30T18:30:00-07:00"
     extended = replace(original, end=long_end)
-    probe = _approval_start_window(extended)
-    assert probe.start == extended.start
-    assert probe.end != extended.end
-    assert probe.end > probe.start
-    assert (
-        date.fromisoformat(probe.end) - date.fromisoformat(probe.start)
-        if all_day else
-        datetime.fromisoformat(probe.end) - datetime.fromisoformat(probe.start)
-    ) == (timedelta(days=1) if all_day else timedelta(minutes=1))
-    stored = {
-        "summary": extended.title, "start": extended.start, "end": extended.end
-    }
-    fake = hass({"calendar.work": {"events": [stored]}})
-    result = await async_classify_conflicts(
+    start, end = _approval_start_window(extended, local_zone=ZONE)
+    assert start.tzinfo == timezone.utc
+    assert end.tzinfo == timezone.utc
+    assert end > start
+    assert end - start == (
+        timedelta(days=1, hours=1) if all_day else timedelta(minutes=1)
+    )
+    fake = hass({"calendar.work": {"events": [{
+        "summary": extended.title, "start": extended.start, "end": extended.end,
+    }]}})
+    matches = await async_classify_conflicts(
         fake, extended, observed_calendars=["calendar.work"],
         local_zone=ZONE, context=READ_CONTEXT, approval_start_only=True,
     )
-    assert len(result) == 1
-    assert result[0].kind == "exact_duplicate"
-    query = fake.providers["calendar.work"].async_get_events.await_args.args
-    assert query[1].isoformat().startswith(extended.start[:10])
-    assert query[2].astimezone(timezone.utc) - query[1].astimezone(timezone.utc) <= (
-        timedelta(days=1, hours=1) if all_day else timedelta(minutes=1)
+    assert [m.kind for m in matches] == ["exact_duplicate"]
+    fake.providers["calendar.work"].async_get_events.assert_awaited_once_with(
+        fake, start, end,
     )
 
 
 @pytest.mark.parametrize("all_day", [False, True])
-def test_short_approval_probe_preserves_short_event(all_day):
+def test_short_approval_probe_preserves_short_interval(all_day):
     from dataclasses import replace
     from custom_components.daylight_calendar_import.calendar_observation import (
         _approval_start_window,
@@ -1122,7 +1116,11 @@ def test_short_approval_probe_preserves_short_event(all_day):
     event = replace(original, end=(
         "2026-11-01" if all_day else "2026-10-08T17:30:30-07:00"
     ))
-    assert _approval_start_window(event) is event
+    start, end = _approval_start_window(event, local_zone=ZONE)
+    if all_day:
+        assert end - start == timedelta(days=1)
+    else:
+        assert end - start == timedelta(seconds=30)
 
 
 @pytest.mark.parametrize("all_day", [False, True])
@@ -1133,11 +1131,11 @@ async def test_approval_probe_is_minimal_even_for_short_multiday_events(all_day)
         "2026-11-07" if all_day else "2026-10-11T18:30:00-07:00"
     ))
     fake = hass({"calendar.work": {"events": [existing()]}})
-    # Ensure a provider with dense multi-day calendars is never asked for
-    # that entire period. The exact match itself is always returned.
+    # A dense provider rejects multi-day queries. Approval reads only the
+    # first calendar day or minute while classifying against the full draft.
     async def provider_events(_hass, start, end):
         bound = timedelta(days=1, hours=1) if all_day else timedelta(minutes=1)
-        if end.astimezone(timezone.utc) - start.astimezone(timezone.utc) > bound:
+        if end - start > bound:
             return [SimpleNamespace(**existing()) for _ in range(501)]
         return [SimpleNamespace(summary=event.title, start=event.start, end=event.end)]
     fake.providers["calendar.work"].async_get_events.side_effect = provider_events
@@ -1156,12 +1154,9 @@ def test_approval_probe_crosses_fall_dst_fold_by_elapsed_minute():
         "DST meeting", "2026-11-01T01:59:30-07:00",
         "2026-11-01T01:15:00-08:00", False,
     )
-    probe = _approval_start_window(folded)
-    assert probe.start == folded.start
-    assert probe.end != folded.end
-    fake_start = datetime.fromisoformat(probe.start).astimezone(timezone.utc)
-    fake_end = datetime.fromisoformat(probe.end).astimezone(timezone.utc)
-    assert fake_end - fake_start == timedelta(minutes=1)
+    start, end = _approval_start_window(folded, local_zone=ZONE)
+    assert end - start == timedelta(minutes=1)
+    assert start == datetime.fromisoformat(folded.start).astimezone(timezone.utc)
 
 
 @pytest.mark.parametrize(("start", "end"), [
@@ -1171,33 +1166,27 @@ def test_approval_probe_crosses_fall_dst_fold_by_elapsed_minute():
 async def test_approval_probe_year_boundary_different_offsets_preserves_exact_match(
     start, end,
 ):
-    """Use real UTC instants instead of overflowing the source wall clock."""
+    """Use direct UTC bounds even when zone-local conversion would overflow."""
     from custom_components.daylight_calendar_import.calendar_observation import (
         _approval_start_window,
     )
-
     original = EventDraft("Practice", start, end, False)
-    probe = _approval_start_window(original)
-    assert probe.start == original.start
-    assert probe.end != original.end
-    assert (
-        datetime.fromisoformat(probe.end).astimezone(timezone.utc)
-        - datetime.fromisoformat(probe.start).astimezone(timezone.utc)
-    ) == timedelta(minutes=1)
-
+    zone = ZoneInfo("Pacific/Kiritimati")
+    begin, bound = _approval_start_window(original, local_zone=zone)
+    assert begin.tzinfo is timezone.utc
+    assert bound.tzinfo is timezone.utc
+    assert bound - begin == timedelta(minutes=1)
     fake = hass({"calendar.work": {"events": [{
         "summary": original.title, "start": original.start, "end": original.end,
     }]}})
     matches = await async_classify_conflicts(
         fake, original, observed_calendars=["calendar.work"],
-        local_zone=ZONE, context=READ_CONTEXT, approval_start_only=True,
+        local_zone=zone, context=READ_CONTEXT, approval_start_only=True,
     )
     assert [match.kind for match in matches] == ["exact_duplicate"]
-    query = fake.providers["calendar.work"].async_get_events.await_args.args
-    assert (
-        query[2].astimezone(timezone.utc)
-        - query[1].astimezone(timezone.utc)
-    ) == timedelta(minutes=1)
+    fake.providers["calendar.work"].async_get_events.assert_awaited_once_with(
+        fake, begin, bound,
+    )
 
 
 def test_approval_probe_unrepresentable_utc_instant_has_classified_failure():
@@ -1209,4 +1198,47 @@ def test_approval_probe_unrepresentable_utc_instant_has_classified_failure():
         "9999-12-31T23:59:30-12:00", False,
     )
     with pytest.raises(CalendarObservationError, match="Invalid timed observation interval"):
-        _approval_start_window(draft_outside_utc)
+        _approval_start_window(draft_outside_utc, local_zone=ZONE)
+
+
+@pytest.mark.parametrize("start,end", [
+    ("2026-10-08T17:30:00-07:00", "2026-10-08T17:29:00-07:00"),
+    ("2026-10-08T17:30:00", "2026-10-08T18:30:00"),
+])
+def test_approval_probe_rejects_invalid_timed_interval(start, end):
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    with pytest.raises(CalendarObservationError):
+        _approval_start_window(EventDraft("Practice", start, end, False), local_zone=ZONE)
+
+
+def test_approval_probe_rejects_invalid_all_day_interval():
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    with pytest.raises(CalendarObservationError):
+        _approval_start_window(
+            EventDraft("Practice", "2026-11-01", "2026-11-01", True),
+            local_zone=ZONE,
+        )
+
+
+async def test_approval_does_not_use_regular_review_window_limit():
+    long = EventDraft(
+        "Practice", "2026-10-08T17:30:00-07:00",
+        "2027-10-08T17:30:00-07:00", False,
+    )
+    fake = hass({"calendar.work": {"events": [
+        {"summary": long.title, "start": long.start, "end": long.end},
+    ]}})
+    with pytest.raises(CalendarObservationError, match="exceeds 90 days"):
+        await async_classify_conflicts(
+            fake, long, observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    matches = await async_classify_conflicts(
+        fake, long, observed_calendars=["calendar.work"],
+        local_zone=ZONE, context=READ_CONTEXT, approval_start_only=True,
+    )
+    assert [m.kind for m in matches] == ["exact_duplicate"]
