@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import tokenize
+import tomllib
 import yaml
 from pathlib import Path
 
@@ -34,6 +35,10 @@ CACHE_HELPERS = {
     "tests/test_mutation_cache_reuse.py",
 }
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
+VERSION_ONLY_FILES = {
+    "custom_components/daylight_calendar_import/manifest.json",
+    "pyproject.toml",
+}
 
 
 def tracked_inputs(commit: str | None = None) -> list[Path]:
@@ -180,8 +185,38 @@ def _environment_fingerprint() -> str:
     return digest.hexdigest()
 
 
+def _version_independent_content(path: Path, raw: bytes) -> bytes:
+    """Ignore version *labels*, never dependencies or test configuration.
+
+    Release preparation updates the integration/packaging version together.
+    Neither value changes the code exercised by the mutation test runner.
+    Parse both formats so every other field must match semantically; malformed
+    or unsupported metadata is compared byte-for-byte and fails closed.
+    """
+    name = path.as_posix()
+    if name not in VERSION_ONLY_FILES:
+        return raw
+    try:
+        if name == "pyproject.toml":
+            doc = tomllib.loads(raw.decode("utf-8"))
+            project = doc.get("project")
+            if not isinstance(project, dict) or not isinstance(project.get("version"), str):
+                return raw
+            project.pop("version")
+        else:
+            doc = json.loads(raw)
+            if not isinstance(doc, dict) or not isinstance(doc.get("version"), str):
+                return raw
+            doc.pop("version")
+        return json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()
+    except (UnicodeError, ValueError, TypeError):
+        return raw
+
+
 def _comparison_content(path: Path, raw: bytes) -> bytes:
     """Hash the behavior relevant to mutation testing, not cache plumbing."""
+    if path.as_posix() in VERSION_ONLY_FILES:
+        return _version_independent_content(path, raw)
     if path.as_posix() == ".github/workflows/mutation.yml":
         try:
             workflow = yaml.safe_load(raw)
@@ -245,6 +280,8 @@ def _legacy_delta(commit: str) -> tuple[bool, list[str], list[str]]:
         now = path.read_bytes()
         if old == now:
             return True
+        if path.as_posix() in VERSION_ONLY_FILES:
+            return _version_independent_content(path, old) == _version_independent_content(path, now)
         if path.as_posix() == ".github/workflows/mutation.yml":
             return _same_test_execution_workflow(old, now)
         return (
@@ -273,9 +310,29 @@ def _manifest_delta(saved: dict) -> tuple[bool, list[str], list[str]]:
         return False, [], []
 
     def same(path: Path) -> bool:
-        return hashlib.sha256(
-            _comparison_content(path, path.read_bytes())
-        ).hexdigest() == files[path.as_posix()]
+        name = path.as_posix()
+        current = path.read_bytes()
+        normalized_sha = hashlib.sha256(_comparison_content(path, current)).hexdigest()
+        if normalized_sha == files[name]:
+            return True
+        # Previously stamped PR caches hashed these files raw. Accept a
+        # byte-identical old file, or a version-only change if the original
+        # Git snapshot is still accessible.
+        if name in VERSION_ONLY_FILES:
+            if hashlib.sha256(current).hexdigest() == files[name]:
+                return True
+            commit = saved.get("source_commit", "")
+            if isinstance(commit, str) and COMMIT_SHA.fullmatch(commit):
+                try:
+                    old = _historical_content(commit, path)
+                except subprocess.CalledProcessError:
+                    return False
+                return (
+                    hashlib.sha256(old).hexdigest() == files[name]
+                    and _version_independent_content(path, old)
+                    == _version_independent_content(path, current)
+                )
+        return False
 
     return _compare_files(set(map(Path, files)), same)
 
