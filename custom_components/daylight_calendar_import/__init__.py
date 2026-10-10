@@ -218,7 +218,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pending_store = PendingImportStore(hass)
     await pending_store.async_load()
     pending_store.active_submissions = set()
-    pending_store.notification_tasks = set()
+    # Keep task ownership across config-entry reloads. Providers that ignore
+    # cancellation must not become invisible when the old store unloads.
+    registry = hass.data.setdefault(f"{DOMAIN}_notification_tasks", {})
+    pending_store.notification_tasks = registry.setdefault(entry.entry_id, set())
     # Track entry service calls *before* their first await so unload cannot
     # miss a request waiting for authorization or a source claim.
     pending_store.active_service_handlers = set()
@@ -256,11 +259,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # The old callback must not send with superseded preferences even
             # if Home Assistant reopens the old store after platform failure.
             return
+        # The registry includes both wrapper tasks and provider tasks. Keep
+        # a hard cap across reloads so broken providers cannot accumulate
+        # unbounded calls or keep using a superseded notify target.
+        if len(pending_store.notification_tasks) >= _MAX_NOTIFICATION_TASKS:
+            _LOGGER.warning("Daylight notification capacity reached; skipping best-effort delivery")
+            return
         # A review-ready callback is fired only after its durable activity
         # transaction commits, so its lifecycle record is guaranteed present.
         activity = pending_store.get_activity(pending.id)
         task = hass.async_create_task(
-            async_notify_review_ready(hass, activity, notify_preferences),
+            async_notify_review_ready(
+                hass, activity, notify_preferences, pending_store.notification_tasks,
+            ),
             f"Daylight review-ready notification for {pending.id}",
         )
         pending_store.notification_tasks.add(task)
@@ -927,6 +938,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 _NOTIFICATION_CANCEL_GRACE_SECONDS = 1
+_MAX_NOTIFICATION_TASKS = 4
 
 
 async def _async_cancel_notification_tasks(store: PendingImportStore) -> None:
