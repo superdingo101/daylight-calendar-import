@@ -2798,16 +2798,26 @@ async def test_approval_internal_userless_service_context_is_forwarded(monkeypat
 
 
 @pytest.mark.parametrize("action", [SERVICE_APPROVE_PENDING, SERVICE_APPROVE_PENDING_EVENT])
-async def test_control_only_reviewer_can_approve_with_private_destination_observation(
+async def test_control_only_reviewer_cannot_probe_private_calendar_via_approval(
     monkeypatch, action,
 ):
-    """Approval must not silently demand read access to a writable calendar."""
+    """Duplicate-safe approval needs destination READ as well as CONTROL."""
     from homeassistant.auth.permissions.const import POLICY_READ
+    from homeassistant.components.calendar.const import DATA_COMPONENT
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        async_classify_conflicts as real_classify,
+    )
+
     item = pending(draft())
     event = item.events[0]
     permission = FakePermissions()
-    permission.check_entity = Mock(side_effect=lambda _entity, policy: policy == POLICY_CONTROL)
+    permission.check_entity = Mock(
+        side_effect=lambda _entity, policy: policy == POLICY_CONTROL
+    )
     hass = FakeHass(user=SimpleNamespace(permissions=permission))
+    provider = SimpleNamespace(async_get_events=AsyncMock(return_value=[]))
+    component = SimpleNamespace(get_entity=Mock(return_value=provider))
+    hass.data[DATA_COMPONENT] = component
 
     async def approve(_id, *args, **kwargs):
         writer = next(arg for arg in args if hasattr(arg, "async_preflight"))
@@ -2822,22 +2832,79 @@ async def test_control_only_reviewer_can_approve_with_private_destination_observ
         async_approve_event=AsyncMock(side_effect=approve),
     )
     monkeypatch.setattr(
-        "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _: store,
     )
-    observe = AsyncMock(return_value=())
+    # Exercise the real permission gate rather than a mock returning matches.
     monkeypatch.setattr(
-        "custom_components.daylight_calendar_import.async_classify_conflicts", observe
+        "custom_components.daylight_calendar_import.async_classify_conflicts",
+        real_classify,
     )
     assert await async_setup_entry(hass, entry())
     handler = hass.services.handlers[(DOMAIN, action)][0]
     data = {ATTR_PENDING_ID: item.id}
     if action == SERVICE_APPROVE_PENDING_EVENT:
-        # The single-event review action separately checks AI Task + calendar
-        # control, not destination POLICY_READ.
         data[ATTR_EVENT_ID] = event.id
-    response = await handler(SimpleNamespace(data=data, context=Context(user_id="reviewer")))
-    assert response["approved"] is True
-    assert observe.await_args.kwargs["trusted_internal"] is True
-    assert observe.await_args.kwargs["context"] is None
-    assert all(call.args[1] == POLICY_CONTROL for call in permission.check_entity.call_args_list)
-    assert len(hass.services.calls) == 1
+
+    with pytest.raises(
+        ServiceValidationError,
+        match="Approval rejected before calendar write: Destination calendar "
+        "read permission is required",
+    ):
+        await handler(SimpleNamespace(data=data, context=Context(user_id="reviewer")))
+
+    assert any(
+        call.args == ("calendar.family", POLICY_READ)
+        for call in permission.check_entity.call_args_list
+    )
+    component.get_entity.assert_not_called()
+    provider.async_get_events.assert_not_awaited()
+    assert hass.services.calls == []
+
+
+async def test_control_only_reviewer_error_never_reveals_duplicate_existence(monkeypatch):
+    """Even a real existing duplicate must not reach an unauthorized reader."""
+    from homeassistant.components.calendar.const import DATA_COMPONENT
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        async_classify_conflicts as real_classify,
+    )
+    item = pending(draft())
+    event = item.events[0]
+    user = SimpleNamespace(permissions=FakePermissions(allowed=True))
+    user.permissions.check_entity = Mock(
+        side_effect=lambda _entity, policy: policy == POLICY_CONTROL
+    )
+    hass = FakeHass(user=user)
+    provider = SimpleNamespace(async_get_events=AsyncMock(
+        side_effect=AssertionError("Private provider must never be queried"),
+    ))
+    hass.data[DATA_COMPONENT] = SimpleNamespace(
+        get_entity=Mock(return_value=provider),
+    )
+
+    async def approve(_id, writer):
+        await writer.async_preflight(event)
+        await writer(event)
+        return item
+
+    store = SimpleNamespace(
+        async_load=AsyncMock(), get=Mock(return_value=item),
+        async_process_events=AsyncMock(side_effect=approve),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore",
+        lambda _: store,
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_classify_conflicts",
+        real_classify,
+    )
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)][0]
+    with pytest.raises(ServiceValidationError, match="read permission is required"):
+        await handler(SimpleNamespace(
+            data={ATTR_PENDING_ID: item.id},
+            context=Context(user_id="reviewer"),
+        ))
+    provider.async_get_events.assert_not_awaited()
+    assert hass.services.calls == []
