@@ -4,6 +4,7 @@ const SETTINGS_GET = "daylight_calendar_import/settings/get";
 const SETTINGS_CORE_UPDATE = "daylight_calendar_import/settings/core/update";
 const SETTINGS_EMAIL_UPDATE = "daylight_calendar_import/settings/email/update";
 const SETTINGS_CALENDAR_INTELLIGENCE_UPDATE = "daylight_calendar_import/settings/calendar_intelligence/update";
+const SETTINGS_NOTIFICATIONS_UPDATE = "daylight_calendar_import/settings/notifications/update";
 
 function validateSettings(result) {
   if (!result || typeof result.entry_id !== "string" ||
@@ -53,6 +54,14 @@ export async function saveEmailSettings(hass, settings) {
     if (settings[key] !== undefined) payload[key] = settings[key];
   }
   return validateSettings(await hass.callWS(payload));
+}
+
+export async function saveNotificationSettings(hass, settings) {
+  return validateSettings(await hass.callWS({
+    type: SETTINGS_NOTIFICATIONS_UPDATE,
+    entry_id: settings.entry_id,
+    notifications: settings.notifications,
+  }));
 }
 
 export async function saveCalendarIntelligenceSettings(hass, settings) {
