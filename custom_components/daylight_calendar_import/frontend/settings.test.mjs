@@ -8,6 +8,7 @@ const snapshot = {
   ai_task_entity: "ai_task.openai",
   calendar_entity: "calendar.family",
   calendar_entities: ["calendar.family"],
+  notifications: {enabled: false, target: null, classes: []},
   email: {
     enabled: false,
     host: "",
@@ -134,17 +135,34 @@ test("notification client sends only the explicit opt-in policy", async () => {
   const hass = {callWS: async message => {
     calls.push(message);
     return {entry_id: "entry-1", ai_task_entity: "ai_task.initial",
-      calendar_entity: "calendar.family", calendar_entities: ["calendar.family"], email: {}};
+      calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+      notifications: {enabled: false, target: null, classes: []}, email: {}};
   }};
   await saveNotificationSettings(hass, {
     entry_id: "entry-1", notifications: {
       enabled: true, target: "notify.phone", classes: ["review_ready"],
     },
+    expected_notifications: snapshot.notifications,
   });
   assert.deepEqual(calls, [{
     type: "daylight_calendar_import/settings/notifications/update",
     entry_id: "entry-1", notifications: {
       enabled: true, target: "notify.phone", classes: ["review_ready"],
     },
+    expected_notifications: snapshot.notifications,
   }]);
+});
+
+
+test("settings client rejects missing or malformed notification policy", async () => {
+  for (const notifications of [undefined, {enabled: "yes", classes: [], target: null},
+    {enabled: true, classes: ["secret"], target: "notify.phone"}]) {
+    const response = {...snapshot, notifications};
+    const hass = {callWS: async () => response};
+    await assert.rejects(() => loadSettings(hass), /unexpected response/);
+    await assert.rejects(() => saveNotificationSettings(hass, {
+      entry_id: "entry-1", notifications: snapshot.notifications,
+      expected_notifications: snapshot.notifications,
+    }), /unexpected response/);
+  }
 });
