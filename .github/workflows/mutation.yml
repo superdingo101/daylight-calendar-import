@@ -69,6 +69,7 @@ jobs:
         with:
           name: mutation-results
           if-no-files-found: warn
+          overwrite: true
           path: |
             mutants/mutmut-cicd-stats.json
             mutation-survivors.txt
