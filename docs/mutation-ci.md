@@ -82,10 +82,12 @@ Other PRs cannot accidentally select it.
 
 On success, the recovery workflow records a separate `PR Mutation Cache Rebuild`
 status (it does **not** impersonate the required `Mutation score` check).
-It attempts to rerun the latest failed mutation check for the selected PR.
-If GitHub cannot rerun it automatically, open the failed check and select
-**Re-run jobs** yourself. The ordinary check then restores the recovery
-cache, validates it, and records the required passing `Mutation score`.
+Open the **current PR's failed Mutation score check**, confirm its head/base
+are current, and select **Re-run jobs**. The ordinary check then restores
+the recovery cache, validates it, and records the required passing
+`Mutation score`. This deliberate manual retry avoids GitHub's limitation
+that automatically rerunning an old workflow retains its old synthetic merge
+commit even after a PR's base changes.
 
 **Do not rerun a full main baseline repeatedly for a PR-specific mismatch.**
 Changes to existing tests, fixtures and dependencies may require a new
