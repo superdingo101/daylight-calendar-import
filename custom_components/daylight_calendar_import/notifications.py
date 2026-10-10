@@ -71,7 +71,7 @@ def notification_from_transition(
     kind, title, message, severity = template
     # The stored identity is immutable. Do not use a transition's position in a
     # bounded history as an idempotency key.
-    identity = "\\x00".join((import_id, raw_type, occurred_at, str(event_id)))
+    identity = "\x00".join((import_id, raw_type, occurred_at, str(event_id)))
     key = sha256(identity.encode("utf-8")).hexdigest()
     return NotificationEvent(
         type=kind,
