@@ -21,10 +21,11 @@ def test_cache_invalidates_test_changes_but_not_production_function_changes(monk
     monkeypatch.chdir(tmp_path)
     _git("init")
     paths = {
-        "custom_components/daylight_calendar_import/example.py": "def a(): return 1\n",
+        "custom_components/daylight_calendar_import/example.py": "LIMIT = 4\ndef a(): return 1\n",
         "tests/test_example.py": "def test_a(): assert True\n",
         "requirements_test.txt": "pytest\n",
         "README.md": "Documentation\n",
+        "tests/fixtures/example.md": "Original email\n",
     }
     for name, content in paths.items():
         path = Path(name)
@@ -33,7 +34,12 @@ def test_cache_invalidates_test_changes_but_not_production_function_changes(monk
     _git("add", ".")
     original = mutation_cache.fingerprint()
 
-    Path("custom_components/daylight_calendar_import/example.py").write_text("def a(): return 2\n")
+    Path("custom_components/daylight_calendar_import/example.py").write_text("LIMIT = 4\ndef a(): return 2\n")
+    assert mutation_cache.fingerprint() == original
+
+    Path("custom_components/daylight_calendar_import/example.py").write_text("LIMIT = 5\ndef a(): return 2\n")
+    assert mutation_cache.fingerprint() != original
+    Path("custom_components/daylight_calendar_import/example.py").write_text(paths["custom_components/daylight_calendar_import/example.py"])
     assert mutation_cache.fingerprint() == original
 
     Path("tests/test_example.py").write_text("def test_a(): assert False\n")
@@ -43,6 +49,9 @@ def test_cache_invalidates_test_changes_but_not_production_function_changes(monk
     assert mutation_cache.fingerprint() == original
 
     Path("requirements_test.txt").write_text("pytest==9\n")
+    assert mutation_cache.fingerprint() != original
+    Path("requirements_test.txt").write_text(paths["requirements_test.txt"])
+    Path("tests/fixtures/example.md").write_text("Changed test fixture\n")
     assert mutation_cache.fingerprint() != original
 
 
