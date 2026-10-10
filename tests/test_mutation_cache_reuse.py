@@ -1,0 +1,142 @@
+"""Regression tests for reusing clean mutmut baselines across ordinary PRs."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from scripts import mutation_cache
+
+
+def _git(*args: str) -> str:
+    return subprocess.check_output(["git", *args], text=True).strip()
+
+
+def _write(path: str, content: str) -> None:
+    file = Path(path)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text(content, encoding="utf-8")
+
+
+def _baseline(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _git("init")
+    _git("config", "user.email", "cache@example.invalid")
+    _git("config", "user.name", "Cache Test")
+    initial = {
+        "custom_components/daylight_calendar_import/old.py":
+            "LIMIT = 3\ndef old():\n    return LIMIT\n",
+        "custom_components/daylight_calendar_import/frontend/panel.js":
+            "console.log('old')\n",
+        "tests/test_old.py": "def test_old():\n    assert True\n",
+        "tests/conftest.py": "# shared fixtures\n",
+        "tests/fixtures/data.json": '{"state":"old"}\n',
+        "tests/test_mutation_ci_strategy.py": "# CI-only test helper\n",
+        "scripts/mutation_cache.py": "# original cache helper\n",
+        "requirements_test.txt": "pytest\n",
+    }
+    for path, text in initial.items():
+        _write(path, text)
+    _git("add", ".")
+    _git("commit", "-m", "clean baseline")
+    baseline = _git("rev-parse", "HEAD")
+
+    _write("mutants/custom_components/daylight_calendar_import/old.py.meta", "{}")
+    _write("mutants/mutmut-stats.json", json.dumps({"git_commit": baseline}))
+    _write(
+        "mutants/mutation-cache-provenance.json",
+        json.dumps({
+            "schema": mutation_cache.CACHE_SCHEMA,
+            "fingerprint": mutation_cache.fingerprint(),
+            # Legacy baseline: no source_commit yet.
+        }),
+    )
+    assert mutation_cache.validate()
+    return initial, baseline
+
+
+def test_reuses_legacy_main_baseline_for_new_feature_modules_and_tests(monkeypatch, tmp_path):
+    initial, baseline = _baseline(monkeypatch, tmp_path)
+    _write(
+        "custom_components/daylight_calendar_import/old.py",
+        "LIMIT = 3\ndef old():\n    return LIMIT + 1\n",
+    )
+    _write(
+        "custom_components/daylight_calendar_import/notifications.py",
+        "def notify():\n    return True\n",
+    )
+    _write("tests/test_notifications.py", "def test_notification():\n    assert True\n")
+    _write("custom_components/daylight_calendar_import/frontend/panel.js", "console.log('new')\n")
+    _write("scripts/mutation_cache.py", "# updated cache validator\n")
+    _write("tests/test_mutation_ci_strategy.py", "# updated cache tests\n")
+    _git("add", ".")
+    assert mutation_cache.validate()
+    assert mutation_cache.fingerprint() != mutation_cache.fingerprint(baseline)
+
+    # Cached results remain reusable after stamping a successfully tested PR.
+    assert mutation_cache.main.__name__ == "main"
+    source_commit = _git("rev-parse", "HEAD")
+    mutation_cache.CACHE_META.write_text(json.dumps({
+        "schema": mutation_cache.CACHE_SCHEMA,
+        "fingerprint": mutation_cache.fingerprint(),
+        "source_commit": source_commit,
+    }))
+    assert mutation_cache.validate()
+
+
+@pytest.mark.parametrize("path,content", [
+    ("tests/test_old.py", "def test_old():\n    assert False\n"),
+    ("tests/conftest.py", "# changed autouse fixtures\n"),
+    ("tests/fixtures/data.json", '{"state":"changed"}\n'),
+    ("requirements_test.txt", "pytest==9.0\n"),
+    ("custom_components/daylight_calendar_import/old.py",
+     "LIMIT = 4\ndef old():\n    return LIMIT\n"),
+])
+def test_invalidates_existing_tests_fixtures_dependencies_and_module_state(
+    monkeypatch, tmp_path, path, content,
+):
+    _baseline(monkeypatch, tmp_path)
+    _write(path, content)
+    assert not mutation_cache.validate()
+
+
+@pytest.mark.parametrize("path,content", [
+    ("tests/conftest.py", "def pytest_configure(config): pass\n"),
+    ("custom_components/daylight_calendar_import/__init__.py", "# new package init\n"),
+    ("requirements_more.txt", "new_dependency\n"),
+])
+def test_rejects_new_shared_inputs(monkeypatch, tmp_path, path, content):
+    _baseline(monkeypatch, tmp_path)
+    _write(path, content)
+    _git("add", path)
+    assert not mutation_cache.validate()
+
+
+def test_rejects_deleted_existing_test(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    Path("tests/test_old.py").unlink()
+    _git("add", "-u")
+    assert not mutation_cache.validate()
+
+
+def test_rejects_forged_legacy_fingerprint(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    saved = json.loads(mutation_cache.CACHE_META.read_text())
+    saved["fingerprint"] = "0" * 64
+    mutation_cache.CACHE_META.write_text(json.dumps(saved))
+    _write("tests/test_new.py", "def test_new(): pass\n")
+    _git("add", ".")
+    assert not mutation_cache.validate()
+
+
+def test_missing_or_unknown_baseline_commit_fails_closed(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    _write("tests/test_new.py", "def test_new(): pass\n")
+    _git("add", ".")
+    mutation_cache.STATS.write_text("{}")
+    assert not mutation_cache.validate()
+    mutation_cache.STATS.write_text(json.dumps({"git_commit": "a" * 40}))
+    assert not mutation_cache.validate()
