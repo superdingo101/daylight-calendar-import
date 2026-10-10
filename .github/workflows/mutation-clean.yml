@@ -1,0 +1,159 @@
+name: Clean mutation validation
+
+on:
+  schedule:
+    # 02:00 PDT / 01:00 PST. GitHub schedules are UTC and may be delayed.
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Optional exact commit SHA to clean-test; defaults to the selected ref"
+        required: false
+        type: string
+      release_tag:
+        description: "Optional vX.Y.Z tag for a manual release revalidation"
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      target_sha:
+        type: string
+        required: true
+      release_tag:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  statuses: write
+  issues: write
+
+concurrency:
+  # Do not cancel a release validation when a nightly run begins.
+  group: clean-mutation-${{ inputs.release_tag || 'nightly' }}
+  cancel-in-progress: false
+
+jobs:
+  clean:
+    name: Clean mutation score
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Restrict manual release revalidation to main
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' }}
+        run: |
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "ERROR: Manual release revalidation must be dispatched from main."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.target_sha || github.sha }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements_test.txt
+
+      - name: Discard all mutation state
+        run: rm -rf mutants
+
+      - name: Run full clean mutation tests
+        id: mutation
+        run: mutmut run
+
+      - name: Enforce clean score
+        id: enforce
+        run: |
+          mutmut export-cicd-stats
+          python scripts/check_mutation_score.py
+
+      - name: Export complete survivor diagnostics
+        id: export
+        if: always()
+        run: python scripts/export_mutation_survivors.py
+
+      - name: Stamp nightly baseline
+        if: ${{ github.event_name == 'schedule' && success() }}
+        run: python scripts/mutation_cache.py stamp
+
+      - name: Publish nightly cache for PRs
+        id: nightly-cache
+        if: ${{ github.event_name == 'schedule' && success() }}
+        uses: actions/cache/save@v4
+        with:
+          path: mutants
+          key: mutmut-v2-linux-py314-v380-main-${{ github.run_id }}
+
+      - name: Create release mutation proof
+        if: ${{ inputs.release_tag != '' && success() }}
+        run: python scripts/release_mutation_proof.py create "${{ inputs.release_tag }}"
+
+      - name: Upload release mutation proof
+        id: proof
+        if: ${{ inputs.release_tag != '' && success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-clean-${{ inputs.release_tag }}
+          path: release-mutation-proof.json
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+      - name: Upload mutation diagnostics
+        id: diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-results
+          if-no-files-found: warn
+          overwrite: true
+          path: |
+            mutants/mutmut-cicd-stats.json
+            mutation-survivors.txt
+            mutation-survivor-names.txt
+            mutation-survivor-report.txt
+
+      - name: Report release validation on candidate commit
+        if: ${{ always() && inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ inputs.target_sha || github.sha }}
+          PROOF_OUTCOME: ${{ steps.proof.outcome }}
+          DIAGNOSTICS_OUTCOME: ${{ steps.diagnostics.outcome }}
+          MUTATION_OUTCOME: ${{ steps.mutation.outcome }}
+          ENFORCE_OUTCOME: ${{ steps.enforce.outcome }}
+          EXPORT_OUTCOME: ${{ steps.export.outcome }}
+        run: |
+          state=failure
+          if [[ "$MUTATION_OUTCOME" == success && "$ENFORCE_OUTCOME" == success && "$EXPORT_OUTCOME" == success && "$PROOF_OUTCOME" == success && "$DIAGNOSTICS_OUTCOME" == success ]]; then
+            state=success
+          fi
+          # The token-created release-prep PR does not fire the normal
+          # pull_request mutation job. One clean run supplies both its release
+          # gate and the standard required mutation context.
+          for context in "Release Mutation Validation" "Mutation score"; do
+            gh api --method POST "repos/${{ github.repository }}/statuses/$TARGET" \
+              -f state="$state" \
+              -f context="$context" \
+              -f description="Clean mutation validation for ${{ inputs.release_tag }}" \
+              -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          done
+
+      - name: Update visible nightly mutation health
+        if: ${{ always() && github.event_name == 'schedule' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MUTATION_OUTCOME: ${{ steps.mutation.outcome }}
+          ENFORCE_OUTCOME: ${{ steps.enforce.outcome }}
+          EXPORT_OUTCOME: ${{ steps.export.outcome }}
+          DIAGNOSTICS_OUTCOME: ${{ steps.diagnostics.outcome }}
+          NIGHTLY_CACHE_OUTCOME: ${{ steps.nightly-cache.outcome }}
+        run: python scripts/report_nightly_mutation.py
+
