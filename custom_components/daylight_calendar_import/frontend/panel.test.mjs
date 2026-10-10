@@ -1257,6 +1257,7 @@ test("admin can manage AI and calendars from native settings tabs", async () => 
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {
       enabled: false,
       host: "",
@@ -1383,6 +1384,7 @@ test("settings save failures focus an alert that is programmatically focusable",
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {
       enabled: false,
       host: "",
@@ -1449,6 +1451,7 @@ test("settings forms freeze every editable control while a save is pending", asy
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {
       enabled: false,
       host: "",
@@ -1532,6 +1535,7 @@ test("calendar settings freeze select and checkboxes while saving", async () => 
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {},
   };
   panel._settingsTab = "calendars";
@@ -1558,6 +1562,7 @@ test("reload_failed refreshes persisted settings and keeps restart warning", asy
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {
       enabled: false,
       host: "",
@@ -1650,6 +1655,7 @@ test("settings pending save exposes and focuses a busy status", async () => {
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -1702,6 +1708,7 @@ test("reload_failed keeps submitted patch when reconciliation also fails", async
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -1764,6 +1771,7 @@ test("new save error receives focus ahead of an older reload warning", async () 
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -1827,6 +1835,7 @@ test("successful changed save clears restart warning but no-op save preserves it
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -1892,6 +1901,7 @@ test("initial settings load immediately focuses and announces loading state", as
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -1930,6 +1940,7 @@ test("settings failure clears an earlier save announcement", async () => {
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -1984,6 +1995,7 @@ test("calendar validation focuses current error ahead of restart warning", async
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -2044,6 +2056,7 @@ test("cached settings entry clears stale announcements without reloading", async
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {},
   };
   panel._announcement.replaceChildren(Object.assign(new FakeNode("span"), {
@@ -2064,6 +2077,7 @@ test("ambiguous connection loss reconciles a persisted settings patch", async ()
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -2123,6 +2137,7 @@ test("ambiguous connection loss keeps draft when server confirms no write", asyn
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -2189,6 +2204,7 @@ test("ambiguous connection loss retains draft when reconciliation also fails", a
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -2245,6 +2261,7 @@ test("coded Core save errors are definitive and skip reconciliation", async () =
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -2296,6 +2313,7 @@ test("successful save in one settings tab preserves another tab's unconfirmed dr
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -2375,6 +2393,7 @@ test("unsaved General selection survives settings tab switches", async () => {
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -2425,6 +2444,7 @@ test("unsaved Calendar selections survive settings tab switches", async () => {
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -2489,6 +2509,7 @@ test("settings refresh preserves unmatched local drafts", async () => {
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -2535,6 +2556,7 @@ test("unavailable writable calendar is preserved without becoming a new default 
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -2590,6 +2612,7 @@ test("unavailable current default remains preservable in the default picker", as
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -2639,6 +2662,7 @@ test("unsaved AI draft remains visible if the selected entity becomes unavailabl
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -2700,6 +2724,7 @@ test("admin can configure and disable Direct IMAP from native Email settings", a
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {
       enabled: true,
       host: "imap.old.test",
@@ -2730,6 +2755,7 @@ test("admin can configure and disable Direct IMAP from native Email settings", a
       if (message.type === "daylight_calendar_import/settings/email/update") {
         current = {
           ...current,
+          notifications: {enabled: false, target: null, classes: []},
           email: {
             ...current.email,
             enabled: message.enabled,
@@ -2814,6 +2840,7 @@ test("Email validation failure preserves enabled submitted values and replacemen
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {
       enabled: false,
       host: "imap.old.test",
@@ -2895,6 +2922,7 @@ test("unsaved Email edits survive tab switches and settings refresh", async () =
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {
       enabled: false,
       host: "imap.old.test",
@@ -2961,6 +2989,7 @@ test("Email reload failure reflects persisted settings and clears replacement pa
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {
       enabled: true,
       host: "imap.old.test",
@@ -2992,6 +3021,7 @@ test("Email reload failure reflects persisted settings and clears replacement pa
         updateAttempted = true;
         persisted = {
           ...persisted,
+          notifications: {enabled: false, target: null, classes: []},
           email: {
             enabled: true,
             host: message.host,
@@ -3034,6 +3064,7 @@ test("ambiguous Email password replacement remains retryable when prior password
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {
       enabled: true,
       host: "imap.old.test",
@@ -3067,6 +3098,7 @@ test("ambiguous Email password replacement remains retryable when prior password
       if (message.type === "daylight_calendar_import/settings/email/update") {
         reconciled = {
           ...snapshot,
+          notifications: {enabled: false, target: null, classes: []},
           email: {
             ...snapshot.email,
             host: message.host,
@@ -3103,6 +3135,7 @@ test("Email controls and settings subnav freeze while save is pending", async ()
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {
       enabled: true,
       host: "imap.example.test",
@@ -3165,6 +3198,7 @@ test("ambiguous IMAP disable confirms from enabled state only", async () => {
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {
       enabled: true,
       host: "imap.old.test",
@@ -3177,6 +3211,7 @@ test("ambiguous IMAP disable confirms from enabled state only", async () => {
   };
   const reconciled = {
     ...initial,
+    notifications: {enabled: false, target: null, classes: []},
     email: {...initial.email, enabled: false},
   };
   const panel = new DaylightImportPanel();
@@ -3229,6 +3264,7 @@ test("leaving Settings scrubs replacement passwords but keeps non-secret Email e
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {
       enabled: true,
       host: "imap.old.test",
@@ -3306,6 +3342,7 @@ test("leaving Settings drops an Email draft when password was the only edit", as
     ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {
       enabled: true,
       host: "imap.example.test",
@@ -3356,6 +3393,7 @@ test("routing tab saves aliases and read-only conflict calendar scope separately
     calendar_entities: ["calendar.family"],
     calendar_aliases: {},
     conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3408,6 +3446,7 @@ test("routing tab rejects aliases pointing to read-only calendars without saving
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: [],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3437,6 +3476,7 @@ test("routing aliases with equals and astral Unicode names are accepted by clien
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {"Pickup=A": "calendar.family"},
     conflict_calendar_entities: [],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3471,6 +3511,7 @@ test("routing preserves unfinished text and conflict selection across tabs", asy
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: [],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3512,6 +3553,7 @@ test("routing lost response conservatively retains canonicalized alias draft", a
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: [],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3545,6 +3587,7 @@ test("routing textarea is disabled while settings save is awaiting response", as
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: [],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3570,6 +3613,7 @@ test("routing save patches only changed settings fields and preserves special ke
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: Object.fromEntries([["__proto__", "calendar.family"]]),
     conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3614,6 +3658,7 @@ test("routing lost response does not guess the server Unicode normalization", as
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3648,6 +3693,7 @@ test("routing field scoping treats FEFF and Python-casefold differences as real 
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {"a b": "calendar.family"},
     conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3685,6 +3731,7 @@ test("routing refresh clears a saved raw draft but retains unfinished text", asy
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3718,6 +3765,7 @@ test("routing no-op save clears stale definitive error", async () => {
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3744,6 +3792,7 @@ test("routing preserves FEFF-prefixed persisted alias when only conflicts change
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {"\uFEFFKids": "calendar.family"},
     conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3782,6 +3831,7 @@ test("routing refresh keeps an alias-only edit but adopts concurrent conflict ch
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3826,6 +3876,7 @@ test("routing refresh keeps conflict-only edits but adopts concurrent alias chan
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {Old: "calendar.family"}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3872,6 +3923,7 @@ test("routing reverted alias edit adopts newer remote aliases on refresh", async
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {Kids: "calendar.family"},
     conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3915,6 +3967,7 @@ test("routing reverted conflict selection adopts newer remote scope on refresh",
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3961,6 +4014,7 @@ test("invalid routing alias text stays dirty even after an edit is reverted", as
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -3993,6 +4047,7 @@ test("routing failed conflict-only save rebases untouched aliases from concurren
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {Old: "calendar.family"},
     conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -4049,6 +4104,7 @@ test("routing failed alias-only save rebases untouched conflict scope before ret
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {},
     conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -4103,6 +4159,7 @@ test("saving General rebases untouched routing aliases from the returned snapsho
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {Old: "calendar.family"},
     conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -4162,6 +4219,7 @@ test("ambiguous General save rebases untouched routing conflict selection", asyn
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -4221,6 +4279,7 @@ test("successful Email save also rebases an unfinished routing draft", async () 
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -4268,6 +4327,7 @@ test("Email save-error recovery also rebases untouched routing selections", asyn
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -4347,6 +4407,7 @@ test("routing settings reject an oversized conflict scope before saving", async 
     entry_id: "entry-1", ai_task_entity: "ai_task.test",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
     calendar_aliases: {}, conflict_calendar_entities: [],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: false, host: "", port: 993, username: "",
       password_configured: false, mailbox: "INBOX", verify_ssl: true},
   };
@@ -4846,6 +4907,7 @@ test("Email allowlist keeps quoted commas within one RFC-valid address", async (
   panel._settings = {
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: true, host: "imap.example.test", port: 993,
       username: "mail@example.test", password_configured: true,
       mailbox: "INBOX", verify_ssl: true, sender_allowlist: []},
@@ -4869,6 +4931,7 @@ test("ambiguous IMAP allowlist save reconciles casefolded and deduplicated addre
   let saved = {
     entry_id: "entry-1", ai_task_entity: "ai_task.openai",
     calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
     email: {enabled: true, host: "imap.example.test", port: 993,
       username: "user@example.test", password_configured: false,
       mailbox: "INBOX", verify_ssl: true, sender_allowlist: []},
