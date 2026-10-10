@@ -179,10 +179,11 @@ calendar write:` to distinguish definite non-writes from ambiguous failures
 after a durable write checkpoint. The bulk review panel preserves that
 distinction; failures without this explicit marker remain potentially uncertain.
 An exact match blocks that event's write; possible duplicates and scheduling
-overlaps remain advisory. For long events, the mandatory exact-duplicate
-preflight queries a bounded window covering the draft's start (at most 89
-days), then compares any candidates against the **original full event
-interval**. This does not claim to detect all scheduling overlaps during a
+overlaps remain advisory. For **all** events, the mandatory exact-duplicate preflight queries only
+the draft's start: at most **one calendar day** for all-day events or **one
+minute** for timed events. It then compares returned candidates against
+the **original full event interval**. This avoids collecting unrelated events
+over multi-day schedules, even for relatively short drafts. This does not claim to detect all scheduling overlaps during a
 long event and does not relax the 90-day limit for the optional
 `check_pending_event` review action. An unavailable or malformed destination calendar
 also blocks writing, leaving the event pending rather than write-uncertain.
