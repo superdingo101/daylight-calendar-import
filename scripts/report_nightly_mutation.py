@@ -22,7 +22,8 @@ def main() -> None:
     url = f"https://github.com/{repo}/actions/runs/{run_id}"
     success = all(
         os.environ.get(name) == "success"
-        for name in ("MUTATION_OUTCOME", "ENFORCE_OUTCOME", "EXPORT_OUTCOME")
+        for name in ("MUTATION_OUTCOME", "ENFORCE_OUTCOME", "EXPORT_OUTCOME",
+                     "DIAGNOSTICS_OUTCOME", "NIGHTLY_CACHE_OUTCOME")
     )
     stats = json.loads(STATS.read_text()) if STATS.is_file() else {}
     total = stats.get("total", 0) - stats.get("skipped", 0)
