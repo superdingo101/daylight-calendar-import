@@ -140,7 +140,9 @@ def test_identity_encoding_separates_null_text_and_embedded_delimiters():
         ).idempotency_key
 
     assert key("a", "x", None) != key("a", "x", "None")
-    assert key("a\\x00review_ready\\x00x", "y", "event") != key(
-        "a", "x\\x00review_ready\\x00y", "event"
+    assert "\\x00" not in "a\\x00review_ready\\x00x"
+    assert len("a\\x00review_ready\\x00x") == len("areview_readyx") + 2
+    assert key("a\x00review_ready\x00x", "y", "event") != key(
+        "a", "x\x00review_ready\x00y", "event"
     )
-    assert key("a", "x", "event") != key("a", "x", "event\\x00")
+    assert key("a", "x", "event") != key("a", "x", "event\x00")
