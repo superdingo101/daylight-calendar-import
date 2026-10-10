@@ -18,6 +18,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Required to reconstruct the trusted source tree referenced by the
+          # previously saved mutation baseline (and fail closed if unavailable).
+          fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:
@@ -30,16 +34,36 @@ jobs:
 
       # PR caches are isolated by GitHub; a PR can also restore a cache from
       # main. Each save has a unique key because cache entries are immutable.
-      - name: Restore mutation cache
+      - name: Restore PR mutation cache
         uses: actions/cache/restore@v4
         with:
           path: mutants
           key: mutmut-v2-linux-py314-v380-pr-${{ github.event.pull_request.number }}-${{ github.sha }}-${{ github.run_id }}
           restore-keys: |
             mutmut-v2-linux-py314-v380-pr-${{ github.event.pull_request.number }}-
+
+      - name: Validate PR mutation cache
+        id: pr-cache
+        run: |
+          python scripts/mutation_cache.py validate
+          if [ -f mutants/mutation-cache-provenance.json ]; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A stale PR-specific cache must not prevent GitHub from attempting the
+      # independent main-branch baseline. Cache keys are immutable and the
+      # restore action otherwise stops at the first matching prefix.
+      - name: Restore main mutation baseline
+        if: ${{ steps.pr-cache.outputs.valid != 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: mutants
+          key: mutmut-v2-linux-py314-v380-main-${{ github.run_id }}
+          restore-keys: |
             mutmut-v2-linux-py314-v380-main-
 
-      - name: Validate mutation cache provenance
+      - name: Validate main mutation baseline
+        if: ${{ steps.pr-cache.outputs.valid != 'true' }}
         run: python scripts/mutation_cache.py validate
 
       - name: Run incremental mutations
