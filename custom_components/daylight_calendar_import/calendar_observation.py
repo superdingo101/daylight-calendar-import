@@ -219,6 +219,27 @@ async def async_observe_candidates(
     return tuple(candidates)
 
 
+def _approval_all_day_bound(day: date, zone: tzinfo) -> datetime:
+    """Convert a local civil midnight, clamping only ISO-year UTC overflows.
+
+    Calendar providers accept aware UTC query bounds. A year-one local day
+    in a positive-offset zone starts before datetime.min UTC, although the
+    all-day event is valid as a civil date. Query the representable overlap
+    instead of rejecting the entire approval. The same applies at year 9999
+    for a negative-offset zone. Never mask unrelated zone errors.
+    """
+    local = datetime.combine(day, time.min, zone)
+    try:
+        return local.astimezone(timezone.utc)
+    except (OverflowError, ValueError) as exc:
+        offset = local.utcoffset()
+        if day == date.min and offset is not None and offset > timedelta(0):
+            return datetime.min.replace(tzinfo=timezone.utc)
+        if day == date.max and offset is not None and offset < timedelta(0):
+            return datetime.max.replace(tzinfo=timezone.utc)
+        raise CalendarObservationError("Invalid all-day observation interval") from exc
+
+
 def _approval_start_window(
     draft: EventDraft, *, local_zone: tzinfo,
 ) -> tuple[datetime, datetime]:
@@ -239,14 +260,8 @@ def _approval_start_window(
                 raise CalendarObservationError("Invalid event interval")
             # A calendar day may span 23 or 25 elapsed hours around DST.
             probe_end = min(end_date, start_date + timedelta(days=1))
-            start = _as_utc(
-                datetime.combine(start_date, time.min, local_zone),
-                message="Invalid all-day observation interval",
-            )
-            end = _as_utc(
-                datetime.combine(probe_end, time.min, local_zone),
-                message="Invalid all-day observation interval",
-            )
+            start = _approval_all_day_bound(start_date, local_zone)
+            end = _approval_all_day_bound(probe_end, local_zone)
         except (OverflowError, ValueError) as exc:
             raise CalendarObservationError("Invalid all-day observation interval") from exc
     else:
@@ -297,14 +312,28 @@ async def async_classify_conflicts(
             )
         ):
             continue
+        # Approval blocks exact duplicates only. A mixed all-day/timed
+        # candidate cannot be an exact match, and unrelated conflicts must
+        # not make an otherwise valid boundary-date import unapprovable.
+        if approval_start_only and draft.all_day != existing.all_day:
+            continue
+        # All-day exact equality compares civil dates. A fixed UTC zone is
+        # sufficient for that comparison and avoids converting date.min in
+        # a positive-offset zone through a nonexistent year-zero instant.
+        match_zone = (
+            timezone.utc if approval_start_only and draft.all_day
+            else local_zone
+        )
         try:
-            match = classify_calendar_event(draft, existing, local_zone=local_zone)
+            match = classify_calendar_event(draft, existing, local_zone=match_zone)
         except (OverflowError, ValueError) as exc:
             # The pure matcher operates on UTC intervals. For extreme valid
             # local dates, conversion to UTC may overflow datetime's range.
             raise CalendarObservationError(
                 "Invalid calendar interval for classification"
             ) from exc
-        if match is not None:
+        if match is not None and (
+            not approval_start_only or match.kind == "exact_duplicate"
+        ):
             matches.append(match)
     return tuple(matches)
