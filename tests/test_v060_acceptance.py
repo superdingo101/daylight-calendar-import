@@ -36,7 +36,10 @@ def _entry():
             CONF_CALENDAR_ENTITY: "calendar.family",
             CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.kids"],
         },
-        options={CONF_CALENDAR_ALIASES: {"kids": "calendar.kids"}},
+        options={
+            CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.kids"],
+            CONF_CALENDAR_ALIASES: {"kids": "calendar.kids"},
+        },
     )
 
 
