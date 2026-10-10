@@ -229,12 +229,23 @@ def _approval_start_window(draft: EventDraft) -> EventDraft:
         end = date.fromisoformat(draft.end)
         window = timedelta(days=1)
     else:
-        start = datetime.fromisoformat(draft.start)
-        end = datetime.fromisoformat(draft.end)
+        # Different UTC offsets can make a valid instant later than the
+        # start even when its wall clock is earlier. Build the short probe
+        # in UTC: adding one minute to a year-9999 wall time may overflow,
+        # although both event instants and their UTC probe are representable.
+        start = _as_utc(
+            datetime.fromisoformat(draft.start),
+            message="Invalid timed observation interval",
+        )
+        end = _as_utc(
+            datetime.fromisoformat(draft.end),
+            message="Invalid timed observation interval",
+        )
         window = timedelta(minutes=1)
-    # Do not add time to a timestamp near datetime.max unless necessary.
     if end - start <= window:
         return draft
+    # end is a representable instant at least one window after start, so
+    # start + window cannot overflow the ISO year bounds.
     return replace(draft, end=(start + window).isoformat())
 
 
