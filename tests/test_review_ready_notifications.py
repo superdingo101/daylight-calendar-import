@@ -180,3 +180,39 @@ async def test_unload_deadline_does_not_wait_for_stubborn_notification_task(
     assert "did not stop before unload deadline" in caplog.text
     release.set()
     await asyncio.wait_for(task, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_resistant_provider_stays_tracked_until_it_finishes(
+    monkeypatch,
+):
+    import asyncio
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.review_ready_notifications._DELIVERY_TIMEOUT_SECONDS",
+        0.002,
+    )
+    registry = set()
+    child_ready = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stubborn_provider(*args):
+        child_ready.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    with patch(
+        "custom_components.daylight_calendar_import.review_ready_notifications.async_send_ha_notification",
+        stubborn_provider,
+    ):
+        await async_notify_review_ready(Mock(), activity(), preferences(), registry)
+        assert child_ready.is_set()
+        assert len(registry) == 1
+        task = next(iter(registry))
+        assert not task.done()
+        release.set()
+        await asyncio.wait_for(task, timeout=1)
+        await asyncio.sleep(0)
+    assert registry == set()
