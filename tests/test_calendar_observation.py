@@ -1253,3 +1253,25 @@ def test_all_day_approval_probe_spans_fall_dst_day_in_utc():
     assert end - start == timedelta(hours=25)
     assert start.tzinfo is timezone.utc
     assert end.tzinfo is timezone.utc
+
+
+def test_approval_probe_handles_unparseable_timed_input():
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    bad = EventDraft(
+        "Malformed", "not-a-timestamp", "2026-10-08T18:30:00-07:00", False,
+    )
+    with pytest.raises(CalendarObservationError, match="Invalid timed observation interval"):
+        _approval_start_window(bad, local_zone=ZONE)
+
+
+def test_approval_probe_skipped_local_calendar_day_is_not_an_empty_query():
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+    # Pacific/Apia skipped December 30, 2011 entirely when crossing the
+    # international date line. Adjacent date midnights can map to one instant.
+    skipped = EventDraft("Holiday", "2011-12-30", "2011-12-31", True)
+    with pytest.raises(CalendarObservationError, match="Invalid event interval"):
+        _approval_start_window(skipped, local_zone=ZoneInfo("Pacific/Apia"))
