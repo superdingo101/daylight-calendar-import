@@ -37,6 +37,15 @@ def _baseline(monkeypatch, tmp_path):
         "tests/test_mutation_ci_strategy.py": "# CI-only test helper\n",
         "scripts/mutation_cache.py": "# original cache helper\n",
         "requirements_test.txt": "pytest\n",
+        ".github/workflows/mutation.yml": (
+            "name: Incremental mutation testing\n"
+            "jobs:\n  mutation:\n    steps:\n"
+            "      - uses: actions/checkout@v5\n"
+            "      - name: Restore mutation cache\n"
+            "        uses: actions/cache/restore@v4\n"
+            "      - name: Run incremental mutations\n"
+            "        run: mutmut run\n"
+        ),
     }
     for path, text in initial.items():
         _write(path, text)
@@ -77,7 +86,6 @@ def test_reuses_legacy_main_baseline_for_new_feature_modules_and_tests(monkeypat
     assert mutation_cache.fingerprint() != mutation_cache.fingerprint(baseline)
 
     # Cached results remain reusable after stamping a successfully tested PR.
-    assert mutation_cache.main.__name__ == "main"
     source_commit = _git("rev-parse", "HEAD")
     mutation_cache.CACHE_META.write_text(json.dumps({
         "schema": mutation_cache.CACHE_SCHEMA,
@@ -140,3 +148,32 @@ def test_missing_or_unknown_baseline_commit_fails_closed(monkeypatch, tmp_path):
     assert not mutation_cache.validate()
     mutation_cache.STATS.write_text(json.dumps({"git_commit": "a" * 40}))
     assert not mutation_cache.validate()
+
+
+def test_allows_cache_workflow_plumbing_changes_but_not_mutation_command(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    before = Path(".github/workflows/mutation.yml").read_text(encoding="utf-8")
+    after = before.replace(
+        "      - uses: actions/checkout@v5\n",
+        "      - uses: actions/checkout@v5\n"
+        "        with:\n          fetch-depth: 0\n",
+    ).replace(
+        "      - name: Restore mutation cache\n",
+        "      - name: Restore PR mutation cache\n",
+    )
+    _write(".github/workflows/mutation.yml", after)
+    assert mutation_cache.validate()
+
+    # Adjusting the mutmut invocation itself is *not* cache plumbing.
+    _write(".github/workflows/mutation.yml", after.replace("mutmut run", "mutmut run --max-children=1"))
+    assert not mutation_cache.validate()
+
+
+def test_rejects_mismatched_resolved_dependency_versions(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    _write("tests/test_new.py", "def test_new(): pass\n")
+    _git("add", ".")
+    original_distributions = mutation_cache.metadata.distributions
+    monkeypatch.setattr(mutation_cache.metadata, "distributions", lambda: ())
+    assert not mutation_cache.validate()
+    monkeypatch.setattr(mutation_cache.metadata, "distributions", original_distributions)
