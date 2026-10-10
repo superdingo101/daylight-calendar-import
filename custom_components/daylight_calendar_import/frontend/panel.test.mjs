@@ -1117,7 +1117,7 @@ test("primary navigation stays above status and content in every view", async ()
   const hass = {
     user: {is_admin: true},
     callWS: async request => {
-      if (request.service === "list_pending") return {response: {imports: [
+      if (request.type === "call_service" && request.service === "list_pending") return {response: {imports: [
         {id: "one", title: "Birthday", created_at: "2026-10-05T21:51:00Z",
           source_kind: "email", event_count: 1},
       ]}};
@@ -1132,7 +1132,7 @@ test("primary navigation stays above status and content in every view", async ()
     },
   };
   const checkTop = expected => {
-    const [navigation, announcement, ...body] = panel._content.children;
+    const [navigation, announcement, ...body] = panel._content.children[0].children;
     assert.equal(navigation.tag, "nav");
     assert.equal(navigation.attributes["aria-label"], "Daylight views");
     assert.equal(announcement, panel._announcement);
