@@ -54,17 +54,7 @@ jobs:
 
       - name: Export surviving mutants
         if: always()
-        run: |
-          mutmut results > mutation-survivors.txt || true
-          sed -n 's/^    \(.*\): survived$/\1/p' mutation-survivors.txt > mutation-survivor-names.txt
-          : > mutation-survivor-report.txt
-          while IFS= read -r mutant; do
-            {
-              echo "===== $mutant ====="
-              mutmut show "$mutant"
-              echo
-            } >> mutation-survivor-report.txt
-          done < mutation-survivor-names.txt
+        run: python scripts/export_mutation_survivors.py
 
       - uses: actions/upload-artifact@v4
         if: always()
