@@ -1112,6 +1112,48 @@ test("view navigation exposes the current page and remains keyboard reachable", 
   assert.equal(globalThis.focusedNode.textContent, "Refresh");
 });
 
+test("primary navigation stays above status and content in every view", async () => {
+  const panel = new DaylightImportPanel();
+  const hass = {
+    user: {is_admin: true},
+    callWS: async request => {
+      if (request.service === "list_pending") return {response: {imports: [
+        {id: "one", title: "Birthday", created_at: "2026-10-05T21:51:00Z",
+          source_kind: "email", event_count: 1},
+      ]}};
+      if (request.service === "list_activity") return {response: {activity: [
+        {id: "two", title: "Soccer", status: "created", created_at: "2026-10-04T20:00:00Z"},
+      ]}};
+      if (request.service === "get_settings") return {response: {settings: {
+        entry_id: "abc", ai_task_entity: "ai_task.google", calendar_entity: "calendar.family",
+        calendar_entities: ["calendar.family"], conflict_calendar_entities: ["calendar.family"],
+      }}};
+      throw new Error("Unexpected request: " + request.service);
+    },
+  };
+  const checkTop = expected => {
+    const [navigation, announcement, ...body] = panel._content.children;
+    assert.equal(navigation.tag, "nav");
+    assert.equal(navigation.attributes["aria-label"], "Daylight views");
+    assert.equal(announcement, panel._announcement);
+    assert.ok(body.length > 0);
+    assert.equal(navigation.querySelectorAll("button")
+      .find(button => button.attributes["aria-current"] === "page").textContent, expected);
+  };
+  panel.hass = hass;
+  await flush();
+  checkTop("Review inbox");
+  assert.equal(find(panel._announcement, "span").textContent, "Inbox loaded");
+  await panel.showActivity();
+  checkTop("Recent activity");
+  assert.equal(find(panel._announcement, "span").textContent, "Activity loaded");
+  await panel.showSettings();
+  checkTop("Settings");
+  assert.equal(find(panel._content, "nav").querySelectorAll("button")[2].disabled, true);
+  await panel.showReview();
+  checkTop("Review inbox");
+});
+
 test("mobile buttons include padding in their full width and return focus stays put", async () => {
   const panel = new DaylightImportPanel();
   assert.match(find(panel.shadowRoot, "style").textContent, /button \{ box-sizing: border-box;/);
