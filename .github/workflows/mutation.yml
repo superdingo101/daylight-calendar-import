@@ -15,7 +15,8 @@ jobs:
   mutation:
     name: Mutation score
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Never let an ordinary PR consume a clean-run-sized mutation job.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
         with:
@@ -65,6 +66,16 @@ jobs:
       - name: Validate main mutation baseline
         if: ${{ steps.pr-cache.outputs.valid != 'true' }}
         run: python scripts/mutation_cache.py validate
+
+      # Ordinary PRs must not silently turn a cache miss into a 45–60-minute
+      # clean run. Scheduled and release workflows own clean baseline creation.
+      - name: Require reusable mutation baseline
+        run: |
+          if [ ! -f mutants/mutation-cache-provenance.json ]; then
+            echo "::error title=Mutation baseline unavailable::Both PR and main caches were missing or incompatible. Run the Clean mutation validation workflow on main (leave inputs blank), then rerun this PR check. Ordinary PRs never run the full suite."
+            exit 1
+          fi
+          echo "Verified compatible PR or main mutation cache: incremental test permitted."
 
       - name: Run incremental mutations
         run: mutmut run
