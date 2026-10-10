@@ -1,0 +1,87 @@
+# Mutation testing in CI
+
+## Policy
+
+- Every PR gets an incremental mutmut 3.8.0 run and a required `Mutation score`
+  check. The minimum score is defined by `mutation-baseline.json` (95.22%).
+- Every night at 09:00 UTC, a clean run of `main` starts with no `mutants/`
+  directory. It publishes detailed survivor reports, a GitHub Actions summary,
+  a scheduled workflow badge, and a persistent **Mutation Health — Nightly Clean
+  Validation** issue with daily result comments.
+- **Update Integration Version** creates a release-preparation PR, dispatches
+  ordinary Tests and HACS workflows (needed because `GITHUB_TOKEN`-created
+  PR events do not launch Actions), and invokes the clean reusable workflow
+  on the exact release candidate commit. The clean job adds a
+  `Release Mutation Validation` status to that commit.
+- **Publish HACS Release** rejects any release for which it cannot find an
+  unexpired, clean proof artifact from a successful Update Integration
+  Version workflow run on `main`, for the same release tag and Git source
+  tree. It pins the release target to the verified checked-out commit.
+  No incremental result or nightly result can satisfy release validation.
+
+## Incremental cache behavior
+
+Ordinary PRs first try caches scoped to that PR, then compatible nightly
+baselines from `main`. GitHub Actions caches are immutable and PR caches
+cannot generally be shared with another PR. Every successful PR run saves
+a uniquely keyed state for its next update. The nightly clean job publishes
+the default-branch baseline.
+
+`scripts/mutation_cache.py` tracks the exact contents of the tracked inputs
+outside mutmut's production-Python source path. It intentionally ignores
+documentation-only changes and production Python, which mutmut already
+invalidates by function hash. Existing tests, `conftest.py`, dependencies,
+fixtures, configuration, and non-Python integration files all invalidate
+previous verdicts. Missing or inconsistent provenance discards the entire
+cache and starts clean.
+
+A cache miss is **not** a bypass: mutmut runs the full set, which can take
+approximately 40–60 minutes. Restored state is never allowed to come from
+privileged release validation, and PR workflows have a read-only token.
+No cache is saved when the mutation gate fails.
+
+The normal `python scripts/check_mutation_score.py` score enforcement
+and complete survivor artifacts are retained. If GitHub cache storage or
+restoration fails, discard state and run uncached rather than passing based
+on stale metadata.
+
+## Nightly results
+
+Visit [Clean mutation validation](../.github/workflows/mutation-clean.yml)
+or the repository Actions page (filter on scheduled runs). The README
+displays the scheduled-job status badge. The open GitHub issue titled
+`Mutation Health — Nightly Clean Validation` contains the latest result
+and a comment per night; the workflow artifacts contain full survivor diffs.
+A failed or absent nightly does not automatically block unrelated PR merges,
+but publication always requires its own clean release validation.
+
+## Release proof and exact source trees
+
+The release-preparation action calls the clean workflow after creating the
+release PR. On success, it uploads an attestation with the release tag,
+tested candidate commit, full Git tree hash, mutmut statistics, and caller
+run ID. A commit status is recorded on the release candidate.
+
+The publisher checks the **conclusion** and provenance of the
+`Update Integration Version` workflow run, downloads the successful
+`release-clean-vX.Y.Z` artifact, checks its tag/run ID/schema/clean mode,
+and compares its tested Git tree to `main` being published. A squash merge
+can change the commit SHA but leave the Git tree identical; that is allowed.
+Any source-tree difference, missing or expired artifact, failed workflow, or
+invalid proof blocks publication. The publication target is pinned to the
+verified checked-out SHA to avoid a moving-`main` race.
+
+A version update run with no new release-preparation commit cannot create
+new evidence. Make a new release-preparation candidate and validate it if
+proof is missing or stale. New changes pushed to the release-preparation PR
+invalidate its status and usually its source-tree proof.
+
+## Repository settings
+
+Require the stable **Mutation score** check, alongside normal test, HACS,
+and Hassfest checks, under branch protection on `main`.
+`Release Mutation Validation` is *release-specific* and should not be
+required for every ordinary PR. Instead, the publisher enforces it from
+first-party clean-run evidence. Review release-preparation PR statuses
+before merging; the publisher still fails closed if the proof is stale.
+Ensure GitHub Issues and Actions are enabled for nightly reporting.
