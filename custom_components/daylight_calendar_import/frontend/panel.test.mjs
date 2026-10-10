@@ -150,6 +150,7 @@ test("uncertain recovery requires confirmation, retains errors, and restores rev
   const choice = panel._content.querySelectorAll("button")
     .find(button => button.dataset.resolution === "not_created");
   choice.click();
+  assert.equal(globalThis.focusedNode.textContent, "Confirm recovery choice");
   assert.equal(calls.filter(call => call.service === "resolve_pending_event").length, 0);
   panel._content.querySelectorAll("button")
     .find(button => button.textContent === "Cancel recovery").click();
@@ -369,7 +370,7 @@ test("opens detail, renders source and events as text, and returns to inbox", as
     "Calendar: calendar.family · Status: pending");
   assert.equal(find(panel._content, "section").children[3].textContent,
     "AI extraction confidence: 0% (estimate)");
-  find(panel._content, "button").click();
+  panel._content.querySelector("[data-import-back]").click();
   await flush();
   assert.equal(find(panel._content, "h2").children[0].textContent, "Picnic");
   assert.equal(globalThis.focusedNode.textContent, "Picnic");
@@ -985,6 +986,7 @@ test("approval requires explicit confirmation and returns to the inbox", async (
   const approve = find(panel._content, "section").querySelectorAll("button")
     .find(button => button.textContent === "Approve Picnic");
   approve.click();
+  assert.equal(globalThis.focusedNode.textContent, "Confirm approve: Picnic");
   assert.equal(calls.filter(call => call.service === "approve_pending_event").length, 0);
   find(panel._content, "section").querySelectorAll("button")[1].click();
   assert.equal(globalThis.focusedNode.dataset.action, "approve");
@@ -1047,6 +1049,7 @@ test("bulk approval reports each result and leaves failed events in review", asy
   const bulk = panel._content.querySelectorAll("button")
     .find(button => button.dataset.batchAction === "approve");
   bulk.click();
+  assert.equal(globalThis.focusedNode.textContent, "Confirm approve all");
   assert.equal(calls.filter(call => call.service === "approve_pending_event").length, 0);
   assert.equal(panel._content.querySelectorAll("button")
     .some(button => button.textContent === "Edit Practice"), false);
@@ -1110,6 +1113,58 @@ test("view navigation exposes the current page and remains keyboard reachable", 
   await flush();
   assert.equal(find(panel._content, "nav").querySelectorAll("button")[0].attributes["aria-current"], "page");
   assert.equal(globalThis.focusedNode.textContent, "Refresh");
+});
+
+test("primary navigation stays above status and content in every view", async () => {
+  const panel = new DaylightImportPanel();
+  const hass = {
+    user: {is_admin: true},
+    callWS: async request => {
+      if (request.type === "call_service" && request.service === "list_pending") return {response: {imports: [
+        {id: "one", title: "Birthday", created_at: "2026-10-05T21:51:00Z",
+          source_kind: "email", event_count: 1},
+      ]}};
+      if (request.type === "call_service" && request.service === "list_activity") return {response: {activity: [
+        {id: "two", title: "Soccer", status: "created", created_at: "2026-10-04T20:00:00Z"},
+      ]}};
+      if (request.type === "daylight_calendar_import/settings/get") return {
+        entry_id: "abc", ai_task_entity: "ai_task.google", calendar_entity: "calendar.family",
+        calendar_entities: ["calendar.family"], conflict_calendar_entities: ["calendar.family"],
+      };
+      throw new Error("Unexpected request: " + request.service);
+    },
+  };
+  const navigation = panel._navigation;
+  const announcement = panel._announcement;
+  const viewBody = panel._viewContent;
+  const checkTop = expected => {
+    // All three elements stay mounted in this order; only viewBody changes.
+    assert.deepEqual(panel._content.children, [navigation, announcement, viewBody]);
+    assert.equal(navigation.tag, "nav");
+    assert.equal(navigation.attributes["aria-label"], "Daylight views");
+    assert.notEqual(navigation.className, "actions");
+    assert.ok(viewBody.children.length > 0);
+    assert.equal(navigation.querySelectorAll("button")
+      .find(button => button.attributes["aria-current"] === "page").textContent, expected);
+  };
+  panel.hass = hass;
+  await flush();
+  checkTop("Review inbox");
+  assert.equal(find(panel._announcement, "span").textContent, "Inbox loaded");
+  const loadingActivity = panel.showActivity();
+  checkTop("Recent activity");
+  assert.equal(find(panel._announcement, "span").textContent, "Loading activity…");
+  await loadingActivity;
+  checkTop("Recent activity");
+  assert.equal(find(panel._announcement, "span").textContent, "Activity loaded");
+  const loadingSettings = panel.showSettings();
+  checkTop("Settings");
+  assert.equal(find(panel._announcement, "span").textContent, "Loading settings…");
+  await loadingSettings;
+  checkTop("Settings");
+  assert.equal(find(panel._content, "nav").querySelectorAll("button")[2].disabled, true);
+  await panel.showReview();
+  checkTop("Review inbox");
 });
 
 test("mobile buttons include padding in their full width and return focus stays put", async () => {

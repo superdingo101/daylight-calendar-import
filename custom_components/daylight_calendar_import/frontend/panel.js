@@ -537,10 +537,16 @@ export class DaylightImportPanel extends HTMLElement {
     });
     header.append(refresh);
     this._content = document.createElement("div");
+    this._navigation = element("nav");
+    this._navigation.setAttribute("aria-label", "Daylight views");
     this._announcement = document.createElement("div");
     this._announcement.setAttribute("aria-live", "polite");
+    this._viewContent = document.createElement("div");
+    // Keep the live region connected so screen readers can observe changes.
+    // Renders replace only the view body, never the navigation or announcement.
+    this._content.append(this._navigation, this._announcement, this._viewContent);
     const main = document.createElement("main");
-    main.append(this._announcement, this._content);
+    main.append(this._content);
     this.shadowRoot.append(style, header, main);
   }
 
@@ -1458,7 +1464,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._batchContext = null;
     this._status = "loading";
     this.render();
-    this._content.querySelector("button")?.focus();
+    this._content.querySelector("[data-import-back]")?.focus();
     try {
       const detail = await loadImport(this._hass, id);
       if (generation !== this._generation) return;
@@ -1469,7 +1475,8 @@ export class DaylightImportPanel extends HTMLElement {
       this._status = error instanceof Error ? error.message : "Could not load import. Try again.";
     }
     this.render();
-    (this._content.querySelector("h2") || this._content.querySelector("button"))?.focus();
+    (this._content.querySelector("h2") ||
+      this._content.querySelector("[data-import-back]") || this._refreshButton).focus();
   }
 
   showInbox() {
@@ -1563,7 +1570,7 @@ export class DaylightImportPanel extends HTMLElement {
       this.render();
       const alert = this._content.querySelector(".error");
       if (alert) { alert.tabIndex = -1; alert.focus(); }
-      else this._content.querySelector("button")?.focus();
+      else (this._content.querySelector("[data-import-back]") || this._refreshButton).focus();
     } finally {
       this._saving = false;
       this._refreshButton.disabled = Boolean(this._editingId || this._decision);
@@ -1711,7 +1718,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._status = `Event saved, but the detail could not be reloaded: ${this._editError}`;
         this._detail = null;
         this.render();
-        this._content.querySelector("button")?.focus();
+        (this._content.querySelector("[data-import-back]") || this._refreshButton).focus();
         return;
       }
       this._announcement.replaceChildren(element("span", this._editError));
@@ -1729,7 +1736,8 @@ export class DaylightImportPanel extends HTMLElement {
   focusEvent(id) {
     (Array.from(this._content.querySelectorAll("button"))
       .find(button => button.dataset.eventId === id) ||
-      this._content.querySelector("h2") || this._content.querySelector("button"))?.focus();
+      this._content.querySelector("h2") ||
+      this._content.querySelector("[data-import-back]") || this._refreshButton).focus();
   }
 
   editForm(event) {
@@ -1921,8 +1929,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton.disabled = this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     const content = document.createDocumentFragment();
-    const navigation = element("nav", "", "actions");
-    navigation.setAttribute("aria-label", "Daylight views");
+    const navigation = this._navigation;
+    navigation.replaceChildren();
     const review = element("button", "Review inbox");
     review.type = "button";
     review.disabled = this._view === "inbox" || this._saving || this._settingsSaving;
@@ -1945,7 +1953,6 @@ export class DaylightImportPanel extends HTMLElement {
       navigation.append(settings);
     }
     if (this._view === "settings") {
-      content.append(navigation);
       if (this._status === "loading") {
         const loading = element("p", "Loading settings…", "status");
         loading.setAttribute("role", "status");
@@ -1990,11 +1997,10 @@ export class DaylightImportPanel extends HTMLElement {
               this.emailSettingsView() : this.generalSettingsView(),
         );
       }
-      this._content.replaceChildren(content);
+      this._viewContent.replaceChildren(content);
       return;
     }
     if (this._view === "activity") {
-      content.append(navigation);
       if (this._activityId) {
         const back = element("button", "Back to recent activity");
         back.type = "button";
@@ -2033,7 +2039,7 @@ export class DaylightImportPanel extends HTMLElement {
         }
         content.append(list);
       }
-      this._content.replaceChildren(content);
+      this._viewContent.replaceChildren(content);
       this._announcement.replaceChildren(element("span", this._status === "loading" ? "Loading activity…" :
         this._status === "ready" ? "Activity loaded" : this._status));
       return;
@@ -2059,6 +2065,7 @@ export class DaylightImportPanel extends HTMLElement {
     }
     if (this._selectedId && !this._detail) {
       const back = element("button", "Back to inbox");
+      back.setAttribute("data-import-back", "");
       back.type = "button";
       back.disabled = Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
       back.addEventListener("click", () => this.showInbox());
@@ -2073,6 +2080,7 @@ export class DaylightImportPanel extends HTMLElement {
     } else if (this._selectedId && this._detail) {
       const detail = this._detail;
       const back = element("button", "Back to inbox");
+      back.setAttribute("data-import-back", "");
       back.type = "button";
       back.disabled = Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
       back.addEventListener("click", () => this.showInbox());
@@ -2308,8 +2316,7 @@ export class DaylightImportPanel extends HTMLElement {
       }
       content.append(list);
     }
-    content.append(navigation);
-    this._content.replaceChildren(content);
+    this._viewContent.replaceChildren(content);
     this._announcement.replaceChildren();
     if (this._status === "loading") this._announcement.append(element("span", "Loading imports…"));
     else if (this._status !== "ready") this._announcement.append(element("span", this._status));
