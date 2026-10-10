@@ -135,13 +135,13 @@ def test_successful_recovery_uses_normal_required_check_not_an_imitation() -> No
 
 
 def test_missing_workflow_fails_in_a_normal_checkout(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(__import__(__name__), "WORKFLOWS", tmp_path / ".github" / "workflows")
+    monkeypatch.setitem(globals(), "WORKFLOWS", tmp_path / ".github" / "workflows")
     with pytest.raises(FileNotFoundError):
         _load("rebuild-pr-mutation-cache.yml")
 
 
 def test_missing_workflow_skips_only_inside_mutmut_sandbox(monkeypatch, tmp_path) -> None:
     sandbox = tmp_path / "mutants" / ".github" / "workflows"
-    monkeypatch.setattr(__import__(__name__), "WORKFLOWS", sandbox)
+    monkeypatch.setitem(globals(), "WORKFLOWS", sandbox)
     with pytest.raises(pytest.skip.Exception):
         _load("rebuild-pr-mutation-cache.yml")
