@@ -31,6 +31,7 @@ FRONTEND = SOURCE + "frontend/"
 # of the production integration during the mutmut runner.
 CACHE_HELPERS = {
     "AGENTS.md",
+    ".github/workflows/rebuild-pr-mutation-cache.yml",
     "scripts/mutation_cache.py",
     "tests/test_mutation_ci_strategy.py",
     "tests/test_mutation_cache_reuse.py",
