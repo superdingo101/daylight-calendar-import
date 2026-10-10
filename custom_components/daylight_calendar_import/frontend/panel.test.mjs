@@ -703,7 +703,7 @@ test("invalid active ranges block mode switches instead of exposing stale values
   panel.hass = {
     config: {time_zone: "America/Los_Angeles"},
     callWS: async request => {
-      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.type === "call_service" && request.service === "list_pending") return {response: {imports: []}};
       return {response: {pending: {id: "one", events: [timed, allDayEvent]}}};
     },
   };
@@ -1121,13 +1121,13 @@ test("primary navigation stays above status and content in every view", async ()
         {id: "one", title: "Birthday", created_at: "2026-10-05T21:51:00Z",
           source_kind: "email", event_count: 1},
       ]}};
-      if (request.service === "list_activity") return {response: {activity: [
+      if (request.type === "call_service" && request.service === "list_activity") return {response: {activity: [
         {id: "two", title: "Soccer", status: "created", created_at: "2026-10-04T20:00:00Z"},
       ]}};
-      if (request.service === "get_settings") return {response: {settings: {
+      if (request.type === "daylight_calendar_import/settings/get") return {
         entry_id: "abc", ai_task_entity: "ai_task.google", calendar_entity: "calendar.family",
         calendar_entities: ["calendar.family"], conflict_calendar_entities: ["calendar.family"],
-      }}};
+      };
       throw new Error("Unexpected request: " + request.service);
     },
   };
