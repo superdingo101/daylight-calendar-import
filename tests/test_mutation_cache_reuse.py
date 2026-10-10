@@ -180,3 +180,88 @@ def test_rejects_mismatched_resolved_dependency_versions(monkeypatch, tmp_path):
     monkeypatch.setattr(mutation_cache.metadata, "distributions", lambda: ())
     assert not mutation_cache.validate()
     monkeypatch.setattr(mutation_cache.metadata, "distributions", original_distributions)
+
+def test_new_tests_invalidate_only_stale_non_killed_verdicts(monkeypatch, tmp_path):
+    _, _ = _baseline(monkeypatch, tmp_path)
+    meta_path = Path("mutants/custom_components/daylight_calendar_import/old.py.meta")
+    meta_path.write_text(json.dumps({
+        "exit_code_by_key": {
+            "was_surviving": 0, "already_killed": 1, "internal_kill": 3,
+            "had_no_tests": 33, "was_timeout": 36,
+            "type_checked": 37, "skipped": 34,
+        },
+        "hash_by_function_name": {},
+        "durations_by_key": {},
+        "estimated_durations_by_key": {},
+        "type_check_error_by_key": {},
+    }))
+    _write("tests/test_new.py", "def test_new(): assert True\n")
+    _git("add", "tests/test_new.py")
+    assert mutation_cache.cache_validation() == (True, ["tests/test_new.py"])
+    monkeypatch.setattr("sys.argv", ["mutation_cache.py", "validate"])
+    assert mutation_cache.main() == 0
+    verdicts = json.loads(meta_path.read_text())["exit_code_by_key"]
+    assert verdicts["was_surviving"] is None
+    assert verdicts["had_no_tests"] is None
+    assert verdicts["was_timeout"] is None
+    assert verdicts["already_killed"] == 1
+    assert verdicts["internal_kill"] == 3
+    assert verdicts["type_checked"] == 37
+    assert verdicts["skipped"] == 34
+
+
+def test_pr_manifest_survives_unreachable_synthetic_merge_commit(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    files = mutation_cache._cache_files()
+    env = mutation_cache._environment_fingerprint()
+    mutation_cache.CACHE_META.write_text(json.dumps({
+        "schema": mutation_cache.CACHE_SCHEMA,
+        "fingerprint": mutation_cache.fingerprint(),
+        "source_commit": "a" * 40,  # Old PR merge ref is no longer reachable.
+        "files": files,
+        "environment": env,
+        "signature": mutation_cache._snapshot_signature(files, env),
+    }))
+    _write("custom_components/daylight_calendar_import/old.py",
+           "LIMIT = 3\ndef old():\n    return LIMIT + 1\n")
+    assert mutation_cache.cache_validation() == (True, [])
+    _write("tests/test_new.py", "def test_new(): assert True\n")
+    _git("add", "tests/test_new.py")
+    assert mutation_cache.cache_validation() == (True, ["tests/test_new.py"])
+    _write("tests/test_old.py", "def test_old(): assert False\n")
+    assert not mutation_cache.validate()
+
+
+def test_manifest_environment_and_signature_fail_closed(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    files = mutation_cache._cache_files()
+    env = mutation_cache._environment_fingerprint()
+    saved = {
+        "schema": mutation_cache.CACHE_SCHEMA,
+        "fingerprint": mutation_cache.fingerprint(),
+        "source_commit": "a" * 40,
+        "files": files,
+        "environment": env,
+        "signature": mutation_cache._snapshot_signature(files, env),
+    }
+    _write("tests/test_new.py", "def test_new(): assert True\n")
+    _git("add", "tests/test_new.py")
+    mutation_cache.CACHE_META.write_text(json.dumps(saved))
+    assert mutation_cache.validate()
+    for field, replacement in [
+        ("environment", "mismatched"), ("signature", "forged"),
+        ("files", {"tests/test_old.py": "not-a-sha"}),
+    ]:
+        changed = {**saved, field: replacement}
+        mutation_cache.CACHE_META.write_text(json.dumps(changed))
+        assert not mutation_cache.validate()
+
+
+def test_stamp_records_self_contained_manifest(monkeypatch, tmp_path):
+    _baseline(monkeypatch, tmp_path)
+    monkeypatch.setattr("sys.argv", ["mutation_cache.py", "stamp"])
+    assert mutation_cache.main() == 0
+    saved = json.loads(mutation_cache.CACHE_META.read_text())
+    assert saved["files"] == mutation_cache._cache_files()
+    assert saved["environment"] == mutation_cache._environment_fingerprint()
+    assert mutation_cache.validate()
