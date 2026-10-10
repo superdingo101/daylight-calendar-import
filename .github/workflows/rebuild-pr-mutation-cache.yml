@@ -200,6 +200,8 @@ jobs:
           # workflow_runs[].head_sha is the PR *head* SHA, not GITHUB_SHA
           # (which is the synthetic merge). Match the validated head exactly;
           # freshness of the synthetic merge was already checked above.
+          # Different PRs can share a branch/head SHA with different bases.
+          # Require an explicit PR-number association; otherwise provide manual retry.
           run_id="$(jq -r --argjson number "$NUMBER" --arg head "$EXPECTED" '
             [.workflow_runs[] |
               select(
@@ -207,8 +209,6 @@ jobs:
                 .conclusion == "failure" and
                 .head_sha == $head
               ) |
-              # Do not guess from branch names: several PRs can share one
-              # branch/head SHA while targeting different base branches.
               select(any(.pull_requests[]?; .number == $number))
             ] | first | .id // empty
           ' <<< "$runs")"
