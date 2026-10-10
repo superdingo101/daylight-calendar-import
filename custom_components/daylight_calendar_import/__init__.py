@@ -926,13 +926,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+_NOTIFICATION_CANCEL_GRACE_SECONDS = 1
+
+
 async def _async_cancel_notification_tasks(store: PendingImportStore) -> None:
-    """Cancel entry-owned best-effort sends without affecting durable state."""
+    """Request cancellation without allowing a broken provider to block unload."""
     tasks = tuple(getattr(store, "notification_tasks", ()))
     for task in tasks:
         task.cancel()
     if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+        _, pending = await asyncio.wait(tasks, timeout=_NOTIFICATION_CANCEL_GRACE_SECONDS)
+        if pending:
+            # Do not expose the entry identifier or notification target.
+            _LOGGER.warning("Daylight notification task did not stop before unload deadline")
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
