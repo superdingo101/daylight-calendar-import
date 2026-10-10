@@ -1275,3 +1275,76 @@ def test_approval_probe_skipped_local_calendar_day_is_not_an_empty_query():
     skipped = EventDraft("Holiday", "2011-12-30", "2011-12-31", True)
     with pytest.raises(CalendarObservationError, match="Invalid event interval"):
         _approval_start_window(skipped, local_zone=ZoneInfo("Pacific/Apia"))
+
+
+@pytest.mark.parametrize(("event", "message"), [
+    (
+        EventDraft("Practice", "2026-11-01", "2026-11-01", True),
+        "Invalid all-day observation interval",
+    ),
+    (
+        EventDraft("Practice", "2026-11-02", "2026-11-01", True),
+        "Invalid all-day observation interval",
+    ),
+    (
+        EventDraft("Practice", "not-a-timestamp", "2026-10-08T18:30:00-07:00", False),
+        "Invalid timed observation interval",
+    ),
+    (
+        EventDraft("Practice", "2026-10-08T17:30:00-07:00",
+                   "2026-10-08T17:30:00-07:00", False),
+        "Invalid event interval",
+    ),
+    (
+        EventDraft("Practice", "2026-10-08T17:30:00-07:00",
+                   "2026-10-08T17:29:00-07:00", False),
+        "Invalid event interval",
+    ),
+    (
+        # The first instant is earlier than Python's minimum UTC datetime.
+        EventDraft("Practice", "0001-01-01T00:00:00+14:00",
+                   "0001-01-01T01:00:00+14:00", False),
+        "Invalid timed observation interval",
+    ),
+    (
+        # The start is representable in UTC, but the end is not.
+        EventDraft("Practice", "9999-12-31T20:00:00+00:00",
+                   "9999-12-31T23:00:00-12:00", False),
+        "Invalid timed observation interval",
+    ),
+])
+def test_approval_probe_invalid_bounds_report_precise_safe_errors(event, message):
+    """Invalid approval probes must not be mistaken for an empty observation."""
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+
+    with pytest.raises(CalendarObservationError) as caught:
+        _approval_start_window(event, local_zone=ZONE)
+    assert str(caught.value) == message
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("2026-10-08T17:30:00", "2026-10-08T18:30:00-07:00"),
+    ("2026-10-08T17:30:00-07:00", "2026-10-08T18:30:00"),
+])
+def test_approval_probe_rejects_one_missing_offset_without_provider_access(start, end):
+    from custom_components.daylight_calendar_import.calendar_observation import (
+        _approval_start_window,
+    )
+
+    event = EventDraft("Practice", start, end, False)
+    with pytest.raises(CalendarObservationError) as caught:
+        _approval_start_window(event, local_zone=ZONE)
+    assert str(caught.value) == "Timed observations require UTC offsets"
+
+
+async def test_conflict_read_does_not_default_to_trusted_internal():
+    """Omitting the internal-only flag must never grant anonymous calendar access."""
+    fake = hass({"calendar.work": {"events": [existing()]}})
+    with pytest.raises(Unauthorized):
+        await async_classify_conflicts(
+            fake, draft(), observed_calendars=["calendar.work"],
+            local_zone=ZONE, context=None,
+        )
+    fake.providers["calendar.work"].async_get_events.assert_not_awaited()

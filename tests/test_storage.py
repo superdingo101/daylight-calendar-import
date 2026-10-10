@@ -3228,8 +3228,9 @@ def test_pending_assumption_metadata_roundtrip_and_legacy_compatibility():
     old = event.as_dict()
     old.pop("date_time_assumptions")
     assert PendingEvent.from_dict(old).date_time_assumptions == ()
-    with pytest.raises(ValueError, match="event assumptions must match"):
+    with pytest.raises(ValueError) as error:
         PendingImport.create(source_text="Flyer", events=[draft()], event_assumptions=[])
+    assert str(error.value) == "event assumptions must match the event count"
 
 
 async def test_duplicate_filter_keeps_only_accepted_event_assumptions(monkeypatch):
@@ -3289,11 +3290,12 @@ async def test_wrong_event_assumption_count_is_rejected_without_any_write(monkey
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
     await store.async_load()
-    with pytest.raises(ValueError, match="event assumptions must match"):
+    with pytest.raises(ValueError) as error:
         await store.async_add(
             source_text="Schedule", events=[draft()],
             event_assumptions=[(), ()],
         )
+    assert str(error.value) == "event assumptions must match the event count"
     assert backend.saved == []
 
 
