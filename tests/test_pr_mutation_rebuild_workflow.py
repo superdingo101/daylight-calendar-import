@@ -6,6 +6,7 @@ PR code, to make the recovery/security boundaries hard to accidentally remove.
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -13,7 +14,13 @@ WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
 
 def _load(name: str) -> dict:
-    return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+    path = WORKFLOWS / name
+    # Mutmut isolates tests under mutants/ and does not copy .github/. Ordinary
+    # pytest checks these workflows; mutant collection must not fail because a
+    # non-production CI file is absent in mutmut's sandbox.
+    if not path.is_file():
+        pytest.skip("GitHub Actions workflow files are not in the mutmut sandbox")
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def _steps(job: dict) -> list[dict]:
