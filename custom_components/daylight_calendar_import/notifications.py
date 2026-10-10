@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+import json
 from collections.abc import Mapping
 
 
@@ -69,10 +70,18 @@ def notification_from_transition(
     ):
         return None
     kind, title, message, severity = template
-    # The stored identity is immutable. Do not use a transition's position in a
-    # bounded history as an idempotency key.
-    identity = "\x00".join((import_id, raw_type, occurred_at, str(event_id)))
-    key = sha256(identity.encode("utf-8")).hexdigest()
+    # Canonical JSON preserves component boundaries and distinguishes a missing
+    # event ID (null) from the literal text "None". Reject damaged JSON values
+    # containing unpaired surrogates rather than crashing the replay iterator.
+    # No transition-history position is used as part of the durable identity.
+    try:
+        identity = json.dumps(
+            [import_id, raw_type, occurred_at, event_id],
+            ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    key = sha256(identity).hexdigest()
     return NotificationEvent(
         type=kind,
         idempotency_key=key,
