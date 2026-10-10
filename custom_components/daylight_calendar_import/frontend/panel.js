@@ -523,6 +523,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._settingsReloadWarning = null;
     this._settingsDrafts = {general: null, calendars: null, routing: null, email: null, notifications: null};
     this._notificationDraftBaseline = null;
+    this._notificationConflictNeedsRebase = false;
     this._routingRawDraft = null;
     this._settingsSaving = false;
     const style = element("style", css);
@@ -710,12 +711,23 @@ export class DaylightImportPanel extends HTMLElement {
     // All server snapshots (including saves from other tabs) must rebase
     // untouched Routing fields before the next render or save.
     this._settings = settings;
+    if (this._notificationConflictNeedsRebase && this._settingsDrafts.notifications) {
+      // The earlier conflict refresh was unavailable. Keep the user draft,
+      // but require a fresh server baseline before permitting another save.
+      this._notificationDraftBaseline = {
+        ...settings.notifications, classes: [...settings.notifications.classes],
+      };
+      this._notificationConflictNeedsRebase = false;
+      this._settingsError =
+        "Notification settings changed elsewhere. Review your retained choices before saving.";
+    }
     // Any refresh or recovered save which confirms the drafted policy has
     // persisted must also discard its obsolete optimistic concurrency token.
     if (!this._settingsDrafts.notifications ||
         settingsDraftMatches(settings, "notifications", this._settingsDrafts.notifications)) {
       this._settingsDrafts.notifications = null;
       this._notificationDraftBaseline = null;
+      this._notificationConflictNeedsRebase = false;
     }
     this._reconcileRoutingDraft(settings);
   }
@@ -765,7 +777,10 @@ export class DaylightImportPanel extends HTMLElement {
     try {
       const saved = await save();
       if (tab === "routing") this._routingRawDraft = null;
-      if (tab === "notifications") this._notificationDraftBaseline = null;
+      if (tab === "notifications") {
+        this._notificationDraftBaseline = null;
+        this._notificationConflictNeedsRebase = false;
+      }
       this._settingsDrafts[tab] = null;
       this._applySettingsSnapshot(saved);
       if (changesPersistedSettings) this._settingsReloadWarning = null;
@@ -795,10 +810,12 @@ export class DaylightImportPanel extends HTMLElement {
           // only after obtaining it; preserve the user's edit if the read
           // fails, so it can be reviewed once connectivity returns.
           this._notificationDraftBaseline = null;
+          this._notificationConflictNeedsRebase = false;
           this._settingsDrafts.notifications = null;
           this._applySettingsSnapshot(refreshed);
           this._settingsError = message;
         } catch {
+          this._notificationConflictNeedsRebase = true;
           this._settingsError =
             "Notification settings changed elsewhere, but refresh failed. " +
             "Your unsaved choices are retained; refresh settings before saving.";
@@ -840,7 +857,10 @@ export class DaylightImportPanel extends HTMLElement {
       if (!matches && !this._notificationDraftBaseline) {
         const policy = this._settings.notifications;
         this._notificationDraftBaseline = {...policy, classes: [...policy.classes]};
-      } else if (matches) this._notificationDraftBaseline = null;
+      } else if (matches) {
+        this._notificationDraftBaseline = null;
+        this._notificationConflictNeedsRebase = false;
+      }
     }
     this._settingsDrafts[tab] = matches ? null : patch;
   }
@@ -1340,6 +1360,12 @@ export class DaylightImportPanel extends HTMLElement {
     form.addEventListener("submit", event => {
       event.preventDefault();
       const notifications = policy();
+      if (this._notificationConflictNeedsRebase) {
+        this._settingsError = "Refresh notification settings before retrying your retained changes.";
+        this.render();
+        this._content.querySelector("[data-settings-save-error]")?.focus();
+        return;
+      }
       if (notifications.enabled && (!notifications.target || !notifications.classes.length)) {
         this._settingsError = !notifications.target ?
           "Select a Home Assistant notify entity before enabling notifications." :
