@@ -4,8 +4,11 @@
 
 - Every pull request runs **incremental** mutation testing (stable `Mutation score` check).
   It restores a cache when available, but invalidates cached results on changes
-  to tests, shared fixtures, dependencies, build configuration, or other
-  non-mutated tracked inputs. On cache miss, it runs the full suite.
+  to existing tests, shared fixtures, dependencies, or behavior-changing
+  configuration. Release-only version-number changes in manifest.json and
+  pyproject.toml do not invalidate mutation results.
+  If no safe PR/main cache exists, **fail quickly** with instructions to run
+  a clean main validation; never launch a 45-minute full run on a routine PR.
 - Do not delete mutation state in an ordinary PR job: incremental mutmut
   invalidates changed production functions itself.
 - The clean full mutation suite runs every night on `main`. The nightly
