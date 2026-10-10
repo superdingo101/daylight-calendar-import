@@ -50,6 +50,17 @@ def test_normalize_sender_allowlist_rejects_invalid_values(values: object) -> No
         email_safety.normalize_sender_allowlist(values)
 
 
+def test_exact_sender_allowlist_supports_quoted_comma_local_part() -> None:
+    sender = '"last,first"@Example.com'
+    assert email_safety.normalize_sender_allowlist((sender,)) == (
+        '"last,first"@example.com',
+    )
+    allowlist = email_safety.ExactSenderAllowlist(
+        email_safety.normalize_sender_allowlist((sender,))
+    )
+    assert allowlist.allows(_raw_from(sender))
+
+
 def test_exact_sender_allowlist_requires_at_least_one_sender() -> None:
     with pytest.raises(
         ValueError,
