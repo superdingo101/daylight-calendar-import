@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 from importlib import metadata
 import json
 import platform
+import re
 import subprocess
 import sys
 import tokenize
@@ -21,10 +23,19 @@ CACHE_SCHEMA = 1
 CACHE_META = Path("mutants/mutation-cache-provenance.json")
 STATS = Path("mutants/mutmut-stats.json")
 SOURCE = "custom_components/daylight_calendar_import/"
+FRONTEND = SOURCE + "frontend/"
+# CI-only helpers and their tests do not affect mutation verdicts for the
+# production package; pytest still exercises them on every mutmut run.
+CACHE_HELPERS = {"scripts/mutation_cache.py", "tests/test_mutation_ci_strategy.py"}
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}\\Z")
 
 
-def tracked_inputs() -> list[Path]:
-    paths = subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
+def tracked_inputs(commit: str | None = None) -> list[Path]:
+    command = (
+        ["git", "ls-files", "-z"] if commit is None
+        else ["git", "ls-tree", "-r", "--name-only", "-z", commit]
+    )
+    paths = subprocess.check_output(command).decode().split("\\0")
     return [
         Path(path) for path in paths
         if path
@@ -60,7 +71,24 @@ def _input_content(path: Path) -> bytes:
     return path.read_bytes() if path.is_file() else b"<missing>"
 
 
-def fingerprint() -> str:
+def _historical_content(commit: str, path: Path) -> bytes:
+    return subprocess.check_output(["git", "show", f"{commit}:{path.as_posix()}"])
+
+
+def _outline(source: bytes) -> bytes:
+    try:
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(source).readline)
+        module = ast.parse(source.decode(encoding))
+        return ast.dump(_HideFunctionBodies().visit(module), include_attributes=False).encode()
+    except (SyntaxError, UnicodeError, LookupError):
+        return source
+
+
+def _snapshot_content(path: Path, data: bytes) -> bytes:
+    return _outline(data) if path.as_posix().startswith(SOURCE) and path.suffix == ".py" else data
+
+
+def fingerprint(commit: str | None = None) -> str:
     digest = hashlib.sha256()
     digest.update(
         f"mutation-cache-v{CACHE_SCHEMA}|python={platform.python_version()}|"
@@ -83,15 +111,69 @@ def fingerprint() -> str:
     return digest.hexdigest()
 
 
+def _independent_addition(path: Path) -> bool:
+    name = path.as_posix()
+    return (
+        (name.startswith("tests/") and path.name.startswith("test_") and path.suffix == ".py")
+        or (name.startswith(SOURCE) and path.suffix == ".py" and path.name != "__init__.py")
+    )
+
+
+def _frontend_asset(path: Path) -> bool:
+    return path.as_posix().startswith(FRONTEND) and path.suffix in {
+        ".js", ".mjs", ".css", ".html", ".map",
+    }
+
+
+def _safe_delta(commit: str) -> bool:
+    before = set(tracked_inputs(commit))
+    after = set(tracked_inputs())
+    for path in before | after:
+        name = path.as_posix()
+        if _frontend_asset(path) or name in CACHE_HELPERS:
+            continue
+        if path not in before:
+            if not _independent_addition(path):
+                return False
+            continue
+        if path not in after:
+            return False
+        old = _historical_content(commit, path)
+        now = path.read_bytes()
+        if old == now:
+            continue
+        # Mutmut already invalidates source function-body changes by hash.
+        if name.startswith(SOURCE) and path.suffix == ".py":
+            if _snapshot_content(path, old) == _snapshot_content(path, now):
+                continue
+        return False
+    return True
+
+
 def validate() -> bool:
     try:
         saved = json.loads(CACHE_META.read_text(encoding="utf-8"))
-        return (
-            saved == {"schema": CACHE_SCHEMA, "fingerprint": fingerprint()}
-            and STATS.is_file()
-            and any(Path("mutants").rglob("*.meta"))
-        )
-    except (OSError, ValueError, subprocess.CalledProcessError):
+        if not (
+            isinstance(saved, dict) and saved.get("schema") == CACHE_SCHEMA
+            and isinstance(saved.get("fingerprint"), str)
+            and STATS.is_file() and any(Path("mutants").rglob("*.meta"))
+        ):
+            return False
+        if saved["fingerprint"] == fingerprint():
+            return True
+
+        # Existing nightly baselines only contain a whole-tree fingerprint.
+        # Recover the exact original Git snapshot and *verify* its fingerprint
+        # before allowing strictly scoped additions. This preserves the
+        # baseline built before this change without accepting stale metadata.
+        stats = json.loads(STATS.read_text(encoding="utf-8"))
+        commit = saved.get("source_commit") or stats.get("git_commit")
+        if not isinstance(commit, str) or not COMMIT_SHA.fullmatch(commit):
+            return False
+        if saved["fingerprint"] != fingerprint(commit):
+            return False
+        return _safe_delta(commit)
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
         return False
 
 
@@ -113,7 +195,13 @@ def main() -> int:
         return 1
     CACHE_META.parent.mkdir(exist_ok=True, parents=True)
     CACHE_META.write_text(
-        json.dumps({"schema": CACHE_SCHEMA, "fingerprint": fingerprint()}, sort_keys=True) + "\n",
+        json.dumps({
+            "schema": CACHE_SCHEMA,
+            "fingerprint": fingerprint(),
+            "source_commit": subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], text=True,
+            ).strip(),
+        }, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return 0
