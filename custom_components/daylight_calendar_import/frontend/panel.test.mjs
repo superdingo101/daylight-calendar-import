@@ -4685,6 +4685,31 @@ test("failed calendar checks re-enable other events for retry", async () => {
   assert.equal(panel._calendarCheck.status, "ready");
 });
 
+
+test("date/time assumptions are displayed under their own review event", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "pending";
+  const fields = {start: "2026-10-11", end: "2026-10-12",
+    all_day: true, status: "pending", confidence: 0.9,
+    calendar_entity: "calendar.family"};
+  panel._detail = {
+    id: "pending", source_kind: "manual_text", source_text: "Family schedule",
+    events: [
+      {...fields, id: "event-a", title: "Explicit date"},
+      {...fields, id: "event-b", title: "Relative date",
+        date_time_assumptions: ["Sunday was resolved using the reference date"]},
+    ],
+  };
+  panel.render();
+  const cards = panel._content.querySelectorAll(".detail-event");
+  assert.equal(cards.length, 2);
+  const content = card => card.querySelectorAll("p").map(item => item.textContent).join(" ");
+  assert.doesNotMatch(content(cards[0]), /Date\/time assumption/);
+  assert.match(content(cards[1]), /Date\/time assumption: Sunday was resolved/);
+});
+
 test("Email allowlist keeps quoted commas within one RFC-valid address", async () => {
   const panel = new DaylightImportPanel();
   panel._hass = {user: {is_admin: true}, states: {}};

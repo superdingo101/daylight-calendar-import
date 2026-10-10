@@ -3181,3 +3181,144 @@ async def test_store_add_persists_sender_and_source_kind_across_restart(monkeypa
     assert restored.source_title == "School digest"
     assert restored.source_sender == "Teacher <teacher@example.test>"
     assert restored.events[0].routing_unresolved is True
+
+
+def test_pending_assumption_metadata_roundtrip_and_legacy_compatibility():
+    item = PendingImport.create(
+        source_text="Flyer", events=[draft()],
+        event_assumptions=[("Friday resolved using calendar context",)],
+    )
+    event = item.events[0]
+    assert event.as_service_dict()["date_time_assumptions"] == [
+        "Friday resolved using calendar context"
+    ]
+    assert PendingImport.from_dict(item.as_dict()) == item
+    old = event.as_dict()
+    old.pop("date_time_assumptions")
+    assert PendingEvent.from_dict(old).date_time_assumptions == ()
+    with pytest.raises(ValueError, match="event assumptions must match"):
+        PendingImport.create(source_text="Flyer", events=[draft()], event_assumptions=[])
+
+
+async def test_duplicate_filter_keeps_only_accepted_event_assumptions(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    await store.async_add(source_text="Previous", events=[draft()])
+    outcome = await store.async_add(
+        source_text="Second", events=[draft(), second_draft()],
+        event_assumptions=[
+            ("Old event assumptions should not appear",),
+            ("Picture Day derived from relative date",),
+        ],
+    )
+    assert outcome.pending is not None
+    assert outcome.duplicate_events == 1
+    assert len(outcome.pending.events) == 1
+    assert outcome.pending.events[0].draft == second_draft()
+    assert outcome.pending.events[0].date_time_assumptions == (
+        "Picture Day derived from relative date",
+    )
+    assert outcome.pending.warnings == ()
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    restored = restarted.get(outcome.pending.id)
+    assert restored == outcome.pending
+    assert restored.as_service_dict()["events"][0]["date_time_assumptions"] == [
+        "Picture Day derived from relative date"
+    ]
+
+
+async def test_temporal_edits_clear_stale_assumptions_but_title_edits_keep_them(monkeypatch):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    await store.async_load()
+    pending_item = (await store.async_add(
+        source_text="Schedule", events=[draft()],
+        event_assumptions=[("Clock time normalized",)],
+    )).pending
+    assert pending_item is not None
+    original = pending_item.events[0]
+    renamed = await store.async_edit_event(
+        pending_item.id, original.id, replace(original.draft, title="Revised"),
+        expected_event=original,
+    )
+    assert renamed.date_time_assumptions == ("Clock time normalized",)
+    updated = await store.async_edit_event(
+        pending_item.id, original.id,
+        replace(renamed.draft, start="2026-10-08T16:30:00-07:00"),
+        expected_event=renamed,
+    )
+    assert updated.date_time_assumptions == ()
+    assert "date_time_assumptions" not in updated.as_service_dict()
+
+
+async def test_wrong_event_assumption_count_is_rejected_without_any_write(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    with pytest.raises(ValueError, match="event assumptions must match"):
+        await store.async_add(
+            source_text="Schedule", events=[draft()],
+            event_assumptions=[(), ()],
+        )
+    assert backend.saved == []
+
+
+def test_legacy_expected_event_snapshot_ignores_new_disclosure_metadata():
+    """A v0.5 client snapshot must still identify the same review event."""
+    event = PendingEvent.create(
+        draft(), date_time_assumptions=("Friday inferred from source reference",)
+    )
+    old_client_snapshot = event.as_service_dict()
+    old_client_snapshot.pop("date_time_assumptions")
+    legacy = PendingEvent(
+        event.id, EventDraft.from_mapping(old_client_snapshot),
+        old_client_snapshot["status"], old_client_snapshot["calendar_entity"],
+    )
+    assert event == legacy
+    assert legacy == event
+    assert event.as_dict()["date_time_assumptions"] == [
+        "Friday inferred from source reference"
+    ]
+    # This field is never an optimistic-concurrency or calendar-write token.
+    assert PendingEvent.from_dict(event.as_dict()) == legacy
+
+
+@pytest.mark.parametrize("invalid_notes", [
+    None, "not a list", 123, ["valid", 42], [""],
+    ["x" * 161], ["note"] * 9, {"unexpected": "object"},
+])
+async def test_malformed_optional_assumptions_never_block_store_restart(
+    monkeypatch, invalid_notes,
+):
+    """A corrupt AI-only field must not strand durable review decisions."""
+    item = PendingImport.create(
+        source_text="Calendar flyer",
+        events=[draft(), second_draft()],
+        event_assumptions=[("Valid calendar inference",), ()],
+    )
+    raw = item.as_dict()
+    raw["events"][0]["date_time_assumptions"] = invalid_notes
+    backend = FakeStoreBackend(load_result={"items": [raw]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    loaded = store.get(item.id)
+    assert loaded is not None
+    assert len(loaded.events) == 2
+    assert loaded.events[0].date_time_assumptions == ()
+    assert loaded.events[1].draft == second_draft()
+    assert loaded.events[0].as_service_dict().get("date_time_assumptions") is None
+
+
+async def test_valid_bounded_assumptions_survive_storage_restart(monkeypatch):
+    item = PendingImport.create(
+        source_text="Schedule", events=[draft()],
+        event_assumptions=[("  Normalized local time  ",)],
+    )
+    backend = FakeStoreBackend(load_result={"items": [item.as_dict()]})
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    event = store.get(item.id).events[0]
+    assert event.date_time_assumptions == ("Normalized local time",)
+    assert event.as_service_dict()["date_time_assumptions"] == ["Normalized local time"]

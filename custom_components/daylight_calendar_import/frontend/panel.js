@@ -2158,6 +2158,9 @@ export class DaylightImportPanel extends HTMLElement {
         if (event.routing_unresolved) {
           card.append(element("p", "Routing hint was unrecognized or conflicting. Edit this event, choose its destination calendar, then save before approval.", "error"));
         }
+        for (const assumption of event.date_time_assumptions || []) {
+          card.append(element("p", `Date/time assumption: ${assumption}`));
+        }
         if (typeof event.confidence === "number") {
           card.append(element("p", `AI extraction confidence: ${Math.round(event.confidence * 100)}% (estimate)`));
         }

@@ -280,6 +280,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await pending_store.async_add(
             source_text=email_review_source_text(source),
             events=outcome.events,
+            **({"event_assumptions": outcome.event_assumptions}
+               if outcome.event_assumptions else {}),
             source_id=source.upstream_source_id,
             calendar_entity=route.calendar_entity,
             source_kind=source.kind.value,
@@ -350,6 +352,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             result = await pending_store.async_add(
                 source_text=source.text,
                 events=outcome.events,
+                **({"event_assumptions": outcome.event_assumptions}
+                   if outcome.event_assumptions else {}),
                 source_id=source.upstream_source_id,
                 calendar_entity=route.calendar_entity,
                 warnings=[*outcome.warnings, *route.warnings],
@@ -390,6 +394,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             result = await pending_store.async_add(
                 source_text="\n\n".join(part for part in (source.text, attachment_note) if part),
                 events=outcome.events,
+                **({"event_assumptions": outcome.event_assumptions}
+                   if outcome.event_assumptions else {}),
                 source_id=source.upstream_source_id,
                 calendar_entity=route.calendar_entity,
                 source_kind=source.kind.value,

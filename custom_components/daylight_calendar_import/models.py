@@ -93,3 +93,13 @@ def _validate_temporal_range(start: str, end: str, all_day: bool) -> None:
 
     if end_value <= start_value:
         raise DraftValidationError("end must be after start")
+
+
+def normalize_date_time_assumptions(value: object) -> tuple[str, ...]:
+    """Validate bounded per-event temporal disclosures, including saved data."""
+    if not isinstance(value, (list, tuple)) or len(value) > 8 or any(
+        not isinstance(note, str) or not note.strip() or len(note) > 160
+        for note in value
+    ):
+        raise ValueError("assumptions must be up to eight short strings")
+    return tuple(note.strip() for note in value)
