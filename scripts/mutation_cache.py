@@ -145,6 +145,8 @@ _CACHE_ONLY_STEPS = {
     "Validate mutation cache provenance",
     "Restore PR mutation cache",
     "Validate PR mutation cache",
+    "Restore rebuilt PR mutation baseline",
+    "Validate rebuilt PR mutation baseline",
     "Restore main mutation baseline",
     "Validate main mutation baseline",
     "Require reusable mutation baseline",
