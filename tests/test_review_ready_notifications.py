@@ -64,3 +64,50 @@ async def test_notification_failure_cannot_undo_review_ready_commit():
         AsyncMock(side_effect=NotificationDeliveryError("Unavailable")),
     ):
         await async_notify_review_ready(Mock(), activity(), preferences())
+
+
+@pytest.mark.asyncio
+async def test_notification_delivery_failures_are_sanitized(caplog):
+    import asyncio
+
+    for cause in [NotificationDeliveryError("private provider token"),
+                  RuntimeError("private source details")]:
+        with patch(
+            "custom_components.daylight_calendar_import.review_ready_notifications.async_send_ha_notification",
+            AsyncMock(side_effect=cause),
+        ):
+            await async_notify_review_ready(Mock(), activity(), preferences())
+    assert caplog.text.count("Daylight notification delivery failed") == 2
+    assert "private" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_notification_delivery_timeout_is_bounded_and_private(caplog, monkeypatch):
+    import asyncio
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.review_ready_notifications._DELIVERY_TIMEOUT_SECONDS",
+        0.001,
+    )
+    async def blocked(*args):
+        await asyncio.sleep(60)
+    with patch(
+        "custom_components.daylight_calendar_import.review_ready_notifications.async_send_ha_notification",
+        blocked,
+    ):
+        await async_notify_review_ready(Mock(), activity(), preferences())
+    assert "Daylight notification delivery failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cancel_entry_owned_notification_tasks():
+    import asyncio
+    from types import SimpleNamespace
+    from custom_components.daylight_calendar_import import _async_cancel_notification_tasks
+
+    async def blocked():
+        await asyncio.Event().wait()
+    task = asyncio.create_task(blocked())
+    store = SimpleNamespace(notification_tasks={task})
+    await _async_cancel_notification_tasks(store)
+    assert task.cancelled()
+    await _async_cancel_notification_tasks(SimpleNamespace(notification_tasks=set()))
