@@ -266,13 +266,19 @@ async def websocket_update_notifications(
                     "Notification settings changed elsewhere. Refresh and review before saving.",
                 )
             patch = notification_preferences_patch(entry, msg["notifications"])
-            if msg["notifications"].get("enabled") is True and set(msg["notifications"].get("classes", ())) != {"review_ready"}:
-                # Domain model anticipates future classes, but do not accept
-                # enabled choices for which no delivery adapter is registered.
-                raise SettingsValidationError(
-                    "invalid_notifications",
-                    "Only review-ready notifications are currently supported.",
-                )
+            if msg["notifications"].get("enabled") is True:
+                selected = set(msg["notifications"].get("classes", ()))
+                # Enabled policies must explicitly select the one class with
+                # a delivery path. Previously stored hidden classes are kept
+                # dormant for future implementations, but callers may not
+                # introduce additional unsupported classes while opting in.
+                if "review_ready" not in selected or not (
+                    selected - {"review_ready"} <= set(current["classes"])
+                ):
+                    raise SettingsValidationError(
+                        "invalid_notifications",
+                        "Only review-ready notifications can be newly enabled.",
+                    )
             if patch:
                 await async_save_option_patch(hass, entry, patch)
     except SettingsValidationError as err:
