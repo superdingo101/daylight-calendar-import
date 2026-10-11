@@ -112,7 +112,8 @@ def test_identical_tests_keep_prior_results(tmp_path, monkeypatch):
     make_context(tests={"tests/test_app.py": ["changed-existing-function"]}),
 ])
 def test_incompatible_provenance_never_reuses_mutant_verdicts(tmp_path, monkeypatch, new):
-    old = make_context()
+    # The previous test body must exist for a replacement to be non-additive.
+    old = make_context(tests={"tests/test_app.py": ["previous-existing-test"]})
     setup_state(tmp_path, monkeypatch, old, new)
     cache.restore("113")
     assert not cache.ROOT.exists()
