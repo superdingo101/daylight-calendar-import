@@ -262,7 +262,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # The registry includes both wrapper tasks and provider tasks. Keep
         # a hard cap across reloads so broken providers cannot accumulate
         # unbounded calls or keep using a superseded notify target.
-        if len(pending_store.notification_tasks) >= _MAX_NOTIFICATION_TASKS:
+        if sum(len(tasks) for tasks in registry.values()) >= _MAX_NOTIFICATION_TASKS:
+            # Include retired config-entry IDs: a provider that ignores
+            # cancellation must not regain capacity after remove/re-add.
             _LOGGER.warning("Daylight notification capacity reached; skipping best-effort delivery")
             return
         # A review-ready callback is fired only after its durable activity
