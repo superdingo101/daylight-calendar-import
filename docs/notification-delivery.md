@@ -14,8 +14,30 @@ again. Old storage files without the journal load with an empty journal, with no
 historical notification replay. Invalid journal identities fail loading rather
 than silently dropping durable requests.
 
-The foundation does not enqueue existing lifecycle outcomes, send notifications,
-or retry delivery. Those changes are separate PRs. Journal entries are currently
-retained; retention is a separate v0.7 reliability work item. External Home
-Assistant notify delivery will be at-least-once, never exactly-once: a crash
-between service completion and persisted delivery state can repeat a submission.
+Journal entries are currently retained; retention is a separate v0.7 reliability
+work item. External HA notify delivery is at-least-once, never exactly-once: a
+crash between service completion and persisted delivery state can repeat a
+submission.
+
+## Durable delivery
+
+Review-ready requests are now appended atomically with newly accepted imports
+when the current policy explicitly permits them. Existing activity is never
+replayed after consent is enabled. Each request binds to the selected notify
+entity; a changed target or revoked category cancels pending delivery rather
+than forwarding older requests to a new destination.
+
+A config-entry-owned worker resumes pending requests at startup and checks them
+every minute. It durably consumes an attempt before calling HA, allows at most
+three attempts with a one-minute retry delay, and imposes a 15-second deadline.
+A completed HA service call records `sent`, which means submission rather than
+receipt on a device. Failed/exhausted delivery records contain fixed safe codes.
+Interrupted last attempts fail closed without a fourth submission.
+
+Provider tasks that ignore cancellation stay tracked across reloads and removed
+entries. The same identity cannot be retried while its previous provider task is
+still running, and aggregate task capacity is bounded. Entry teardown waits for
+journal persistence to finish before a new snapshot may load; provider
+cancellation itself is bounded. A crash after HA accepts a call but before its
+result is saved can repeat that notification. Calendar lifecycle truth is never
+changed by delivery failures.

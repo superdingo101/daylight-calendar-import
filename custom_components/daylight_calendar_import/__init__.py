@@ -12,10 +12,12 @@ import voluptuous as vol
 from homeassistant.auth.permissions.const import CAT_ENTITIES, POLICY_CONTROL
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DESCRIPTION
-from homeassistant.core import Context, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.core import callback, Context, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError, Unauthorized, UnknownUser
 from homeassistant.util import dt as dt_util
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.event import async_track_time_interval
+from datetime import timedelta
 
 from .const import (
     ATTR_EVENT_ID,
@@ -58,7 +60,7 @@ from .review_panel import async_register_review_panel, async_remove_review_panel
 from .settings import effective_ai_task_entity, effective_calendar_options, effective_calendar_intelligence
 from .settings_api import async_register_settings_api
 from .settings import effective_notification_preferences
-from .review_ready_notifications import async_notify_review_ready
+from .notification_delivery import async_deliver_notifications, MAX_ACTIVE_TASKS as _MAX_NOTIFICATION_TASKS
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .source_routing import plan_source_routing
 from .uploads import async_image_source
@@ -243,43 +245,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.exception("Pending-added notification could not be published")
 
     notify_preferences = effective_notification_preferences(entry)
+    pending_store.notification_preferences = lambda: effective_notification_preferences(entry)
+    worker = None
+
+    @callback
+    def kick_notifications(_now=None) -> None:
+        """Schedule one bounded delivery pass without blocking lifecycle commits."""
+        nonlocal worker
+        if (not pending_store.accepting_services
+                or notify_preferences != effective_notification_preferences(entry)):
+            return
+        if sum(len(tasks) for tasks in registry.values()) >= _MAX_NOTIFICATION_TASKS:
+            _LOGGER.warning("Daylight notification capacity reached; deferring durable delivery")
+            return
+        if worker is not None and not worker.done():
+            return
+        if not any(record.status == "pending" for record in pending_store.list_notifications()):
+            return
+        worker = hass.async_create_task(
+            async_deliver_notifications(hass, pending_store, registry),
+            "Daylight durable notification delivery", eager_start=False,
+        )
+        pending_store.notification_tasks.add(worker)
+        worker.add_done_callback(pending_store.notification_tasks.discard)
 
     def on_review_ready_with_notification(pending: Any) -> None:
-        """Keep HA automation event separate from opt-in delivery."""
         on_review_ready(pending)
-        # An already accepted submission may commit while entry teardown is
-        # awaiting other services. Never enqueue using superseded preferences
-        # after unload has closed admission.
-        if (
-            not pending_store.accepting_services
-            or notify_preferences != effective_notification_preferences(entry)
-            or not notify_preferences.permits("review_ready")
-        ):
-            # A settings update may persist before a failed config-entry reload.
-            # The old callback must not send with superseded preferences even
-            # if Home Assistant reopens the old store after platform failure.
-            return
-        # The registry includes both wrapper tasks and provider tasks. Keep
-        # a hard cap across reloads so broken providers cannot accumulate
-        # unbounded calls or keep using a superseded notify target.
-        if sum(len(tasks) for tasks in registry.values()) >= _MAX_NOTIFICATION_TASKS:
-            # Include retired config-entry IDs: a provider that ignores
-            # cancellation must not regain capacity after remove/re-add.
-            _LOGGER.warning("Daylight notification capacity reached; skipping best-effort delivery")
-            return
-        # A review-ready callback is fired only after its durable activity
-        # transaction commits, so its lifecycle record is guaranteed present.
-        activity = pending_store.get_activity(pending.id)
-        task = hass.async_create_task(
-            async_notify_review_ready(
-                hass, activity, notify_preferences, pending_store.notification_tasks,
-            ),
-            f"Daylight review-ready notification for {pending.id}",
-        )
-        pending_store.notification_tasks.add(task)
-        task.add_done_callback(pending_store.notification_tasks.discard)
+        kick_notifications()
 
     pending_store.on_review_ready = on_review_ready_with_notification
+    pending_store.on_notifications = kick_notifications
+    pending_store.notification_unsubscribe = async_track_time_interval(
+        hass, kick_notifications, timedelta(seconds=60),
+    )
+    entry.async_on_unload(pending_store.notification_unsubscribe)
 
     def tracked(handler):
         async def invoke(call):
@@ -903,6 +902,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Forward last: a failing email configuration cannot strand sensor entities.
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         pending_store.accepting_services = True
+        kick_notifications()
         runtime = pending_store.email_runtime
         if runtime is not None:
             runtime.on_entry_ready()
@@ -911,6 +911,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Even a failed or cancelled partial forward must not leave its sensor
         # entities pointing to a discarded store.
         pending_store.accepting_services = False
+        pending_store.notification_unsubscribe()
         await _async_cancel_notification_tasks(pending_store)
         _unregister_entry_services(hass)
         cleanup_ok = True
@@ -940,7 +941,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 _NOTIFICATION_CANCEL_GRACE_SECONDS = 1
-_MAX_NOTIFICATION_TASKS = 4
 
 
 async def _async_cancel_notification_tasks(store: PendingImportStore) -> None:
@@ -953,6 +953,12 @@ async def _async_cancel_notification_tasks(store: PendingImportStore) -> None:
         if pending:
             # Do not expose the entry identifier or notification target.
             _LOGGER.warning("Daylight notification task did not stop before unload deadline")
+    # Provider cancellation stays bounded, but durable journal transactions
+    # must finish before another store loads or removal deletes the envelope.
+    lock = getattr(store, "notification_delivery_lock", None)
+    if lock is not None:
+        async with lock:
+            pass
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -975,6 +981,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             return False
 
+        getattr(store, "notification_unsubscribe", lambda: None)()
+        store.on_notifications = None
         _unregister_entry_services(hass)
         async_remove_review_panel(hass)
         email_runtime = getattr(store, "email_runtime", None)

@@ -20,7 +20,8 @@ from .dedup import (
     source_fingerprint as build_source_fingerprint,
 )
 from .models import EventDraft, normalize_date_time_assumptions
-from .notification_journal import NotificationRecord
+from .notification_journal import NotificationRecord, notification_record
+from .notification_preferences import NotificationPreferences
 from .source_routing import LEGACY_UNRESOLVED_WARNINGS
 
 _LOGGER = logging.getLogger(__name__)
@@ -295,6 +296,9 @@ class PendingImportStore:
         self._items: dict[str, PendingImport] = {}
         self._activity: tuple[dict[str, Any], ...] = ()
         self._notifications: tuple[NotificationRecord, ...] = ()
+        self.notification_preferences: Callable[[], NotificationPreferences] = NotificationPreferences
+        self.notification_delivery_lock = asyncio.Lock()
+        self.on_notifications: Callable[[], None] | None = None
         self._seen_source_fingerprints: tuple[str, ...] = ()
         self._seen_event_fingerprints: tuple[str, ...] = ()
         self._source_claims: dict[str, str] = {}
@@ -392,6 +396,52 @@ class PendingImportStore:
                 return False
             await self._async_save(self._items, notifications=self._notifications + (record,))
             return True
+
+    async def async_update_notification(
+        self, expected: NotificationRecord, updated: NotificationRecord,
+    ) -> bool:
+        """Commit delivery state using an immutable optimistic snapshot."""
+        if expected.event.idempotency_key != updated.event.idempotency_key:
+            raise ValueError("Notification identity cannot change")
+        NotificationRecord.from_dict(updated.as_dict())
+        result, cancelled = await self._async_complete_transaction(
+            self._async_update_notification_transaction(expected, updated)
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    async def _async_update_notification_transaction(
+        self, expected: NotificationRecord, updated: NotificationRecord,
+    ) -> bool:
+        async with self._lock:
+            if expected not in self._notifications:
+                return False
+            journal = tuple(updated if record == expected else record for record in self._notifications)
+            await self._async_save(self._items, notifications=journal)
+            return True
+
+    def _journal_for_activity(self, activity: tuple[dict[str, Any], ...]) -> tuple[NotificationRecord, ...]:
+        """Enqueue newly committed review-ready transitions only with live consent."""
+        policy = self.notification_preferences()
+        journal = self._notifications
+        known = {record.event.idempotency_key for record in journal}
+        previous = {record["id"]: record for record in self._activity}
+        for record in activity:
+            transitions = record.get("transitions", ())
+            if not transitions:
+                continue
+            transition = transitions[-1]
+            if (transition.get("type") != "review_ready" or transition.get("event_id") is not None
+                    or transition in previous.get(record["id"], {}).get("transitions", ())):
+                continue
+            request = notification_record(record, transition)
+            if request is not None and policy.permits(request.event.type):
+                key = request.event.idempotency_key
+                if key not in known:
+                    journal += (replace(request, target=policy.target),)
+                    known.add(key)
+        return journal
 
     def get(self, pending_id: str) -> PendingImport | None:
         """Return one pending import by ID."""
@@ -1464,11 +1514,17 @@ class PendingImportStore:
         history = self._activity if activity is None else activity
         if history:
             data[_STORAGE_ACTIVITY] = list(history)
-        journal = self._notifications if notifications is None else notifications
+        journal = (self._journal_for_activity(activity) if activity is not None else self._notifications
+                   ) if notifications is None else notifications
         if journal:
             data[_STORAGE_NOTIFICATIONS] = [record.as_dict() for record in journal]
         await self._store.async_save(data)
         self._notifications = journal
+        if self.on_notifications is not None:
+            try:
+                self.on_notifications()
+            except Exception:
+                _LOGGER.warning("Daylight notification scheduling failed; durable request retained")
 
 
 def _remember_fingerprints(
