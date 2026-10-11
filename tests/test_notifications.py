@@ -146,3 +146,15 @@ def test_identity_encoding_separates_null_text_and_embedded_delimiters():
         "a", "x\x00review_ready\x00y", "event"
     )
     assert key("a", "x", "event") != key("a", "x", "event\x00")
+
+
+def test_golden_non_ascii_idempotency_key_preserves_utf8_json_encoding():
+    """Non-ASCII identities must keep the exact durable key across releases."""
+    projected = notification_from_transition(
+        {"id": "import-ñ"},
+        {"type": "review_ready", "at": "2026-10-09T12:00:00+00:00",
+         "event_id": "event-☃"},
+    )
+    assert projected.idempotency_key == (
+        "236d36e0d3a0ad922a2cc394d07fe3296791636424a4de378d70a61db973f320"
+    )

@@ -207,6 +207,7 @@ async def test_real_remove_entry_deletes_storage_and_runtime_wiring(
     assert hass.config_entries.async_get_entry(entry.entry_id) is None
     _assert_services(hass, registered=False)
     assert entry.entry_id not in hass.data[DOMAIN]
+    assert f"{DOMAIN}_notification_tasks" not in hass.data
 
     fresh_store = PendingImportStore(hass)
     await fresh_store.async_load()
@@ -269,3 +270,336 @@ async def test_pending_added_bus_failure_does_not_rollback_durable_import(hass, 
     assert response["pending"] is not None
     assert len(hass.data[DOMAIN][entry.entry_id].list()) == 1
     assert "notification could not be published" in caplog.text
+
+
+async def test_opted_in_review_ready_dispatch_is_post_commit_and_not_replayed(hass, monkeypatch):
+    """New durable pending imports notify, but duplicate source replay does not."""
+    from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.parse_source_with_provider",
+        AsyncMock(return_value=ParseOutcome([_draft()], [])),
+    )
+    emitted = []
+
+    async def capture(hass_instance, activity, preferences, active_tasks):
+        store = hass_instance.data[DOMAIN][entry.entry_id]
+        assert store.get_activity(activity["id"]) is not None
+        assert store.get(activity["id"]) is not None
+        assert preferences.permits("review_ready")
+        assert active_tasks is store.notification_tasks
+        emitted.append(activity["id"])
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_notify_review_ready",
+        capture,
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daylight Calendar Import",
+        data={CONF_AI_TASK_ENTITY: "ai_task.test",
+              CONF_CALENDAR_ENTITY: "calendar.family"},
+        options={CONF_NOTIFICATION_PREFERENCES: {
+            "enabled": True, "target": "notify.phone", "classes": ["review_ready"],
+        }},
+    )
+    await _setup_entry(hass, entry)
+    source = {ATTR_TEXT: "Practice with water", ATTR_SOURCE_ID: "notification-source"}
+    response = await hass.services.async_call(
+        DOMAIN, SERVICE_SUBMIT_TEXT, source, blocking=True, return_response=True,
+    )
+    await hass.async_block_till_done()
+    assert emitted == [response["pending"]["id"]]
+    await hass.services.async_call(
+        DOMAIN, SERVICE_SUBMIT_TEXT, source, blocking=True, return_response=True,
+    )
+    await hass.async_block_till_done()
+    assert emitted == [response["pending"]["id"]]
+
+
+async def test_review_notification_callback_skips_submissions_finishing_during_unload(
+    hass, monkeypatch,
+):
+    """An accepted submission completing after admission closes cannot notify."""
+    from types import SimpleNamespace
+    from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
+
+    notify = AsyncMock()
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_notify_review_ready",
+        notify,
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daylight Calendar Import",
+        data={CONF_AI_TASK_ENTITY: "ai_task.test",
+              CONF_CALENDAR_ENTITY: "calendar.family"},
+        options={CONF_NOTIFICATION_PREFERENCES: {
+            "enabled": True, "target": "notify.phone", "classes": ["review_ready"],
+        }},
+    )
+    await _setup_entry(hass, entry)
+    store = hass.data[DOMAIN][entry.entry_id]
+    store.accepting_services = False
+    store.on_review_ready(SimpleNamespace(id="committed-while-stopping", events=()))
+    await hass.async_block_till_done()
+    notify.assert_not_awaited()
+    assert not store.notification_tasks
+
+
+async def test_old_notification_runtime_ignores_new_saved_policy_after_reload_failure(
+    hass, monkeypatch,
+):
+    """A failed reload must not use a captured, no-longer-consented notify target."""
+    from types import SimpleNamespace
+    from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
+
+    notify = AsyncMock()
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_notify_review_ready",
+        notify,
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daylight Calendar Import",
+        data={CONF_AI_TASK_ENTITY: "ai_task.test",
+              CONF_CALENDAR_ENTITY: "calendar.family"},
+        options={CONF_NOTIFICATION_PREFERENCES: {
+            "enabled": True, "target": "notify.original", "classes": ["review_ready"],
+        }},
+    )
+    await _setup_entry(hass, entry)
+    store = hass.data[DOMAIN][entry.entry_id]
+    # Persisted options change but a failed reload leaves the old closure
+    # running, even if HA has reopened service admission.
+    hass.config_entries.async_update_entry(entry, options={
+        CONF_NOTIFICATION_PREFERENCES: {
+            "enabled": False, "target": "notify.original", "classes": ["review_ready"],
+        },
+    })
+    assert store.accepting_services
+    store.on_review_ready(SimpleNamespace(id="committed-after-failed-reload", events=()))
+    await hass.async_block_till_done()
+    notify.assert_not_awaited()
+    assert not store.notification_tasks
+
+
+async def test_notification_capacity_caps_active_providers_across_reload_registry(
+    hass, monkeypatch, caplog,
+):
+    """A stuck provider remains visible and stops an unbounded send backlog."""
+    import asyncio
+    from types import SimpleNamespace
+    from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
+    from custom_components.daylight_calendar_import import _MAX_NOTIFICATION_TASKS
+
+    notify = AsyncMock()
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_notify_review_ready", notify,
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daylight Calendar Import",
+        data={CONF_AI_TASK_ENTITY: "ai_task.test",
+              CONF_CALENDAR_ENTITY: "calendar.family"},
+        options={CONF_NOTIFICATION_PREFERENCES: {
+            "enabled": True, "target": "notify.phone", "classes": ["review_ready"],
+        }},
+    )
+    await _setup_entry(hass, entry)
+    store = hass.data[DOMAIN][entry.entry_id]
+    assert store.notification_tasks is hass.data[f"{DOMAIN}_notification_tasks"][entry.entry_id]
+    async def blocked():
+        await asyncio.Event().wait()
+
+    blockers = [asyncio.create_task(blocked()) for _ in range(_MAX_NOTIFICATION_TASKS)]
+    store.notification_tasks.update(blockers)
+    try:
+        store.on_review_ready(SimpleNamespace(id="committed-at-capacity", events=()))
+        await hass.async_block_till_done()
+        notify.assert_not_awaited()
+        assert "capacity reached" in caplog.text
+    finally:
+        for task in blockers:
+            task.cancel()
+        await asyncio.gather(*blockers, return_exceptions=True)
+        store.notification_tasks.difference_update(blockers)
+
+
+async def test_remove_entry_retires_idle_notification_registry(hass, monkeypatch):
+    """Permanent removal releases an empty entry registry, not just the store."""
+    from custom_components.daylight_calendar_import import async_remove_entry
+
+    cleanup = AsyncMock()
+    monkeypatch.setattr(PendingImportStore, "async_remove_storage", cleanup)
+    entry = _entry()
+    key = f"{DOMAIN}_notification_tasks"
+    hass.data[key] = {entry.entry_id: set()}
+    await async_remove_entry(hass, entry)
+    cleanup.assert_awaited_once()
+    assert key not in hass.data
+
+
+async def test_remove_entry_retains_stuck_provider_until_it_really_finishes(
+    hass, monkeypatch,
+):
+    """Do not leak empty entry keys or abandon surviving provider references."""
+    import asyncio
+    from custom_components.daylight_calendar_import import async_remove_entry
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import._NOTIFICATION_CANCEL_GRACE_SECONDS",
+        0.002,
+    )
+    monkeypatch.setattr(PendingImportStore, "async_remove_storage", AsyncMock())
+    entry = _entry()
+    key = f"{DOMAIN}_notification_tasks"
+    registry = hass.data.setdefault(key, {})
+    registry["unrelated-entry"] = set()
+    owned = registry[entry.entry_id] = set()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stubborn_provider():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    task = asyncio.create_task(stubborn_provider())
+    owned.add(task)
+    task.add_done_callback(owned.discard)
+    await started.wait()
+    try:
+        await asyncio.wait_for(async_remove_entry(hass, entry), timeout=0.5)
+        assert registry.get(entry.entry_id) is owned
+        assert task in owned
+    finally:
+        release.set()
+        await asyncio.wait_for(task, timeout=1)
+        await asyncio.sleep(0)
+    assert entry.entry_id not in registry
+    assert "unrelated-entry" in registry
+
+
+async def test_remove_entry_without_registry_does_not_create_one(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import async_remove_entry
+
+    monkeypatch.setattr(PendingImportStore, "async_remove_storage", AsyncMock())
+    entry = _entry()
+    key = f"{DOMAIN}_notification_tasks"
+    hass.data.pop(key, None)
+    await async_remove_entry(hass, entry)
+    assert key not in hass.data
+
+
+async def test_old_provider_cleanup_cannot_evict_a_replaced_registry_key(
+    hass, monkeypatch,
+):
+    """Late cancellation callbacks must not remove a newer registry owner."""
+    import asyncio
+    from custom_components.daylight_calendar_import import async_remove_entry
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import._NOTIFICATION_CANCEL_GRACE_SECONDS",
+        0.002,
+    )
+    monkeypatch.setattr(PendingImportStore, "async_remove_storage", AsyncMock())
+    entry = _entry()
+    key = f"{DOMAIN}_notification_tasks"
+    registry = hass.data.setdefault(key, {})
+    old_tasks = registry[entry.entry_id] = set()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def cancellation_resistant():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    task = asyncio.create_task(cancellation_resistant())
+    old_tasks.add(task)
+    task.add_done_callback(old_tasks.discard)
+    await started.wait()
+    try:
+        await asyncio.wait_for(async_remove_entry(hass, entry), timeout=0.5)
+        replacement = registry[entry.entry_id] = set()
+        release.set()
+        await asyncio.wait_for(task, timeout=1)
+        await asyncio.sleep(0)
+        assert entry.entry_id in registry
+        assert registry[entry.entry_id] is replacement
+        assert not old_tasks
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.wait_for(task, timeout=1)
+
+
+async def test_remove_entry_cancels_cooperative_provider_within_grace(
+    hass, monkeypatch,
+):
+    """Normal provider cancellation finishes before the bounded cleanup timeout."""
+    import asyncio
+    from custom_components.daylight_calendar_import import async_remove_entry
+
+    monkeypatch.setattr(PendingImportStore, "async_remove_storage", AsyncMock())
+    entry = _entry()
+    key = f"{DOMAIN}_notification_tasks"
+    tasks = hass.data.setdefault(key, {})[entry.entry_id] = set()
+    started = asyncio.Event()
+
+    async def cooperative():
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(cooperative())
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    await started.wait()
+    await asyncio.wait_for(async_remove_entry(hass, entry), timeout=1)
+    assert task.cancelled()
+    await asyncio.sleep(0)
+    assert key not in hass.data
+
+
+async def test_notification_capacity_counts_retired_entry_provider_tasks(
+    hass, monkeypatch, caplog,
+):
+    """Remove/re-add must not reset capacity while old providers are still stuck."""
+    import asyncio
+    from types import SimpleNamespace
+    from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
+    from custom_components.daylight_calendar_import import _MAX_NOTIFICATION_TASKS
+
+    notify = AsyncMock()
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.async_notify_review_ready", notify,
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daylight Calendar Import",
+        data={CONF_AI_TASK_ENTITY: "ai_task.test",
+              CONF_CALENDAR_ENTITY: "calendar.family"},
+        options={CONF_NOTIFICATION_PREFERENCES: {
+            "enabled": True, "target": "notify.phone", "classes": ["review_ready"],
+        }},
+    )
+    await _setup_entry(hass, entry)
+    store = hass.data[DOMAIN][entry.entry_id]
+    registry = hass.data[f"{DOMAIN}_notification_tasks"]
+    async def stuck():
+        await asyncio.Event().wait()
+    tasks = [asyncio.create_task(stuck()) for _ in range(_MAX_NOTIFICATION_TASKS)]
+    registry["removed-entry-id"] = set(tasks)
+    try:
+        assert not store.notification_tasks
+        store.on_review_ready(SimpleNamespace(id="committed-after-readd", events=()))
+        await hass.async_block_till_done()
+        notify.assert_not_awaited()
+        assert not store.notification_tasks
+        assert "capacity reached" in caplog.text
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        registry.pop("removed-entry-id")
