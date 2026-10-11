@@ -357,18 +357,22 @@ def test_uncertain_journal_identity_preserves_write_attempt_across_serialization
     assert second.event.idempotency_key != original.event.idempotency_key
 
 
-@pytest.mark.parametrize("invalid", [True, "yes", "", 17])
-def test_invalid_recovery_provenance_has_stable_validation_error(invalid):
+@pytest.mark.parametrize(
+    ("field", "invalid"), [
+        ("recovered", "yes"),
+        ("write_attempt", True),
+        ("write_attempt", ""),
+        ("write_attempt", 17),
+    ],
+)
+def test_invalid_recovery_provenance_has_stable_validation_error(field, invalid):
     """Invalid persisted attempt state must be rejected with the documented reason."""
     request = NotificationRecord(
         "import-1", "calendar_write_uncertain", "2026-10-11T02:00:00+00:00",
         "event-1", target="notify.phone",
     )
     payload = request.as_dict()
-    if invalid is True:
-        payload["recovered"] = "yes"
-    else:
-        payload["write_attempt"] = invalid
+    payload[field] = invalid
     with pytest.raises(ValueError, match="^Invalid notification recovery provenance$"):
         NotificationRecord.from_dict(payload)
 
