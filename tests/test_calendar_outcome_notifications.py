@@ -189,3 +189,79 @@ async def test_missing_checkpoint_has_no_uncertainty_transition_identity(monkeyp
     item, event = await pending(store)
     transition = store._transition(item, "calendar_write_uncertain", event_id="absent")[-1]["transitions"][-1]
     assert transition["write_attempt"] is None
+
+
+async def test_live_cancellation_notifies_uncertainty_without_waiting_for_restart(monkeypatch):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    enable(store)
+    item, event = await pending(store)
+    started = asyncio.Event()
+
+    async def blocked(_event):
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(store.async_approve_event(item.id, event.id, blocked))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    request = store.list_notifications()[0]
+    assert request.event.type == "calendar_write_uncertain" and not request.recovered
+    assert request.write_attempt == store.get_event(item.id, event.id).write_attempt
+
+
+async def test_cancellation_during_created_save_preserves_authoritative_outcome(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    store.notification_preferences = lambda: normalize_notification_preferences({
+        "enabled": True, "classes": ["calendar_created", "calendar_write_uncertain"], "target": "notify.phone",
+    })
+    item, event = await pending(store)
+    entered, release = asyncio.Event(), asyncio.Event()
+    save = backend.async_save
+
+    async def block_created(data):
+        if data["activity"][-1]["transitions"][-1]["type"] == "calendar_created":
+            entered.set()
+            await release.wait()
+        await save(data)
+
+    backend.async_save = block_created
+    task = asyncio.create_task(store.async_approve_event(item.id, event.id, AsyncMock()))
+    await entered.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert store.list() == ()
+    assert store.list_notifications()[0].event.type == "calendar_created"
+    # A later journal delivery save must retain the accepted calendar outcome.
+    record = store.list_notifications()[0]
+    await store.async_update_notification(record, record)
+    assert backend.saved[-1]["items"] == []
+
+
+async def test_second_cancellation_during_uncertainty_save_finishes_commit(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    enable(store)
+    item, event = await pending(store)
+    entered, release = asyncio.Event(), asyncio.Event()
+    save = backend.async_save
+
+    async def block_uncertain(data):
+        if data["activity"][-1]["transitions"][-1]["type"] == "calendar_write_uncertain":
+            entered.set()
+            await release.wait()
+        await save(data)
+
+    backend.async_save = block_uncertain
+    task = asyncio.create_task(store.async_approve_event(item.id, event.id, AsyncMock(side_effect=asyncio.CancelledError())))
+    await entered.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert store.get_activity(item.id)["transitions"][-1]["type"] == "calendar_write_uncertain"
+    assert store.list_notifications()[0].event.type == "calendar_write_uncertain"

@@ -372,6 +372,16 @@ class PendingImportStore:
 
         await self._async_recover_uncertain_notifications()
 
+    async def _async_commit_activity(self, activity: tuple[dict[str, Any], ...]) -> None:
+        """Finish outcome persistence/publication before propagating cancellation."""
+        async def commit() -> None:
+            await self._async_save(self._items, activity=activity)
+            self._activity = activity
+
+        _, cancelled = await self._async_complete_transaction(commit())
+        if cancelled:
+            raise asyncio.CancelledError
+
     async def _async_recover_uncertain_notifications(self) -> None:
         """Observe durable event checkpoints, independently of prunable history.
 
@@ -1446,11 +1456,9 @@ class PendingImportStore:
                 failed = self._transition(pending, "calendar_create_failed", event_id=event.id,
                                           remaining=pending.events)
                 try:
-                    await self._async_save(self._items, activity=failed)
+                    await self._async_commit_activity(failed)
                 except Exception:
                     pass
-                else:
-                    self._activity = failed
                 raise
         in_flight = replace(pending, events=tuple(
                 replace(item, status="write_uncertain", write_attempt=str(uuid4()))
@@ -1466,15 +1474,13 @@ class PendingImportStore:
 
         try:
             await processor(event)
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             uncertain = self._transition(pending, "calendar_write_uncertain", event_id=event.id)
             try:
-                await self._async_save(self._items, activity=uncertain)
+                await self._async_commit_activity(uncertain)
             except Exception:
                 # The write-started checkpoint already records an uncertain status.
                 pass
-            else:
-                self._activity = uncertain
             raise
 
         remaining = tuple(item for item in pending.events if item.id != event.id)
@@ -1496,13 +1502,20 @@ class PendingImportStore:
 
         activity = self._transition(pending, "calendar_created", event_id=event.id,
                                     remaining=remaining)
-        try:
+        async def commit_created() -> None:
             await self._async_save(
                 items,
                 seen_source_fingerprints=seen_sources,
                 seen_event_fingerprints=seen_events,
                 activity=activity,
             )
+            self._commit_items(items)
+            self._activity = activity
+            self._seen_source_fingerprints = seen_sources
+            self._seen_event_fingerprints = seen_events
+
+        try:
+            _, cancelled = await self._async_complete_transaction(commit_created())
         except Exception:
             # The external call completed, but the accepted outcome did not
             # commit. The durable write checkpoint remains authoritative.
@@ -1511,10 +1524,8 @@ class PendingImportStore:
             except Exception:
                 pass
             raise
-        self._commit_items(items)
-        self._activity = activity
-        self._seen_source_fingerprints = seen_sources
-        self._seen_event_fingerprints = seen_events
+        if cancelled:
+            raise asyncio.CancelledError
         return updated
 
     async def async_remove_storage(self) -> None:
