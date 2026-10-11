@@ -207,6 +207,7 @@ async def test_real_remove_entry_deletes_storage_and_runtime_wiring(
     assert hass.config_entries.async_get_entry(entry.entry_id) is None
     _assert_services(hass, registered=False)
     assert entry.entry_id not in hass.data[DOMAIN]
+    assert f"{DOMAIN}_notification_tasks" not in hass.data
 
     fresh_store = PendingImportStore(hass)
     await fresh_store.async_load()
@@ -419,3 +420,71 @@ async def test_notification_capacity_caps_active_providers_across_reload_registr
             task.cancel()
         await asyncio.gather(*blockers, return_exceptions=True)
         store.notification_tasks.difference_update(blockers)
+
+
+async def test_remove_entry_retires_idle_notification_registry(hass, monkeypatch):
+    """Permanent removal releases an empty entry registry, not just the store."""
+    from custom_components.daylight_calendar_import import async_remove_entry
+
+    cleanup = AsyncMock()
+    monkeypatch.setattr(PendingImportStore, "async_remove_storage", cleanup)
+    entry = _entry()
+    key = f"{DOMAIN}_notification_tasks"
+    hass.data[key] = {entry.entry_id: set()}
+    await async_remove_entry(hass, entry)
+    cleanup.assert_awaited_once()
+    assert key not in hass.data
+
+
+async def test_remove_entry_retains_stuck_provider_until_it_really_finishes(
+    hass, monkeypatch,
+):
+    """Do not leak empty entry keys or abandon surviving provider references."""
+    import asyncio
+    from custom_components.daylight_calendar_import import async_remove_entry
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import._NOTIFICATION_CANCEL_GRACE_SECONDS",
+        0.002,
+    )
+    monkeypatch.setattr(PendingImportStore, "async_remove_storage", AsyncMock())
+    entry = _entry()
+    key = f"{DOMAIN}_notification_tasks"
+    registry = hass.data.setdefault(key, {})
+    registry["unrelated-entry"] = set()
+    owned = registry[entry.entry_id] = set()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stubborn_provider():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    task = asyncio.create_task(stubborn_provider())
+    owned.add(task)
+    task.add_done_callback(owned.discard)
+    await started.wait()
+    try:
+        await asyncio.wait_for(async_remove_entry(hass, entry), timeout=0.5)
+        assert registry.get(entry.entry_id) is owned
+        assert task in owned
+    finally:
+        release.set()
+        await asyncio.wait_for(task, timeout=1)
+        await asyncio.sleep(0)
+    assert entry.entry_id not in registry
+    assert "unrelated-entry" in registry
+
+
+async def test_remove_entry_without_registry_does_not_create_one(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import async_remove_entry
+
+    monkeypatch.setattr(PendingImportStore, "async_remove_storage", AsyncMock())
+    entry = _entry()
+    key = f"{DOMAIN}_notification_tasks"
+    hass.data.pop(key, None)
+    await async_remove_entry(hass, entry)
+    assert key not in hass.data
