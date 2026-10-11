@@ -28,15 +28,20 @@ def activity(transition="review_ready"):
 
 
 @pytest.mark.asyncio
-async def test_post_commit_review_ready_dispatch_is_privacy_safe():
+async def test_post_commit_review_ready_dispatch_is_privacy_safe(caplog):
     sink = AsyncMock(return_value=True)
+    hass = Mock()
+    prefs = preferences()
     with patch(
         "custom_components.daylight_calendar_import.review_ready_notifications.async_send_ha_notification",
         sink,
     ):
-        await async_notify_review_ready(Mock(), activity(), preferences())
-    assert sink.await_count == 1
-    event = sink.await_args.args[1]
+        await async_notify_review_ready(hass, activity(), prefs)
+    sink.assert_awaited_once()
+    actual_hass, event, actual_prefs = sink.await_args.args
+    assert actual_hass is hass
+    assert actual_prefs is prefs
+    assert "Daylight notification delivery failed" not in caplog.text
     assert event.type == "review_ready"
     assert "private-import" not in event.title + event.message
 
@@ -77,7 +82,7 @@ async def test_notification_delivery_failures_are_sanitized(caplog):
             AsyncMock(side_effect=cause),
         ):
             await async_notify_review_ready(Mock(), activity(), preferences())
-    assert caplog.text.count("Daylight notification delivery failed") == 2
+    assert caplog.text.count("Daylight notification delivery failed; verify the configured notify entity") == 2
     assert "private" not in caplog.text
 
 
@@ -95,7 +100,7 @@ async def test_notification_delivery_timeout_is_bounded_and_private(caplog, monk
         blocked,
     ):
         await async_notify_review_ready(Mock(), activity(), preferences())
-    assert "Daylight notification delivery failed" in caplog.text
+    assert "Daylight notification delivery failed; verify the configured notify entity" in caplog.text
 
 
 @pytest.mark.asyncio
