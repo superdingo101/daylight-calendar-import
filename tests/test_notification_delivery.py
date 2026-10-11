@@ -503,3 +503,32 @@ async def test_active_provider_for_one_identity_does_not_block_another(monkeypat
     finally:
         blocker.cancel()
         await asyncio.gather(blocker, return_exceptions=True)
+
+
+def test_journal_filters_ineligible_history_without_losing_later_review_requests(monkeypatch):
+    """Malformed, unrelated and event-level transitions must not stop the scan."""
+    store = runtime(monkeypatch)
+    old = record()
+    # Preserve already-committed notifications when more history is projected.
+    store._notifications = (replace(old, target="notify.phone"),)
+    at = "2026-10-12T12:00:00+00:00"
+
+    def activity(import_id, kind=None, *, event_id=None):
+        transitions = [] if kind is None else [
+            {"type": kind, "at": at, "event_id": event_id}
+        ]
+        return {"id": import_id, "transitions": transitions}
+
+    projected = store._journal_for_activity((
+        activity("empty"),
+        activity("event-only", "review_ready", event_id="event-1"),
+        activity("unrelated", "calendar_created", event_id="event-2"),
+        activity("import-a", "review_ready"),
+        activity("import-a", "review_ready"),  # Same transition in one batch
+        activity("import-b", "review_ready"),
+    ))
+    assert [request.import_id for request in projected] == [
+        old.import_id, "import-a", "import-b",
+    ]
+    assert all(request.target == "notify.phone" for request in projected)
+    assert all(request.event.type == "review_ready" for request in projected)

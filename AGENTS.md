@@ -2,23 +2,20 @@
 
 ## Mutation testing and release gate
 
-- Every pull request runs **incremental** mutation testing (stable `Mutation score` check).
-  It restores a cache when available, but invalidates cached results on changes
-  to existing tests, shared fixtures, dependencies, or behavior-changing
-  configuration. Release-only version-number changes in manifest.json and
-  pyproject.toml do not invalidate mutation results.
-  If no safe PR/recovery/main cache exists, **fail quickly** with instructions
-  to run **Rebuild PR Mutation Cache** from main with that PR number; never
-  launch a 45-minute full run on a routine PR. The explicit rebuild checks
-  the PR's exact merge tree, runs the full mutation suite once, publishes a
-  PR-specific cache. After it succeeds, manually rerun the current PR's
-  failed required `Mutation score` check to validate the saved cache.
-  Never automatically rerun an earlier workflow run: GitHub would retain
-  its old synthetic merge SHA if the PR base changed.
-- Do not delete mutation state in an ordinary PR job: incremental mutmut
-  invalidates changed production functions itself.
+- Ordinary PRs use **uncached, changed-module mutation testing** with a stable
+  `Mutation score` check; compare against the PR's actual base branch, including
+  stacked PRs. New application tests also select source they exercise.
+  Changes to existing tests, shared test helpers, fixtures or dependencies can
+  invalidate results outside a narrow diff and require a full clean fallback.
+  Do not restore the retired PR-baseline rebuilding system.
+- Documentation, frontend or CI-only PRs legitimately have no Python mutations;
+  record the no-op explicitly in the check summary. Keep normal tests required.
+- Full nightly and release validation remain authoritative for the project-wide
+  mutation score; a PR-scoped score only describes its selected modules.
 - The clean full mutation suite runs every night on `main`. The nightly
-  result, diagnostics, and a persistent Mutation Health issue are visible.
+  results and diagnostics stay in Actions. Nightly failures create or update
+  a Mutation Health issue; the next successful run closes it. Successful runs
+  without an open failure alert do not create an issue.
 - The **Update Integration Version** action creates the release-preparation PR,
   runs normal CI through explicit workflow dispatch, and calls the clean
   mutation workflow against the release candidate's exact SHA.
@@ -31,9 +28,9 @@
   cannot authorize publishing unless the source trees still match. Repeat
   release preparation/clean validation when the proof is stale.
 - The legacy `mutation-ready` label is no longer a trigger; do not apply it.
-- The normal 100% coverage gate, minimum mutation score (95.22%), and complete
-  survivor reports remain enforced. Do not bypass required checks or merge a
-  PR with failed incremental mutation tests.
+- The normal 100% coverage gate, minimum mutation score (95.22%) within
+  the measured mutation scope, and survivor diagnostics remain enforced for
+  mutation-relevant PRs. Do not bypass required checks or merge a PR with failures.
 - Keep tests for CI scripts importable under mutmut's isolated `mutants/`
   directory. The `scripts/` helper directory is configured in `also_copy`.
 
