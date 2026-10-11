@@ -4,12 +4,13 @@
 
 - Ordinary PRs use **changed-module mutation testing** with a stable
   `Mutation score` check; compare against the PR's actual base branch, including
-  stacked PRs. New application tests also select source they exercise.
+  stacked PRs. New tests do not expand a production-change PR's mutation
+  scope through package imports; test-only PRs use test-call coverage.
   PR-local mutation results may be reused only when strict provenance validates
   unchanged production inputs, dependency environment, and mutation scope.
-  Strictly appended, undecorated test functions may retain killed verdicts only
-  when they do not shadow earlier module bindings; all non-killed mutants are
-  retested. Modified existing tests, fixtures, shared helpers or dependencies
+  Strictly appended, undecorated test functions or safely isolated new test
+  modules may retain killed verdicts only after fail-closed additive validation;
+  all non-killed mutants are retested. Modified existing tests, fixtures, shared helpers or dependencies
   require a clean fallback. Invalid or missing caches always start clean.
   Do not restore the retired PR-baseline rebuilding system.
 - Documentation, frontend or CI-only PRs legitimately have no Python mutations;
