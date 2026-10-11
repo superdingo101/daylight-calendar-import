@@ -190,7 +190,8 @@ async def test_disabling_notifications_keeps_saved_classes_without_delivery():
     """Disabling does not need a deliverable selection or erase dormant choices."""
     from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
 
-    previous = {"enabled": True, "target": "notify.phone", "classes": ["review_ready"]}
+    previous = {"enabled": True, "target": "notify.phone",
+                "classes": ["review_ready", "parse_failed"]}
     requested = {"enabled": False, "target": "notify.phone",
                  "classes": ["review_ready", "parse_failed"]}
     config_entry = entry(options={CONF_NOTIFICATION_PREFERENCES: previous})
@@ -206,3 +207,33 @@ async def test_disabling_notifications_keeps_saved_classes_without_delivery():
         "classes": ["parse_failed", "review_ready"],
     }
     assert hass.config_entries.reloads == ["entry-1"]
+
+
+@pytest.mark.asyncio
+async def test_disabled_policy_cannot_stage_unsupported_class_for_later_activation():
+    """Reject the two-request bypass through a disabled policy."""
+    from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
+
+    config_entry = entry()
+    hass = hass_for(config_entry)
+    connection = FakeConnection()
+    previous = {"enabled": False, "target": None, "classes": []}
+    await invoke(settings_api.websocket_update_notifications, hass, connection, {
+        "id": 360, "entry_id": "entry-1",
+        "expected_notifications": previous,
+        "notifications": {"enabled": False, "target": "notify.phone",
+                          "classes": ["parse_failed"]},
+    })
+    assert connection.errors[0][1] == "invalid_notifications"
+    assert CONF_NOTIFICATION_PREFERENCES not in config_entry.options
+    assert hass.config_entries.reloads == []
+
+    # A disabled policy may still add the one class we can actually deliver.
+    await invoke(settings_api.websocket_update_notifications, hass, connection, {
+        "id": 361, "entry_id": "entry-1",
+        "expected_notifications": previous,
+        "notifications": {"enabled": False, "target": "notify.phone",
+                          "classes": ["review_ready"]},
+    })
+    assert len(connection.errors) == 1
+    assert config_entry.options[CONF_NOTIFICATION_PREFERENCES]["classes"] == ["review_ready"]
