@@ -21,7 +21,7 @@ from .dedup import (
 )
 from .models import EventDraft, normalize_date_time_assumptions
 from .notification_journal import NotificationRecord, notification_record
-from .notification_preferences import NotificationPreferences
+from .notification_preferences import NotificationPreferences, DELIVERABLE_NOTIFICATION_CLASSES
 from .source_routing import LEGACY_UNRESOLVED_WARNINGS
 
 _LOGGER = logging.getLogger(__name__)
@@ -426,7 +426,7 @@ class PendingImportStore:
             return True
 
     def _journal_for_activity(self, activity: tuple[dict[str, Any], ...]) -> tuple[NotificationRecord, ...]:
-        """Enqueue newly committed review-ready transitions only with live consent."""
+        """Enqueue newly committed supported outcomes only with live consent."""
         policy = self.notification_preferences()
         journal = self._notifications
         known = {record.event.idempotency_key for record in journal}
@@ -436,11 +436,12 @@ class PendingImportStore:
             if not transitions:
                 continue
             transition = transitions[-1]
-            if (transition.get("type") != "review_ready" or transition.get("event_id") is not None
+            request = notification_record(record, transition)
+            if (request is None or request.event.type not in DELIVERABLE_NOTIFICATION_CLASSES
+                    or (request.event.type == "review_ready" and request.event_id is not None)
                     or transition in previous.get(record["id"], {}).get("transitions", ())):
                 continue
-            request = notification_record(record, transition)
-            if request is not None and policy.permits(request.event.type):
+            if policy.permits(request.event.type):
                 key = request.event.idempotency_key
                 if key not in known:
                     journal += (replace(request, target=policy.target),)

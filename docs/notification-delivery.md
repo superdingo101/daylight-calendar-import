@@ -46,3 +46,12 @@ journal persistence to finish before a new snapshot may load; provider
 cancellation itself is bounded. A crash after HA accepts a call but before its
 result is saved can repeat that notification. Calendar lifecycle truth is never
 changed by delivery failures.
+
+## Calendar-created outcomes
+
+The event-added category is independently opt-in. Its request is committed in
+the same envelope as a confirmed calendar-created outcome, including an
+explicit user confirmation that an uncertain write did create the event.
+Write-started checkpoints, ambiguous provider exceptions, and calendar calls
+whose final outcome cannot be saved never produce an event-added notification.
+The delivered message contains no event title, source content or calendar name.
