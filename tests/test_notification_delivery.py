@@ -398,3 +398,108 @@ async def test_terminal_commit_logs_even_when_caller_cancelled(monkeypatch, capl
     assert "import-1" not in caplog.text and "notify.phone" not in caplog.text
     assert await store.async_update_notification(terminal, terminal)
     assert caplog.text.count("retry budget exhausted") == 1
+
+
+@pytest.mark.parametrize("first_state", ["sent", "policy", "exhausted", "deferred"])
+async def test_delivery_continues_after_independent_unactionable_requests(monkeypatch, first_state):
+    """A terminal, revoked or deferred notification cannot block its successor."""
+    store = runtime(monkeypatch)
+    first = replace(record(), import_id="import-first", target="notify.phone")
+    if first_state == "sent":
+        first = replace(first, status="sent")
+    elif first_state == "policy":
+        first = replace(first, target="notify.other")
+    elif first_state == "exhausted":
+        first = replace(first, attempts=delivery.MAX_ATTEMPTS)
+    else:
+        first = replace(first, next_attempt_at=(datetime.now(UTC) + timedelta(hours=1)).isoformat())
+    second = replace(record(), import_id="import-second", target="notify.phone")
+    assert await store.async_enqueue_notification(first)
+    assert await store.async_enqueue_notification(second)
+    sink = AsyncMock(return_value=True)
+    monkeypatch.setattr(delivery, "async_send_ha_notification", sink)
+    await run(store)
+    current_first, current_second = store.list_notifications()
+    assert current_second.status == "sent" and current_second.attempts == 1
+    sink.assert_awaited_once()
+    if first_state == "policy":
+        assert current_first.status == "cancelled"
+        assert current_first.failure == "policy_changed"
+    elif first_state == "exhausted":
+        assert current_first.status == "failed"
+        assert current_first.failure == "delivery_interrupted"
+    elif first_state == "deferred":
+        assert current_first.attempts == 0
+
+
+async def test_failed_comparison_on_one_notification_does_not_block_next(monkeypatch):
+    store = runtime(monkeypatch)
+    first = replace(record(), import_id="import-first", target="notify.phone")
+    second = replace(record(), import_id="import-second", target="notify.phone")
+    await store.async_enqueue_notification(first)
+    await store.async_enqueue_notification(second)
+    original_update = store.async_update_notification
+
+    async def update(expected, updated):
+        if expected.import_id == "import-first":
+            return False
+        return await original_update(expected, updated)
+
+    monkeypatch.setattr(store, "async_update_notification", update)
+    sink = AsyncMock(return_value=True)
+    monkeypatch.setattr(delivery, "async_send_ha_notification", sink)
+    await run(store)
+    assert store.list_notifications()[0].attempts == 0
+    assert store.list_notifications()[1].status == "sent"
+    sink.assert_awaited_once()
+
+
+async def test_delivery_checkpoint_records_a_future_retry_deadline(monkeypatch):
+    store = runtime(monkeypatch)
+    await enqueue(store)
+    sink = AsyncMock(return_value=True)
+    monkeypatch.setattr(delivery, "async_send_ha_notification", sink)
+    before = datetime.now(UTC)
+    await run(store)
+    request = store.list_notifications()[0]
+    deadline = datetime.fromisoformat(request.next_attempt_at)
+    assert timedelta(seconds=delivery.RETRY_SECONDS - 5) < deadline - before
+    assert deadline - before < timedelta(seconds=delivery.RETRY_SECONDS + 5)
+
+
+async def test_delivery_is_due_at_exact_retry_deadline(monkeypatch):
+    deadline = datetime(2026, 10, 11, 1, tzinfo=UTC)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return deadline
+
+    store = runtime(monkeypatch)
+    await enqueue(store, next_attempt_at=deadline.isoformat())
+    sink = AsyncMock(return_value=True)
+    monkeypatch.setattr(delivery, "datetime", FrozenDateTime)
+    monkeypatch.setattr(delivery, "async_send_ha_notification", sink)
+    await run(store)
+    sink.assert_awaited_once()
+    assert store.list_notifications()[0].status == "sent"
+
+
+async def test_active_provider_for_one_identity_does_not_block_another(monkeypatch):
+    store = runtime(monkeypatch)
+    first = replace(record(), import_id="import-first", target="notify.phone")
+    second = replace(record(), import_id="import-second", target="notify.phone")
+    await store.async_enqueue_notification(first)
+    await store.async_enqueue_notification(second)
+    blocker = asyncio.create_task(asyncio.Event().wait(), name=f"Daylight notify {first.event.idempotency_key}")
+    store.notification_tasks.add(blocker)
+    sink = AsyncMock(return_value=True)
+    monkeypatch.setattr(delivery, "async_send_ha_notification", sink)
+    try:
+        await run(store)
+        assert store.list_notifications()[0].attempts == 0
+        assert store.list_notifications()[1].status == "sent"
+        sink.assert_awaited_once()
+    finally:
+        blocker.cancel()
+        await asyncio.gather(blocker, return_exceptions=True)
