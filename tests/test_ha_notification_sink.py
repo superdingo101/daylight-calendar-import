@@ -78,8 +78,9 @@ async def test_no_target_skips_delivery():
 @pytest.mark.asyncio
 async def test_missing_notify_service_fails_closed():
     hass = hass_with_notify(has_service=False)
-    with pytest.raises(NotificationDeliveryError, match="service unavailable"):
+    with pytest.raises(NotificationDeliveryError) as caught:
         await async_send_ha_notification(hass, event(), policy())
+    assert str(caught.value) == "Home Assistant notification service unavailable"
     hass.services.async_call.assert_not_awaited()
 
 
@@ -87,8 +88,9 @@ async def test_missing_notify_service_fails_closed():
 async def test_missing_notify_component_fails_closed():
     hass = hass_with_notify()
     hass.data.clear()
-    with pytest.raises(NotificationDeliveryError, match="entity unavailable"):
+    with pytest.raises(NotificationDeliveryError) as caught:
         await async_send_ha_notification(hass, event(), policy())
+    assert str(caught.value) == "Selected Home Assistant notification entity unavailable"
     hass.services.async_call.assert_not_awaited()
 
 
@@ -140,8 +142,9 @@ async def test_provider_availability_exception_is_sanitized():
 @pytest.mark.asyncio
 async def test_provider_service_failure_cannot_leak_exception_details():
     hass = hass_with_notify(error=RuntimeError("private-endpoint-and-token"))
-    with pytest.raises(NotificationDeliveryError, match="service call failed") as caught:
+    with pytest.raises(NotificationDeliveryError) as caught:
         await async_send_ha_notification(hass, event(), policy())
+    assert str(caught.value) == "Home Assistant notification service call failed"
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
     assert "private-endpoint-and-token" not in "".join(traceback.format_exception(caught.value))
