@@ -30,18 +30,18 @@ jobs:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: python scripts/pr_mutation.py prepare --base "$PR_BASE" --head "$PR_HEAD"
       - name: Discard previous mutation state
-        if: ${{ steps.scope.outputs.mode != 'skip' }}
+        if: ${{ (steps.scope.outputs.mode == 'scoped' || steps.scope.outputs.mode == 'full') }}
         run: rm -rf mutants
       - name: Run mutations for changed modules
-        if: ${{ steps.scope.outputs.mode != 'skip' }}
+        if: ${{ (steps.scope.outputs.mode == 'scoped' || steps.scope.outputs.mode == 'full') }}
         run: mutmut run
       - name: Enforce scoped mutation quality
-        if: ${{ steps.scope.outputs.mode != 'skip' }}
+        if: ${{ (steps.scope.outputs.mode == 'scoped' || steps.scope.outputs.mode == 'full') }}
         run: |
           mutmut export-cicd-stats
           python scripts/check_mutation_score.py
       - name: Export mutation survivor diagnostics
-        if: ${{ always() && steps.scope.outputs.mode != 'skip' }}
+        if: ${{ always() && (steps.scope.outputs.mode == 'scoped' || steps.scope.outputs.mode == 'full') }}
         run: python scripts/export_mutation_survivors.py
       - name: Restore mutation configuration
         if: always()
