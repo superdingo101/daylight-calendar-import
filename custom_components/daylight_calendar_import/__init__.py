@@ -34,6 +34,7 @@ from .const import (
     SERVICE_EDIT_PENDING_EVENT,
     SERVICE_GET_PENDING,
     SERVICE_REPROCESS_PENDING,
+    SERVICE_RESET_DEDUPLICATION,
     SERVICE_GET_PENDING_EVENT,
     SERVICE_CHECK_PENDING_EVENT,
     SERVICE_IMPORT_TEXT,
@@ -91,6 +92,7 @@ _ENTRY_SERVICES = (
     SERVICE_GET_ACTIVITY,
     SERVICE_GET_PENDING,
     SERVICE_REPROCESS_PENDING,
+    SERVICE_RESET_DEDUPLICATION,
     SERVICE_GET_PENDING_EVENT,
     SERVICE_CHECK_PENDING_EVENT,
     SERVICE_EDIT_PENDING_EVENT,
@@ -118,6 +120,12 @@ SUBMIT_SCHEMA = vol.Schema(
         ),
     }
 )
+RESET_DEDUPLICATION_SCHEMA = vol.Schema(vol.Any(
+    {vol.Required(ATTR_SOURCE_ID): vol.All(
+        cv.string, lambda value: value.strip(), vol.Length(min=1, max=2048),
+    )},
+    {vol.Required("event"): dict},
+))
 SUBMIT_IMAGE_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_FILE_ID): vol.All(cv.string, vol.Match(r"^[0-9a-f]{32}$")),
@@ -588,6 +596,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for calendar_entity in allowed_calendars:
             await _async_check_entity_control_permission(hass, calendar_entity, call.context)
 
+    async def handle_reset_deduplication(call: ServiceCall) -> ServiceResponse:
+        """Authorize an explicit reset of one handled source or event identity."""
+        await check_read_permission(call)
+        try:
+            event = EventDraft.from_mapping(call.data["event"]) if "event" in call.data else None
+        except DraftValidationError as err:
+            raise ServiceValidationError("Invalid event draft for deduplication reset") from err
+        try:
+            reset = await pending_store.async_reset_deduplication(
+                source_id=call.data.get(ATTR_SOURCE_ID), event=event,
+            )
+        except PendingEventEditError as err:
+            raise ServiceValidationError(str(err)) from err
+        return {"reset": reset, "kind": "source" if event is None else "event"}
+
     async def handle_reprocess_pending(call: ServiceCall) -> ServiceResponse:
         """Explicitly reparse available source text without replacing user work."""
         await check_read_permission(call)
@@ -915,6 +938,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.services.async_register(
             DOMAIN, SERVICE_GET_ACTIVITY, tracked(handle_get_activity),
             schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_RESET_DEDUPLICATION, tracked(handle_reset_deduplication),
+            schema=RESET_DEDUPLICATION_SCHEMA, supports_response=SupportsResponse.ONLY,
         )
         hass.services.async_register(
             DOMAIN, SERVICE_REPROCESS_PENDING, tracked(handle_reprocess_pending),

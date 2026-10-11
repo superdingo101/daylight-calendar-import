@@ -285,3 +285,18 @@ reprocess_pending:
       required: true
       selector:
         text:
+
+reset_deduplication:
+  name: Reset one deduplication identity
+  description: Explicitly forget exactly one handled source or event fingerprint. Supply either source_id or event, never both. Pending, uncertain, or processing targets are refused. Other history and pending work remain unchanged; no calendar event is created or deleted. Requires authenticated control access to the AI Task and every allowed calendar.
+  fields:
+    source_id:
+      name: Source ID
+      description: Original stable upstream identifier whose handled source fingerprint should be forgotten. Omit event when using this field.
+      selector:
+        text:
+    event:
+      name: Event draft
+      description: Full validated event draft whose handled event fingerprint should be forgotten. Omit source_id when using this field.
+      selector:
+        object:
