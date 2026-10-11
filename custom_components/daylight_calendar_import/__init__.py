@@ -599,7 +599,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 text=original.source_text, title=original.source_title,
             )
             route = route_review_source(source)
-            outcome = await _async_parse_source(hass, route.parser_source, ai_task_entity)
+            outcome = await _async_parse_source(
+                hass, route.parser_source, ai_task_entity,
+                reference_datetime=source.received_at,
+            )
             assumptions = outcome.event_assumptions or ((),) * len(outcome.events)
             candidates = tuple(PendingEvent.create(
                 event, route.calendar_entity,
@@ -1106,6 +1109,8 @@ async def _async_parse_source(
     hass: HomeAssistant,
     source: SourceDocument,
     ai_task_entity: str,
+    *,
+    reference_datetime: datetime | None = None,
 ) -> ParseOutcome:
     """Feed a normalized source into the current text parser boundary."""
     if source.text is None and not source.attachments:
@@ -1117,6 +1122,7 @@ async def _async_parse_source(
         hass,
         source=source,
         ai_task_entity=ai_task_entity,
+        **({"reference_datetime": reference_datetime} if reference_datetime is not None else {}),
     )
 
 

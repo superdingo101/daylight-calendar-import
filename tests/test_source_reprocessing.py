@@ -199,3 +199,27 @@ async def test_service_no_events_preserves_existing_review(monkeypatch):
     result = await handler(SimpleNamespace(data={'pending_id':item.id}, context=Context(user_id='user')))
     assert result['added_events'] == result['duplicate_events'] == 0
     assert store.get(item.id).events == item.events
+
+async def test_reprocessing_passes_retained_reference_through_actual_parser(monkeypatch):
+    from custom_components.daylight_calendar_import.providers import AITaskParserProvider
+    store, handler = await setup_service(monkeypatch)
+    item = (await store.async_add(source_text='tomorrow', events=[draft()])).pending
+    # Freeze an older source reference rather than the date of this later request.
+    retained = replace(item, created_at='2026-10-01T02:30:00+00:00')
+    store._items[item.id] = retained
+    provider = AsyncMock(return_value=ParseOutcome([], []))
+    monkeypatch.setattr(AITaskParserProvider, 'async_parse', provider)
+    result = await handler(SimpleNamespace(data={'pending_id':item.id}, context=Context(user_id='user')))
+    assert result['added_events'] == 0
+    assert provider.await_args.kwargs['reference_datetime'] == '2026-09-30T19:30:00-07:00'
+    assert provider.await_args.kwargs['time_zone'] == 'America/Los_Angeles'
+
+
+async def test_parser_rejects_naive_explicit_reference():
+    from datetime import datetime
+    from custom_components.daylight_calendar_import.parser import async_parse_source
+    from custom_components.daylight_calendar_import.sources import TextSourceAdapter
+    hass = FakeHass()
+    with pytest.raises(ValueError, match='time zone'):
+        await async_parse_source(hass, source=TextSourceAdapter().create('tomorrow'),
+                                 ai_task_entity='ai_task.test', reference_datetime=datetime(2026,10,1))
