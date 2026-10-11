@@ -46,7 +46,9 @@ def changed_paths(base: str, head: str, kind: str = "ACMRTD") -> set[str]:
 def _executed_function_lines(path: str, lines: set[int]) -> bool:
     """Reject package-import/module declaration coverage as a mutation target.
 
-    Only executed statement lines *inside* production functions count. Import
+    Only executed statement lines *inside* production functions count. One-line
+    function definitions are conservatively ignored because their definition
+    and return execute at the same source line. Import
     time line hits (including module-level import effects) are not a test
     exercising production behavior.
     """
@@ -54,7 +56,7 @@ def _executed_function_lines(path: str, lines: set[int]) -> bool:
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for statement in node.body:
-                if any(statement.lineno <= line <= statement.end_lineno
+                if any(node.lineno < statement.lineno <= line <= statement.end_lineno
                        for line in lines):
                     return True
     return False
