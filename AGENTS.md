@@ -9,7 +9,7 @@
   PR-local mutation results may be reused only when strict provenance validates
   unchanged production inputs, dependency environment, and mutation scope.
   Strictly appended, undecorated test functions or safely isolated new test
-  modules may retain killed verdicts only after fail-closed additive validation;
+  modules (including static pytest parametrization) may retain killed verdicts only after fail-closed additive validation;
   all non-killed mutants are retested. Modified existing tests, fixtures, shared helpers or dependencies
   require a clean fallback. Invalid or missing caches always start clean.
   Do not restore the retired PR-baseline rebuilding system.
