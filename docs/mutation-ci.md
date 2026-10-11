@@ -3,8 +3,8 @@
 ## Pull requests: scoped mutation testing
 
 The required `Mutation score` check no longer requires a compatible GitHub
-mutation-results cache. It calculates changes between the PR's actual base SHA
-and head SHA, supporting stacked pull requests.
+mutation-results cache. It uses a merge-base (three-dot) diff between the PR's actual base SHA
+and head SHA, supporting stacked pull requests even when their base advances.
 
 - Production Python changes: mutate only the changed Python modules using
   mutmut's `only_mutate` configuration. All tests remain discoverable by mutmut
