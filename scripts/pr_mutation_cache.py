@@ -130,11 +130,49 @@ def previously_bound_names(nodes: list[ast.stmt]) -> set[str] | None:
     return names
 
 
-def _standalone_test(node: ast.stmt, used_names: set[str]) -> bool:
-    """No decorators/defaults/annotations or shadowing at collection time."""
+def _safe_parametrize(node: ast.expr) -> bool:
+    """New tests may use literal pytest parametrization without executing code.
+
+    Reject arbitrary decorators, fixtures, dynamic argument expressions, ids
+    callbacks, etc. Marking only a newly added function cannot replace an old
+    test or change an existing fixture.
+    """
+    if not isinstance(node, ast.Call) or node.keywords or len(node.args) != 2:
+        return False
+    func = node.func
+    if not (isinstance(func, ast.Attribute) and func.attr == "parametrize"
+            and isinstance(func.value, ast.Attribute)
+            and func.value.attr == "mark"
+            and isinstance(func.value.value, ast.Name)
+            and func.value.value.id == "pytest"):
+        return False
+    try:
+        arguments = ast.literal_eval(node.args[0])
+        cases = ast.literal_eval(node.args[1])
+    except (ValueError, TypeError, MemoryError, RecursionError):
+        return False
+    names = (
+        tuple(part.strip() for part in arguments.split(","))
+        if isinstance(arguments, str) else arguments
+    )
+    return (isinstance(names, (list, tuple))
+            and bool(names)
+            and all(isinstance(name, str) and name.isidentifier() for name in names)
+            and isinstance(cases, (list, tuple))
+            and bool(cases))
+
+
+def _standalone_test(
+    node: ast.stmt, used_names: set[str], *, new_module: bool = False,
+) -> bool:
+    """No runtime collection effects or shadowing; simple static marks allowed."""
     if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return False
-    if not node.name.startswith("test_") or node.decorator_list:
+    if not node.name.startswith("test_"):
+        return False
+    if node.decorator_list and not (
+        new_module and all(_safe_parametrize(dec) for dec in node.decorator_list)
+    ):
         return False
     if node.name in used_names or node.args.defaults or any(
         default is not None for default in node.args.kw_defaults
@@ -182,7 +220,7 @@ def _safe_new_module(name: str, old: dict[str, list[str]]) -> bool:
                     if f"tests/{root}.py" not in old:
                         return False
                 elif root not in {
-                    "asyncio", "collections", "contextlib", "dataclasses",
+                    "__future__", "asyncio", "collections", "contextlib", "dataclasses",
                     "datetime", "functools", "inspect", "itertools", "json",
                     "pathlib", "re", "types", "typing", "unittest", "uuid",
                     "zoneinfo", "pytest", "homeassistant", "custom_components",
@@ -200,7 +238,7 @@ def _safe_new_module(name: str, old: dict[str, list[str]]) -> bool:
                     return False
                 names.add(bound)
             continue
-        if not _standalone_test(node, names):
+        if not _standalone_test(node, names, new_module=True):
             return False
         seen_test = True
     return seen_test
