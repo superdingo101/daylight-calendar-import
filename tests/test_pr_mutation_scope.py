@@ -350,3 +350,9 @@ def test_import_inside_test_does_not_select_other_module_definitions(
         "    assert lazy is not None\n"
     )
     assert pr_mutation.test_coverage([str(test_file)]) == set()
+
+
+    # Runtime imports execute the function's definition line. For one-line
+    # functions the definition and return share a line, so avoid false scope.
+    (pkg / "lazy.py").write_text("def not_called(): return 17\n")
+    assert pr_mutation.test_coverage([str(test_file)]) == set()
