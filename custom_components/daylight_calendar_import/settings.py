@@ -16,6 +16,7 @@ from .const import (
     CONF_CALENDAR_ENTITY,
     CONF_CALENDAR_ALIASES,
     CONF_CONFLICT_CALENDAR_ENTITIES,
+    CONF_NOTIFICATION_PREFERENCES,
     CONF_EMAIL_ENABLED,
     CONF_EMAIL_HOST,
     CONF_EMAIL_MAILBOX,
@@ -33,6 +34,12 @@ from .direct_imap import (
     DirectImapSource,
 )
 from .email_safety import normalize_sender_allowlist
+from .notification_preferences import (
+    NotificationPreferences,
+    NotificationPreferencesError,
+    normalize_notification_preferences,
+    notification_preferences_snapshot,
+)
 from .email_runtime import (
     DEFAULT_EMAIL_MAILBOX,
     DEFAULT_EMAIL_PORT,
@@ -252,6 +259,32 @@ def email_settings_snapshot(options: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def effective_notification_preferences(entry: ConfigEntry) -> NotificationPreferences:
+    """Read effective options with legacy fallback, failing closed on corrupt state."""
+    raw = entry.options.get(
+        CONF_NOTIFICATION_PREFERENCES,
+        entry.data.get(CONF_NOTIFICATION_PREFERENCES, {}),
+    )
+    try:
+        return normalize_notification_preferences(raw)
+    except NotificationPreferencesError:
+        return NotificationPreferences()
+
+
+def notification_preferences_patch(
+    entry: ConfigEntry, submitted: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate the complete notification policy; never infer opt-in."""
+    try:
+        requested = normalize_notification_preferences(submitted)
+    except NotificationPreferencesError as err:
+        raise SettingsValidationError("invalid_notifications", str(err)) from err
+    normalized = notification_preferences_snapshot(requested)
+    if normalized == notification_preferences_snapshot(effective_notification_preferences(entry)):
+        return {}
+    return {CONF_NOTIFICATION_PREFERENCES: normalized}
+
+
 def settings_snapshot(entry: ConfigEntry) -> dict[str, Any]:
     """Return the complete secret-safe settings view for one entry."""
     ai_task_entity, default_calendar, allowed_calendars = effective_core_options(entry)
@@ -264,6 +297,7 @@ def settings_snapshot(entry: ConfigEntry) -> dict[str, Any]:
         "calendar_entity": default_calendar,
         "calendar_entities": allowed_calendars,
         "email": email_settings_snapshot(entry.options),
+        "notifications": notification_preferences_snapshot(effective_notification_preferences(entry)),
     }
 
 

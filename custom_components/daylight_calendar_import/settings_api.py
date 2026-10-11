@@ -33,6 +33,7 @@ from .settings import (
     async_validate_email_options,
     core_option_patch,
     calendar_intelligence_patch,
+    notification_preferences_patch,
     effective_core_options,
     settings_lock,
     settings_snapshot,
@@ -42,6 +43,7 @@ WS_GET_SETTINGS = f"{DOMAIN}/settings/get"
 WS_UPDATE_CORE_SETTINGS = f"{DOMAIN}/settings/core/update"
 WS_UPDATE_EMAIL_SETTINGS = f"{DOMAIN}/settings/email/update"
 WS_UPDATE_CALENDAR_INTELLIGENCE = f"{DOMAIN}/settings/calendar_intelligence/update"
+WS_UPDATE_NOTIFICATIONS = f"{DOMAIN}/settings/notifications/update"
 
 
 def _entry_for_message(hass: HomeAssistant, msg: dict[str, Any]) -> ConfigEntry:
@@ -228,6 +230,31 @@ async def websocket_update_calendar_intelligence(
     connection.send_result(msg["id"], settings_snapshot(entry))
 
 
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    "type": WS_UPDATE_NOTIFICATIONS,
+    vol.Required("entry_id"): cv.string,
+    vol.Required("notifications"): dict,
+})
+@websocket_api.async_response
+async def websocket_update_notifications(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update the full opt-in notification policy under the settings lock."""
+    try:
+        entry = _entry_for_message(hass, msg)
+        async with settings_lock(hass, entry.entry_id):
+            patch = notification_preferences_patch(entry, msg["notifications"])
+            if patch:
+                await async_save_option_patch(hass, entry, patch)
+    except SettingsValidationError as err:
+        _send_validation_error(connection, msg, err)
+        return
+    connection.send_result(msg["id"], settings_snapshot(entry))
+
+
 @callback
 def async_register_settings_api(hass: HomeAssistant) -> None:
     """Register the Daylight settings WebSocket commands once."""
@@ -235,3 +262,4 @@ def async_register_settings_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_update_core_settings)
     websocket_api.async_register_command(hass, websocket_update_email_settings)
     websocket_api.async_register_command(hass, websocket_update_calendar_intelligence)
+    websocket_api.async_register_command(hass, websocket_update_notifications)
