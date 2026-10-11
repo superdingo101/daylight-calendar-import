@@ -99,13 +99,30 @@ def additive(old: dict[str, list[str]], new: dict[str, list[str]]) -> bool:
             return False
         if len(current) == len(old_nodes):
             continue
-        # Inspect actual AST to validate only the appended nodes.
+        # Inspect actual AST to validate only the appended nodes.  New
+        # definitions must not shadow an existing test or execute expressions
+        # during collection (decorators, defaults, runtime annotations).
         nodes = ast.parse(Path(name).read_bytes(), filename=name).body
+        used_names = {
+            node.name for node in nodes[:len(old_nodes)]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
         for node in nodes[len(old_nodes):]:
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 return False
             if not node.name.startswith("test_") or node.decorator_list:
                 return False
+            if node.name in used_names or node.args.defaults or any(
+                default is not None for default in node.args.kw_defaults
+            ) or node.returns is not None or node.type_params:
+                return False
+            arguments = [
+                *node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs,
+            ]
+            arguments.extend(arg for arg in (node.args.vararg, node.args.kwarg) if arg)
+            if any(arg.annotation is not None for arg in arguments):
+                return False
+            used_names.add(node.name)
     return True
 
 
