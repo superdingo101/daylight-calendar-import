@@ -28,7 +28,7 @@ and head SHA, supporting stacked pull requests even when their base advances.
   ASTs are unchanged and additions consist only of undecorated standalone
   `test_*` functions appended to existing modules **or** entirely new, isolated
   `tests/test_*.py` modules with a static docstring, allowlisted imports and
-  undecorated test functions. The new module may import an existing test helper
+  standalone test functions (optionally using only literal pytest parametrization). The new module may import an existing test helper
   or established package, but cannot add fixtures, hooks, classes, decorators,
   module assignments, wildcard/dynamic imports, or executable collection code.
   Uncertain additions, modified/deleted tests or changed production/dependency
