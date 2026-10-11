@@ -51,11 +51,33 @@ jobs:
             echo "valid=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # A stale PR-specific cache must not prevent GitHub from attempting the
-      # independent main-branch baseline. Cache keys are immutable and the
-      # restore action otherwise stops at the first matching prefix.
-      - name: Restore main mutation baseline
+      # A deliberately rebuilt baseline is saved on the default branch under
+      # a PR-specific prefix. Try it separately: stale PR-ref caches otherwise
+      # shadow valid rebuild caches on the default branch.
+      - name: Restore rebuilt PR mutation baseline
         if: ${{ steps.pr-cache.outputs.valid != 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: mutants
+          key: mutmut-v2-linux-py314-v380-rebuild-pr-${{ github.event.pull_request.number }}-${{ github.sha }}-${{ github.run_id }}
+          # Prefer recovery built for this exact synthetic PR merge tree.
+          restore-keys: |
+            mutmut-v2-linux-py314-v380-rebuild-pr-${{ github.event.pull_request.number }}-${{ github.sha }}-
+            mutmut-v2-linux-py314-v380-rebuild-pr-${{ github.event.pull_request.number }}-
+
+      - name: Validate rebuilt PR mutation baseline
+        if: ${{ steps.pr-cache.outputs.valid != 'true' }}
+        id: rebuilt-cache
+        run: |
+          python scripts/mutation_cache.py validate
+          if [ -f mutants/mutation-cache-provenance.json ]; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A stale PR-specific cache must not prevent trying a recovery baseline
+      # and the independently saved main-branch nightly baseline.
+      - name: Restore main mutation baseline
+        if: ${{ steps.pr-cache.outputs.valid != 'true' && steps.rebuilt-cache.outputs.valid != 'true' }}
         uses: actions/cache/restore@v4
         with:
           path: mutants
@@ -64,7 +86,7 @@ jobs:
             mutmut-v2-linux-py314-v380-main-
 
       - name: Validate main mutation baseline
-        if: ${{ steps.pr-cache.outputs.valid != 'true' }}
+        if: ${{ steps.pr-cache.outputs.valid != 'true' && steps.rebuilt-cache.outputs.valid != 'true' }}
         run: python scripts/mutation_cache.py validate
 
       # Ordinary PRs must not silently turn a cache miss into a 45–60-minute
@@ -72,10 +94,10 @@ jobs:
       - name: Require reusable mutation baseline
         run: |
           if [ ! -f mutants/mutation-cache-provenance.json ]; then
-            echo "::error title=Mutation baseline unavailable::Both PR and main caches were missing or incompatible. Run the Clean mutation validation workflow on main (leave inputs blank), then rerun this PR check. Ordinary PRs never run the full suite."
+            echo "::error title=Mutation baseline unavailable::No compatible PR, PR-rebuild or main mutation cache. Use Actions -> Rebuild PR Mutation Cache on main with this PR number; a clean main run only helps if the PR did not change existing tests, fixtures or dependencies."
             exit 1
           fi
-          echo "Verified compatible PR or main mutation cache: incremental test permitted."
+          echo "Verified a compatible PR, recovery, or main cache: incremental test permitted."
 
       - name: Run incremental mutations
         run: mutmut run

@@ -21,8 +21,8 @@
 
 ## Incremental cache behavior
 
-Ordinary PRs first try caches scoped to that PR, then compatible nightly
-baselines from `main`. GitHub Actions caches are immutable and PR caches
+Ordinary PRs first try caches scoped to that PR, then explicitly rebuilt
+PR caches from the default branch, then compatible nightly baselines from `main`. GitHub Actions caches are immutable and PR caches
 cannot generally be shared with another PR. Every successful PR run saves
 a uniquely keyed state for its next update. The nightly clean job publishes
 the default-branch baseline.
@@ -65,13 +65,36 @@ The PR job attempts its own prior cache first, then a separately restored
 trusted `main` cache if the PR cache is stale or unavailable. GitHub checkout
 fetches complete Git history for legacy cache verification.
 
-**PR jobs never start a full mutation run on a cache miss.** Both failed
-cache-validation attempts cause an immediate failed `Mutation score` check
-with instructions to manually run **Clean mutation validation** on `main`
-(with both optional fields empty). After that successful clean baseline is
-published, rerun the PR's mutation check. This avoids wasting 45–60 minutes
-on every PR update during cache incompatibility while still blocking a merge
-on missing validation.
+**PR jobs never start a full mutation run on a cache miss.** They try
+the previous PR cache, an explicitly rebuilt PR cache saved on the default
+branch, and the shared nightly `main` cache, in that order. If none passes
+provenance validation, the required `Mutation score` check fails immediately.
+
+To recover, open **Actions → Rebuild PR Mutation Cache → Run workflow**.
+Select `main` and enter the **open PR number**. The workflow accepts same-repo
+PRs (including stacked PRs), pins GitHub's **exact PR merge commit**, and
+performs one intentionally full, uncached 60-minute mutation run. It verifies
+the normal score and completeness gates, confirms neither the PR head nor
+its base/merge tree changed, and stamps a PR-specific recovery cache under
+`mutmut-v2-linux-py314-v380-rebuild-pr-<PR number>-`. That cache is saved by
+the default-branch dispatch so the selected PR's next run can restore it.
+Other PRs cannot accidentally select it.
+
+On success, the recovery workflow records a separate `PR Mutation Cache Rebuild`
+status (it does **not** impersonate the required `Mutation score` check).
+Open the **current PR's failed Mutation score check**, confirm its head/base
+are current, and select **Re-run jobs**. The ordinary check then restores
+the recovery cache, validates it, and records the required passing
+`Mutation score`. This deliberate manual retry avoids GitHub's limitation
+that automatically rerunning an old workflow retains its old synthetic merge
+commit even after a PR's base changes.
+
+**Do not rerun a full main baseline repeatedly for a PR-specific mismatch.**
+Changes to existing tests, fixtures and dependencies may require a new
+PR-specific baseline, which the recovery workflow supplies. A recovery run
+that fails its mutation score or detects a moving PR head never publishes
+a cache. This design prevents routine commits from triggering 45–60-minute
+clean mutation jobs while keeping merges blocked until mutation testing passes.
 
 PR mutation jobs are capped at 25 minutes, including setup; clean nightly
 and release validation retain a 60-minute timeout. No cache is saved if

@@ -31,9 +31,11 @@ FRONTEND = SOURCE + "frontend/"
 # of the production integration during the mutmut runner.
 CACHE_HELPERS = {
     "AGENTS.md",
+    ".github/workflows/rebuild-pr-mutation-cache.yml",
     "scripts/mutation_cache.py",
     "tests/test_mutation_ci_strategy.py",
     "tests/test_mutation_cache_reuse.py",
+    "tests/test_pr_mutation_rebuild_workflow.py",
 }
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 VERSION_ONLY_FILES = {
@@ -145,6 +147,8 @@ _CACHE_ONLY_STEPS = {
     "Validate mutation cache provenance",
     "Restore PR mutation cache",
     "Validate PR mutation cache",
+    "Restore rebuilt PR mutation baseline",
+    "Validate rebuilt PR mutation baseline",
     "Restore main mutation baseline",
     "Validate main mutation baseline",
     "Require reusable mutation baseline",

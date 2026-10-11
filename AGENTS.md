@@ -7,8 +7,14 @@
   to existing tests, shared fixtures, dependencies, or behavior-changing
   configuration. Release-only version-number changes in manifest.json and
   pyproject.toml do not invalidate mutation results.
-  If no safe PR/main cache exists, **fail quickly** with instructions to run
-  a clean main validation; never launch a 45-minute full run on a routine PR.
+  If no safe PR/recovery/main cache exists, **fail quickly** with instructions
+  to run **Rebuild PR Mutation Cache** from main with that PR number; never
+  launch a 45-minute full run on a routine PR. The explicit rebuild checks
+  the PR's exact merge tree, runs the full mutation suite once, publishes a
+  PR-specific cache. After it succeeds, manually rerun the current PR's
+  failed required `Mutation score` check to validate the saved cache.
+  Never automatically rerun an earlier workflow run: GitHub would retain
+  its old synthetic merge SHA if the PR base changed.
 - Do not delete mutation state in an ordinary PR job: incremental mutmut
   invalidates changed production functions itself.
 - The clean full mutation suite runs every night on `main`. The nightly
