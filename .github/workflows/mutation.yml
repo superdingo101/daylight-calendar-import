@@ -32,11 +32,22 @@ jobs:
       - name: Explain non-Python scope
         if: ${{ steps.scope.outputs.mode == 'skip' }}
         run: echo "No mutation-relevant Python code changed; mutation testing not applicable."
-      - name: Discard previous mutation state
-        if: ${{ (steps.scope.outputs.mode == 'scoped' || steps.scope.outputs.mode == 'full') }}
-        run: rm -rf mutants
+      # A PR ref can restore its own previous cache. Every run uses a unique
+      # immutable save key; prefix restores choose the most recent candidate.
+      - name: Restore prior PR mutation state
+        if: ${{ steps.scope.outputs.mode == 'scoped' || steps.scope.outputs.mode == 'full' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: mutants
+          key: pr-mutmut-v1-${{ runner.os }}-py314-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            pr-mutmut-v1-${{ runner.os }}-py314-${{ github.event.pull_request.number }}-
+      - name: Validate restored state and invalidate affected mutants
+        if: ${{ steps.scope.outputs.mode == 'scoped' || steps.scope.outputs.mode == 'full' }}
+        run: python scripts/pr_mutation_cache.py restore --pr "${{ github.event.pull_request.number }}"
       - name: Run mutations for changed modules
-        if: ${{ (steps.scope.outputs.mode == 'scoped' || steps.scope.outputs.mode == 'full') }}
+        id: mutate
+        if: ${{ steps.scope.outputs.mode == 'scoped' || steps.scope.outputs.mode == 'full' }}
         run: mutmut run
       - name: Enforce scoped mutation quality
         if: ${{ (steps.scope.outputs.mode == 'scoped' || steps.scope.outputs.mode == 'full') }}
@@ -46,6 +57,18 @@ jobs:
       - name: Export mutation survivor diagnostics
         if: ${{ always() && (steps.scope.outputs.mode == 'scoped' || steps.scope.outputs.mode == 'full') }}
         run: python scripts/export_mutation_survivors.py
+      # Even a low score must save completed mutant verdicts, so that the
+      # next test-only commit can recheck survivors rather than all killed ones.
+      - name: Stamp completed mutation state
+        id: stamp
+        if: ${{ !cancelled() && steps.mutate.outcome == 'success' }}
+        run: python scripts/pr_mutation_cache.py stamp --pr "${{ github.event.pull_request.number }}"
+      - name: Save reusable PR mutation state
+        if: ${{ !cancelled() && steps.stamp.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: mutants
+          key: pr-mutmut-v1-${{ runner.os }}-py314-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Restore mutation configuration
         if: always()
         run: python scripts/pr_mutation.py restore
