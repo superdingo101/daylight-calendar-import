@@ -33,6 +33,8 @@ must still collect test-to-function associations.
 every night at 09:00 UTC. Run artifacts retain mutation health and survivor
 reports. Nightly failures create or update a Mutation Health issue; the next
 successful run closes that issue. Passing runs without open alerts are quiet.
+A separate dependent reporting job also catches clean-job timeouts, even when
+mutation statistics cannot be uploaded.
 A clean run of the exact release candidate remains mandatory before publishing,
 with `Release Mutation Validation` and an exact source-tree proof.
 Neither PR-scoped mutation scores nor cached incremental results can satisfy

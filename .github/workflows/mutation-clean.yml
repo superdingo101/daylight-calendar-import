@@ -133,14 +133,25 @@ jobs:
               -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           done
 
+  nightly-report:
+    name: Report nightly mutation health
+    # A timed-out clean job cannot execute its own final reporting step.
+    if: ${{ always() && github.event_name == 'schedule' }}
+    needs: clean
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download mutation diagnostics when available
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: mutation-results
+
       - name: Update visible nightly mutation health
-        if: ${{ always() && github.event_name == 'schedule' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          MUTATION_OUTCOME: ${{ steps.mutation.outcome }}
-          ENFORCE_OUTCOME: ${{ steps.enforce.outcome }}
-          EXPORT_OUTCOME: ${{ steps.export.outcome }}
-          DIAGNOSTICS_OUTCOME: ${{ steps.diagnostics.outcome }}
+          NIGHTLY_CLEAN_OUTCOME: ${{ needs.clean.result }}
         run: python scripts/report_nightly_mutation.py
-
