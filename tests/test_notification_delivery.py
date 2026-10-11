@@ -55,7 +55,7 @@ async def test_committed_success_is_not_replayed_after_restart(monkeypatch):
     sink.assert_awaited_once()
 
 
-async def test_failed_submission_is_private_bounded_and_recovers_after_restart(monkeypatch):
+async def test_failed_submission_is_private_bounded_and_recovers_after_restart(monkeypatch, caplog):
     backend = FakeStoreBackend()
     store = runtime(monkeypatch, backend)
     await enqueue(store)
@@ -74,6 +74,8 @@ async def test_failed_submission_is_private_bounded_and_recovers_after_restart(m
     assert restored.list_notifications()[0].status == "failed"
     assert restored.list_notifications()[0].failure == "delivery_failed"
     assert "private" not in str(backend.saved)
+    assert caplog.text.count("retry budget exhausted") == 1
+    assert "private" not in caplog.text
 
 
 @pytest.mark.parametrize("changed", [policy(False), policy(target="notify.other")])
@@ -88,7 +90,7 @@ async def test_changed_policy_discards_unsent_request(monkeypatch, changed):
     assert store.list_notifications()[0].status == "cancelled"
 
 
-async def test_crash_after_last_attempt_is_terminal_without_fourth_call(monkeypatch):
+async def test_crash_after_last_attempt_is_terminal_without_fourth_call(monkeypatch, caplog):
     store = runtime(monkeypatch)
     await enqueue(store, attempts=3)
     sink = AsyncMock()
@@ -96,6 +98,7 @@ async def test_crash_after_last_attempt_is_terminal_without_fourth_call(monkeypa
     await run(store)
     sink.assert_not_awaited()
     assert store.list_notifications()[0].failure == "delivery_interrupted"
+    assert "retry budget exhausted" in caplog.text
 
 
 async def test_retry_deadline_and_closed_admission_defer_delivery(monkeypatch):
@@ -351,3 +354,19 @@ async def test_enabling_consent_does_not_replay_existing_review_ready_history(mo
     store.notification_preferences = lambda: policy()
     await store._async_save(store._items, activity=store._activity)
     assert store.list_notifications() == ()
+
+
+@pytest.mark.parametrize("attempts", [2, 3])
+async def test_terminal_warning_requires_committed_terminal_state(monkeypatch, caplog, attempts):
+    store = runtime(monkeypatch)
+    await enqueue(store, attempts=attempts)
+    if attempts == 3:
+        monkeypatch.setattr(store, "async_update_notification", AsyncMock(return_value=False))
+    else:
+        async def concurrent_change(*args):
+            current = store.list_notifications()[0]
+            await store.async_update_notification(current, replace(current, status="cancelled"))
+            return False
+        monkeypatch.setattr(delivery, "async_send_ha_notification", concurrent_change)
+    await run(store)
+    assert "retry budget exhausted" not in caplog.text

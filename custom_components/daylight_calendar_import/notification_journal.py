@@ -1,8 +1,9 @@
 """Private notification identities, independent of prunable activity history.
 
-Only transition coordinates are persisted. Messages are regenerated from the
-safe notification contract; source text and provider errors never enter this
-journal. Delivery state and retries are added separately from lifecycle truth.
+Transition coordinates, the notify entity, and bounded delivery state are
+persisted until a retention policy is introduced. Messages are regenerated from
+the safe contract; source text and provider errors never enter this journal.
+Delivery state remains separate from calendar lifecycle truth.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ class NotificationRecord:
         return event
 
     def as_dict(self) -> dict:
-        """Serialize identity only, without mutable activity or private content."""
+        """Serialize identity and bounded delivery state without source content."""
         return {"import_id": self.import_id, "transition_type": self.transition_type,
                 "occurred_at": self.occurred_at, "event_id": self.event_id,
                 "target": self.target, "status": self.status, "attempts": self.attempts,
