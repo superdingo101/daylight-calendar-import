@@ -17,8 +17,19 @@ and head SHA, supporting stacked pull requests even when their base advances.
   dependencies or pytest configuration also require a full uncached run.
 - Documentation, frontend-only or CI-only changes: explicitly record that
   there is no applicable Python mutation scope; ordinary tests still apply.
-- No compatible cache is necessary. On every PR check, mutation state starts
-  clean, avoiding silent use of stale verdicts.
+- Mutation state is *optionally* reused from an earlier run of the **same PR**.
+  CI validates mutation scope, all tracked non-test inputs, installed dependency
+  versions and Python interpreter. If any differ, it starts completely clean.
+- Test changes are eligible for warm reuse only when their previous Python AST
+  is unchanged and the only additions are undecorated, top-level `test_*`
+  functions appended at the end of existing test files. Previous killed mutants
+  remain killed; survivors, no-tests, timeouts and other non-killed verdicts
+  are explicitly reset and retested. Replaced assertions, fixtures, imports,
+  modified/deleted tests, and newly created test modules force a clean run.
+- The workflow saves completed `mutants/` state **even if the 95.22% gate
+  fails**. A later PR commit may reuse this state; interrupted, timed-out or
+  incomplete mutation runs are not published. Cache misses never bypass
+  mutation execution or score enforcement.
 - The existing 95.22% threshold, no-tests, suspicious and segfault guards apply
   to the selected mutation scope. Scoped results **are not project-wide scores**.
 
@@ -26,6 +37,26 @@ The job summary and downloadable `.pr-mutation-scope.json` show the exact
 selection. The temporary `only_mutate` setting is restored after the job.
 A scoped mutation run can still be expensive for large shared modules and mutmut
 must still collect test-to-function associations.
+
+## GitHub Actions cache behavior
+
+The pull-request workflow uses `actions/cache/restore@v4` and
+`actions/cache/save@v4` with PR-scoped, immutable, per-run keys. GitHub's
+PR-ref cache isolation prevents unrelated PRs from sharing mutant verdicts.
+The cache contains generated `mutants/` output and a provenance marker;
+the marker is removed before a warm run and re-created only after `mutmut run`
+returns successfully. The test tree copied under `mutants/tests/` is replaced
+from the current checkout before reuse, because mutmut 3.8.0 otherwise keeps
+old copies.
+
+If safe reuse is impossible (or GitHub evicts the cache), the job simply
+runs mutmut from scratch. Because the existing selector intentionally chooses
+a full scope for modified application tests, this can still be expensive; the
+cache reduces rechecking previously killed mutants on strictly additive fixes,
+but does not alter the scope-selection safety rules.
+
+GitHub's dependency (`pip`) cache is independent from the mutant-result cache.
+The 95.22% requirement and the fail-closed status guards are unchanged.
 
 ## Nightly and release validation
 
