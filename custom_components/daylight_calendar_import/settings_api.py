@@ -268,14 +268,6 @@ async def websocket_update_notifications(
                 )
             patch = notification_preferences_patch(entry, msg["notifications"])
             selected = set(msg["notifications"].get("classes", ()))
-            # Legacy dormant classes may remain in either an enabled or
-            # disabled policy, but no settings API call may introduce new
-            # unsupported classes and later activate them in two steps.
-            if (selected - DELIVERABLE_NOTIFICATION_CLASSES) - set(current["classes"]):
-                raise SettingsValidationError(
-                    "invalid_notifications",
-                    "Unsupported notification types cannot be newly selected.",
-                )
             if msg["notifications"].get("enabled") is True and not selected & DELIVERABLE_NOTIFICATION_CLASSES:
                 raise SettingsValidationError(
                     "invalid_notifications",

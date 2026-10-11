@@ -32,6 +32,7 @@ class NotificationRecord:
     failure: str | None = None
     write_attempt: str | None = None
     recovered: bool = False
+    conflict_revision: str | None = None
 
     @property
     def event(self) -> NotificationEvent:
@@ -39,7 +40,7 @@ class NotificationRecord:
         event = notification_from_transition(
             {"id": self.import_id},
             {"type": self.transition_type, "at": self.occurred_at, "event_id": self.event_id,
-             "write_attempt": self.write_attempt},
+             "write_attempt": self.write_attempt, "conflict_revision": self.conflict_revision},
         )
         if event is None:
             raise ValueError("Invalid notification identity")
@@ -51,7 +52,8 @@ class NotificationRecord:
                 "occurred_at": self.occurred_at, "event_id": self.event_id,
                 "target": self.target, "status": self.status, "attempts": self.attempts,
                 "next_attempt_at": self.next_attempt_at, "failure": self.failure,
-                "write_attempt": self.write_attempt, "recovered": self.recovered}
+                "write_attempt": self.write_attempt, "recovered": self.recovered,
+                "conflict_revision": self.conflict_revision}
 
     @classmethod
     def from_dict(cls, raw: Mapping) -> NotificationRecord:
@@ -59,7 +61,7 @@ class NotificationRecord:
         record = cls(raw["import_id"], raw["transition_type"], raw["occurred_at"], raw["event_id"],
                      raw.get("target"), raw.get("status", "pending"), raw.get("attempts", 0),
                      raw.get("next_attempt_at"), raw.get("failure"),
-                     raw.get("write_attempt"), raw.get("recovered", False))
+                     raw.get("write_attempt"), raw.get("recovered", False), raw.get("conflict_revision"))
         normalize_notification_preferences({"target": record.target})
         if (record.status not in {"pending", "sent", "failed", "cancelled"}
                 or type(record.attempts) is not int or not 0 <= record.attempts <= 3
@@ -81,4 +83,5 @@ def notification_record(activity: Mapping, transition: Mapping) -> NotificationR
     if event is None:
         return None
     return NotificationRecord(event.import_id, transition["type"], event.occurred_at, event.event_id,
-                              write_attempt=transition.get("write_attempt"))
+                              write_attempt=transition.get("write_attempt"),
+                              conflict_revision=transition.get("conflict_revision"))

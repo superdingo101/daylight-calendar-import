@@ -2565,7 +2565,7 @@ async def test_check_pending_event_uses_read_only_observer_and_configured_scope(
     from custom_components.daylight_calendar_import.calendar_match import CalendarMatch
     item = pending()
     store = SimpleNamespace(
-        async_load=AsyncMock(), list_notifications=Mock(return_value=()), get_event=Mock(return_value=item.events[0]),
+        async_load=AsyncMock(), async_record_conflict=AsyncMock(return_value=True), list_notifications=Mock(return_value=()), get_event=Mock(return_value=item.events[0]),
     )
     hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
     hass.config = SimpleNamespace(time_zone="America/Los_Angeles")
@@ -2590,6 +2590,7 @@ async def test_check_pending_event_uses_read_only_observer_and_configured_scope(
         {"kind": "exact_duplicate", "calendar_entity": "calendar.family",
          "existing_title": "Practice"}
     ]
+    store.async_record_conflict.assert_awaited_once_with(item.id, item.events[0], ["calendar.family", "calendar.school"])
     observer.assert_awaited_once()
     assert observer.await_args.kwargs["context"].user_id == "test-user"
 
@@ -2934,3 +2935,43 @@ async def test_control_only_reviewer_error_never_reveals_duplicate_existence(mon
         ))
     provider.async_get_events.assert_not_awaited()
     assert hass.services.calls == []
+
+
+@pytest.mark.parametrize("outcome", ["exact_duplicate", "possible_duplicate", "conflict", "clear", "unknown", "storage_error", "stale", "changed_after_save"])
+async def test_check_pending_event_conflict_notification_boundary(monkeypatch, caplog, outcome):
+    from custom_components.daylight_calendar_import.const import SERVICE_CHECK_PENDING_EVENT
+    from custom_components.daylight_calendar_import.calendar_match import CalendarMatch
+    item = pending()
+    event = item.events[0]
+    recorder = AsyncMock(return_value=outcome != "stale")
+    if outcome == "storage_error":
+        recorder.side_effect = OSError("Private provider information")
+    store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+                            get_event=Mock(return_value=event), async_record_conflict=recorder)
+    if outcome == "changed_after_save":
+        async def record_and_change(*args):
+            store.get_event.return_value = None
+            return True
+        recorder.side_effect = record_and_change
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _: store)
+    kind = outcome if outcome in ("exact_duplicate", "possible_duplicate", "conflict", "unknown") else "conflict"
+    matches = () if outcome == "clear" else (CalendarMatch(kind, "calendar.family", "Private calendar title"),)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_classify_conflicts", AsyncMock(return_value=matches))
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
+    assert await async_setup_entry(hass, entry())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_CHECK_PENDING_EVENT)]
+    call = SimpleNamespace(data={ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: event.id}, context=Context(user_id="reviewer"))
+    if outcome in ("stale", "changed_after_save"):
+        with pytest.raises(ServiceValidationError, match="changed during calendar check"):
+            await handler(call)
+    else:
+        response = await handler(call)
+        assert response["matches"] == [{"kind": match.kind, "calendar_entity": match.calendar_entity,
+                                        "existing_title": match.existing_title} for match in matches]
+    if outcome in ("clear", "unknown"):
+        recorder.assert_not_awaited()
+    else:
+        recorder.assert_awaited_once_with(item.id, event, ["calendar.family"])
+    assert "Private provider information" not in caplog.text
+    if outcome == "storage_error":
+        assert "conflict notification could not be persisted" in caplog.text

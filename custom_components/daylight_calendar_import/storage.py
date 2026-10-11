@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
+from hashlib import sha256
 from copy import deepcopy
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field, replace
@@ -474,6 +476,47 @@ class PendingImportStore:
             # follow this durable commit before a delivery wrapper resumes.
             if updated.status == "failed" and expected.status != "failed":
                 _LOGGER.warning("Daylight notification retry budget exhausted; verify the configured notify entity")
+            return True
+
+    async def async_record_conflict(
+        self, pending_id: str, expected_event: PendingEvent, observed_calendars: Iterable[str],
+    ) -> bool:
+        """Record an authorized completed observation without changing lifecycle state.
+
+        The service producer supplies only actionable results, after successful
+        permission-checked reads. No observed event details enter storage. Return
+        false for an obsolete pending snapshot, including while waiting for the
+        storage lock. One request per exact event/scope revision survives reload.
+        """
+        result, cancelled = await self._async_complete_transaction(
+            self._async_record_conflict_transaction(pending_id, expected_event, tuple(observed_calendars))
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    async def _async_record_conflict_transaction(
+        self, pending_id: str, expected_event: PendingEvent, observed_calendars: tuple[str, ...],
+    ) -> bool:
+        async with self._lock:
+            if self.get_event(pending_id, expected_event.id) != expected_event:
+                return False
+            policy = self.notification_preferences()
+            if not policy.permits("conflict_detected"):
+                return True
+            revision = sha256(json.dumps(
+                [expected_event.as_dict(), sorted(set(observed_calendars))],
+                sort_keys=True, separators=(",", ":"),
+            ).encode()).hexdigest()
+            if any(record.event.type == "conflict_detected" and record.import_id == pending_id
+                   and record.event_id == expected_event.id and record.conflict_revision == revision
+                   for record in self._notifications):
+                return True
+            request = NotificationRecord(
+                pending_id, "conflict_detected", datetime.now(UTC).isoformat(), expected_event.id,
+                target=policy.target, conflict_revision=revision,
+            )
+            await self._async_save(self._items, notifications=self._notifications + (request,))
             return True
 
     def _journal_for_activity(self, activity: tuple[dict[str, Any], ...]) -> tuple[NotificationRecord, ...]:
