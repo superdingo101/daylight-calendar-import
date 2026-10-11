@@ -40,6 +40,26 @@ def test_changes_to_existing_tests_or_fixtures_are_not_additive(tmp_path, monkey
     assert not cache.additive(old, cache.hash_inputs([path])[1])
 
 
+
+@pytest.mark.parametrize("addition", [
+    "\ndef test_existing():\n    assert True\n",
+    "\ndef test_new(value=side_effect()):\n    assert value\n",
+    "\ndef test_new(*, value=side_effect()):\n    assert value\n",
+    "\ndef test_new(value: side_effect()):\n    assert value\n",
+])
+def test_appended_tests_with_collection_side_effects_or_shadowing_are_not_additive(
+    tmp_path, monkeypatch, addition,
+):
+    monkeypatch.chdir(tmp_path)
+    path = Path("tests/test_app.py")
+    path.parent.mkdir()
+    original = "def test_existing():\n    assert True\n"
+    path.write_text(original)
+    previous = cache.hash_inputs([path])[1]
+    path.write_text(original + addition)
+    assert not cache.additive(previous, cache.hash_inputs([path])[1])
+
+
 def test_added_or_deleted_test_files_cannot_keep_old_verdicts():
     assert not cache.additive({"tests/test_one.py": []}, {
         "tests/test_one.py": [], "tests/test_two.py": [],
