@@ -70,3 +70,17 @@ retention. New attempt IDs distinguish uncertainty identities even if timestamps
 repeat. On startup, unresolved event checkpoints produce at most one alert per
 attempt, including legacy checkpoints with an unknown attempt ID. Recovery does
 not rely on prunable activity history or modify the user's review decision.
+
+
+### Source-processing failures
+
+The `parse_failed` opt-in covers durable source failures, including parser errors,
+terminal attachment/source failures, and processing interrupted by a restart.
+The existing `failed` lifecycle transition maps to this category. Failure and
+notification request commit in the same private storage save; a failed save does
+not publish either. Interrupted recovery also completes persistence and in-memory
+publication before caller cancellation propagates. Repeated cleanup or reload
+does not create another request for the same failure. Enabling the category does
+not replay historical failures. Delivery uses a generic message without source
+text, source titles, attachment details, or provider errors. Processing status
+and source retry/deduplication rules remain authoritative and unchanged.

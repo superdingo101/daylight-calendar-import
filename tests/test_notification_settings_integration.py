@@ -63,8 +63,8 @@ async def test_notifications_ws_validation_rejects_bad_policy_without_writes():
     for index, invalid in enumerate([
         {"enabled": True}, {"classes": ["unknown"]},
         {"target": "notify.missing", "enabled": "yes"},
-        {"enabled": True, "target": "notify.phone", "classes": ["parse_failed"]},
-        {"enabled": True, "target": "notify.phone", "classes": ["review_ready", "parse_failed"]},
+        {"enabled": True, "target": "notify.phone", "classes": ["conflict_detected"]},
+        {"enabled": True, "target": "notify.phone", "classes": ["review_ready", "conflict_detected"]},
         {"enabled": True, "target": "notify.phone"},
     ]):
         await invoke(settings_api.websocket_update_notifications, hass, connection, {
@@ -169,7 +169,7 @@ async def test_enabled_policy_cannot_add_new_undelivered_classes():
     hass = hass_for(config_entry)
     connection = FakeConnection()
     for index, classes in enumerate([
-        ["parse_failed"],
+        ["conflict_detected"],
         ["review_ready", "conflict_detected"],
         ["review_ready", "parse_failed", "conflict_detected"],
     ]):
@@ -222,13 +222,13 @@ async def test_disabled_policy_cannot_stage_unsupported_class_for_later_activati
         "id": 360, "entry_id": "entry-1",
         "expected_notifications": previous,
         "notifications": {"enabled": False, "target": "notify.phone",
-                          "classes": ["parse_failed"]},
+                          "classes": ["conflict_detected"]},
     })
     assert connection.errors[0][1] == "invalid_notifications"
     assert CONF_NOTIFICATION_PREFERENCES not in config_entry.options
     assert hass.config_entries.reloads == []
 
-    # A disabled policy may still add the one class we can actually deliver.
+    # A disabled policy may still add a supported class.
     await invoke(settings_api.websocket_update_notifications, hass, connection, {
         "id": 361, "entry_id": "entry-1",
         "expected_notifications": previous,

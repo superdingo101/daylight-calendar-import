@@ -5067,7 +5067,7 @@ test("Notification settings never advertise unsupported lifecycle notification t
     notifications: {enabled: false, target: null, classes: []}, email: {}};
   const checkboxes = panel.notificationSettingsView().querySelectorAll("input")
     .filter(input => input.name?.startsWith("notify_"));
-  assert.deepEqual(checkboxes.map(x => x.value), ["review_ready", "calendar_created", "calendar_create_failed", "calendar_write_uncertain"]);
+  assert.deepEqual(checkboxes.map(x => x.value), ["review_ready", "calendar_created", "calendar_create_failed", "calendar_write_uncertain", "parse_failed"]);
 });
 
 
@@ -5138,7 +5138,7 @@ test("notification settings retain hidden future classes through unrelated edits
     "notify.phone": {entity_id: "notify.phone", state: "idle", attributes: {}},
   }};
   panel._settings = {entry_id: "entry-1",
-    notifications: {enabled: false, target: "notify.phone", classes: ["parse_failed"]},
+    notifications: {enabled: false, target: "notify.phone", classes: ["conflict_detected"]},
     email: {}};
   const form = find(panel.notificationSettingsView(), "form");
   form.elements.namedItem("notification_target").change();
@@ -5147,7 +5147,7 @@ test("notification settings retain hidden future classes through unrelated edits
   form.elements.namedItem("notify_review_ready").checked = true;
   form.change();
   assert.deepEqual(panel._settingsDrafts.notifications.notifications.classes,
-    ["parse_failed", "review_ready"]);
+    ["conflict_detected", "review_ready"]);
   form.elements.namedItem("notify_review_ready").checked = false;
   form.change();
   assert.equal(panel._settingsDrafts.notifications, null);
@@ -5160,14 +5160,14 @@ test("enabling review-ready keeps previously saved hidden classes in the submitt
     "notify.phone": {entity_id: "notify.phone", state: "idle", attributes: {}},
   }};
   panel._settings = {entry_id: "entry-1",
-    notifications: {enabled: false, target: "notify.phone", classes: ["parse_failed"]},
+    notifications: {enabled: false, target: "notify.phone", classes: ["conflict_detected"]},
     email: {}};
   const form = find(panel.notificationSettingsView(), "form");
   form.elements.namedItem("notification_enabled").checked = true;
   form.elements.namedItem("notify_review_ready").checked = true;
   form.change();
   assert.deepEqual(panel._settingsDrafts.notifications.notifications, {
-    enabled: true, target: "notify.phone", classes: ["parse_failed", "review_ready"],
+    enabled: true, target: "notify.phone", classes: ["conflict_detected", "review_ready"],
   });
 });
 
@@ -5187,6 +5187,25 @@ test("calendar-created opt-in can be selected and deselected independently", () 
   form.change();
   assert.deepEqual(panel._settingsDrafts.notifications.notifications.classes, ["parse_failed"]);
   form.elements.namedItem("notify_calendar_created").checked = true;
+  form.change();
+  assert.equal(panel._settingsDrafts.notifications, null);
+});
+
+test("source-failure opt-in can be selected and deselected independently", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {
+    "notify.phone": {entity_id: "notify.phone", state: "idle", attributes: {}},
+  }};
+  panel._settings = {entry_id: "entry-1", notifications: {
+    enabled: true, target: "notify.phone", classes: ["parse_failed", "review_ready"],
+  }, email: {}};
+  const form = find(panel.notificationSettingsView(), "form");
+  assert.equal(form.elements.namedItem("notify_calendar_created").checked, false);
+  assert.equal(form.elements.namedItem("notify_parse_failed").checked, true);
+  form.elements.namedItem("notify_parse_failed").checked = false;
+  form.change();
+  assert.deepEqual(panel._settingsDrafts.notifications.notifications.classes, ["review_ready"]);
+  form.elements.namedItem("notify_parse_failed").checked = true;
   form.change();
   assert.equal(panel._settingsDrafts.notifications, null);
 });

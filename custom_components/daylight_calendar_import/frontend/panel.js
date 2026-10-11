@@ -7,6 +7,7 @@ const notificationOptions = [
   ["calendar_created", "Events added to a calendar"],
   ["calendar_create_failed", "Calendar writes that could not start"],
   ["calendar_write_uncertain", "Calendar writes needing confirmation"],
+  ["parse_failed", "Sources that could not be processed"],
 ];
 
 const css = `

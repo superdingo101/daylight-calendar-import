@@ -358,17 +358,27 @@ class PendingImportStore:
             for item in self._activity
             if item["status"] in ("discovered", "processing")
         ]
+        activity = self._activity
+        recovered_failures = []
         for activity_id in interrupted:
-            self._activity = self._finish_submission(
-                activity_id, "failed", "Processing was interrupted. Check the source and submit it again."
+            activity = self._finish_submission(
+                activity_id, "failed", "Processing was interrupted. Check the source and submit it again.",
+                activity=activity,
             )
+            # Each newly completed source is newest in the proposed history.
+            # Keep its transition even if later recoveries prune that history.
+            recovered_failures.append(activity[-1])
         if interrupted or self._source_claims:
-            await self._async_save(
-                self._items,
-                activity=self._activity,
-                source_claims={},
-            )
-            self._source_claims = {}
+            async def commit_recovery() -> None:
+                journal = self._journal_for_activity(tuple(recovered_failures))
+                await self._async_save(self._items, activity=activity, source_claims={},
+                                       notifications=journal)
+                self._activity = activity
+                self._source_claims = {}
+
+            _, cancelled = await self._async_complete_transaction(commit_recovery())
+            if cancelled:
+                raise asyncio.CancelledError
 
         await self._async_recover_uncertain_notifications()
 
@@ -928,20 +938,24 @@ class PendingImportStore:
             await self._async_record_parse_failure_locked(activity_id)
 
     def _finish_submission(self, activity_id: str | None, status: str,
-                           guidance: str | None = None) -> tuple[dict[str, Any], ...]:
+                           guidance: str | None = None, *,
+                           activity: tuple[dict[str, Any], ...] | None = None) -> tuple[dict[str, Any], ...]:
         """Propose a terminal source status in the next storage transaction."""
+        baseline = self._activity if activity is None else activity
         if activity_id is None:
-            return self._activity
-        record = self.get_activity(activity_id)
+            return baseline
+        record = next((deepcopy(item) for item in baseline if item["id"] == activity_id), None)
         if record is None:
-            return self._activity
+            return baseline
         record["status"] = status
         if guidance is not None:
             record["guidance"] = guidance
         record["transitions"].append({"type": status, "at": datetime.now(UTC).isoformat(),
                                       "event_id": None})
-        history = [item if item["id"] != activity_id else record for item in self._activity]
-        active_ids = self._protected_activity_ids()
+        history = [item for item in baseline if item["id"] != activity_id] + [record]
+        active_ids = set(self._items) | {
+            item["id"] for item in baseline if item["status"] in ("discovered", "processing")
+        }
         active_ids.discard(activity_id)
         while sum(item["id"] not in active_ids for item in history) > ACTIVITY_LIMIT:
             history.pop(next(index for index, item in enumerate(history)
