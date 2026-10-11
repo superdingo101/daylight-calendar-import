@@ -282,16 +282,17 @@ async def test_opted_in_review_ready_dispatch_is_post_commit_and_not_replayed(ha
     )
     emitted = []
 
-    async def capture(hass_instance, activity, preferences, active_tasks):
+    async def capture(hass_instance, event, preferences):
         store = hass_instance.data[DOMAIN][entry.entry_id]
-        assert store.get_activity(activity["id"]) is not None
-        assert store.get(activity["id"]) is not None
+        assert store.get_activity(event.import_id) is not None
+        assert store.get(event.import_id) is not None
         assert preferences.permits("review_ready")
-        assert active_tasks is store.notification_tasks
-        emitted.append(activity["id"])
+        assert store.list_notifications()[0].attempts == 1
+        emitted.append(event.import_id)
+        return True
 
     monkeypatch.setattr(
-        "custom_components.daylight_calendar_import.async_notify_review_ready",
+        "custom_components.daylight_calendar_import.notification_delivery.async_send_ha_notification",
         capture,
     )
     entry = MockConfigEntry(
@@ -325,7 +326,7 @@ async def test_review_notification_callback_skips_submissions_finishing_during_u
 
     notify = AsyncMock()
     monkeypatch.setattr(
-        "custom_components.daylight_calendar_import.async_notify_review_ready",
+        "custom_components.daylight_calendar_import.notification_delivery.async_send_ha_notification",
         notify,
     )
     entry = MockConfigEntry(
@@ -354,7 +355,7 @@ async def test_old_notification_runtime_ignores_new_saved_policy_after_reload_fa
 
     notify = AsyncMock()
     monkeypatch.setattr(
-        "custom_components.daylight_calendar_import.async_notify_review_ready",
+        "custom_components.daylight_calendar_import.notification_delivery.async_send_ha_notification",
         notify,
     )
     entry = MockConfigEntry(
@@ -392,7 +393,7 @@ async def test_notification_capacity_caps_active_providers_across_reload_registr
 
     notify = AsyncMock()
     monkeypatch.setattr(
-        "custom_components.daylight_calendar_import.async_notify_review_ready", notify,
+        "custom_components.daylight_calendar_import.notification_delivery.async_send_ha_notification", notify,
     )
     entry = MockConfigEntry(
         domain=DOMAIN, title="Daylight Calendar Import",
@@ -574,7 +575,7 @@ async def test_notification_capacity_counts_retired_entry_provider_tasks(
 
     notify = AsyncMock()
     monkeypatch.setattr(
-        "custom_components.daylight_calendar_import.async_notify_review_ready", notify,
+        "custom_components.daylight_calendar_import.notification_delivery.async_send_ha_notification", notify,
     )
     entry = MockConfigEntry(
         domain=DOMAIN, title="Daylight Calendar Import",
@@ -603,3 +604,45 @@ async def test_notification_capacity_counts_retired_entry_provider_tasks(
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         registry.pop("removed-entry-id")
+
+
+async def test_notification_retry_resumes_on_config_entry_reload(hass, monkeypatch):
+    """Unsent durable requests reload independently of existing review items."""
+    from dataclasses import replace
+    from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
+    from custom_components.daylight_calendar_import import notification_delivery
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.parse_source_with_provider",
+        AsyncMock(return_value=ParseOutcome([_draft()], [])),
+    )
+    sink = AsyncMock(side_effect=RuntimeError("private provider detail"))
+    monkeypatch.setattr(notification_delivery, "async_send_ha_notification", sink)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daylight Calendar Import",
+        data={CONF_AI_TASK_ENTITY: "ai_task.test", CONF_CALENDAR_ENTITY: "calendar.family"},
+        options={CONF_NOTIFICATION_PREFERENCES: {
+            "enabled": True, "target": "notify.phone", "classes": ["review_ready"],
+        }},
+    )
+    await _setup_entry(hass, entry)
+    await hass.services.async_call(
+        DOMAIN, SERVICE_SUBMIT_TEXT, {ATTR_TEXT: "Practice", ATTR_SOURCE_ID: "retry-source"},
+        blocking=True, return_response=True,
+    )
+    await hass.async_block_till_done()
+    store = hass.data[DOMAIN][entry.entry_id]
+    request = store.list_notifications()[0]
+    assert request.attempts == 1 and request.status == "pending"
+    store.accepting_services = False
+    await store.async_update_notification(request, replace(request, next_attempt_at=None))
+    sink.side_effect = None
+    sink.return_value = True
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    restored = hass.data[DOMAIN][entry.entry_id]
+    assert restored is not store
+    assert restored.list_notifications()[0].status == "sent"
+    assert restored.list_notifications()[0].attempts == 2
+    assert sink.await_count == 2
+    assert len(restored.list()) == 1

@@ -223,6 +223,7 @@ class PipelineEnvironment:
             "parse_source_with_provider",
             parser,
         )
+        monkeypatch.setattr(integration_module, "async_track_time_interval", Mock(return_value=Mock()))
         monkeypatch.setattr(
             integration_module,
             "async_setup_email_runtime",
@@ -235,6 +236,7 @@ class PipelineEnvironment:
         hass = FakeHass()
         entry = SimpleNamespace(
             entry_id="pipeline-entry",
+            async_on_unload=Mock(),
             data={
                 CONF_AI_TASK_ENTITY: "ai_task.test",
                 CONF_CALENDAR_ENTITY: "calendar.family",
