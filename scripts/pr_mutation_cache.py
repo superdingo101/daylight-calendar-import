@@ -1,8 +1,8 @@
 """Fail-closed, PR-local reuse of mutmut 3.8.0's native mutants/ state.
 
 Reuse is limited to the same PR, identical production/config/dependency inputs,
-and tests that are byte-identical or have only *new, undecorated top-level*
-test functions appended after unchanged existing AST nodes. With new tests,
+and tests that are unchanged or strictly additive, including tightly constrained
+new test files. With new tests,
 previously killed mutants remain killed; every non-killed verdict is reset.
 Any uncertain change causes a clean run. Never use this for release/nightly gates.
 """
@@ -130,14 +130,89 @@ def previously_bound_names(nodes: list[ast.stmt]) -> set[str] | None:
     return names
 
 
-def additive(old: dict[str, list[str]], new: dict[str, list[str]]) -> bool:
-    """Allow unchanged tests plus appended, standalone, undecorated test functions.
+def _standalone_test(node: ast.stmt, used_names: set[str]) -> bool:
+    """No decorators/defaults/annotations or shadowing at collection time."""
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    if not node.name.startswith("test_") or node.decorator_list:
+        return False
+    if node.name in used_names or node.args.defaults or any(
+        default is not None for default in node.args.kw_defaults
+    ) or node.returns is not None or node.type_params:
+        return False
+    arguments = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+    arguments.extend(arg for arg in (node.args.vararg, node.args.kwarg) if arg)
+    if any(arg.annotation is not None for arg in arguments):
+        return False
+    used_names.add(node.name)
+    return True
 
-    No deleted/renamed files; no edits to existing function bodies, imports,
-    fixtures, decorators, globals, or collection hooks. New test modules are
-    conservatively rejected because imports/collection can change fixtures.
+
+def _safe_new_module(name: str, old: dict[str, list[str]]) -> bool:
+    """Permit test-only modules without collection-time execution or hooks.
+
+    Imports are restricted to established dependencies and pre-existing test
+    helpers. Entirely new imported helpers, fixtures, decorators, classes and
+    module assignments may change old tests; they require cold validation.
     """
-    if old.keys() != new.keys():
+    path = Path(name)
+    if (path.parent != Path("tests") or not path.name.startswith("test_")
+            or path.suffix != ".py"):
+        return False
+    nodes = ast.parse(path.read_bytes(), filename=name).body
+    names: set[str] = set()
+    seen_test = False
+    for index, node in enumerate(nodes):
+        if (index == 0 and isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if seen_test:
+                return False
+            if isinstance(node, ast.ImportFrom) and node.level:
+                return False
+            modules = (
+                [alias.name for alias in node.names]
+                if isinstance(node, ast.Import) else [node.module or ""]
+            )
+            for module in modules:
+                root = module.split(".", 1)[0]
+                if root.startswith("test_"):
+                    if f"tests/{root}.py" not in old:
+                        return False
+                elif root not in {
+                    "asyncio", "collections", "contextlib", "dataclasses",
+                    "datetime", "functools", "inspect", "itertools", "json",
+                    "pathlib", "re", "types", "typing", "unittest", "uuid",
+                    "zoneinfo", "pytest", "homeassistant", "custom_components",
+                    "scripts",
+                }:
+                    return False
+            for alias in node.names:
+                if alias.name == "*":
+                    return False
+                bound = alias.asname or (
+                    alias.name.split(".", 1)[0] if isinstance(node, ast.Import)
+                    else alias.name
+                )
+                if bound in names:
+                    return False
+                names.add(bound)
+            continue
+        if not _standalone_test(node, names):
+            return False
+        seen_test = True
+    return seen_test
+
+
+def additive(old: dict[str, list[str]], new: dict[str, list[str]]) -> bool:
+    """Old collected tests unchanged; extra tests are strictly additive.
+
+    Entirely new files must be plain, non-executable collection modules.
+    Previous killed mutant verdicts are monotonic only under these conditions.
+    """
+    if not old.keys() <= new.keys():
         return False
     for name, old_nodes in old.items():
         current = new[name]
@@ -145,29 +220,16 @@ def additive(old: dict[str, list[str]], new: dict[str, list[str]]) -> bool:
             return False
         if len(current) == len(old_nodes):
             continue
-        # Inspect actual AST to validate only the appended nodes.  New
-        # definitions must not shadow an existing test or execute expressions
-        # during collection (decorators, defaults, runtime annotations).
         nodes = ast.parse(Path(name).read_bytes(), filename=name).body
         used_names = previously_bound_names(nodes[:len(old_nodes)])
         if used_names is None:
-            return False  # A wildcard import may bind the proposed name.
-        for node in nodes[len(old_nodes):]:
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                return False
-            if not node.name.startswith("test_") or node.decorator_list:
-                return False
-            if node.name in used_names or node.args.defaults or any(
-                default is not None for default in node.args.kw_defaults
-            ) or node.returns is not None or node.type_params:
-                return False
-            arguments = [
-                *node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs,
-            ]
-            arguments.extend(arg for arg in (node.args.vararg, node.args.kwarg) if arg)
-            if any(arg.annotation is not None for arg in arguments):
-                return False
-            used_names.add(node.name)
+            return False
+        if not all(_standalone_test(node, used_names)
+                   for node in nodes[len(old_nodes):]):
+            return False
+    for name in new.keys() - old.keys():
+        if not _safe_new_module(name, old):
+            return False
     return True
 
 
@@ -234,7 +296,7 @@ def restore(pr: str) -> None:
                 clear_cache("existing tests or fixtures changed")
                 return
             total, reset = reset_non_killed()
-            print(f"Mutation cache: added tests; reconsider {reset}/{total} non-killed mutants")
+            print(f"Mutation cache: safe additive tests; reconsider {reset}/{total} non-killed mutants")
         else:
             print("Mutation cache: unchanged source and tests; reuse prior verdicts")
         refresh_tests()
