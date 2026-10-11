@@ -288,7 +288,6 @@ def test_isolated_new_test_file_is_additive_and_retests_survivors(tmp_path, monk
 @pytest.mark.parametrize("body", [
     'import pytest\n@pytest.fixture\ndef shared():\n    return 1\n',
     'from pytest import fixture\n@fixture\ndef shared():\n    return 1\n',
-    'import pytest\n@pytest.mark.parametrize("x", [1])\ndef test_new(x):\n    assert x\n',
     'import pytest\npytest_plugins = ["new_plugin"]\ndef test_new():\n    assert True\n',
     'import pytest\nregister_global_hooks()\ndef test_new():\n    assert True\n',
     'import external_new_module\ndef test_new():\n    assert True\n',
@@ -343,3 +342,43 @@ def test_new_test_file_must_not_shadow_imports(tmp_path, monkeypatch):
     assert cache.additive(old, cache.hash_inputs([original, newfile])[1])
     newfile.write_text("from datetime import test_new\n\ndef test_new(): assert True\n")
     assert not cache.additive(old, cache.hash_inputs([original, newfile])[1])
+
+
+
+def test_new_module_with_static_parametrize_is_additive(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    initial = Path("tests/test_before.py")
+    initial.parent.mkdir()
+    initial.write_text("def test_before(): assert True\n")
+    old = cache.hash_inputs([initial])[1]
+    added = Path("tests/test_with_cases.py")
+    added.write_text(
+        "import pytest\n"
+        "@pytest.mark.parametrize('value', [False, True, None])\n"
+        "def test_flags(value):\n    assert value is not 0\n"
+        "@pytest.mark.parametrize(('a', 'b'), [(1, 2), (3, 4)])\n"
+        "async def test_pair(a, b):\n    assert a < b\n"
+    )
+    assert cache.additive(old, cache.hash_inputs([initial, added])[1])
+
+
+@pytest.mark.parametrize("decorator", [
+    "@pytest.mark.parametrize('n', dangerous())",
+    "@pytest.mark.parametrize('n', [1], ids=dynamic)",
+    "@pytest.mark.parametrize('n', [1], ids=['first'])",
+    "@pytest.mark.skipif(flag, reason='test')",
+    "@external_decorator",
+])
+def test_new_module_dynamic_or_nonparametrize_decorators_force_cold(
+    tmp_path, monkeypatch, decorator,
+):
+    monkeypatch.chdir(tmp_path)
+    old_file = Path("tests/test_before.py")
+    old_file.parent.mkdir()
+    old_file.write_text("def test_before(): assert True\n")
+    previous = cache.hash_inputs([old_file])[1]
+    added = Path("tests/test_after.py")
+    added.write_text(
+        f"import pytest\n{decorator}\ndef test_new(n=None): assert True\n"
+    )
+    assert not cache.additive(previous, cache.hash_inputs([old_file, added])[1])
