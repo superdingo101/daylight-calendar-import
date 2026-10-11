@@ -370,3 +370,31 @@ async def test_terminal_warning_requires_committed_terminal_state(monkeypatch, c
         monkeypatch.setattr(delivery, "async_send_ha_notification", concurrent_change)
     await run(store)
     assert "retry budget exhausted" not in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["delivery_failed", "delivery_interrupted"])
+async def test_terminal_commit_logs_even_when_caller_cancelled(monkeypatch, caplog, failure):
+    backend = FakeStoreBackend()
+    store = runtime(monkeypatch, backend)
+    original = await enqueue(store, attempts=3)
+    entered, release = asyncio.Event(), asyncio.Event()
+    save = backend.async_save
+
+    async def blocked_save(data):
+        entered.set()
+        await release.wait()
+        await save(data)
+
+    backend.async_save = blocked_save
+    terminal = replace(original, status="failed", failure=failure)
+    task = asyncio.create_task(store.async_update_notification(original, terminal))
+    await entered.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert store.list_notifications()[0] == terminal
+    assert caplog.text.count("retry budget exhausted") == 1
+    assert "import-1" not in caplog.text and "notify.phone" not in caplog.text
+    assert await store.async_update_notification(terminal, terminal)
+    assert caplog.text.count("retry budget exhausted") == 1

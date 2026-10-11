@@ -419,6 +419,10 @@ class PendingImportStore:
                 return False
             journal = tuple(updated if record == expected else record for record in self._notifications)
             await self._async_save(self._items, notifications=journal)
+            # Log inside the uncancelled transaction: caller cancellation can
+            # follow this durable commit before a delivery wrapper resumes.
+            if updated.status == "failed" and expected.status != "failed":
+                _LOGGER.warning("Daylight notification retry budget exhausted; verify the configured notify entity")
             return True
 
     def _journal_for_activity(self, activity: tuple[dict[str, Any], ...]) -> tuple[NotificationRecord, ...]:

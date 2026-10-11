@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -13,7 +12,6 @@ DELIVERY_TIMEOUT_SECONDS = 15
 RETRY_SECONDS = 60
 MAX_ATTEMPTS = 3
 MAX_ACTIVE_TASKS = 4
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_deliver_notifications(hass, store, registry) -> None:
@@ -36,10 +34,9 @@ async def async_deliver_notifications(hass, store, registry) -> None:
                 )
                 continue
             if record.attempts >= MAX_ATTEMPTS:
-                if await store.async_update_notification(
+                await store.async_update_notification(
                     record, replace(record, status="failed", failure="delivery_interrupted"),
-                ):
-                    _LOGGER.warning("Daylight notification retry budget exhausted; verify the configured notify entity")
+                )
                 continue
             now = datetime.now(UTC)
             if record.next_attempt_at is not None and datetime.fromisoformat(record.next_attempt_at) > now:
@@ -85,6 +82,4 @@ async def async_deliver_notifications(hass, store, registry) -> None:
                     "failed" if attempt.attempts == MAX_ATTEMPTS else "pending"),
                 failure=None if sent else "delivery_failed",
             )
-            committed = await store.async_update_notification(attempt, updated)
-            if committed and updated.status == "failed":
-                _LOGGER.warning("Daylight notification retry budget exhausted; verify the configured notify entity")
+            await store.async_update_notification(attempt, updated)
