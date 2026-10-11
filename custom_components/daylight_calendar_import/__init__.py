@@ -55,7 +55,7 @@ from .models import DraftValidationError, EventDraft
 from .calendar_observation import CalendarObservationError, async_classify_conflicts
 from .parser import ParseOutcome, async_parse_source as parse_source_with_provider
 from .pdfs import async_pdf_source
-from .providers import SourceValidationError
+from .providers import SourceValidationError, ProviderError
 from .review_panel import async_register_review_panel, async_remove_review_panel
 from .settings import effective_ai_task_entity, effective_calendar_options, effective_calendar_intelligence
 from .settings_api import async_register_settings_api
@@ -305,9 +305,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Finish a stopped parser without obscuring its original error."""
         try:
             return await _async_parse_source(hass, source, ai_task_entity)
-        except (asyncio.CancelledError, Exception):
+        except (asyncio.CancelledError, Exception) as error:
             try:
-                await pending_store.async_record_parse_failure(activity_id)
+                if isinstance(error, ProviderError):
+                    await pending_store.async_record_parse_failure(
+                        activity_id, provider_error_code=error.code,
+                    )
+                else:
+                    await pending_store.async_record_parse_failure(activity_id)
             except Exception:
                 pass
             raise

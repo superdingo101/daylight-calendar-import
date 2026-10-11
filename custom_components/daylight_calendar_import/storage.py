@@ -25,6 +25,7 @@ from .models import EventDraft, normalize_date_time_assumptions
 from .notification_journal import NotificationRecord, notification_record
 from .notification_preferences import NotificationPreferences, DELIVERABLE_NOTIFICATION_CLASSES
 from .source_routing import LEGACY_UNRESOLVED_WARNINGS
+from .provider_failures import PROVIDER_FAILURE_GUIDANCE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -845,12 +846,25 @@ class PendingImportStore:
             self._source_claims = source_claims
             return identifier
 
-    async def async_record_parse_failure(self, activity_id: str) -> None:
+    async def async_record_parse_failure(
+        self, activity_id: str, *, provider_error_code: str | None = None,
+    ) -> None:
         """Finalize a failed parse while keeping the original source private."""
-        await self.async_record_source_failure(
-            activity_id,
-            "Parsing failed. Check the configured AI Task and submit the source again.",
+        if provider_error_code is None:
+            await self.async_record_source_failure(
+                activity_id, PROVIDER_FAILURE_GUIDANCE["provider_error"],
+            )
+            return
+        code = (provider_error_code if isinstance(provider_error_code, str)
+                and provider_error_code in PROVIDER_FAILURE_GUIDANCE
+                else "provider_error")
+        _, cancelled = await self._async_complete_transaction(
+            self._async_record_source_failure_transaction(
+                activity_id, PROVIDER_FAILURE_GUIDANCE[code], provider_error_code=code,
+            )
         )
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def async_record_source_failure(
         self,
@@ -871,6 +885,7 @@ class PendingImportStore:
         self,
         activity_id: str,
         guidance: str,
+        *, provider_error_code: str | None = None,
     ) -> None:
         """Release one source claim in an uncancelled storage transaction."""
         async with self._lock:
@@ -885,6 +900,7 @@ class PendingImportStore:
             await self._async_record_parse_failure_locked(
                 activity_id,
                 guidance=guidance,
+                provider_error_code=provider_error_code,
             )
 
     async def async_record_terminal_source_failure(
@@ -957,6 +973,7 @@ class PendingImportStore:
         guidance: str = (
             "Parsing failed. Check the configured AI Task and submit the source again."
         ),
+        provider_error_code: str | None = None,
     ) -> None:
         """Persist one failure transition and release its source claim."""
         activity = self._finish_submission(
@@ -964,6 +981,12 @@ class PendingImportStore:
             "failed",
             guidance,
         )
+        if provider_error_code is not None:
+            activity = tuple(
+                {**record, "failure_code": provider_error_code}
+                if record["id"] == activity_id else record
+                for record in activity
+            )
         source_claims = dict(self._source_claims)
         source_claims.pop(activity_id, None)
         await self._async_save(

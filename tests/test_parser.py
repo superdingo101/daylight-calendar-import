@@ -262,7 +262,8 @@ async def test_provider_maps_ai_task_failure_to_stable_category(monkeypatch):
     assert caught.value.code == "provider_error"
     assert isinstance(caught.value, HomeAssistantError)
     assert str(caught.value) == "AI Task could not parse the source"
-    assert isinstance(caught.value.__cause__, HomeAssistantError)
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
 
 
 async def test_async_parse_text_preserves_ai_task_and_timezone_contract(monkeypatch):
