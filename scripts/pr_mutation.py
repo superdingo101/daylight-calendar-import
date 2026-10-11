@@ -73,25 +73,43 @@ def select(base: str, head: str) -> tuple[str, list[str], str]:
         for file in files
     ):
         return "full", [], "Shared test, dependency or integration settings changed"
+    # Modified/deleted existing tests can STOP covering a module. Current-head
+    # coverage cannot reconstruct what they previously exercised, so only a
+    # full run is safe. New tests have no old behavior to lose.
+    modified_tests = changed_paths(base, head, "MRTD")
     if any(file.startswith("tests/") and file not in CI_TESTS
-           for file in changed_paths(base, head, "D")):
-        return "full", [], "Deleted tests require a full mutation run"
+           for file in modified_tests):
+        return "full", [], "An existing application test changed or was removed"
 
-    selected = sorted({
+    # Shared helpers and fixtures affect unrelated tests, even if their own
+    # names do not begin with test_. Do not silently classify them as CI-only.
+    application_tests = {
+        file for file in files if file.startswith("tests/")
+        and file not in CI_TESTS
+    }
+    if any(not Path(file).name.startswith("test_") or not file.endswith(".py")
+           for file in application_tests):
+        return "full", [], "Shared test helpers or fixtures changed"
+
+    selected = {
         file for file in files if file.startswith(SOURCE)
         and not file.startswith(FRONTEND) and file.endswith(".py")
         and Path(file).is_file()
-    })
-    tests = sorted(file for file in files if file.startswith("tests/")
-                   and Path(file).name.startswith("test_") and file.endswith(".py")
-                   and file not in CI_TESTS and Path(file).is_file())
-    if not selected and tests:
-        selected = sorted(test_coverage(tests))
-        if not selected:
-            return "full", [], "Changed tests have no identifiable production coverage"
+    }
+    added_tests = sorted(
+        file for file in application_tests
+        if file.endswith(".py") and Path(file).is_file()
+    )
+    if added_tests:
+        # Always union test coverage with changed source, even in mixed PRs.
+        # Otherwise a new test could expose mutations in another module.
+        covered = test_coverage(added_tests)
+        if not covered and not selected:
+            return "full", [], "Added tests have no identifiable production coverage"
+        selected.update(covered)
     if selected:
-        return "scoped", selected, "Changed or test-covered production Python modules"
-    return "skip", [], "Only docs, frontend or CI metadata changed"
+        return "scoped", sorted(selected), "Changed production modules and modules covered by added tests"
+    return "skip", [], "No affected Python modules (docs, frontend or CI-only)"
 
 
 def configure_only_mutate(paths: list[str]) -> None:

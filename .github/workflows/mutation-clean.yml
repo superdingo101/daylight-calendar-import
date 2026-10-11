@@ -142,6 +142,5 @@ jobs:
           ENFORCE_OUTCOME: ${{ steps.enforce.outcome }}
           EXPORT_OUTCOME: ${{ steps.export.outcome }}
           DIAGNOSTICS_OUTCOME: ${{ steps.diagnostics.outcome }}
-          NIGHTLY_CACHE_OUTCOME: ${{ steps.nightly-cache.outcome }}
         run: python scripts/report_nightly_mutation.py
 

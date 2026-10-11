@@ -29,6 +29,9 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: python scripts/pr_mutation.py prepare --base "$PR_BASE" --head "$PR_HEAD"
+      - name: Explain non-Python scope
+        if: ${{ steps.scope.outputs.mode == 'skip' }}
+        run: echo "No mutation-relevant Python code changed; mutation testing not applicable."
       - name: Discard previous mutation state
         if: ${{ (steps.scope.outputs.mode == 'scoped' || steps.scope.outputs.mode == 'full') }}
         run: rm -rf mutants

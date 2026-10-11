@@ -34,7 +34,7 @@ def test_changed_source_scope(tmp_path, monkeypatch):
     path.parent.mkdir(parents=True)
     path.write_text("def f(): return 1")
     monkeypatch.setattr(pr_mutation, "changed_paths", lambda *a, **kw: {name})
-    assert pr_mutation.select(BASE, HEAD) == ("scoped", [name], "Changed or test-covered production Python modules")
+    assert pr_mutation.select(BASE, HEAD)[0:2] == ("scoped", [name])
 
 
 def test_changed_test_maps_coverage(tmp_path, monkeypatch):
@@ -43,7 +43,7 @@ def test_changed_test_maps_coverage(tmp_path, monkeypatch):
     t.parent.mkdir()
     t.touch()
     def changed(base, head, kind="ACMRTD"):
-        return set() if kind == "D" else {str(t)}
+        return set() if kind == "MRTD" else {str(t)}
     monkeypatch.setattr(pr_mutation, "changed_paths", changed)
     monkeypatch.setattr(pr_mutation, "test_coverage", lambda tests: {SRC + "journal.py"})
     assert pr_mutation.select(BASE, HEAD)[1] == [SRC + "journal.py"]
@@ -70,6 +70,61 @@ def test_configuration_round_trip(tmp_path, monkeypatch):
     assert obj["tool"]["other"]["flag"] is True
     pr_mutation.restore()
     assert Path("pyproject.toml").read_text() == source
+
+def test_existing_test_edits_trigger_safe_full_fallback(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    test = Path("tests/test_existing.py")
+    test.parent.mkdir()
+    test.touch()
+    def changed(base, head, kind="ACMRTD"):
+        return {str(test)}  # tracked existing test, so also in MRTD diff
+    monkeypatch.setattr(pr_mutation, "changed_paths", changed)
+    monkeypatch.setattr(pr_mutation, "test_coverage",
+                        lambda _: pytest.fail("Cannot infer lost coverage from edited test"))
+    assert pr_mutation.select(BASE, HEAD)[0] == "full"
+
+
+def test_shared_helper_change_triggers_full_run(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    helper = Path("tests/hosted_contract.py")
+    helper.parent.mkdir()
+    helper.touch()
+    monkeypatch.setattr(pr_mutation, "changed_paths", lambda *a, **k: {str(helper)})
+    assert pr_mutation.select(BASE, HEAD)[0] == "full"
+
+
+def test_new_test_plus_changed_source_unions_both_modules(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    source = Path(SRC + "notification_journal.py")
+    source.parent.mkdir(parents=True)
+    source.touch()
+    test = Path("tests/test_notification.py")
+    test.parent.mkdir()
+    test.touch()
+    def changed(base, head, kind="ACMRTD"):
+        return set() if kind == "MRTD" else {str(source), str(test)}
+    monkeypatch.setattr(pr_mutation, "changed_paths", changed)
+    monkeypatch.setattr(pr_mutation, "test_coverage",
+                        lambda files: {SRC + "storage.py"})
+    assert pr_mutation.select(BASE, HEAD)[1] == [
+        str(source), SRC + "storage.py",
+    ]
+
+
+def test_new_test_with_no_coverage_and_no_changed_source_falls_back_to_full(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    test = Path("tests/test_new.py")
+    test.parent.mkdir()
+    test.touch()
+    monkeypatch.setattr(
+        pr_mutation, "changed_paths",
+        lambda base, head, kind="ACMRTD": set() if kind == "MRTD" else {str(test)},
+    )
+    monkeypatch.setattr(pr_mutation, "test_coverage", lambda _: set())
+    assert pr_mutation.select(BASE, HEAD)[0] == "full"
+
 
 
 def test_deleted_only_ci_contract_tests_do_not_force_full_mutation(monkeypatch):

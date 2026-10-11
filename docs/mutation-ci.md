@@ -9,12 +9,14 @@ and head SHA, supporting stacked pull requests.
 - Production Python changes: mutate only the changed Python modules using
   mutmut's `only_mutate` configuration. All tests remain discoverable by mutmut
   when mapping tests to mutated functions.
-- Changes limited to application test modules: execute the changed tests with
-  coverage.py, then mutate production modules executed by those tests.
-- Changes in shared fixtures, dependencies, pytest configuration or deleted tests:
-  run a full uncached mutation check because narrowing would be unsafe.
-- Documentation, frontend-only or CI-only changes: skip Python mutation testing;
-  standard Python and frontend checks still apply.
+- Newly added application tests: run the new tests under coverage.py and include
+  the production modules they exercise **alongside** any changed source.
+- Edited or deleted existing application tests: use a full clean fallback,
+  because post-edit coverage alone cannot show which modules lost tests.
+- Changes in shared helpers (including `tests/hosted_contract.py`), fixtures,
+  dependencies or pytest configuration also require a full uncached run.
+- Documentation, frontend-only or CI-only changes: explicitly record that
+  there is no applicable Python mutation scope; ordinary tests still apply.
 - No compatible cache is necessary. On every PR check, mutation state starts
   clean, avoiding silent use of stale verdicts.
 - The existing 95.22% threshold, no-tests, suspicious and segfault guards apply
