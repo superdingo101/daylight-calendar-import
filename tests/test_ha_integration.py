@@ -488,3 +488,49 @@ async def test_remove_entry_without_registry_does_not_create_one(hass, monkeypat
     hass.data.pop(key, None)
     await async_remove_entry(hass, entry)
     assert key not in hass.data
+
+
+async def test_old_provider_cleanup_cannot_evict_a_replaced_registry_key(
+    hass, monkeypatch,
+):
+    """Late cancellation callbacks must not remove a newer registry owner."""
+    import asyncio
+    from custom_components.daylight_calendar_import import async_remove_entry
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import._NOTIFICATION_CANCEL_GRACE_SECONDS",
+        0.002,
+    )
+    monkeypatch.setattr(PendingImportStore, "async_remove_storage", AsyncMock())
+    entry = _entry()
+    key = f"{DOMAIN}_notification_tasks"
+    registry = hass.data.setdefault(key, {})
+    old_tasks = registry[entry.entry_id] = set()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def cancellation_resistant():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    task = asyncio.create_task(cancellation_resistant())
+    old_tasks.add(task)
+    task.add_done_callback(old_tasks.discard)
+    await started.wait()
+    try:
+        await asyncio.wait_for(async_remove_entry(hass, entry), timeout=0.5)
+        replacement = registry[entry.entry_id] = set()
+        release.set()
+        await asyncio.wait_for(task, timeout=1)
+        await asyncio.sleep(0)
+        assert entry.entry_id in registry
+        assert registry[entry.entry_id] is replacement
+        assert not old_tasks
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.wait_for(task, timeout=1)
