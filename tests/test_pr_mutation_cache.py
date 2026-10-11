@@ -379,6 +379,6 @@ def test_new_module_dynamic_or_nonparametrize_decorators_force_cold(
     previous = cache.hash_inputs([old_file])[1]
     added = Path("tests/test_after.py")
     added.write_text(
-        f"import pytest\n{decorator}\ndef test_new(n=None): assert True\n"
+        f"import pytest\n{decorator}\ndef test_new(n): assert True\n"
     )
     assert not cache.additive(previous, cache.hash_inputs([old_file, added])[1])
