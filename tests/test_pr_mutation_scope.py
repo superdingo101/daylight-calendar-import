@@ -200,7 +200,7 @@ def test_shared_helper_change_triggers_full_run(tmp_path, monkeypatch):
     assert pr_mutation.select(BASE, HEAD)[0] == "full"
 
 
-def test_new_test_plus_changed_source_unions_both_modules(tmp_path, monkeypatch):
+def test_new_test_does_not_expand_changed_source_scope(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     source = Path(SRC + "notification_journal.py")
     source.parent.mkdir(parents=True)
@@ -208,14 +208,16 @@ def test_new_test_plus_changed_source_unions_both_modules(tmp_path, monkeypatch)
     test = Path("tests/test_notification.py")
     test.parent.mkdir()
     test.touch()
+
     def changed(base, head, kind="ACMRTD"):
         return set() if kind == "MRTD" else {str(source), str(test)}
+
     monkeypatch.setattr(pr_mutation, "changed_paths", changed)
-    monkeypatch.setattr(pr_mutation, "test_coverage",
-                        lambda files: {SRC + "storage.py"})
-    assert pr_mutation.select(BASE, HEAD)[1] == [
-        str(source), SRC + "storage.py",
-    ]
+    monkeypatch.setattr(
+        pr_mutation, "test_coverage",
+        lambda _: pytest.fail("Added test imports cannot widen changed-source scope"),
+    )
+    assert pr_mutation.select(BASE, HEAD)[1] == [str(source)]
 
 
 def test_new_test_with_no_coverage_and_no_changed_source_falls_back_to_full(
@@ -269,12 +271,12 @@ def test_coverage_json_keeps_fully_covered_modules_when_skip_covered_true(
     )
     module = Path(SRC + "fully_covered.py")
     module.parent.mkdir(parents=True)
-    module.write_text("VALUE = 7\n", encoding="utf-8")
+    module.write_text("def value():\n    return 7\n", encoding="utf-8")
     added_test = Path("tests/test_new_coverage.py")
     added_test.parent.mkdir()
     added_test.write_text(
-        "from custom_components.daylight_calendar_import.fully_covered import VALUE\n"
-        "def test_value(): assert VALUE == 7\n",
+        "from custom_components.daylight_calendar_import.fully_covered import value\n"
+        "def test_value(): assert value() == 7\n",
         encoding="utf-8",
     )
 
@@ -282,3 +284,69 @@ def test_coverage_json_keeps_fully_covered_modules_when_skip_covered_true(
     # The JSON report is temporary, but the input setting was enabled.
     assert "skip_covered = true" in Path("pyproject.toml").read_text()
     assert not Path(".pr-mutation-coverage.json").exists()
+
+
+
+def test_added_tests_do_not_select_package_import_side_effects(tmp_path, monkeypatch):
+    """Real pytest-cov execution contexts exclude modules imported at collect."""
+    monkeypatch.chdir(tmp_path)
+    Path("pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\n'
+        'asyncio_mode = "auto"\n'
+        'pythonpath = ["."]\n'
+        '[tool.coverage.run]\n'
+        'source = ["custom_components.daylight_calendar_import"]\n'
+        '[tool.coverage.report]\n'
+        'skip_covered = true\n'
+        'fail_under = 100\n',
+        encoding="utf-8",
+    )
+    pkg = Path(SRC)
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(
+        "from . import imported_only\nfrom . import actual\n"
+    )
+    (pkg / "imported_only.py").write_text(
+        "def unrelated():\n    return 42\n"
+    )
+    (pkg / "actual.py").write_text(
+        "def exercised():\n    return 7\n"
+    )
+    test_file = Path("tests/test_added.py")
+    test_file.parent.mkdir()
+    test_file.write_text(
+        "from custom_components.daylight_calendar_import.actual import exercised\n"
+        "def test_exercised():\n"
+        "    assert exercised() == 7\n"
+    )
+    assert pr_mutation.test_coverage([str(test_file)]) == {str(pkg / "actual.py")}
+
+
+def test_import_inside_test_does_not_select_other_module_definitions(
+    tmp_path, monkeypatch,
+):
+    """Even runtime imports must not count module-level initialization."""
+    monkeypatch.chdir(tmp_path)
+    Path("pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\n'
+        'asyncio_mode = "auto"\n'
+        'pythonpath = ["."]\n'
+        '[tool.coverage.run]\n'
+        'source = ["custom_components.daylight_calendar_import"]\n'
+        '[tool.coverage.report]\n'
+        'fail_under = 100\n',
+    )
+    pkg = Path(SRC)
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "lazy.py").write_text(
+        "def not_called():\n    return 17\n"
+    )
+    test_file = Path("tests/test_lazy.py")
+    test_file.parent.mkdir()
+    test_file.write_text(
+        "def test_import_only():\n"
+        "    from custom_components.daylight_calendar_import import lazy\n"
+        "    assert lazy is not None\n"
+    )
+    assert pr_mutation.test_coverage([str(test_file)]) == set()
