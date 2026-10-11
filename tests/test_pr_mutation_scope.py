@@ -178,3 +178,41 @@ def test_deleted_only_ci_contract_tests_do_not_force_full_mutation(monkeypatch):
 def test_deleted_application_tests_still_force_full_mutation(monkeypatch):
     monkeypatch.setattr(pr_mutation, "changed_paths", lambda *a, **kw: {"tests/test_storage.py"})
     assert pr_mutation.select(BASE, HEAD)[0] == "full"
+
+
+
+def test_coverage_json_keeps_fully_covered_modules_when_skip_covered_true(
+    tmp_path, monkeypatch,
+):
+    """Coverage JSON includes 100%-covered modules even if text output skips them.
+
+    Exercise the same coverage run/json commands as test_coverage(), so this
+    does not merely mock the JSON response or the covered-file selector.
+    """
+    monkeypatch.chdir(tmp_path)
+    Path("pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\n'
+        'testpaths = ["tests"]\n'
+        'pythonpath = ["."]\n'
+        '[tool.coverage.run]\n'
+        'source = ["custom_components.daylight_calendar_import"]\n'
+        '[tool.coverage.report]\n'
+        'skip_covered = true\n'
+        'fail_under = 100\n',
+        encoding="utf-8",
+    )
+    module = Path(SRC + "fully_covered.py")
+    module.parent.mkdir(parents=True)
+    module.write_text("VALUE = 7\n", encoding="utf-8")
+    added_test = Path("tests/test_new_coverage.py")
+    added_test.parent.mkdir()
+    added_test.write_text(
+        "from custom_components.daylight_calendar_import.fully_covered import VALUE\n"
+        "def test_value(): assert VALUE == 7\n",
+        encoding="utf-8",
+    )
+
+    assert pr_mutation.test_coverage([str(added_test)]) == {str(module)}
+    # The JSON report is temporary, but the input setting was enabled.
+    assert "skip_covered = true" in Path("pyproject.toml").read_text()
+    assert not Path(".pr-mutation-coverage.json").exists()
