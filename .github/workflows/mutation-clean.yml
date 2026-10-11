@@ -78,42 +78,6 @@ jobs:
         if: always()
         run: python scripts/export_mutation_survivors.py
 
-      - name: Stamp nightly baseline
-        if: >-
-          ${{
-            success() &&
-            (
-              github.event_name == 'schedule' ||
-              (
-                github.event_name == 'workflow_dispatch' &&
-                github.ref == 'refs/heads/main' &&
-                inputs.release_tag == '' &&
-                inputs.target_sha == ''
-              )
-            )
-          }}
-        run: python scripts/mutation_cache.py stamp
-
-      - name: Publish nightly cache for PRs
-        id: nightly-cache
-        if: >-
-          ${{
-            success() &&
-            (
-              github.event_name == 'schedule' ||
-              (
-                github.event_name == 'workflow_dispatch' &&
-                github.ref == 'refs/heads/main' &&
-                inputs.release_tag == '' &&
-                inputs.target_sha == ''
-              )
-            )
-          }}
-        uses: actions/cache/save@v4
-        with:
-          path: mutants
-          key: mutmut-v2-linux-py314-v380-main-${{ github.run_id }}
-
       - name: Create release mutation proof
         if: ${{ inputs.release_tag != '' && success() }}
         run: python scripts/release_mutation_proof.py create "${{ inputs.release_tag }}"
@@ -169,15 +133,24 @@ jobs:
               -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           done
 
-      - name: Update visible nightly mutation health
-        if: ${{ always() && github.event_name == 'schedule' }}
+  nightly-report:
+    name: Report nightly mutation health
+    # A timed-out clean job cannot execute its own final reporting step.
+    if: ${{ always() && github.event_name == 'schedule' }}
+    needs: clean
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download mutation diagnostics when available
+        uses: actions/download-artifact@v4
         continue-on-error: true
+        with:
+          name: mutation-results
+
+      - name: Update visible nightly mutation health
         env:
           GH_TOKEN: ${{ github.token }}
-          MUTATION_OUTCOME: ${{ steps.mutation.outcome }}
-          ENFORCE_OUTCOME: ${{ steps.enforce.outcome }}
-          EXPORT_OUTCOME: ${{ steps.export.outcome }}
-          DIAGNOSTICS_OUTCOME: ${{ steps.diagnostics.outcome }}
-          NIGHTLY_CACHE_OUTCOME: ${{ steps.nightly-cache.outcome }}
+          NIGHTLY_CLEAN_OUTCOME: ${{ needs.clean.result }}
         run: python scripts/report_nightly_mutation.py
-

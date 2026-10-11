@@ -2,7 +2,7 @@
 
 [![Nightly clean mutation](https://github.com/superdingo101/daylight-calendar-import/actions/workflows/mutation-clean.yml/badge.svg?event=schedule)](https://github.com/superdingo101/daylight-calendar-import/actions/workflows/mutation-clean.yml?query=event%3Aschedule)
 
-The [mutation testing policy](docs/mutation-ci.md) runs cached incremental checks on PRs, nightly clean verification, and an independent clean release gate.
+The [mutation testing policy](docs/mutation-ci.md) runs uncached changed-module mutation checks on PRs, nightly full clean verification, and an independent clean release gate.
 
 A Home Assistant custom integration that turns unstructured text into validated calendar event drafts using the user's existing **AI Task** provider.
 
@@ -127,7 +127,7 @@ mutmut export-cicd-stats
 python scripts/check_mutation_score.py
 ```
 
-CI requires 100% statement/branch coverage for the Python integration package. For same-repository pull requests, full mutation testing is a **final pre-merge gate** rather than a per-commit check: finish implementation and review work, get the normal CI checks green, then apply the `mutation-ready` label. That label triggers `Mutation score`; if another commit is pushed afterward, mutation testing reruns automatically against the new head. Do not merge until `Mutation score` passes on the current pull request head. Fork/external pull requests are intentionally not eligible for this label-driven final gate.
+CI requires 100% statement/branch coverage for the Python integration package. The required `Mutation score` check runs automatically when a pull request is opened or updated; **do not apply the retired `mutation-ready` label**. Ordinary PRs mutate changed production Python modules relative to the PR's merge base (including stacked PRs); changes to existing tests and shared mutation inputs conservatively trigger a full uncached run. Documentation-, frontend- and CI-only PRs with no affected Python code explicitly report that mutation testing is not applicable. Do not merge if any required check fails. An independent full clean mutation validation is mandatory for release. This check uses the normal `pull_request` trigger, not a same-repository label gate.
 
 The mutation gate enforces the baseline in `mutation-baseline.json` via `scripts/check_mutation_score.py`.
 

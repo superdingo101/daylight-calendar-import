@@ -1,4 +1,4 @@
-"""Expose the nightly clean mutation result in a persistent GitHub issue."""
+"""Create a nightly mutation issue only on failure; close it after recovery."""
 
 from __future__ import annotations
 
@@ -20,15 +20,29 @@ def main() -> None:
     repo = os.environ["GITHUB_REPOSITORY"]
     run_id = os.environ["GITHUB_RUN_ID"]
     url = f"https://github.com/{repo}/actions/runs/{run_id}"
-    success = all(
-        os.environ.get(name) == "success"
-        for name in ("MUTATION_OUTCOME", "ENFORCE_OUTCOME", "EXPORT_OUTCOME",
-                     "DIAGNOSTICS_OUTCOME", "NIGHTLY_CACHE_OUTCOME")
-    )
+    # This job runs separately, even when the mutation job times out.
+    success = os.environ.get("NIGHTLY_CLEAN_OUTCOME") == "success"
     stats = json.loads(STATS.read_text()) if STATS.is_file() else {}
     total = stats.get("total", 0) - stats.get("skipped", 0)
     score = (stats.get("killed", 0) + stats.get("timeout", 0)) / total * 100 if total > 0 else None
     status = "PASS" if success else "FAIL"
+    # Server-side title filtering keeps older alerts in scope even with >100 open issues.
+    issues = json.loads(gh("issue", "list", "--repo", repo, "--state", "open",
+                          "--search", f'in:title "{ISSUE_TITLE}"',
+                          "--limit", "100", "--json", "number,title"))
+    match = next((issue for issue in issues if issue["title"] == ISSUE_TITLE), None)
+    if success:
+        if match is None:
+            print(f"Nightly mutation health: PASS; no issue needed — {url}")
+            return
+        number = str(match["number"])
+        score_text = f"{score:.2f}% mutation score" if score is not None else "mutation score unavailable"
+        gh("issue", "comment", number, "--repo", repo, "--body",
+           f"**PASS** — {score_text} — {url}")
+        gh("issue", "close", number, "--repo", repo, "--reason", "completed")
+        print(f"Nightly mutation health: resolved issue #{number} — {url}")
+        return
+
     text = (
         "## Nightly clean mutation health\n\n"
         f"- Status: **{status}**\n"
@@ -46,9 +60,6 @@ def main() -> None:
     )
     with Path("nightly-mutation-health.md").open("w") as output:
         output.write(text)
-    issues = json.loads(gh("issue", "list", "--repo", repo, "--state", "open",
-                          "--limit", "100", "--json", "number,title"))
-    match = next((x for x in issues if x["title"] == ISSUE_TITLE), None)
     if match:
         number = str(match["number"])
         gh("issue", "edit", number, "--repo", repo, "--body-file", "nightly-mutation-health.md")
