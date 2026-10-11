@@ -1,6 +1,6 @@
 import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
 import {checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
-import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, settingsErrorMessage} from "./settings.js";
+import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, settingsErrorMessage} from "./settings.js";
 
 const css = `
   :host {
@@ -459,7 +459,15 @@ function emailDraftMatches(settings, draft) {
 }
 
 function settingsDraftMatches(settings, tab, draft) {
-  return tab === "email" ?
+  return tab === "notifications" ?
+    Boolean(settings?.notifications && draft?.notifications) &&
+      settings.notifications.enabled === draft.notifications.enabled &&
+      settings.notifications.target === draft.notifications.target &&
+      Array.isArray(draft.notifications.classes) &&
+      draft.notifications.classes.length === settings.notifications.classes.length &&
+      draft.notifications.classes.every(value =>
+        settings.notifications.classes.includes(value)) :
+    tab === "email" ?
     emailDraftMatches(settings, draft) :
     settingsPatchMatches(settings, draft);
 }
@@ -513,7 +521,9 @@ export class DaylightImportPanel extends HTMLElement {
     this._settingsTab = "general";
     this._settingsError = null;
     this._settingsReloadWarning = null;
-    this._settingsDrafts = {general: null, calendars: null, routing: null, email: null};
+    this._settingsDrafts = {general: null, calendars: null, routing: null, email: null, notifications: null};
+    this._notificationDraftBaseline = null;
+    this._notificationConflictNeedsRebase = false;
     this._routingRawDraft = null;
     this._settingsSaving = false;
     const style = element("style", css);
@@ -678,7 +688,7 @@ export class DaylightImportPanel extends HTMLElement {
       const settings = await loadSettings(this._hass);
       if (generation !== this._generation) return;
       this._applySettingsSnapshot(settings);
-      for (const tab of ["general", "calendars", "routing", "email"]) {
+      for (const tab of ["general", "calendars", "routing", "email", "notifications"]) {
         if (this._settingsDrafts[tab] &&
             settingsDraftMatches(settings, tab, this._settingsDrafts[tab])) {
           this._settingsDrafts[tab] = null;
@@ -701,6 +711,25 @@ export class DaylightImportPanel extends HTMLElement {
     // All server snapshots (including saves from other tabs) must rebase
     // untouched Routing fields before the next render or save.
     this._settings = settings;
+    if (this._notificationConflictNeedsRebase) {
+      // A known conflict invalidates the *entire* submitted policy. Never
+      // rebase a stale full-policy draft onto another administrator's version:
+      // that would turn a retry into an unreviewed overwrite.
+      this._settingsDrafts.notifications = null;
+      this._notificationDraftBaseline = null;
+      this._notificationConflictNeedsRebase = false;
+      this._settingsError =
+        "Notification settings changed elsewhere. The conflicting unsaved choices " +
+        "were discarded; review these current settings and re-enter your changes.";
+    }
+    // Any refresh or recovered save which confirms the drafted policy has
+    // persisted must also discard its obsolete optimistic concurrency token.
+    if (!this._settingsDrafts.notifications ||
+        settingsDraftMatches(settings, "notifications", this._settingsDrafts.notifications)) {
+      this._settingsDrafts.notifications = null;
+      this._notificationDraftBaseline = null;
+      this._notificationConflictNeedsRebase = false;
+    }
     this._reconcileRoutingDraft(settings);
   }
 
@@ -740,7 +769,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async _saveSettings(tab, patch, save, successMessage, fallbackMessage) {
-    const changesPersistedSettings = !settingsPatchMatches(this._settings, patch);
+    const changesPersistedSettings = !settingsDraftMatches(this._settings, tab, patch);
     this._settingsSaving = true;
     this._settingsError = null;
     this._announcement.replaceChildren(element("span", "Saving settings…"));
@@ -749,6 +778,10 @@ export class DaylightImportPanel extends HTMLElement {
     try {
       const saved = await save();
       if (tab === "routing") this._routingRawDraft = null;
+      if (tab === "notifications") {
+        this._notificationDraftBaseline = null;
+        this._notificationConflictNeedsRebase = false;
+      }
       this._settingsDrafts[tab] = null;
       this._applySettingsSnapshot(saved);
       if (changesPersistedSettings) this._settingsReloadWarning = null;
@@ -760,6 +793,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._settingsReloadWarning = message;
         this._settings = {...this._settings, ...patch};
         this._settingsDrafts[tab] = null;
+        if (tab === "notifications") this._notificationDraftBaseline = null;
         try {
           this._applySettingsSnapshot(await loadSettings(this._hass));
         } catch (refreshError) {
@@ -768,14 +802,34 @@ export class DaylightImportPanel extends HTMLElement {
             "The saved settings could not be refreshed. Try again after restarting Home Assistant.",
           );
         }
+      } else if (tab === "notifications" && isSettingsErrorCode(error, "notifications_changed")) {
+        // Do not retain a stale complete policy which could overwrite a
+        // concurrent administrator's edit on the next attempt.
+        try {
+          const refreshed = await loadSettings(this._hass);
+          // The refreshed policy is authoritative. Discard the stale draft
+          // only after obtaining it; preserve the user's edit if the read
+          // fails, so it can be reviewed once connectivity returns.
+          this._notificationDraftBaseline = null;
+          this._notificationConflictNeedsRebase = false;
+          this._settingsDrafts.notifications = null;
+          this._applySettingsSnapshot(refreshed);
+          this._settingsError = message;
+        } catch {
+          this._notificationConflictNeedsRebase = true;
+          this._settingsError =
+            "Notification settings changed elsewhere, but refresh failed. " +
+            "Your unsaved choices are retained; refresh settings before saving.";
+        }
       } else if (isDefinitiveSettingsError(error)) {
         this._settingsError = message;
       } else {
         try {
           const reconciled = await loadSettings(this._hass);
           this._applySettingsSnapshot(reconciled);
-          if (settingsPatchMatches(reconciled, patch)) {
+          if (settingsDraftMatches(reconciled, tab, patch)) {
             this._settingsDrafts[tab] = null;
+            if (tab === "notifications") this._notificationDraftBaseline = null;
             if (changesPersistedSettings) {
               this._settingsReloadWarning = SETTINGS_RUNTIME_UNCERTAIN_WARNING;
             }
@@ -799,8 +853,17 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   _setSettingsDraft(tab, patch) {
-    this._settingsDrafts[tab] =
-      settingsDraftMatches(this._settings, tab, patch) ? null : patch;
+    const matches = settingsDraftMatches(this._settings, tab, patch);
+    if (tab === "notifications") {
+      if (!matches && !this._notificationDraftBaseline) {
+        const policy = this._settings.notifications;
+        this._notificationDraftBaseline = {...policy, classes: [...policy.classes]};
+      } else if (matches) {
+        this._notificationDraftBaseline = null;
+        this._notificationConflictNeedsRebase = false;
+      }
+    }
+    this._settingsDrafts[tab] = matches ? null : patch;
   }
 
   _clearEmailDraftPassword() {
@@ -873,6 +936,7 @@ export class DaylightImportPanel extends HTMLElement {
       ["calendars", "Calendars"],
       ["routing", "Routing"],
       ["email", "Email"],
+      ["notifications", "Notifications"],
     ]) {
       const button = element("button", label);
       button.type = "button";
@@ -1232,6 +1296,99 @@ export class DaylightImportPanel extends HTMLElement {
         this._content.querySelector("[data-settings-reload-warning]") ||
         this._content.querySelector("h2") || this._refreshButton)?.focus();
     }
+  }
+
+  notificationSettingsView() {
+    const section = element("section", "", "settings-card");
+    const heading = element("h2", "Notifications");
+    heading.tabIndex = -1;
+    section.append(heading, element("p",
+      "Notifications are off by default. Review-ready alerts are available now; other event types will be enabled when their delivery paths ship. Messages omit private event details.",
+      "settings-help"));
+    const form = document.createElement("form");
+    const saved = this._settings.notifications ?? {enabled: false, target: null, classes: []};
+    const draft = this._settingsDrafts.notifications?.notifications ?? saved;
+    const enableLabel = document.createElement("label");
+    const enabled = document.createElement("input");
+    enabled.type = "checkbox";
+    enabled.name = "notification_enabled";
+    enabled.checked = draft.enabled;
+    enableLabel.append(enabled, element("span", "Enable notifications"));
+    form.append(enableLabel);
+    const targetLabel = element("label", "Home Assistant notify entity");
+    const target = document.createElement("select");
+    target.name = "notification_target";
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "Select a notify entity";
+    target.append(empty);
+    const notifyChoices = entityChoices(this._hass, "notify", 0,
+      [saved.target, draft.target].filter(Boolean));
+    appendOptions(target, notifyChoices, draft.target);
+    target.value = draft.target ?? "";
+    targetLabel.append(target);
+    form.append(targetLabel);
+    const classes = document.createElement("fieldset");
+    classes.append(element("legend", "Notify me about"));
+    // Other lifecycle classes exist in the domain contract, but have no
+    // delivery path until a later v0.7 PR. Do not advertise them yet.
+    for (const [value, description] of [
+      ["review_ready", "Imports ready for review"],
+    ]) {
+      const label = document.createElement("label");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.name = `notify_${value}`;
+      checkbox.value = value;
+      checkbox.checked = draft.classes.includes(value);
+      label.append(checkbox, element("span", description));
+      classes.append(label);
+    }
+    form.append(classes);
+    const policy = () => ({
+      enabled: enabled.checked,
+      target: target.value.trim() || null,
+      // Preserve valid classes that predate this UI but are not yet
+      // selectable. A disabled policy may intentionally retain them.
+      classes: [
+        ...draft.classes.filter(kind => kind !== "review_ready"),
+        ...Array.from(classes.querySelectorAll("input"))
+          .filter(input => input.checked).map(input => input.value),
+      ],
+    });
+    const changed = () => this._setSettingsDraft("notifications", {notifications: policy()});
+    form.addEventListener("change", changed);
+    target.addEventListener("change", changed);
+    const save = element("button", this._settingsSaving ? "Saving…" : "Save notification settings");
+    save.type = "submit";
+    save.disabled = this._settingsSaving;
+    form.append(save);
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      const notifications = policy();
+      if (this._notificationConflictNeedsRebase) {
+        this._settingsError = "Refresh notification settings before retrying your retained changes.";
+        this.render();
+        this._content.querySelector("[data-settings-save-error]")?.focus();
+        return;
+      }
+      if (notifications.enabled && (!notifications.target || !notifications.classes.length)) {
+        this._settingsError = !notifications.target ?
+          "Select a Home Assistant notify entity before enabling notifications." :
+          "Choose at least one notification type before enabling notifications.";
+        this.render();
+        this._content.querySelector("[data-settings-save-error]")?.focus();
+        return;
+      }
+      void this._saveSettings("notifications", {notifications},
+        () => saveNotificationSettings(this._hass, {
+          entry_id: this._settings.entry_id, notifications,
+          expected_notifications: this._notificationDraftBaseline ?? this._settings.notifications,
+        }), "Notification settings saved", "Could not save notification settings.");
+    });
+    setSettingsFormBusy(form, this._settingsSaving);
+    section.append(form);
+    return section;
   }
 
   emailSettingsView() {
@@ -1994,7 +2151,9 @@ export class DaylightImportPanel extends HTMLElement {
             this._settingsTab === "routing" ?
               this.routingSettingsView() :
             this._settingsTab === "email" ?
-              this.emailSettingsView() : this.generalSettingsView(),
+              this.emailSettingsView() :
+            this._settingsTab === "notifications" ?
+              this.notificationSettingsView() : this.generalSettingsView(),
         );
       }
       this._viewContent.replaceChildren(content);
