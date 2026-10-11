@@ -97,18 +97,36 @@ def test_renamed_application_test_preserves_deleted_old_path_and_runs_full(
     assert pr_mutation.select(base, head)[0] == "full"
 
 
-@pytest.mark.parametrize("kind", ["M", "D"])
+@pytest.mark.parametrize("operation", ["modify", "delete"])
 def test_exporter_only_test_changes_are_not_application_mutation_inputs(
-    monkeypatch, kind,
+    tmp_path, monkeypatch, operation,
 ):
-    ci_test = "tests/test_export_mutation_survivors.py"
+    """Exporter CI test changes don't need application-wide mutation testing."""
+    monkeypatch.chdir(tmp_path)
 
-    def changed(base, head, diff_kind="ACMRTD"):
-        return {ci_test} if diff_kind in ("ACMRTD", "MRTD") else set()
+    def git(*args):
+        return subprocess.check_output(["git", *args], text=True).strip()
 
-    monkeypatch.setattr(pr_mutation, "changed_paths", changed)
-    assert ci_test in pr_mutation.CI_TESTS
-    assert pr_mutation.select(BASE, HEAD)[0] == "skip"
+    git("init")
+    git("config", "user.email", "ci@example.invalid")
+    git("config", "user.name", "CI")
+    ci_test = Path("tests/test_export_mutation_survivors.py")
+    ci_test.parent.mkdir()
+    ci_test.write_text("def test_export(): assert True\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "original exporter test")
+    base = git("rev-parse", "HEAD")
+
+    if operation == "modify":
+        ci_test.write_text("def test_export(): assert 1 == 1\n", encoding="utf-8")
+        git("add", ".")
+    else:
+        git("rm", str(ci_test))
+    git("commit", "-m", "adjust exporter test")
+    head = git("rev-parse", "HEAD")
+
+    assert str(ci_test) in pr_mutation.changed_paths(base, head, "MRTD")
+    assert pr_mutation.select(base, head)[0] == "skip"
 
 
 def test_rejects_git_options_as_refs():
