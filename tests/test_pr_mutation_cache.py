@@ -246,3 +246,100 @@ def test_new_test_in_a_different_file_does_not_reuse_dynamic_binder(
     before = cache.hash_inputs([first, second])[1]
     second.write_text(second.read_text() + "\ndef test_added():\n    assert True\n")
     assert cache.additive(before, cache.hash_inputs([first, second])[1])
+
+
+
+def test_isolated_new_test_file_is_additive_and_retests_survivors(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    initial = Path("tests/test_existing.py")
+    initial.parent.mkdir()
+    initial.write_text("def test_original():\n    assert True\n")
+    previous_tests = cache.hash_inputs([initial])[1]
+    extra = Path("tests/test_more.py")
+    extra.write_text(
+        '"""Purely additive test module."""\n'
+        'from datetime import UTC\n'
+        'import pytest\n'
+        'from test_existing import test_original\n'
+        'from custom_components.daylight_calendar_import.models import EventDraft\n'
+        '\n'
+        'def test_extra():\n'
+        '    assert test_original() is None\n'
+    )
+    latest_tests = cache.hash_inputs([initial, extra])[1]
+    assert cache.additive(previous_tests, latest_tests)
+
+    old = make_context(tests=previous_tests)
+    new = make_context(tests=latest_tests)
+    metadata = setup_state(tmp_path, monkeypatch, old, new)
+    # setup_state creates its own test_app.py but the provenance and saved state
+    # are intentionally those of the two test modules created above.
+    cache.restore("113")
+    verdicts = json.loads(metadata.read_text())["exit_code_by_key"]
+    assert verdicts["killed"] == 1
+    assert verdicts["killed_internal"] == 3
+    assert verdicts["type_check"] == 37
+    assert verdicts["survived"] is None
+    assert verdicts["no_tests"] is None
+    assert (cache.ROOT / "tests/test_more.py").exists()
+    assert not cache.PROVENANCE.exists()
+
+
+@pytest.mark.parametrize("body", [
+    'import pytest\n@pytest.fixture\ndef shared():\n    return 1\n',
+    'from pytest import fixture\n@fixture\ndef shared():\n    return 1\n',
+    'import pytest\n@pytest.mark.parametrize("x", [1])\ndef test_new(x):\n    assert x\n',
+    'import pytest\npytest_plugins = ["new_plugin"]\ndef test_new():\n    assert True\n',
+    'import pytest\nregister_global_hooks()\ndef test_new():\n    assert True\n',
+    'import external_new_module\ndef test_new():\n    assert True\n',
+    'from arbitrary_source import *\ndef test_new():\n    assert True\n',
+    'from test_new_helper import value\ndef test_new():\n    assert value\n',
+    'def test_new(a=side_effect()):\n    assert a\n',
+    'def test_new(a: some_effect()):\n    assert a\n',
+    'class TestGlobal:\n    def test_nested(self):\n        assert True\n',
+    'async def test_new():\n    assert True\n\ndef not_a_test():\n    pass\n',
+])
+def test_new_test_module_collection_side_effects_force_cold(
+    tmp_path, monkeypatch, body,
+):
+    monkeypatch.chdir(tmp_path)
+    original = Path("tests/test_old.py")
+    original.parent.mkdir()
+    original.write_text("def test_old(): assert True\n")
+    old = cache.hash_inputs([original])[1]
+    newfile = Path("tests/test_added.py")
+    newfile.write_text(body)
+    assert not cache.additive(old, cache.hash_inputs([original, newfile])[1])
+
+
+def test_deleting_existing_test_file_remains_incompatible(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    original = Path("tests/test_old.py")
+    original.parent.mkdir()
+    original.write_text("def test_old(): assert True\n")
+    old = cache.hash_inputs([original])[1]
+    assert not cache.additive(old, {})
+
+
+def test_new_test_helper_file_is_not_safe_addition(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    original = Path("tests/test_old.py")
+    original.parent.mkdir()
+    original.write_text("def test_old(): assert True\n")
+    old = cache.hash_inputs([original])[1]
+    helper = Path("tests/helper.py")
+    helper.write_text("def test_new(): assert True\n")
+    assert not cache.additive(old, cache.hash_inputs([original, helper])[1])
+
+
+def test_new_test_file_must_not_shadow_imports(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    original = Path("tests/test_old.py")
+    original.parent.mkdir()
+    original.write_text("def test_old(): assert True\n")
+    old = cache.hash_inputs([original])[1]
+    newfile = Path("tests/test_added.py")
+    newfile.write_text("from datetime import UTC\n\ndef test_new(): assert True\n")
+    assert cache.additive(old, cache.hash_inputs([original, newfile])[1])
+    newfile.write_text("from datetime import test_new\n\ndef test_new(): assert True\n")
+    assert not cache.additive(old, cache.hash_inputs([original, newfile])[1])
