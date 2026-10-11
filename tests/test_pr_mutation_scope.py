@@ -192,6 +192,7 @@ def test_coverage_json_keeps_fully_covered_modules_when_skip_covered_true(
     monkeypatch.chdir(tmp_path)
     Path("pyproject.toml").write_text(
         '[tool.pytest.ini_options]\n'
+        'asyncio_mode = "auto"\n'
         'testpaths = ["tests"]\n'
         'pythonpath = ["."]\n'
         '[tool.coverage.run]\n'
