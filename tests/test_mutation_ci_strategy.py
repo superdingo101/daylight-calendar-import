@@ -110,3 +110,42 @@ def test_full_nightly_and_release_checks_remain():
     publisher = workflow("publish-hacs-release.yml")
     scripts = "\n".join(str(step.get("run", "")) for step in publisher["jobs"]["publish"]["steps"])
     assert "release_mutation_proof.py verify" in scripts
+
+def test_nightly_reporting_does_not_require_a_deleted_cache_step(monkeypatch, tmp_path):
+    from scripts import report_nightly_mutation
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "superdingo101/daylight-calendar-import")
+    monkeypatch.setenv("GITHUB_RUN_ID", "12345")
+    for outcome in ("MUTATION_OUTCOME", "ENFORCE_OUTCOME", "EXPORT_OUTCOME",
+                    "DIAGNOSTICS_OUTCOME"):
+        monkeypatch.setenv(outcome, "success")
+    monkeypatch.delenv("NIGHTLY_CACHE_OUTCOME", raising=False)
+    stats = Path("mutants/mutmut-cicd-stats.json")
+    stats.parent.mkdir()
+    stats.write_text(json.dumps({
+        "total": 100, "skipped": 0, "killed": 97,
+        "timeout": 0, "survived": 3,
+    }))
+    calls = []
+
+    def gh(*arguments):
+        calls.append(arguments)
+        if arguments[:2] == ("issue", "list"):
+            return "[]"
+        if arguments[:2] == ("issue", "create"):
+            return "https://github.com/superdingo101/daylight-calendar-import/issues/123"
+        return ""
+
+    monkeypatch.setattr(report_nightly_mutation, "gh", gh)
+    report_nightly_mutation.main()
+    assert "- Status: **PASS**" in Path("nightly-mutation-health.md").read_text()
+    assert "- Mutation score: **97.00%**" in Path("nightly-mutation-health.md").read_text()
+    assert any(args[:2] == ("issue", "comment") for args in calls)
+
+    clean = workflow("mutation-clean.yml")
+    nightly = next(
+        step for step in clean["jobs"]["clean"]["steps"]
+        if step.get("name") == "Update visible nightly mutation health"
+    )
+    assert "NIGHTLY_CACHE_OUTCOME" not in str(nightly.get("env"))
