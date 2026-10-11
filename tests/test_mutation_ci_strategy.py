@@ -92,7 +92,16 @@ def test_pr_mutation_scope_never_requires_rebuild_cache():
     assert "scripts/pr_mutation.py restore" in run
     assert "mutmut run" in run
     assert "scripts/check_mutation_score.py" in run
-    assert all("actions/cache/restore" not in str(step.get("uses", "")) for step in steps)
+    # The old baseline-rebuild cache is forbidden; a new, PR-scoped cache
+    # is allowed only with provenance validation and post-run stamping.
+    restore = [step for step in steps if step.get("uses") == "actions/cache/restore@v4"]
+    save = [step for step in steps if step.get("uses") == "actions/cache/save@v4"]
+    assert len(restore) == len(save) == 1
+    assert "github.event.pull_request.number" in restore[0]["with"]["key"]
+    assert restore[0]["with"]["key"] == save[0]["with"]["key"]
+    assert "scripts/pr_mutation_cache.py restore" in run
+    assert "scripts/pr_mutation_cache.py stamp" in run
+    assert all("scripts/mutation_cache.py" not in str(step) for step in steps)
 
 
 def test_full_nightly_and_release_checks_remain():
