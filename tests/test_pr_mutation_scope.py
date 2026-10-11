@@ -19,7 +19,49 @@ def test_stacked_pr_uses_exact_supplied_git_shas(monkeypatch):
         return (SRC + "storage.py\0").encode().replace(b"\\0", b"\0")
     monkeypatch.setattr(pr_mutation.subprocess, "check_output", git)
     assert pr_mutation.changed_paths(BASE, HEAD) == {SRC + "storage.py"}
-    assert calls[0][-3:] == [BASE, HEAD, "--"]
+    assert calls[0][-2:] == [f"{BASE}...{HEAD}", "--"]
+
+
+
+def test_target_branch_advances_without_polluting_pr_mutation_scope(tmp_path, monkeypatch):
+    """A newer base must not turn base-only tests into PR test deletions."""
+    monkeypatch.chdir(tmp_path)
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], text=True).strip()
+
+    git("init")
+    git("config", "user.email", "ci@example.invalid")
+    git("config", "user.name", "CI")
+    source = Path(SRC + "storage.py")
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n")
+    git("add", ".")
+    git("commit", "-m", "shared ancestor")
+    ancestor = git("rev-parse", "HEAD")
+
+    git("checkout", "-b", "feature")
+    source.write_text("VALUE = 2\n")
+    git("add", ".")
+    git("commit", "-m", "feature change")
+    feature = git("rev-parse", "HEAD")
+
+    git("checkout", "-b", "target", ancestor)
+    base_only = Path("tests/test_base_only.py")
+    base_only.parent.mkdir()
+    base_only.write_text("def test_new(): assert True\n")
+    git("add", ".")
+    git("commit", "-m", "base advances")
+    target = git("rev-parse", "HEAD")
+
+    # Wrong direct-tip diff interprets a base-only test as removed.
+    assert str(base_only) in subprocess.check_output(
+        ["git", "diff", "--name-only", target, feature], text=True
+    ).splitlines()
+    # Correct three-dot comparison captures only the feature's changes.
+    assert pr_mutation.changed_paths(target, feature) == {str(source)}
+    git("checkout", "feature")
+    assert pr_mutation.select(target, feature)[0] == "scoped"
 
 
 def test_rejects_git_options_as_refs():
