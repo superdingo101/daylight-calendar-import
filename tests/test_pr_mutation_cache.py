@@ -161,3 +161,46 @@ def test_production_hash_changes_even_when_file_size_is_constant(tmp_path, monke
     original = cache.hash_inputs([src])[0]
     src.write_text("a = 2\n")
     assert cache.hash_inputs([src])[0] != original
+
+
+
+@pytest.mark.parametrize("existing", [
+    "from helpers import test_shadow\n",
+    "from helpers import some_test as test_shadow\n",
+    "import helpers as test_shadow\n",
+    "test_shadow = lambda: True\n",
+    "test_shadow: object = lambda: True\n",
+    "for test_shadow in [lambda: True]:\n    pass\n",
+    "if True:\n    from helpers import test_shadow\n",
+    "try:\n    from helpers import test_shadow\nexcept ImportError:\n    pass\n",
+])
+def test_appended_function_cannot_shadow_previous_module_binding(
+    tmp_path, monkeypatch, existing,
+):
+    monkeypatch.chdir(tmp_path)
+    path = Path("tests/test_app.py")
+    path.parent.mkdir()
+    path.write_text(existing)
+    before = cache.hash_inputs([path])[1]
+    path.write_text(existing + "\ndef test_shadow():\n    assert True\n")
+    assert not cache.additive(before, cache.hash_inputs([path])[1])
+
+
+def test_appended_function_cannot_follow_wildcard_import(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path = Path("tests/test_app.py")
+    path.parent.mkdir()
+    path.write_text("from helpers import *\n")
+    before = cache.hash_inputs([path])[1]
+    path.write_text("from helpers import *\n\ndef test_new():\n    assert True\n")
+    assert not cache.additive(before, cache.hash_inputs([path])[1])
+
+
+def test_unrelated_named_import_does_not_block_appended_test(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path = Path("tests/test_app.py")
+    path.parent.mkdir()
+    path.write_text("import pytest\nfrom helpers import test_other\n")
+    before = cache.hash_inputs([path])[1]
+    path.write_text("import pytest\nfrom helpers import test_other\n\ndef test_new():\n    assert True\n")
+    assert cache.additive(before, cache.hash_inputs([path])[1])

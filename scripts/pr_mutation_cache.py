@@ -84,6 +84,31 @@ def context(pr: str) -> dict:
     }
 
 
+def previously_bound_names(nodes: list[ast.stmt]) -> set[str] | None:
+    """Conservatively detect names already exposed by existing test modules.
+
+    Existing pytest callables can arrive via imports or assignments, not just
+    definitions. A wildcard import has unknown bindings and forces cold.
+    Inspecting nested scopes may reject safe reuse but cannot create unsafe hits.
+    """
+    names: set[str] = set()
+    for statement in nodes:
+        for node in ast.walk(statement):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    if alias.name == "*":
+                        return None
+                    names.add(alias.asname or alias.name.split(".", 1)[0])
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                names.add(node.id)
+            elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+                if node.name:
+                    names.add(node.name)
+    return names
+
+
 def additive(old: dict[str, list[str]], new: dict[str, list[str]]) -> bool:
     """Allow unchanged tests plus appended, standalone, undecorated test functions.
 
@@ -103,10 +128,9 @@ def additive(old: dict[str, list[str]], new: dict[str, list[str]]) -> bool:
         # definitions must not shadow an existing test or execute expressions
         # during collection (decorators, defaults, runtime annotations).
         nodes = ast.parse(Path(name).read_bytes(), filename=name).body
-        used_names = {
-            node.name for node in nodes[:len(old_nodes)]
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        }
+        used_names = previously_bound_names(nodes[:len(old_nodes)])
+        if used_names is None:
+            return False  # A wildcard import may bind the proposed name.
         for node in nodes[len(old_nodes):]:
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 return False
