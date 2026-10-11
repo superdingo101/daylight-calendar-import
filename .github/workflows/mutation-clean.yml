@@ -78,42 +78,6 @@ jobs:
         if: always()
         run: python scripts/export_mutation_survivors.py
 
-      - name: Stamp nightly baseline
-        if: >-
-          ${{
-            success() &&
-            (
-              github.event_name == 'schedule' ||
-              (
-                github.event_name == 'workflow_dispatch' &&
-                github.ref == 'refs/heads/main' &&
-                inputs.release_tag == '' &&
-                inputs.target_sha == ''
-              )
-            )
-          }}
-        run: python scripts/mutation_cache.py stamp
-
-      - name: Publish nightly cache for PRs
-        id: nightly-cache
-        if: >-
-          ${{
-            success() &&
-            (
-              github.event_name == 'schedule' ||
-              (
-                github.event_name == 'workflow_dispatch' &&
-                github.ref == 'refs/heads/main' &&
-                inputs.release_tag == '' &&
-                inputs.target_sha == ''
-              )
-            )
-          }}
-        uses: actions/cache/save@v4
-        with:
-          path: mutants
-          key: mutmut-v2-linux-py314-v380-main-${{ github.run_id }}
-
       - name: Create release mutation proof
         if: ${{ inputs.release_tag != '' && success() }}
         run: python scripts/release_mutation_proof.py create "${{ inputs.release_tag }}"
@@ -178,6 +142,5 @@ jobs:
           ENFORCE_OUTCOME: ${{ steps.enforce.outcome }}
           EXPORT_OUTCOME: ${{ steps.export.outcome }}
           DIAGNOSTICS_OUTCOME: ${{ steps.diagnostics.outcome }}
-          NIGHTLY_CACHE_OUTCOME: ${{ steps.nightly-cache.outcome }}
         run: python scripts/report_nightly_mutation.py
 

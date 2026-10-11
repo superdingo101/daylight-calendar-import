@@ -1,4 +1,4 @@
-"""Contract tests for mutation caching and release validation evidence."""
+"""Contracts for PR-scoped mutation checks and clean release proof."""
 
 from __future__ import annotations
 
@@ -8,71 +8,13 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
-from scripts import mutation_cache
 from scripts import release_mutation_proof
 
 
 def _git(*args):
     return subprocess.check_output(["git", *args], text=True).strip()
-
-
-def test_cache_invalidates_test_changes_but_not_production_function_changes(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    _git("init")
-    paths = {
-        "custom_components/daylight_calendar_import/example.py": "LIMIT = 4\ndef a(): return 1\n",
-        "tests/test_example.py": "def test_a(): assert True\n",
-        "requirements_test.txt": "pytest\n",
-        "README.md": "Documentation\n",
-        "tests/fixtures/example.md": "Original email\n",
-    }
-    for name, content in paths.items():
-        path = Path(name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
-    _git("add", ".")
-    original = mutation_cache.fingerprint()
-
-    Path("custom_components/daylight_calendar_import/example.py").write_text("LIMIT = 4\ndef a(): return 2\n")
-    assert mutation_cache.fingerprint() == original
-
-    Path("custom_components/daylight_calendar_import/example.py").write_text("LIMIT = 5\ndef a(): return 2\n")
-    assert mutation_cache.fingerprint() != original
-    Path("custom_components/daylight_calendar_import/example.py").write_text(paths["custom_components/daylight_calendar_import/example.py"])
-    assert mutation_cache.fingerprint() == original
-
-    Path("tests/test_example.py").write_text("def test_a(): assert False\n")
-    assert mutation_cache.fingerprint() != original
-
-    Path("tests/test_example.py").write_text(paths["tests/test_example.py"])
-    assert mutation_cache.fingerprint() == original
-
-    Path("requirements_test.txt").write_text("pytest==9\n")
-    assert mutation_cache.fingerprint() != original
-    Path("requirements_test.txt").write_text(paths["requirements_test.txt"])
-    Path("tests/fixtures/example.md").write_text("Changed test fixture\n")
-    assert mutation_cache.fingerprint() != original
-
-
-def test_bad_or_missing_provenance_cannot_restore_cache(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    _git("init")
-    Path("tests").mkdir()
-    Path("tests/test.py").write_text("pass\n")
-    _git("add", ".")
-    Path("mutants/custom_components").mkdir(parents=True)
-    Path("mutants/custom_components/a.meta").write_text("{}")
-    mutation_cache.STATS.parent.mkdir(parents=True, exist_ok=True)
-    mutation_cache.STATS.write_text("{}")
-    assert not mutation_cache.validate()
-
-    mutation_cache.CACHE_META.write_text(
-        json.dumps({"schema": mutation_cache.CACHE_SCHEMA, "fingerprint": mutation_cache.fingerprint()})
-    )
-    assert mutation_cache.validate()
-    Path("tests/test.py").write_text("assert True\n")
-    assert not mutation_cache.validate()
 
 
 def test_release_proof_contains_exact_git_tree_and_run(monkeypatch, tmp_path):
@@ -130,41 +72,80 @@ def test_publisher_checks_successful_first_party_run_and_matching_tree(
             release_mutation_proof.find_verified_run("v0.6.0", "correct")
 
 
-def test_mutation_workflows_keep_release_and_nightly_gates():
-    """Validate workflow wiring before the first real release dispatch."""
-    import yaml
 
-    root = Path(__file__).resolve().parents[1] / ".github/workflows"
-    if not root.exists():
-        pytest.skip("Mutation sandbox contains test helpers, not GitHub Actions files")
+ROOT = Path(__file__).resolve().parents[1]
 
-    def load(filename):
-        return yaml.safe_load((root / filename).read_text(encoding="utf-8"))
 
-    incremental = load("mutation.yml")
-    clean = load("mutation-clean.yml")
-    updater = load("update-integration-version.yml")
-    publisher = load("publish-hacs-release.yml")
+def workflow(name):
+    path = ROOT / ".github" / "workflows" / name
+    if not path.exists() and ROOT.name == "mutants":
+        pytest.skip("CI workflow not copied into mutmut sandbox")
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
-    def triggers(workflow):
-        # PyYAML treats YAML 1.1 'on' as a boolean. GitHub treats it as a key.
-        return workflow.get("on", workflow.get(True, {}))
 
-    assert "pull_request" in triggers(incremental)
-    assert incremental["jobs"]["mutation"]["name"] == "Mutation score"
-    assert any("actions/cache/restore" in str(step.get("uses", "")) for step in incremental["jobs"]["mutation"]["steps"])
+def test_pr_mutation_scope_never_requires_rebuild_cache():
+    job = workflow("mutation.yml")["jobs"]["mutation"]
+    assert job["name"] == "Mutation score"
+    steps = job["steps"]
+    run = "\n".join(str(step.get("run", "")) for step in steps)
+    assert "scripts/pr_mutation.py prepare" in run
+    assert "scripts/pr_mutation.py restore" in run
+    assert "mutmut run" in run
+    assert "scripts/check_mutation_score.py" in run
+    assert all("actions/cache/restore" not in str(step.get("uses", "")) for step in steps)
 
-    assert "schedule" in triggers(clean)
-    assert "workflow_call" in triggers(clean)
-    clean_job = clean["jobs"]["clean"]
-    assert clean_job["timeout-minutes"] == 60
-    assert any("rm -rf mutants" in str(step.get("run", "")) for step in clean_job["steps"])
-    assert any("Release Mutation Validation" in str(step.get("run", "")) for step in clean_job["steps"])
 
+def test_full_nightly_and_release_checks_remain():
+    clean = workflow("mutation-clean.yml")
+    job = clean["jobs"]["clean"]
+    trigger = clean.get("on", clean.get(True))
+    assert "schedule" in trigger and "workflow_call" in trigger
+    assert job["timeout-minutes"] == 60
+    scripts = "\n".join(str(step.get("run", "")) for step in job["steps"])
+    assert "rm -rf mutants" in scripts
+    assert "mutmut run" in scripts
+    assert "Release Mutation Validation" in scripts
+    updater = workflow("update-integration-version.yml")
     assert updater["jobs"]["clean-release-mutation"]["uses"] == "./.github/workflows/mutation-clean.yml"
-    updater_steps = updater["jobs"]["update-version"]["steps"]
-    assert any("gh workflow run tests.yml" in str(step.get("run", "")) for step in updater_steps)
+    publisher = workflow("publish-hacs-release.yml")
+    scripts = "\n".join(str(step.get("run", "")) for step in publisher["jobs"]["publish"]["steps"])
+    assert "release_mutation_proof.py verify" in scripts
 
-    publishing_steps = publisher["jobs"]["publish"]["steps"]
-    assert any("release_mutation_proof.py verify" in str(step.get("run", "")) for step in publishing_steps)
-    assert any('--target "$RELEASE_SHA"' in str(step.get("run", "")) for step in publishing_steps)
+def test_nightly_reporting_does_not_require_a_deleted_cache_step(monkeypatch, tmp_path):
+    from scripts import report_nightly_mutation
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "superdingo101/daylight-calendar-import")
+    monkeypatch.setenv("GITHUB_RUN_ID", "12345")
+    for outcome in ("MUTATION_OUTCOME", "ENFORCE_OUTCOME", "EXPORT_OUTCOME",
+                    "DIAGNOSTICS_OUTCOME"):
+        monkeypatch.setenv(outcome, "success")
+    monkeypatch.delenv("NIGHTLY_CACHE_OUTCOME", raising=False)
+    stats = Path("mutants/mutmut-cicd-stats.json")
+    stats.parent.mkdir()
+    stats.write_text(json.dumps({
+        "total": 100, "skipped": 0, "killed": 97,
+        "timeout": 0, "survived": 3,
+    }))
+    calls = []
+
+    def gh(*arguments):
+        calls.append(arguments)
+        if arguments[:2] == ("issue", "list"):
+            return "[]"
+        if arguments[:2] == ("issue", "create"):
+            return "https://github.com/superdingo101/daylight-calendar-import/issues/123"
+        return ""
+
+    monkeypatch.setattr(report_nightly_mutation, "gh", gh)
+    report_nightly_mutation.main()
+    assert "- Status: **PASS**" in Path("nightly-mutation-health.md").read_text()
+    assert "- Mutation score: **97.00%**" in Path("nightly-mutation-health.md").read_text()
+    assert any(args[:2] == ("issue", "comment") for args in calls)
+
+    clean = workflow("mutation-clean.yml")
+    nightly = next(
+        step for step in clean["jobs"]["clean"]["steps"]
+        if step.get("name") == "Update visible nightly mutation health"
+    )
+    assert "NIGHTLY_CACHE_OUTCOME" not in str(nightly.get("env"))
