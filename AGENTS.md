@@ -13,7 +13,9 @@
 - Full nightly and release validation remain authoritative for the project-wide
   mutation score; a PR-scoped score only describes its selected modules.
 - The clean full mutation suite runs every night on `main`. The nightly
-  result, diagnostics, and a persistent Mutation Health issue are visible.
+  results and diagnostics stay in Actions. Nightly failures create or update
+  a Mutation Health issue; the next successful run closes it. Successful runs
+  without an open failure alert do not create an issue.
 - The **Update Integration Version** action creates the release-preparation PR,
   runs normal CI through explicit workflow dispatch, and calls the clean
   mutation workflow against the release candidate's exact SHA.

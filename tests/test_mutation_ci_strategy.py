@@ -139,9 +139,8 @@ def test_nightly_reporting_does_not_require_a_deleted_cache_step(monkeypatch, tm
 
     monkeypatch.setattr(report_nightly_mutation, "gh", gh)
     report_nightly_mutation.main()
-    assert "- Status: **PASS**" in Path("nightly-mutation-health.md").read_text()
-    assert "- Mutation score: **97.00%**" in Path("nightly-mutation-health.md").read_text()
-    assert any(args[:2] == ("issue", "comment") for args in calls)
+    assert not Path("nightly-mutation-health.md").exists()
+    assert [args[:2] for args in calls] == [("issue", "list")]
 
     clean = workflow("mutation-clean.yml")
     nightly = next(
@@ -149,3 +148,98 @@ def test_nightly_reporting_does_not_require_a_deleted_cache_step(monkeypatch, tm
         if step.get("name") == "Update visible nightly mutation health"
     )
     assert "NIGHTLY_CACHE_OUTCOME" not in str(nightly.get("env"))
+
+
+@pytest.fixture
+def nightly_reporter(monkeypatch, tmp_path):
+    """Prepare a nightly run with passing steps and 97% mutation score."""
+    from scripts import report_nightly_mutation
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "superdingo101/daylight-calendar-import")
+    monkeypatch.setenv("GITHUB_RUN_ID", "12345")
+    for outcome in ("MUTATION_OUTCOME", "ENFORCE_OUTCOME", "EXPORT_OUTCOME",
+                    "DIAGNOSTICS_OUTCOME"):
+        monkeypatch.setenv(outcome, "success")
+    stats = Path("mutants/mutmut-cicd-stats.json")
+    stats.parent.mkdir()
+    stats.write_text(json.dumps({
+        "total": 100, "skipped": 0, "killed": 97, "timeout": 0, "survived": 3,
+    }))
+    return report_nightly_mutation, stats
+
+
+def _nightly_calls(monkeypatch, reporter, issues):
+    calls = []
+
+    def gh(*args):
+        calls.append(args)
+        if args[:2] == ("issue", "list"):
+            return json.dumps(issues)
+        if args[:2] == ("issue", "create"):
+            return "https://github.com/superdingo101/daylight-calendar-import/issues/123"
+        return ""
+
+    monkeypatch.setattr(reporter, "gh", gh)
+    return calls
+
+
+def test_nightly_pass_closes_existing_issue(monkeypatch, nightly_reporter):
+    reporter, _stats = nightly_reporter
+    calls = _nightly_calls(monkeypatch, reporter, [
+        {"number": 115, "title": reporter.ISSUE_TITLE}
+    ])
+    reporter.main()
+    assert [args[1] for args in calls] == ["list", "comment", "close"]
+    assert calls[1][:3] == ("issue", "comment", "115")
+    assert "**PASS** — 97.00% mutation score" in calls[1][-1]
+    assert calls[2] == ("issue", "close", "115", "--repo",
+                        "superdingo101/daylight-calendar-import",
+                        "--reason", "completed")
+    assert not Path("nightly-mutation-health.md").exists()
+
+
+def test_nightly_failure_creates_issue(monkeypatch, nightly_reporter):
+    reporter, _stats = nightly_reporter
+    monkeypatch.setenv("MUTATION_OUTCOME", "failure")
+    calls = _nightly_calls(monkeypatch, reporter, [])
+    reporter.main()
+    assert [args[1] for args in calls] == ["list", "create", "comment"]
+    assert reporter.ISSUE_TITLE in calls[1]
+    report = Path("nightly-mutation-health.md").read_text()
+    assert "- Status: **FAIL**" in report
+    assert "- Mutation score: **97.00%**" in report
+    assert calls[2][:3] == ("issue", "comment", "123")
+    assert "**FAIL** — 97.00% mutation score" in calls[2][-1]
+
+
+def test_nightly_repeated_failure_updates_issue(monkeypatch, nightly_reporter):
+    reporter, _stats = nightly_reporter
+    monkeypatch.setenv("ENFORCE_OUTCOME", "failure")
+    calls = _nightly_calls(monkeypatch, reporter, [
+        {"number": 115, "title": reporter.ISSUE_TITLE}
+    ])
+    reporter.main()
+    assert [args[1] for args in calls] == ["list", "edit", "comment"]
+    assert calls[1][:3] == ("issue", "edit", "115")
+    assert calls[2][:3] == ("issue", "comment", "115")
+
+
+def test_nightly_failure_without_stats_still_opens_issue(monkeypatch, nightly_reporter):
+    reporter, stats = nightly_reporter
+    stats.unlink()
+    monkeypatch.setenv("EXPORT_OUTCOME", "skipped")
+    calls = _nightly_calls(monkeypatch, reporter, [])
+    reporter.main()
+    assert [args[1] for args in calls] == ["list", "create", "comment"]
+    assert "unavailable (run failed before statistics)" in Path("nightly-mutation-health.md").read_text()
+    assert "mutation score unavailable" in calls[2][-1]
+
+
+def test_nightly_pass_does_not_touch_unrelated_issue(monkeypatch, nightly_reporter):
+    reporter, _stats = nightly_reporter
+    calls = _nightly_calls(monkeypatch, reporter, [
+        {"number": 999, "title": "Unrelated issue"}
+    ])
+    reporter.main()
+    assert [args[1] for args in calls] == ["list"]
