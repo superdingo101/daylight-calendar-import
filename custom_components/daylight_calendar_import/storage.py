@@ -9,7 +9,7 @@ from hashlib import sha256
 from copy import deepcopy
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -33,6 +33,8 @@ STORAGE_KEY = f"{DOMAIN}.pending_imports"
 DEDUP_HISTORY_LIMIT = 10_000
 ACTIVITY_LIMIT = 500
 ACTIVITY_TRANSITIONS_PER_IMPORT = 32
+COMPLETED_HISTORY_DAYS = 30
+TERMINAL_NOTIFICATION_LIMIT = 1_000
 _STORAGE_ITEMS = "items"
 _STORAGE_ACTIVITY = "activity"
 _STORAGE_NOTIFICATIONS = "notifications"
@@ -375,7 +377,6 @@ class PendingImportStore:
                 journal = self._journal_for_activity(tuple(recovered_failures))
                 await self._async_save(self._items, activity=activity, source_claims={},
                                        notifications=journal)
-                self._activity = activity
                 self._source_claims = {}
 
             _, cancelled = await self._async_complete_transaction(commit_recovery())
@@ -383,12 +384,12 @@ class PendingImportStore:
                 raise asyncio.CancelledError
 
         await self._async_recover_uncertain_notifications()
+        await self.async_apply_retention()
 
     async def _async_commit_activity(self, activity: tuple[dict[str, Any], ...]) -> None:
         """Finish outcome persistence/publication before propagating cancellation."""
         async def commit() -> None:
             await self._async_save(self._items, activity=activity)
-            self._activity = activity
 
         _, cancelled = await self._async_complete_transaction(commit())
         if cancelled:
@@ -421,6 +422,65 @@ class PendingImportStore:
                 known.add(identity)
         if journal != self._notifications:
             await self._async_save(self._items, notifications=journal)
+
+    async def async_apply_retention(self) -> None:
+        """Prune completed history atomically, without touching unresolved work."""
+        async def commit() -> None:
+            async with self._lock:
+                history, journal = self._retained_history(
+                    self._items, self._activity, self._source_claims, self._notifications,
+                )
+                if history != self._activity or journal != self._notifications:
+                    await self._async_save(self._items, activity=history, notifications=journal)
+
+        _, cancelled = await self._async_complete_transaction(commit())
+        if cancelled:
+            raise asyncio.CancelledError
+
+    def _retained_history(
+        self, items: dict[str, PendingImport], history: tuple[dict[str, Any], ...],
+        claims: dict[str, str], journal: tuple[NotificationRecord, ...],
+    ) -> tuple[tuple[dict[str, Any], ...], tuple[NotificationRecord, ...]]:
+        """Protect active identities; expire only timestamped completed history."""
+        now = datetime.now(UTC)
+        cutoff = now - timedelta(days=COMPLETED_HISTORY_DAYS)
+        active_provider_names = {task.get_name() for task in getattr(self, "notification_tasks", ())
+                                 if not task.done()}
+        protected = set(items) | set(claims) | self._source_claim_releases | {
+            item["id"] for item in history if item.get("status") in ("discovered", "processing")
+        } | {record.import_id for record in journal if record.status == "pending"
+             or f"Daylight notify {record.event.idempotency_key}" in active_provider_names}
+
+        def expired(timestamp: str | None) -> bool:
+            # Malformed legacy metadata must not authorize destructive cleanup.
+            try:
+                parsed = datetime.fromisoformat(timestamp)
+            except (TypeError, ValueError):
+                return False
+            return parsed.tzinfo is not None and parsed < cutoff
+
+        history = tuple(item for item in history if item["id"] in protected or not expired(
+            item["transitions"][-1].get("at") if item.get("transitions") else None,
+        ))
+        completed = [item["id"] for item in history if item["id"] not in protected]
+        remove = set(completed[:max(0, len(completed) - ACTIVITY_LIMIT)])
+        history = tuple(item for item in history if item["id"] not in remove)
+        journal = tuple(
+            replace(record, terminal_at=now.isoformat())
+            if record.status != "pending" and record.terminal_at is None else record
+            for record in journal
+        )
+        journal = tuple(record for record in journal if record.import_id in protected
+                        or record.status == "pending" or not expired(record.terminal_at))
+        completed_records = sorted(
+            (record for record in journal
+             if record.status != "pending" and record.import_id not in protected),
+            key=lambda record: datetime.fromisoformat(record.terminal_at),
+        )
+        remove_keys = {record.event.idempotency_key for record in completed_records[
+            :max(0, len(completed_records) - TERMINAL_NOTIFICATION_LIMIT)]}
+        journal = tuple(record for record in journal if record.event.idempotency_key not in remove_keys)
+        return history, journal
 
     def list_notifications(self) -> tuple[NotificationRecord, ...]:
         """Return immutable requests, unaffected by pending/activity pruning."""
@@ -470,6 +530,10 @@ class PendingImportStore:
         async with self._lock:
             if expected not in self._notifications:
                 return False
+            if updated.status != "pending":
+                updated = replace(updated, terminal_at=(expected.terminal_at
+                    if expected.status != "pending" and expected.terminal_at is not None
+                    else datetime.now(UTC).isoformat()))
             journal = tuple(updated if record == expected else record for record in self._notifications)
             await self._async_save(self._items, notifications=journal)
             # Log inside the uncancelled transaction: caller cancellation can
@@ -570,14 +634,6 @@ class PendingImportStore:
         """Return a durable activity record even after an import leaves review."""
         return next((deepcopy(item) for item in self._activity if item["id"] == pending_id), None)
 
-    def _protected_activity_ids(self) -> set[str]:
-        """Keep pending imports and live source checkpoints outside the history cap."""
-        return set(self._items) | {
-            item["id"]
-            for item in self._activity
-            if item["status"] in ("discovered", "processing")
-        }
-
     def _propose_activity(
         self,
         *,
@@ -598,11 +654,6 @@ class PendingImportStore:
                             {"type": initial_status, "at": transitioned, "event_id": None}],
         }
         history = list(self._activity) + [record]
-        active_ids = self._protected_activity_ids()
-        active_ids.add(identifier)
-        while sum(item["id"] not in active_ids for item in history) > ACTIVITY_LIMIT:
-            history.pop(next(index for index, item in enumerate(history)
-                             if item["id"] not in active_ids))
         return identifier, tuple(history)
 
     def _propose_submission_activity(
@@ -663,7 +714,6 @@ class PendingImportStore:
                 initial_status="discovered",
             )
             await self._async_save(self._items, activity=activity)
-            self._activity = activity
             return identifier
 
     async def async_begin_submission(self, *, source_kind: str, source_title: str | None,
@@ -676,7 +726,6 @@ class PendingImportStore:
                 received_at=received_at,
             )
             await self._async_save(self._items, activity=activity)
-            self._activity = activity
             return identifier
 
     async def _async_complete_transaction(
@@ -764,7 +813,6 @@ class PendingImportStore:
                     for item in self._activity
                 )
                 await self._async_save(self._items, activity=activity)
-                self._activity = activity
                 return False
 
             record["status"] = "processing"
@@ -784,7 +832,6 @@ class PendingImportStore:
                 activity=activity,
                 source_claims=source_claims,
             )
-            self._activity = activity
             self._source_claims = source_claims
             return True
 
@@ -841,7 +888,6 @@ class PendingImportStore:
                 activity=activity,
                 source_claims=source_claims,
             )
-            self._activity = activity
             self._source_claims = source_claims
             return identifier
 
@@ -945,7 +991,6 @@ class PendingImportStore:
                 activity=activity,
                 source_claims=source_claims,
             )
-            self._activity = activity
             self._seen_source_fingerprints = seen_sources
             self._source_claims = source_claims
             self._source_claim_releases.discard(activity_id)
@@ -971,7 +1016,6 @@ class PendingImportStore:
             activity=activity,
             source_claims=source_claims,
         )
-        self._activity = activity
         self._source_claims = source_claims
         self._source_claim_releases.discard(activity_id)
 
@@ -996,13 +1040,6 @@ class PendingImportStore:
         record["transitions"].append({"type": status, "at": datetime.now(UTC).isoformat(),
                                       "event_id": None})
         history = [item for item in baseline if item["id"] != activity_id] + [record]
-        active_ids = set(self._items) | {
-            item["id"] for item in baseline if item["status"] in ("discovered", "processing")
-        }
-        active_ids.discard(activity_id)
-        while sum(item["id"] not in active_ids for item in history) > ACTIVITY_LIMIT:
-            history.pop(next(index for index, item in enumerate(history)
-                             if item["id"] not in active_ids))
         return tuple(history)
 
     def _transition(
@@ -1034,15 +1071,6 @@ class PendingImportStore:
             "transitions": transitions[-ACTIVITY_TRANSITIONS_PER_IMPORT:],
         }
         history = list(item for item in self._activity if item["id"] != pending.id) + [record]
-        active_ids = self._protected_activity_ids()
-        if remaining == ():
-            active_ids.discard(pending.id)
-        elif kind == "review_ready" or remaining:
-            active_ids.add(pending.id)
-        while sum(item["id"] not in active_ids for item in history) > ACTIVITY_LIMIT:
-            oldest_completed = next((index for index, item in enumerate(history)
-                                     if item["id"] not in active_ids))
-            history.pop(oldest_completed)
         return tuple(history)
 
     async def async_edit_event(
@@ -1098,7 +1126,6 @@ class PendingImportStore:
                              for record in self._activity)
             await self._async_save(items, activity=activity)
             self._commit_items(items)
-            self._activity = activity
             return edited
 
     def is_source_duplicate(self, source_id: str) -> bool:
@@ -1206,7 +1233,6 @@ class PendingImportStore:
                         activity=activity,
                         source_claims=source_claims,
                     )
-                    self._activity = activity
                     self._source_claims = source_claims
                 return PendingImportAddResult(
                     pending=None,
@@ -1269,7 +1295,6 @@ class PendingImportStore:
                         source_claims=source_claims,
                     )
                     self._source_claims = source_claims
-                self._activity = activity
                 return PendingImportAddResult(
                     pending=None,
                     duplicate_source=False,
@@ -1300,7 +1325,6 @@ class PendingImportStore:
                 source_claims=source_claims,
             )
             self._commit_items(items)
-            self._activity = activity
             self._source_claims = source_claims
             if self.on_review_ready is not None:
                 self.on_review_ready(pending)
@@ -1340,7 +1364,6 @@ class PendingImportStore:
                 activity=activity,
             )
             self._commit_items(items)
-            self._activity = activity
             self._seen_source_fingerprints = seen_sources
             self._seen_event_fingerprints = seen_events
         return True
@@ -1385,7 +1408,6 @@ class PendingImportStore:
                 activity=activity,
             )
             self._commit_items(items)
-            self._activity = activity
             self._seen_source_fingerprints = seen_sources
             self._seen_event_fingerprints = seen_events
             return True
@@ -1441,7 +1463,6 @@ class PendingImportStore:
                 activity=activity,
             )
             self._commit_items(items)
-            self._activity = activity
             self._seen_source_fingerprints = seen_sources
             self._seen_event_fingerprints = seen_events
             return True
@@ -1527,7 +1548,6 @@ class PendingImportStore:
         activity = self._transition(pending, "calendar_write_started", event_id=event.id)
         await self._async_save(items, activity=activity)
         self._commit_items(items)
-        self._activity = activity
 
         try:
             await processor(event)
@@ -1567,7 +1587,6 @@ class PendingImportStore:
                 activity=activity,
             )
             self._commit_items(items)
-            self._activity = activity
             self._seen_source_fingerprints = seen_sources
             self._seen_event_fingerprints = seen_events
 
@@ -1647,13 +1666,15 @@ class PendingImportStore:
         if claims:
             data[_STORAGE_SOURCE_CLAIMS] = dict(claims)
         history = self._activity if activity is None else activity
-        if history:
-            data[_STORAGE_ACTIVITY] = list(history)
         journal = (self._journal_for_activity(activity) if activity is not None else self._notifications
                    ) if notifications is None else notifications
+        history, journal = self._retained_history(items, history, claims, journal)
+        if history:
+            data[_STORAGE_ACTIVITY] = list(history)
         if journal:
             data[_STORAGE_NOTIFICATIONS] = [record.as_dict() for record in journal]
         await self._store.async_save(data)
+        self._activity = history
         self._notifications = journal
         if self.on_notifications is not None:
             try:

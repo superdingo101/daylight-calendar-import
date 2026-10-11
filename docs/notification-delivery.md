@@ -8,9 +8,10 @@ bounded activity history; deleting a reviewed import does not delete its request
 
 Records contain import ID, event ID, transition type and timestamp, plus the
 notify entity ID, delivery status, attempt count, next retry timestamp and a
-fixed failure code, and optional conflict revision digest. Notify entity IDs can identify a person or device. These
-fields, including terminal requests, are currently retained indefinitely in
-private HA storage; the separate retention work item will bound that history.
+fixed failure code, optional conflict revision digest, and terminal-completion
+timestamp (`terminal_at`). Notify entity IDs can identify a person or device.
+Completed requests follow the [retention policy](retention.md); pending requests
+and identities needed by unresolved work remain in private HA storage.
 Safe messages are regenerated from the notification contract rather than persisting
 source content or provider error text. The canonical transition hash identifies
 a request; concurrent enqueue calls and reloads do not insert the same request
@@ -18,8 +19,7 @@ again. Old storage files without the journal load with an empty journal, with no
 historical notification replay. Invalid journal identities fail loading rather
 than silently dropping durable requests.
 
-Journal entries are currently retained; retention is a separate v0.7 reliability
-work item. External HA notify delivery is at-least-once, never exactly-once: a
+External HA notify delivery is at-least-once, never exactly-once: a
 crash between service completion and persisted delivery state can repeat a
 submission.
 
@@ -65,8 +65,8 @@ confirmed failure. A successful external call whose final outcome cannot be
 saved also uses the existing durable uncertain checkpoint.
 
 Uncertainty requests retain the write-attempt ID and a recovery flag in addition
-to the fields listed above; these fields currently have the same indefinite
-retention. New attempt IDs distinguish uncertainty identities even if timestamps
+to the fields listed above; these fields follow the same completed-history
+retention policy, while unresolved checkpoints protect their request identities. New attempt IDs distinguish uncertainty identities even if timestamps
 repeat. On startup, unresolved event checkpoints produce at most one alert per
 attempt, including legacy checkpoints with an unknown attempt ID. Recovery does
 not rely on prunable activity history or modify the user's review decision.
@@ -102,7 +102,8 @@ only the digest (`conflict_revision`) is retained in the notification journal.
 Edited drafts or changed scopes can alert again. Returning to an already alerted
 revision stays silent, and clear checks do not reset this identity. No observed
 calendar titles, times or event details enter the request or generic message.
-The digest shares the journal's private, currently indefinite retention policy.
+The digest shares the journal's private retention policy; unresolved imports
+protect their request identities even after delivery.
 Legacy requests without the field retain their original identities.
 
 The store revalidates the observed snapshot under its lock before saving the

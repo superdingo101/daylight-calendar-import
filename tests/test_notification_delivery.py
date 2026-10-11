@@ -393,7 +393,10 @@ async def test_terminal_commit_logs_even_when_caller_cancelled(monkeypatch, capl
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert store.list_notifications()[0] == terminal
+    saved = store.list_notifications()[0]
+    assert saved == replace(terminal, terminal_at=saved.terminal_at)
+    assert saved.terminal_at is not None
+    terminal = saved
     assert caplog.text.count("retry budget exhausted") == 1
     assert "import-1" not in caplog.text and "notify.phone" not in caplog.text
     assert await store.async_update_notification(terminal, terminal)

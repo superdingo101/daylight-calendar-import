@@ -79,7 +79,7 @@ source title or sender, warnings, or skipped duplicate count. Upload bytes, temp
 media paths, upstream source IDs, and source fingerprints are not exposed by
 the read actions.
 
-`list_activity` returns the most recent 500 import summaries, newest first,
+`list_activity` returns up to 30 days and the most recent 500 completed import summaries, newest first,
 without source text or transition detail. `get_activity` accepts `pending_id`
 and returns the same summary with its latest 32 transitions. These reads share
 the authenticated control check used by pending reads. Each transition has a
@@ -226,3 +226,7 @@ their existing automation behavior and are authorized by the platform.
 The separate `check_pending_event` action continues to enforce explicit
 calendar read access. The legacy immediate `import_text` action does not
 use the pending-approval guard.
+
+Completed lifecycle/source metadata follows the [retention policy](retention.md).
+Unresolved pending imports, source checkpoints and pending notification deliveries
+protect their summaries outside the completed-history age and count limits.

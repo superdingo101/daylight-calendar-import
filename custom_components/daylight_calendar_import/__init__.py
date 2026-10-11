@@ -219,12 +219,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id, None)
     pending_store = PendingImportStore(hass)
     pending_store.notification_preferences = lambda: effective_notification_preferences(entry)
-    await pending_store.async_load()
-    pending_store.active_submissions = set()
+    # Retention must see live providers from the previous entry before loading.
     # Keep task ownership across config-entry reloads. Providers that ignore
     # cancellation must not become invisible when the old store unloads.
     registry = hass.data.setdefault(f"{DOMAIN}_notification_tasks", {})
     pending_store.notification_tasks = registry.setdefault(entry.entry_id, set())
+    await pending_store.async_load()
+    pending_store.active_submissions = set()
     # Track entry service calls *before* their first await so unload cannot
     # miss a request waiting for authorization or a source claim.
     pending_store.active_service_handlers = set()
