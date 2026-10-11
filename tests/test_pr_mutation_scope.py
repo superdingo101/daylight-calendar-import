@@ -42,7 +42,9 @@ def test_changed_test_maps_coverage(tmp_path, monkeypatch):
     t = Path("tests/test_journal.py")
     t.parent.mkdir()
     t.touch()
-    monkeypatch.setattr(pr_mutation, "changed_paths", lambda *a, **kw: set() if kw.get("kind") == "D" else {str(t)})
+    def changed(base, head, kind="ACMRTD"):
+        return set() if kind == "D" else {str(t)}
+    monkeypatch.setattr(pr_mutation, "changed_paths", changed)
     monkeypatch.setattr(pr_mutation, "test_coverage", lambda tests: {SRC + "journal.py"})
     assert pr_mutation.select(BASE, HEAD)[1] == [SRC + "journal.py"]
 
