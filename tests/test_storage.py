@@ -3205,13 +3205,15 @@ async def test_approval_preflight_rejection_keeps_pending_ready_without_checkpoi
     with pytest.raises(ValueError, match="exact duplicate"):
         await store.async_approve_event(actual.id, event.id, Writer())
     assert calls == [("preflight", event.id)]
-    assert backend.save_attempts == saved_before
+    assert backend.save_attempts == saved_before + 1
+    assert store.get_activity(actual.id)["transitions"][-1]["type"] == "calendar_create_failed"
     assert store.get_event(actual.id, event.id) == event
     assert store.get_event(actual.id, event.id).status == "pending"
 
     with pytest.raises(ValueError, match="exact duplicate"):
         await store.async_process_events(actual.id, Writer())
-    assert backend.save_attempts == saved_before
+    assert backend.save_attempts == saved_before + 2
+    assert store.get_activity(actual.id)["transitions"][-1]["type"] == "calendar_create_failed"
     assert store.get_event(actual.id, event.id) == event
 
 

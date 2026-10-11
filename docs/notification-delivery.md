@@ -55,3 +55,18 @@ explicit user confirmation that an uncertain write did create the event.
 Write-started checkpoints, ambiguous provider exceptions, and calendar calls
 whose final outcome cannot be saved never produce an event-added notification.
 The delivered message contains no event title, source content or calendar name.
+
+## Calendar failure and uncertain writes
+
+Calendar writes that cannot pass preflight are known not to have started. Their
+failure requests are saved with the failure transition, while the event stays
+reviewable. Exceptions after a write checkpoint remain uncertain, never a
+confirmed failure. A successful external call whose final outcome cannot be
+saved also uses the existing durable uncertain checkpoint.
+
+Uncertainty requests retain the write-attempt ID and a recovery flag in addition
+to the fields listed above; these fields currently have the same indefinite
+retention. New attempt IDs distinguish uncertainty identities even if timestamps
+repeat. On startup, unresolved event checkpoints produce at most one alert per
+attempt, including legacy checkpoints with an unknown attempt ID. Recovery does
+not rely on prunable activity history or modify the user's review decision.

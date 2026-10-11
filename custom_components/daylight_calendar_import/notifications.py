@@ -48,9 +48,8 @@ def notification_from_transition(
 
     Persisted activity may be legacy or damaged. Malformed records are ignored
     so one record cannot interrupt later delivery. Recovery of ambiguous writes
-    is *not* inferred from this prunable history: a future durable notification
-    outbox must observe persisted PendingEvent.write_attempt and status after
-    PendingImportStore.async_load, with explicit recovery provenance.
+    is driven by persisted PendingEvent.write_attempt and status in the store,
+    with explicit recovery provenance, rather than inferred from this history.
     """
     if not isinstance(activity, Mapping) or not isinstance(transition, Mapping):
         return None
@@ -63,10 +62,12 @@ def notification_from_transition(
     import_id = activity.get("id")
     occurred_at = transition.get("at")
     event_id = transition.get("event_id")
+    write_attempt = transition.get("write_attempt")
     if (
         not isinstance(import_id, str) or not import_id.strip()
         or not isinstance(occurred_at, str) or not occurred_at.strip()
         or (event_id is not None and (not isinstance(event_id, str) or not event_id.strip()))
+        or (write_attempt is not None and (not isinstance(write_attempt, str) or not write_attempt.strip()))
     ):
         return None
     kind, title, message, severity = template
@@ -75,8 +76,11 @@ def notification_from_transition(
     # containing unpaired surrogates rather than crashing the replay iterator.
     # No transition-history position is used as part of the durable identity.
     try:
+        coordinates = [import_id, raw_type, occurred_at, event_id]
+        if write_attempt is not None:
+            coordinates.append(write_attempt)
         identity = json.dumps(
-            [import_id, raw_type, occurred_at, event_id],
+            coordinates,
             ensure_ascii=False, separators=(",", ":"),
         ).encode("utf-8")
     except UnicodeEncodeError:
