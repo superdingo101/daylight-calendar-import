@@ -29,6 +29,7 @@ from .const import (
 )
 from .notification_preferences import (
     NotificationPreferencesError,
+    DELIVERABLE_NOTIFICATION_CLASSES,
     normalize_notification_preferences,
     notification_preferences_snapshot,
 )
@@ -270,15 +271,15 @@ async def websocket_update_notifications(
             # Legacy dormant classes may remain in either an enabled or
             # disabled policy, but no settings API call may introduce new
             # unsupported classes and later activate them in two steps.
-            if (selected - {"review_ready"}) - set(current["classes"]):
+            if (selected - DELIVERABLE_NOTIFICATION_CLASSES) - set(current["classes"]):
                 raise SettingsValidationError(
                     "invalid_notifications",
                     "Unsupported notification types cannot be newly selected.",
                 )
-            if msg["notifications"].get("enabled") is True and "review_ready" not in selected:
+            if msg["notifications"].get("enabled") is True and not selected & DELIVERABLE_NOTIFICATION_CLASSES:
                 raise SettingsValidationError(
                     "invalid_notifications",
-                    "Select review-ready notifications before enabling.",
+                    "Select at least one supported notification category before enabling.",
                 )
             if patch:
                 await async_save_option_patch(hass, entry, patch)

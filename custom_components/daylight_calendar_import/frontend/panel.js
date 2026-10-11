@@ -2,6 +2,11 @@ import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editD
 import {checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, settingsErrorMessage} from "./settings.js";
 
+const notificationOptions = [
+  ["review_ready", "Imports ready for review"],
+  ["calendar_created", "Events added to a calendar"],
+];
+
 const css = `
   :host {
     display: block;
@@ -1332,9 +1337,7 @@ export class DaylightImportPanel extends HTMLElement {
     classes.append(element("legend", "Notify me about"));
     // Other lifecycle classes exist in the domain contract, but have no
     // delivery path until a later v0.7 PR. Do not advertise them yet.
-    for (const [value, description] of [
-      ["review_ready", "Imports ready for review"],
-    ]) {
+    for (const [value, description] of notificationOptions) {
       const label = document.createElement("label");
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
@@ -1351,7 +1354,7 @@ export class DaylightImportPanel extends HTMLElement {
       // Preserve valid classes that predate this UI but are not yet
       // selectable. A disabled policy may intentionally retain them.
       classes: [
-        ...draft.classes.filter(kind => kind !== "review_ready"),
+        ...draft.classes.filter(kind => !notificationOptions.some(([value]) => value === kind)),
         ...Array.from(classes.querySelectorAll("input"))
           .filter(input => input.checked).map(input => input.value),
       ],

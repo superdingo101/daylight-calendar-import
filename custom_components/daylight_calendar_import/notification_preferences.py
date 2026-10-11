@@ -14,6 +14,9 @@ NOTIFICATION_CLASSES = frozenset({
 })
 
 
+DELIVERABLE_NOTIFICATION_CLASSES = frozenset({"review_ready", "calendar_created"})
+
+
 class NotificationPreferencesError(ValueError):
     """Raised when user-supplied notification preferences are unsafe."""
 
