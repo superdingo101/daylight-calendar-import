@@ -2,11 +2,15 @@
 
 ## Mutation testing and release gate
 
-- Ordinary PRs use **uncached, changed-module mutation testing** with a stable
+- Ordinary PRs use **changed-module mutation testing** with a stable
   `Mutation score` check; compare against the PR's actual base branch, including
   stacked PRs. New application tests also select source they exercise.
-  Changes to existing tests, shared test helpers, fixtures or dependencies can
-  invalidate results outside a narrow diff and require a full clean fallback.
+  PR-local mutation results may be reused only when strict provenance validates
+  unchanged production inputs, dependency environment, and mutation scope.
+  Strictly appended, undecorated test functions may retain killed verdicts only
+  when they do not shadow earlier module bindings; all non-killed mutants are
+  retested. Modified existing tests, fixtures, shared helpers or dependencies
+  require a clean fallback. Invalid or missing caches always start clean.
   Do not restore the retired PR-baseline rebuilding system.
 - Documentation, frontend or CI-only PRs legitimately have no Python mutations;
   record the no-op explicitly in the check summary. Keep normal tests required.
