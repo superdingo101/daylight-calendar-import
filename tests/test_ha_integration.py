@@ -534,3 +534,30 @@ async def test_old_provider_cleanup_cannot_evict_a_replaced_registry_key(
         if not task.done():
             task.cancel()
             await asyncio.wait_for(task, timeout=1)
+
+
+async def test_remove_entry_cancels_cooperative_provider_within_grace(
+    hass, monkeypatch,
+):
+    """Normal provider cancellation finishes before the bounded cleanup timeout."""
+    import asyncio
+    from custom_components.daylight_calendar_import import async_remove_entry
+
+    monkeypatch.setattr(PendingImportStore, "async_remove_storage", AsyncMock())
+    entry = _entry()
+    key = f"{DOMAIN}_notification_tasks"
+    tasks = hass.data.setdefault(key, {})[entry.entry_id] = set()
+    started = asyncio.Event()
+
+    async def cooperative():
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(cooperative())
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    await started.wait()
+    await asyncio.wait_for(async_remove_entry(hass, entry), timeout=1)
+    assert task.cancelled()
+    await asyncio.sleep(0)
+    assert key not in hass.data
