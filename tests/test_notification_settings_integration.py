@@ -237,3 +237,15 @@ async def test_disabled_policy_cannot_stage_unsupported_class_for_later_activati
     })
     assert len(connection.errors) == 1
     assert config_entry.options[CONF_NOTIFICATION_PREFERENCES]["classes"] == ["review_ready"]
+
+
+def test_notification_policy_validation_preserves_specific_safe_error_message():
+    """Distinguish invalid policy details without leaking external provider data."""
+    from custom_components.daylight_calendar_import.settings import (
+        SettingsValidationError, notification_preferences_patch,
+    )
+
+    with pytest.raises(SettingsValidationError) as raised:
+        notification_preferences_patch(entry(), {"enabled": "yes"})
+    assert raised.value.code == "invalid_notifications"
+    assert str(raised.value) == "Notification enabled must be a boolean"
