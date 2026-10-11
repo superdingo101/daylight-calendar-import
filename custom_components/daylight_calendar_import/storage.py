@@ -307,6 +307,7 @@ class PendingImportStore:
         self._source_claims: dict[str, str] = {}
         self._source_claim_releases: set[str] = set()
         self._source_claim_release_provider_codes: dict[str, str] = {}
+        self._reprocessing: set[str] = set()
         self._lock = asyncio.Lock()
         self._subscribers: set[Callable[[], None]] = set()
         self.on_review_ready: Callable[[PendingImport], None] | None = None
@@ -1081,6 +1082,68 @@ class PendingImportStore:
                                      if item["id"] not in active_ids))
             history.pop(oldest_completed)
         return tuple(history)
+
+    async def async_reprocess(
+        self,
+        pending_id: str,
+        parser: Callable[[PendingImport], Awaitable[tuple[tuple[PendingEvent, ...], tuple[str, ...]]]],
+    ) -> tuple[PendingImport, int, int]:
+        """Reparse retained text, preserving existing drafts and all dedupe history."""
+        async with self._lock:
+            original = self._items.get(pending_id)
+            if original is None:
+                raise PendingEventEditError("Pending import not found")
+            if original.source_kind != "manual_text":
+                raise PendingEventEditError("Original source material is unavailable; submit the source again")
+            activity = self.get_activity(pending_id)
+            if (any(event.status != "pending" for event in original.events)
+                    or (activity and (activity.get("created_count", 0)
+                                     or activity.get("rejected_count", 0)))):
+                raise PendingEventEditError("Handled or uncertain imports cannot be reprocessed")
+            if pending_id in self._reprocessing:
+                raise PendingEventEditError("Source reprocessing is already in progress")
+            self._reprocessing.add(pending_id)
+        try:
+            candidates, warnings = await parser(original)
+            result, cancelled = await self._async_complete_transaction(
+                self._async_commit_reprocessed(original, candidates, warnings)
+            )
+            if cancelled:
+                raise asyncio.CancelledError
+            return result
+        finally:
+            self._reprocessing.discard(pending_id)
+
+    async def _async_commit_reprocessed(
+        self, original: PendingImport, candidates: tuple[PendingEvent, ...],
+        warnings: tuple[str, ...],
+    ) -> tuple[PendingImport, int, int]:
+        """Append novel drafts only if the entire original review is unchanged."""
+        async with self._lock:
+            if self._items.get(original.id) is not original:
+                raise PendingEventEditError("Import changed during reprocessing; refresh before retrying")
+            known = set(self._seen_event_fingerprints) | self._active_event_fingerprints()
+            accepted = []
+            duplicates = 0
+            for candidate in candidates:
+                fingerprint = event_fingerprint(candidate.draft)
+                if fingerprint in known:
+                    duplicates += 1
+                else:
+                    known.add(fingerprint)
+                    accepted.append(candidate)
+            updated = replace(
+                original, events=original.events + tuple(accepted),
+                warnings=tuple(dict.fromkeys((*original.warnings, *warnings))),
+                duplicate_events=original.duplicate_events + duplicates,
+            )
+            items = dict(self._items)
+            items[original.id] = updated
+            activity = self._transition(updated, "source_reprocessed", remaining=updated.events)
+            await self._async_save(items, activity=activity)
+            self._commit_items(items)
+            self._activity = activity
+            return updated, len(accepted), duplicates
 
     async def async_edit_event(
         self, pending_id: str, event_id: str, draft: EventDraft,
