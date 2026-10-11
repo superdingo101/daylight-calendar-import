@@ -151,6 +151,7 @@ def test_nightly_reporting_does_not_require_a_deleted_cache_step(monkeypatch, tm
     nightly = next(step for step in reporter_job["steps"]
                    if step.get("name") == "Update visible nightly mutation health")
     assert "needs.clean.result" in nightly["env"]["NIGHTLY_CLEAN_OUTCOME"]
+    assert "continue-on-error" not in nightly  # Reporting API errors must fail the job.
     assert "NIGHTLY_CACHE_OUTCOME" not in str(nightly.get("env"))
     assert all("report_nightly_mutation.py" not in str(step.get("run", ""))
                for step in clean["jobs"]["clean"]["steps"])

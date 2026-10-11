@@ -150,7 +150,6 @@ jobs:
           name: mutation-results
 
       - name: Update visible nightly mutation health
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           NIGHTLY_CLEAN_OUTCOME: ${{ needs.clean.result }}
