@@ -5101,19 +5101,15 @@ test("notification conflict keeps unsaved choices when refresh is offline", asyn
   assert.equal(panel._notificationConflictNeedsRebase, true);
   const remote = {enabled: true, target: "notify.concurrent", classes: ["review_ready"]};
   panel._applySettingsSnapshot({...panel._settings, notifications: remote});
-  assert.deepEqual(panel._settingsDrafts.notifications.notifications, drafted);
-  assert.deepEqual(panel._notificationDraftBaseline, remote);
-  assert.equal(panel._notificationConflictNeedsRebase, false);
-  assert.match(panel._settingsError, /Review your retained choices/);
-  let submitted = false;
-  await panel._saveSettings("notifications", {notifications: drafted}, async () => {
-    submitted = true;
-    assert.deepEqual(panel._notificationDraftBaseline, remote);
-    return {...panel._settings, notifications: drafted};
-  }, "Saved", "Could not save");
-  assert.equal(submitted, true);
   assert.equal(panel._settingsDrafts.notifications, null);
   assert.equal(panel._notificationDraftBaseline, null);
+  assert.equal(panel._notificationConflictNeedsRebase, false);
+  assert.deepEqual(panel._settings.notifications, remote);
+  assert.match(panel._settingsError, /discarded/);
+  // Re-entering the choice is an explicit new edit based on the visible
+  // remote configuration, never an implicit full-policy overwrite.
+  panel._setSettingsDraft("notifications", {notifications: drafted});
+  assert.deepEqual(panel._notificationDraftBaseline, remote);
 });
 
 test("notification conflict prevents retry until remote policy has been refreshed", async () => {
