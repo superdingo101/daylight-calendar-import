@@ -183,3 +183,26 @@ async def test_enabled_policy_cannot_add_new_undelivered_classes():
     assert all(code == "invalid_notifications" for _, code, _ in connection.errors)
     assert config_entry.options[CONF_NOTIFICATION_PREFERENCES] == previous
     assert hass.config_entries.reloads == []
+
+
+@pytest.mark.asyncio
+async def test_disabling_notifications_keeps_saved_classes_without_delivery():
+    """Disabling does not need a deliverable selection or erase dormant choices."""
+    from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
+
+    previous = {"enabled": True, "target": "notify.phone", "classes": ["review_ready"]}
+    requested = {"enabled": False, "target": "notify.phone",
+                 "classes": ["review_ready", "parse_failed"]}
+    config_entry = entry(options={CONF_NOTIFICATION_PREFERENCES: previous})
+    hass = hass_for(config_entry)
+    connection = FakeConnection()
+    await invoke(settings_api.websocket_update_notifications, hass, connection, {
+        "id": 350, "entry_id": "entry-1",
+        "expected_notifications": previous, "notifications": requested,
+    })
+    assert not connection.errors
+    assert config_entry.options[CONF_NOTIFICATION_PREFERENCES] == {
+        "enabled": False, "target": "notify.phone",
+        "classes": ["parse_failed", "review_ready"],
+    }
+    assert hass.config_entries.reloads == ["entry-1"]
