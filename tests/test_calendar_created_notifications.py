@@ -108,3 +108,50 @@ def test_created_journal_keeps_multiple_distinct_events_and_deduplicates(monkeyp
         ("import-b", "event-2", "calendar_created"),
     ]
     assert all(request.target == "notify.phone" for request in journal)
+
+
+@pytest.mark.parametrize(
+    ("resolution", "transition_type", "remaining_count", "created_count", "rejected_count"),
+    [
+        ("created", "calendar_created", 1, 1, 0),
+        ("not_created", "review_ready", 2, 0, 0),
+        ("discard", "event_rejected", 1, 0, 1),
+    ],
+)
+async def test_uncertain_resolution_records_exact_event_and_remaining_siblings(
+    monkeypatch, resolution, transition_type, remaining_count, created_count, rejected_count,
+):
+    """The durable transition must identify the resolved event, not a generic import outcome."""
+    from dataclasses import replace
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    enable(store)
+    result = await store.async_add(
+        source_text="private",
+        events=[draft(), replace(draft(), title="Other event")],
+    )
+    pending = result.pending
+    first, second = pending.events
+    with pytest.raises(RuntimeError):
+        await store.async_approve_event(
+            pending.id, first.id, AsyncMock(side_effect=RuntimeError("ambiguous")),
+        )
+    assert await store.async_resolve_uncertain(pending.id, first.id, resolution)
+    remaining = store.get(pending.id)
+    assert remaining is not None
+    assert len(remaining.events) == remaining_count
+    assert remaining.events[-1].id == second.id
+    activity = store.get_activity(pending.id)
+    assert activity is not None
+    assert activity["transitions"][-1]["type"] == transition_type
+    assert activity["transitions"][-1]["event_id"] == first.id
+    assert activity["status"] == "review_ready"
+    assert activity["title"] == "Other event" if resolution != "not_created" else activity["title"] == "Practice"
+    assert activity["created_count"] == created_count
+    assert activity["rejected_count"] == rejected_count
+    assert backend.saved[-1]["activity"][-1] == activity
+    created = [r for r in store.list_notifications() if r.event.type == "calendar_created"]
+    assert len(created) == int(resolution == "created")
+    if created:
+        assert created[0].event_id == first.id
