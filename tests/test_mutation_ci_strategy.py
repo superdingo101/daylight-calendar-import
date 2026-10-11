@@ -1,4 +1,4 @@
-"""Contract tests for mutation caching and release validation evidence."""
+"""Contracts for PR-scoped mutation checks and clean release proof."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from scripts import release_mutation_proof
 
@@ -69,11 +70,6 @@ def test_publisher_checks_successful_first_party_run_and_matching_tree(
     else:
         with pytest.raises(RuntimeError, match="No successful"):
             release_mutation_proof.find_verified_run("v0.6.0", "correct")
-
-
-
-
-"""Contracts for PR-scoped mutation runs and clean release validation."""
 
 
 

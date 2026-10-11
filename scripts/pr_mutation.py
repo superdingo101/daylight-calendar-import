@@ -19,7 +19,13 @@ FRONTEND = SOURCE + "frontend/"
 SCOPE = Path(".pr-mutation-scope.json")
 BACKUP = Path(".pr-mutation-pyproject-original")
 CONFIG = Path("pyproject.toml")
-CI_TESTS = {"tests/test_mutation_ci_strategy.py", "tests/test_pr_mutation_scope.py"}
+CI_TESTS = {
+    "tests/test_mutation_ci_strategy.py",
+    "tests/test_pr_mutation_scope.py",
+    # Removed obsolete cache-specific test modules are CI-only too.
+    "tests/test_mutation_cache_reuse.py",
+    "tests/test_pr_mutation_rebuild_workflow.py",
+}
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -67,7 +73,8 @@ def select(base: str, head: str) -> tuple[str, list[str], str]:
         for file in files
     ):
         return "full", [], "Shared test, dependency or integration settings changed"
-    if any(file.startswith("tests/") for file in changed_paths(base, head, "D")):
+    if any(file.startswith("tests/") and file not in CI_TESTS
+           for file in changed_paths(base, head, "D")):
         return "full", [], "Deleted tests require a full mutation run"
 
     selected = sorted({

@@ -42,7 +42,7 @@ def test_changed_test_maps_coverage(tmp_path, monkeypatch):
     t = Path("tests/test_journal.py")
     t.parent.mkdir()
     t.touch()
-    monkeypatch.setattr(pr_mutation, "changed_paths", lambda *a, **kw: {str(t)})
+    monkeypatch.setattr(pr_mutation, "changed_paths", lambda *a, **kw: set() if kw.get("kind") == "D" else {str(t)})
     monkeypatch.setattr(pr_mutation, "test_coverage", lambda tests: {SRC + "journal.py"})
     assert pr_mutation.select(BASE, HEAD)[1] == [SRC + "journal.py"]
 
@@ -68,3 +68,14 @@ def test_configuration_round_trip(tmp_path, monkeypatch):
     assert obj["tool"]["other"]["flag"] is True
     pr_mutation.restore()
     assert Path("pyproject.toml").read_text() == source
+
+
+def test_deleted_only_ci_contract_tests_do_not_force_full_mutation(monkeypatch):
+    deleted = {"tests/test_mutation_cache_reuse.py", "tests/test_pr_mutation_rebuild_workflow.py"}
+    monkeypatch.setattr(pr_mutation, "changed_paths", lambda *a, **kw: deleted)
+    assert pr_mutation.select(BASE, HEAD)[0] == "skip"
+
+
+def test_deleted_application_tests_still_force_full_mutation(monkeypatch):
+    monkeypatch.setattr(pr_mutation, "changed_paths", lambda *a, **kw: {"tests/test_storage.py"})
+    assert pr_mutation.select(BASE, HEAD)[0] == "full"
