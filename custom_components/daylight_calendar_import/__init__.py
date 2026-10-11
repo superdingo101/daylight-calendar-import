@@ -996,7 +996,34 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Remove persisted data when the config entry is deleted."""
+    """Remove persisted data and retire this entry's notification task set."""
+    registry_key = f"{DOMAIN}_notification_tasks"
+    registry = hass.data.get(registry_key)
+    tasks = registry.get(entry.entry_id) if registry is not None else None
+    if tasks is not None:
+        # Ordinarily the preceding unload has already canceled all tasks.
+        # Repeat the bounded request for a cancellation-resistant provider,
+        # but retain ownership until any straggler truly completes.
+        for task in tuple(tasks):
+            task.cancel()
+        if tasks:
+            _, pending = await asyncio.wait(
+                tuple(tasks), timeout=_NOTIFICATION_CANCEL_GRACE_SECONDS,
+            )
+            if pending:
+                _LOGGER.warning("Daylight notification task still running after entry removal")
+
+        def evict_when_idle(_task: asyncio.Task | None = None) -> None:
+            if tasks or registry.get(entry.entry_id) is not tasks:
+                return
+            registry.pop(entry.entry_id, None)
+            if not registry:
+                hass.data.pop(registry_key, None)
+
+        for task in tuple(tasks):
+            task.add_done_callback(evict_when_idle)
+        evict_when_idle()
+
     await PendingImportStore(hass).async_remove_storage()
 
 
