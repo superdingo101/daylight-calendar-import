@@ -1516,12 +1516,13 @@ class PendingImportStore:
 
         try:
             _, cancelled = await self._async_complete_transaction(commit_created())
-        except Exception:
+        except (Exception, asyncio.CancelledError):
+            # Cancellation can mask a failed save inside the transaction.
             # The external call completed, but the accepted outcome did not
             # commit. The durable write checkpoint remains authoritative.
             try:
-                await self._async_recover_uncertain_notifications()
-            except Exception:
+                await self._async_complete_transaction(self._async_recover_uncertain_notifications())
+            except (Exception, asyncio.CancelledError):
                 pass
             raise
         if cancelled:

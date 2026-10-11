@@ -265,3 +265,39 @@ async def test_second_cancellation_during_uncertainty_save_finishes_commit(monke
         await task
     assert store.get_activity(item.id)["transitions"][-1]["type"] == "calendar_write_uncertain"
     assert store.list_notifications()[0].event.type == "calendar_write_uncertain"
+
+
+@pytest.mark.parametrize("recovery_fails", [False, True])
+async def test_cancelled_failed_created_save_recovers_uncertainty(monkeypatch, recovery_fails):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    enable(store)
+    item, event = await pending(store)
+    entered, release = asyncio.Event(), asyncio.Event()
+    save = backend.async_save
+
+    async def fail_created(data):
+        if data["activity"][-1]["transitions"][-1]["type"] == "calendar_created":
+            entered.set()
+            await release.wait()
+            raise OSError("outcome save failed")
+        if recovery_fails and data.get("notifications"):
+            raise OSError("recovery save failed")
+        await save(data)
+
+    backend.async_save = fail_created
+    task = asyncio.create_task(store.async_approve_event(item.id, event.id, AsyncMock()))
+    await entered.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    checkpoint = store.get_event(item.id, event.id)
+    assert checkpoint.status == "write_uncertain"
+    if recovery_fails:
+        assert store.list_notifications() == ()
+    else:
+        record = store.list_notifications()[0]
+        assert record.event.type == "calendar_write_uncertain" and record.recovered
+        assert record.write_attempt == checkpoint.write_attempt
+        assert backend.saved[-1]["notifications"] == [record.as_dict()]
