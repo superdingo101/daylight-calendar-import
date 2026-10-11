@@ -23,12 +23,15 @@ def classify_provider_failure(error: Exception) -> str:
         seen.add(id(current))
         if isinstance(current, (TimeoutError, TimeoutException)):
             return "provider_timeout"
-        if isinstance(current, ClientResponseError):
-            status = current.status
-        elif isinstance(current, HTTPStatusError):
-            status = current.response.status_code
-        else:
-            status = getattr(current, "status_code", None)
+        try:
+            if isinstance(current, ClientResponseError):
+                status = current.status
+            elif isinstance(current, HTTPStatusError):
+                status = current.response.status_code
+            else:
+                status = getattr(current, "status_code", None)
+        except Exception:
+            return "provider_error"
         if type(status) is int:
             if status == 429:
                 return "provider_rate_limited"

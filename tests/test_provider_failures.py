@@ -219,3 +219,69 @@ async def test_deterministic_validation_precedes_resolved_provider_availability(
         await provider.async_parse(replace(source, text=""), reference_datetime="now", time_zone="UTC")
     assert caught.value.code == "empty_source"
     generate.assert_not_awaited()
+
+
+async def test_failed_provider_failure_save_preserves_category_when_source_reclaimed(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    enable(store)
+    identifier = await begin(store, source_id="private retry source")
+    backend.save_error = OSError("private storage failure")
+    with pytest.raises(OSError):
+        await store.async_record_parse_failure(identifier, provider_error_code="provider_rate_limited")
+    assert store.get_activity(identifier)["status"] == "processing"
+    assert not store.list_notifications()
+    backend.save_error = None
+    replacement = await begin(store, source_id="private retry source")
+    assert replacement != identifier
+    record = store.get_activity(identifier)
+    assert record["status"] == "failed"
+    assert record["failure_code"] == "provider_rate_limited"
+    assert record["guidance"] == PROVIDER_FAILURE_GUIDANCE["provider_rate_limited"]
+    assert len(store.list_notifications()) == 1
+    assert not store._source_claim_release_provider_codes
+
+
+class ThrowingStatusError(Exception):
+    @property
+    def status_code(self):
+        raise ValueError("private SDK descriptor response")
+
+
+class ThrowingResult:
+    @property
+    def data(self):
+        raise ValueError("private provider result body")
+
+
+@pytest.mark.parametrize(("result", "error", "expected"), [
+    (None, None, "provider_invalid_response"),
+    (SimpleNamespace(), None, "provider_invalid_response"),
+    (ThrowingResult(), None, "provider_invalid_response"),
+    (None, ThrowingStatusError("private original provider response"), "provider_error"),
+])
+async def test_actual_submission_boundary_sanitizes_malformed_provider_contracts(monkeypatch, result, error, expected):
+    import traceback
+    from homeassistant.core import Context
+    from custom_components.daylight_calendar_import import async_setup_entry
+    from custom_components.daylight_calendar_import.const import DOMAIN, SERVICE_SUBMIT_TEXT
+    from tests.test_init import FakeHass, entry
+
+    generate = AsyncMock(return_value=result, side_effect=error)
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+                            async_begin_submission=AsyncMock(return_value="activity-id"),
+                            async_record_parse_failure=AsyncMock())
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_review_panel", AsyncMock())
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_track_time_interval", Mock(return_value=Mock()))
+    hass = FakeHass()
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
+    with pytest.raises(providers.ProviderError) as caught:
+        await handler(SimpleNamespace(data={"text": "source details"}, context=Context(user_id=None)))
+    assert caught.value.code == expected
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
+    assert "private" not in "".join(traceback.format_exception(caught.value))
+    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected)

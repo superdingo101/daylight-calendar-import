@@ -306,6 +306,7 @@ class PendingImportStore:
         self._seen_event_fingerprints: tuple[str, ...] = ()
         self._source_claims: dict[str, str] = {}
         self._source_claim_releases: set[str] = set()
+        self._source_claim_release_provider_codes: dict[str, str] = {}
         self._lock = asyncio.Lock()
         self._subscribers: set[Callable[[], None]] = set()
         self.on_review_ready: Callable[[PendingImport], None] | None = None
@@ -339,6 +340,7 @@ class PendingImportStore:
             self._seen_event_fingerprints = ()
             self._source_claims = {}
             self._source_claim_releases = set()
+            self._source_claim_release_provider_codes = {}
             return
 
         items = (
@@ -356,6 +358,7 @@ class PendingImportStore:
         )
         self._source_claims = dict(data.get(_STORAGE_SOURCE_CLAIMS, {}))
         self._source_claim_releases = set()
+        self._source_claim_release_provider_codes = {}
         interrupted = [
             item["id"]
             for item in self._activity
@@ -897,6 +900,10 @@ class PendingImportStore:
                 return
             if activity_id in self._source_claims:
                 self._source_claim_releases.add(activity_id)
+                if provider_error_code is not None:
+                    self._source_claim_release_provider_codes.setdefault(
+                        activity_id, provider_error_code,
+                    )
             await self._async_record_parse_failure_locked(
                 activity_id,
                 guidance=guidance,
@@ -965,6 +972,7 @@ class PendingImportStore:
             self._seen_source_fingerprints = seen_sources
             self._source_claims = source_claims
             self._source_claim_releases.discard(activity_id)
+            self._source_claim_release_provider_codes.pop(activity_id, None)
 
     async def _async_record_parse_failure_locked(
         self,
@@ -997,11 +1005,17 @@ class PendingImportStore:
         self._activity = activity
         self._source_claims = source_claims
         self._source_claim_releases.discard(activity_id)
+        self._source_claim_release_provider_codes.pop(activity_id, None)
 
     async def _async_retry_source_claim_releases_locked(self) -> None:
         """Retry claim releases that previously failed to persist."""
         for activity_id in tuple(self._source_claim_releases):
-            await self._async_record_parse_failure_locked(activity_id)
+            code = self._source_claim_release_provider_codes.get(activity_id)
+            await self._async_record_parse_failure_locked(
+                activity_id,
+                guidance=PROVIDER_FAILURE_GUIDANCE[code or "provider_error"],
+                provider_error_code=code,
+            )
 
     def _finish_submission(self, activity_id: str | None, status: str,
                            guidance: str | None = None, *,
