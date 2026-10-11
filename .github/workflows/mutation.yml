@@ -15,9 +15,14 @@ jobs:
   mutation:
     name: Mutation score
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Never let an ordinary PR consume a clean-run-sized mutation job.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Required to reconstruct the trusted source tree referenced by the
+          # previously saved mutation baseline (and fail closed if unavailable).
+          fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:
@@ -30,17 +35,69 @@ jobs:
 
       # PR caches are isolated by GitHub; a PR can also restore a cache from
       # main. Each save has a unique key because cache entries are immutable.
-      - name: Restore mutation cache
+      - name: Restore PR mutation cache
         uses: actions/cache/restore@v4
         with:
           path: mutants
           key: mutmut-v2-linux-py314-v380-pr-${{ github.event.pull_request.number }}-${{ github.sha }}-${{ github.run_id }}
           restore-keys: |
             mutmut-v2-linux-py314-v380-pr-${{ github.event.pull_request.number }}-
+
+      - name: Validate PR mutation cache
+        id: pr-cache
+        run: |
+          python scripts/mutation_cache.py validate
+          if [ -f mutants/mutation-cache-provenance.json ]; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A deliberately rebuilt baseline is saved on the default branch under
+      # a PR-specific prefix. Try it separately: stale PR-ref caches otherwise
+      # shadow valid rebuild caches on the default branch.
+      - name: Restore rebuilt PR mutation baseline
+        if: ${{ steps.pr-cache.outputs.valid != 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: mutants
+          key: mutmut-v2-linux-py314-v380-rebuild-pr-${{ github.event.pull_request.number }}-${{ github.sha }}-${{ github.run_id }}
+          # Prefer recovery built for this exact synthetic PR merge tree.
+          restore-keys: |
+            mutmut-v2-linux-py314-v380-rebuild-pr-${{ github.event.pull_request.number }}-${{ github.sha }}-
+            mutmut-v2-linux-py314-v380-rebuild-pr-${{ github.event.pull_request.number }}-
+
+      - name: Validate rebuilt PR mutation baseline
+        if: ${{ steps.pr-cache.outputs.valid != 'true' }}
+        id: rebuilt-cache
+        run: |
+          python scripts/mutation_cache.py validate
+          if [ -f mutants/mutation-cache-provenance.json ]; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A stale PR-specific cache must not prevent trying a recovery baseline
+      # and the independently saved main-branch nightly baseline.
+      - name: Restore main mutation baseline
+        if: ${{ steps.pr-cache.outputs.valid != 'true' && steps.rebuilt-cache.outputs.valid != 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: mutants
+          key: mutmut-v2-linux-py314-v380-main-${{ github.run_id }}
+          restore-keys: |
             mutmut-v2-linux-py314-v380-main-
 
-      - name: Validate mutation cache provenance
+      - name: Validate main mutation baseline
+        if: ${{ steps.pr-cache.outputs.valid != 'true' && steps.rebuilt-cache.outputs.valid != 'true' }}
         run: python scripts/mutation_cache.py validate
+
+      # Ordinary PRs must not silently turn a cache miss into a 45–60-minute
+      # clean run. Scheduled and release workflows own clean baseline creation.
+      - name: Require reusable mutation baseline
+        run: |
+          if [ ! -f mutants/mutation-cache-provenance.json ]; then
+            echo "::error title=Mutation baseline unavailable::No compatible PR, PR-rebuild or main mutation cache. Use Actions -> Rebuild PR Mutation Cache on main with this PR number; a clean main run only helps if the PR did not change existing tests, fixtures or dependencies."
+            exit 1
+          fi
+          echo "Verified a compatible PR, recovery, or main cache: incremental test permitted."
 
       - name: Run incremental mutations
         run: mutmut run

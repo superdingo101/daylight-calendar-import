@@ -4,8 +4,17 @@
 
 - Every pull request runs **incremental** mutation testing (stable `Mutation score` check).
   It restores a cache when available, but invalidates cached results on changes
-  to tests, shared fixtures, dependencies, build configuration, or other
-  non-mutated tracked inputs. On cache miss, it runs the full suite.
+  to existing tests, shared fixtures, dependencies, or behavior-changing
+  configuration. Release-only version-number changes in manifest.json and
+  pyproject.toml do not invalidate mutation results.
+  If no safe PR/recovery/main cache exists, **fail quickly** with instructions
+  to run **Rebuild PR Mutation Cache** from main with that PR number; never
+  launch a 45-minute full run on a routine PR. The explicit rebuild checks
+  the PR's exact merge tree, runs the full mutation suite once, publishes a
+  PR-specific cache. After it succeeds, manually rerun the current PR's
+  failed required `Mutation score` check to validate the saved cache.
+  Never automatically rerun an earlier workflow run: GitHub would retain
+  its old synthetic merge SHA if the PR base changed.
 - Do not delete mutation state in an ordinary PR job: incremental mutmut
   invalidates changed production functions itself.
 - The clean full mutation suite runs every night on `main`. The nightly

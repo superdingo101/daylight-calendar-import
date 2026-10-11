@@ -1,0 +1,200 @@
+name: Rebuild PR Mutation Cache
+
+run-name: "Rebuild mutation baseline for PR #${{ inputs.pr_number }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Open same-repository pull request number to rebuild"
+        required: true
+        type: number
+
+# This workflow is an explicit, expensive recovery action. Ordinary PR checks
+# stay incremental and still require their own successful Mutation score check.
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-rebuild-pr-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Verify PR and pin its commit
+    runs-on: ubuntu-latest
+    outputs:
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      merge_sha: ${{ steps.pr.outputs.merge_sha }}
+      base_sha: ${{ steps.pr.outputs.base_sha }}
+    steps:
+      - name: Require main dispatch and trusted same-repo PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" || ! "$NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Run this workflow from main with a valid PR number."
+            exit 1
+          fi
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER")"
+          if ! jq -e --arg repo "$GITHUB_REPOSITORY" '
+              .state == "open" and
+              .head.repo.full_name == $repo and
+              .mergeable != false and
+              (.head.sha | test("^[0-9a-f]{40}$")) and
+              (.base.sha | test("^[0-9a-f]{40}$")) and
+              (.merge_commit_sha | type == "string" and test("^[0-9a-f]{40}$"))
+            ' <<< "$pr" >/dev/null; then
+            echo "::error::Only open, same-repository PRs with a mergeable test-merge commit can be rebuilt. Resolve merge conflicts first."
+            exit 1
+          fi
+          echo "head_sha=$(jq -r '.head.sha' <<< "$pr")" >> "$GITHUB_OUTPUT"
+          echo "merge_sha=$(jq -r '.merge_commit_sha' <<< "$pr")" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$(jq -r '.base.sha' <<< "$pr")" >> "$GITHUB_OUTPUT"
+
+  rebuild:
+    name: Full mutation baseline for PR
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Test the *same combined source tree* as GitHub's pull_request
+          # Mutation score job (a synthetic merge of head and base).
+          ref: ${{ needs.resolve.outputs.merge_sha }}
+          # Parent commits must be available for HEAD^1 / HEAD^2 checks.
+          # Checkout's default depth=1 makes those parent objects unavailable.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify pinned PR source
+        env:
+          EXPECTED_MERGE: ${{ needs.resolve.outputs.merge_sha }}
+          EXPECTED_HEAD: ${{ needs.resolve.outputs.head_sha }}
+          EXPECTED_BASE: ${{ needs.resolve.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MERGE"
+          test "$(git rev-parse HEAD^1)" = "$EXPECTED_BASE"
+          test "$(git rev-parse HEAD^2)" = "$EXPECTED_HEAD"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements_test.txt
+
+      - name: Discard previous mutation state
+        run: rm -rf mutants
+
+      - name: Run full mutations once
+        run: mutmut run
+
+      - name: Enforce the existing mutation threshold
+        run: |
+          mutmut export-cicd-stats
+          python scripts/check_mutation_score.py
+
+      - name: Export survivor diagnostics
+        if: always()
+        run: python scripts/export_mutation_survivors.py
+
+      - name: Verify PR head has not moved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD: ${{ needs.resolve.outputs.head_sha }}
+          EXPECTED_MERGE: ${{ needs.resolve.outputs.merge_sha }}
+          EXPECTED_BASE: ${{ needs.resolve.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER")"
+          head="$(jq -r '.head.sha' <<< "$current")"
+          base="$(jq -r '.base.sha' <<< "$current")"
+          merge="$(jq -r '.merge_commit_sha' <<< "$current")"
+          if [[ "$head" != "$EXPECTED_HEAD" || "$base" != "$EXPECTED_BASE" || "$merge" != "$EXPECTED_MERGE" ]]; then
+            echo "::error::PR head or base changed during the clean run. Nothing will be cached; rerun against the current merge tree."
+            exit 1
+          fi
+
+      - name: Stamp fully verified PR mutation state
+        run: python scripts/mutation_cache.py stamp
+
+      # The dispatch runs on main. GitHub exposes this default-branch cache to
+      # the selected PR, using a PR-specific prefix that other PRs never match.
+      - name: Save PR recovery baseline
+        uses: actions/cache/save@v4
+        with:
+          path: mutants
+          key: mutmut-v2-linux-py314-v380-rebuild-pr-${{ inputs.pr_number }}-${{ needs.resolve.outputs.merge_sha }}-${{ github.run_id }}
+
+      - name: Upload diagnostic artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-${{ inputs.pr_number }}-mutation-rebuild
+          if-no-files-found: warn
+          path: |
+            mutants/mutmut-cicd-stats.json
+            mutation-survivors.txt
+            mutation-survivor-names.txt
+            mutation-survivor-report.txt
+
+  finish:
+    name: Report recovery and next steps
+    needs: [resolve, rebuild]
+    if: ${{ always() && needs.resolve.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      # This job runs only trusted workflow commands on main. No PR code,
+      # dependencies, or scripts are executed with the write-capable token.
+      - name: Report rebuild result and instruct PR check retry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ inputs.pr_number }}
+          EXPECTED: ${{ needs.resolve.outputs.head_sha }}
+          EXPECTED_MERGE: ${{ needs.resolve.outputs.merge_sha }}
+          EXPECTED_BASE: ${{ needs.resolve.outputs.base_sha }}
+          OUTCOME: ${{ needs.rebuild.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER")"
+          actual="$(jq -r '.head.sha' <<< "$pr")"
+          actual_merge="$(jq -r '.merge_commit_sha' <<< "$pr")"
+          actual_base="$(jq -r '.base.sha' <<< "$pr")"
+          if [[ "$actual" != "$EXPECTED" || "$actual_base" != "$EXPECTED_BASE" || "$actual_merge" != "$EXPECTED_MERGE" ]]; then
+            echo "::warning::PR head changed; the old recovery result does not apply to its latest commit."
+            exit 0
+          fi
+
+          state=failure
+          if [[ "$OUTCOME" == "success" ]]; then state=success; fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$EXPECTED" \
+            -f state="$state" \
+            -f context="PR Mutation Cache Rebuild" \
+            -f description="Explicit clean PR cache rebuild: $OUTCOME" \
+            -f target_url="$RUN_URL" >/dev/null
+
+          if [[ "$OUTCOME" != "success" ]]; then
+            echo "::error::Full mutation recovery did not pass; required PR checks remain blocked."
+            exit 1
+          fi
+
+          # A workflow-run rerun reuses its original test merge commit, even if
+          # the PR base has advanced. Selecting the latest failed run is thus
+          # unsafe for stacked PRs. Leave the required status to an explicit
+          # rerun of the *current* PR check, not this recovery workflow.
+          echo "::notice title=Mutation cache rebuilt::The PR-specific cache is ready for PR #$NUMBER. Open the current PR's failed Mutation score check and choose Re-run jobs. Confirm the check targets the current head and base; recovery alone never satisfies required checks."
