@@ -9,8 +9,12 @@ and head SHA, supporting stacked pull requests even when their base advances.
 - Production Python changes: mutate only the changed Python modules using
   mutmut's `only_mutate` configuration. All tests remain discoverable by mutmut
   when mapping tests to mutated functions.
-- Newly added application tests: run the new tests under coverage.py and include
-  the production modules they exercise **alongside** any changed source.
+- For PRs with changed production Python files, select **only changed production
+  modules**; new test files do not widen that scope through package imports.
+- For test-only PRs with new application tests, use pytest-cov per-test
+  **call-phase** contexts and executed function bodies to select modules actually
+  exercised. Import-time package initialization cannot expand the scope.
+  If no production function is demonstrably exercised, fall back to a full run.
 - Edited or deleted existing application tests: use a full clean fallback,
   because post-edit coverage alone cannot show which modules lost tests.
 - Changes in shared helpers (including `tests/hosted_contract.py`), fixtures,
@@ -20,12 +24,17 @@ and head SHA, supporting stacked pull requests even when their base advances.
 - Mutation state is *optionally* reused from an earlier run of the **same PR**.
   CI validates mutation scope, all tracked non-test inputs, installed dependency
   versions and Python interpreter. If any differ, it starts completely clean.
-- Test changes are eligible for warm reuse only when their previous Python AST
-  is unchanged and the only additions are undecorated, top-level `test_*`
-  functions appended at the end of existing test files. Previous killed mutants
-  remain killed; survivors, no-tests, timeouts and other non-killed verdicts
-  are explicitly reset and retested. Replaced assertions, fixtures, imports,
-  modified/deleted tests, and newly created test modules force a clean run.
+- Test-only changes are eligible for warm reuse when existing collected test
+  ASTs are unchanged and additions consist only of undecorated standalone
+  `test_*` functions appended to existing modules **or** entirely new, isolated
+  `tests/test_*.py` modules with a static docstring, allowlisted imports and
+  undecorated test functions. The new module may import an existing test helper
+  or established package, but cannot add fixtures, hooks, classes, decorators,
+  module assignments, wildcard/dynamic imports, or executable collection code.
+  Uncertain additions, modified/deleted tests or changed production/dependency
+  inputs invalidate the cache. Killed mutants are retained only for validated
+  additive changes; all non-killed results (including survivors and timeouts)
+  are reset and retested.
 - The workflow saves completed `mutants/` state **even if the 95.22% gate
   fails**. A later PR commit may reuse this state; interrupted, timed-out or
   incomplete mutation runs are not published. Cache misses never bypass
