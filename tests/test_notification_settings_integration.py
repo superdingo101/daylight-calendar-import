@@ -135,3 +135,51 @@ async def test_only_supported_enabled_notifications_are_accepted():
     })
     assert connection.errors == []
     assert connection.results[-1][1]["notifications"]["classes"] == ["review_ready"]
+
+
+@pytest.mark.asyncio
+async def test_enable_review_ready_preserves_existing_dormant_classes():
+    """Existing future selections cannot prevent opting into shipped delivery."""
+    from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
+
+    old = {"enabled": False, "target": "notify.phone", "classes": ["parse_failed"]}
+    config_entry = entry(options={CONF_NOTIFICATION_PREFERENCES: old})
+    hass = hass_for(config_entry)
+    connection = FakeConnection()
+    requested = {"enabled": True, "target": "notify.phone",
+                 "classes": ["parse_failed", "review_ready"]}
+    await invoke(settings_api.websocket_update_notifications, hass, connection, {
+        "id": 320, "entry_id": "entry-1",
+        "expected_notifications": old,
+        "notifications": requested,
+    })
+    assert connection.errors == []
+    assert config_entry.options[CONF_NOTIFICATION_PREFERENCES] == requested
+    assert hass.config_entries.reloads == ["entry-1"]
+
+
+@pytest.mark.asyncio
+async def test_enabled_policy_cannot_add_new_undelivered_classes():
+    """Only dormant classes present in the optimistic baseline can survive."""
+    from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
+
+    previous = {"enabled": False, "target": "notify.phone",
+                "classes": ["parse_failed"]}
+    config_entry = entry(options={CONF_NOTIFICATION_PREFERENCES: previous})
+    hass = hass_for(config_entry)
+    connection = FakeConnection()
+    for index, classes in enumerate([
+        ["parse_failed"],
+        ["review_ready", "conflict_detected"],
+        ["review_ready", "parse_failed", "conflict_detected"],
+    ]):
+        await invoke(settings_api.websocket_update_notifications, hass, connection, {
+            "id": 330 + index, "entry_id": "entry-1",
+            "expected_notifications": previous,
+            "notifications": {"enabled": True, "target": "notify.phone",
+                              "classes": classes},
+        })
+    assert len(connection.errors) == 3
+    assert all(code == "invalid_notifications" for _, code, _ in connection.errors)
+    assert config_entry.options[CONF_NOTIFICATION_PREFERENCES] == previous
+    assert hass.config_entries.reloads == []
