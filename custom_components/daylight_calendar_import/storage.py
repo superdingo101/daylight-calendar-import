@@ -20,6 +20,7 @@ from .dedup import (
     source_fingerprint as build_source_fingerprint,
 )
 from .models import EventDraft, normalize_date_time_assumptions
+from .notification_journal import NotificationRecord
 from .source_routing import LEGACY_UNRESOLVED_WARNINGS
 
 _LOGGER = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ ACTIVITY_LIMIT = 500
 ACTIVITY_TRANSITIONS_PER_IMPORT = 32
 _STORAGE_ITEMS = "items"
 _STORAGE_ACTIVITY = "activity"
+_STORAGE_NOTIFICATIONS = "notifications"
 _STORAGE_SOURCE_CLAIMS = "source_claims"
 _STORAGE_SEEN_SOURCES = "seen_source_fingerprints"
 _STORAGE_SEEN_EVENTS = "seen_event_fingerprints"
@@ -292,6 +294,7 @@ class PendingImportStore:
         )
         self._items: dict[str, PendingImport] = {}
         self._activity: tuple[dict[str, Any], ...] = ()
+        self._notifications: tuple[NotificationRecord, ...] = ()
         self._seen_source_fingerprints: tuple[str, ...] = ()
         self._seen_event_fingerprints: tuple[str, ...] = ()
         self._source_claims: dict[str, str] = {}
@@ -324,6 +327,7 @@ class PendingImportStore:
         if data is None:
             self._items = {}
             self._activity = ()
+            self._notifications = ()
             self._seen_source_fingerprints = ()
             self._seen_event_fingerprints = ()
             self._source_claims = {}
@@ -335,6 +339,8 @@ class PendingImportStore:
         )
         self._items = {item.id: item for item in items}
         self._activity = tuple(data.get(_STORAGE_ACTIVITY, ()))
+        self._notifications = tuple(NotificationRecord.from_dict(raw)
+                                    for raw in data.get(_STORAGE_NOTIFICATIONS, ()))
         self._seen_source_fingerprints = tuple(
             data.get(_STORAGE_SEEN_SOURCES, ())
         )
@@ -359,6 +365,33 @@ class PendingImportStore:
                 source_claims={},
             )
             self._source_claims = {}
+
+    def list_notifications(self) -> tuple[NotificationRecord, ...]:
+        """Return immutable requests, unaffected by pending/activity pruning."""
+        return self._notifications
+
+    async def async_enqueue_notification(self, record: NotificationRecord) -> bool:
+        """Persist an identity once; publish it only after the atomic save succeeds.
+
+        Later lifecycle producers use the same envelope to save their outcome
+        and proposed journal together. This standalone API does not infer or
+        replay notifications from historical activity.
+        """
+        result, cancelled = await self._async_complete_transaction(
+            self._async_enqueue_notification_transaction(record)
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    async def _async_enqueue_notification_transaction(self, record: NotificationRecord) -> bool:
+        """Finish the durable save before caller cancellation is propagated."""
+        key = record.event.idempotency_key
+        async with self._lock:
+            if any(item.event.idempotency_key == key for item in self._notifications):
+                return False
+            await self._async_save(self._items, notifications=self._notifications + (record,))
+            return True
 
     def get(self, pending_id: str) -> PendingImport | None:
         """Return one pending import by ID."""
@@ -1405,6 +1438,7 @@ class PendingImportStore:
         seen_event_fingerprints: tuple[str, ...] | None = None,
         activity: tuple[dict[str, Any], ...] | None = None,
         source_claims: dict[str, str] | None = None,
+        notifications: tuple[NotificationRecord, ...] | None = None,
     ) -> None:
         """Persist a proposed collection and deduplication history."""
         seen_sources = (
@@ -1430,7 +1464,11 @@ class PendingImportStore:
         history = self._activity if activity is None else activity
         if history:
             data[_STORAGE_ACTIVITY] = list(history)
+        journal = self._notifications if notifications is None else notifications
+        if journal:
+            data[_STORAGE_NOTIFICATIONS] = [record.as_dict() for record in journal]
         await self._store.async_save(data)
+        self._notifications = journal
 
 
 def _remember_fingerprints(
