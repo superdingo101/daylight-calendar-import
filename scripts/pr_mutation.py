@@ -21,6 +21,7 @@ BACKUP = Path(".pr-mutation-pyproject-original")
 CONFIG = Path("pyproject.toml")
 CI_TESTS = {
     "tests/test_mutation_ci_strategy.py",
+    "tests/test_export_mutation_survivors.py",
     "tests/test_pr_mutation_scope.py",
     # Removed obsolete cache-specific test modules are CI-only too.
     "tests/test_mutation_cache_reuse.py",
@@ -30,11 +31,11 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
 def changed_paths(base: str, head: str, kind: str = "ACMRTD") -> set[str]:
-    """Use NUL-separated names and merge-base diff to ignore base-only changes."""
+    """Use NUL names, preserve renamed old paths and ignore base-only changes."""
     if not SHA.fullmatch(base) or not SHA.fullmatch(head):
         raise ValueError("Expected 40-character base and head Git SHAs")
     output = subprocess.check_output([
-        "git", "diff", "--name-only", "-z", f"--diff-filter={kind}",
+        "git", "diff", "--no-renames", "--name-only", "-z", f"--diff-filter={kind}",
         f"{base}...{head}", "--",
     ])
     return {os.fsdecode(p) for p in output.split(b"\0") if p}

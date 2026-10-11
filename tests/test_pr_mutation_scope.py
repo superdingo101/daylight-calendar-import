@@ -20,6 +20,7 @@ def test_stacked_pr_uses_exact_supplied_git_shas(monkeypatch):
     monkeypatch.setattr(pr_mutation.subprocess, "check_output", git)
     assert pr_mutation.changed_paths(BASE, HEAD) == {SRC + "storage.py"}
     assert calls[0][-2:] == [f"{BASE}...{HEAD}", "--"]
+    assert "--no-renames" in calls[0]
 
 
 
@@ -62,6 +63,52 @@ def test_target_branch_advances_without_polluting_pr_mutation_scope(tmp_path, mo
     assert pr_mutation.changed_paths(target, feature) == {str(source)}
     git("checkout", "feature")
     assert pr_mutation.select(target, feature)[0] == "scoped"
+
+
+
+@pytest.mark.parametrize("destination", ["archive/test_storage.py", "tests/test_renamed.py"])
+def test_renamed_application_test_preserves_deleted_old_path_and_runs_full(
+    tmp_path, monkeypatch, destination,
+):
+    """Git rename detection must not hide deleted test paths from the safety gate."""
+    monkeypatch.chdir(tmp_path)
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], text=True).strip()
+
+    git("init")
+    git("config", "user.email", "ci@example.invalid")
+    git("config", "user.name", "CI")
+    original = Path("tests/test_storage.py")
+    original.parent.mkdir()
+    original.write_text("def test_example(): assert True\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "original test")
+    base = git("rev-parse", "HEAD")
+
+    renamed = Path(destination)
+    renamed.parent.mkdir(parents=True, exist_ok=True)
+    git("mv", str(original), str(renamed))
+    git("commit", "-m", "move existing application test")
+    head = git("rev-parse", "HEAD")
+
+    assert pr_mutation.changed_paths(base, head) == {str(original), str(renamed)}
+    assert str(original) in pr_mutation.changed_paths(base, head, "MRTD")
+    assert pr_mutation.select(base, head)[0] == "full"
+
+
+@pytest.mark.parametrize("kind", ["M", "D"])
+def test_exporter_only_test_changes_are_not_application_mutation_inputs(
+    monkeypatch, kind,
+):
+    ci_test = "tests/test_export_mutation_survivors.py"
+
+    def changed(base, head, diff_kind="ACMRTD"):
+        return {ci_test} if diff_kind in ("ACMRTD", "MRTD") else set()
+
+    monkeypatch.setattr(pr_mutation, "changed_paths", changed)
+    assert ci_test in pr_mutation.CI_TESTS
+    assert pr_mutation.select(BASE, HEAD)[0] == "skip"
 
 
 def test_rejects_git_options_as_refs():
