@@ -23,7 +23,7 @@ def main() -> None:
     success = all(
         os.environ.get(name) == "success"
         for name in ("MUTATION_OUTCOME", "ENFORCE_OUTCOME", "EXPORT_OUTCOME",
-                     "DIAGNOSTICS_OUTCOME", "NIGHTLY_CACHE_OUTCOME")
+                     "DIAGNOSTICS_OUTCOME")
     )
     stats = json.loads(STATS.read_text()) if STATS.is_file() else {}
     total = stats.get("total", 0) - stats.get("skipped", 0)
