@@ -301,3 +301,37 @@ async def test_cancelled_failed_created_save_recovers_uncertainty(monkeypatch, r
         assert record.event.type == "calendar_write_uncertain" and record.recovered
         assert record.write_attempt == checkpoint.write_attempt
         assert backend.saved[-1]["notifications"] == [record.as_dict()]
+
+
+async def test_uncertain_history_without_checkpoint_does_not_block_later_failure(monkeypatch):
+    """Historical uncertainty is not enough without a matching durable checkpoint."""
+    store = make_store(monkeypatch, FakeStoreBackend())
+    enable(store)
+    item, event = await pending(store)
+    at = "2026-10-12T12:00:00+00:00"
+    journal = store._journal_for_activity((
+        {"id": "empty", "transitions": []},
+        {"id": item.id, "transitions": [{
+            "type": "calendar_write_uncertain", "at": at, "event_id": event.id,
+        }]},
+        {"id": item.id, "transitions": [{
+            "type": "calendar_create_failed", "at": at, "event_id": event.id,
+        }]},
+    ))
+    assert len(journal) == 1
+    assert journal[0].event.type == "calendar_create_failed"
+    assert journal[0].event_id == event.id
+    assert journal[0].target == "notify.phone"
+
+
+def test_legacy_uncertain_notification_defaults_to_non_recovered():
+    """Old journal records must not invent restart-recovery provenance."""
+    request = NotificationRecord(
+        "import-1", "calendar_write_uncertain", "2026-10-12T12:00:00+00:00",
+        "event-1", target="notify.phone",
+    )
+    payload = request.as_dict()
+    payload.pop("recovered")
+    restored = NotificationRecord.from_dict(payload)
+    assert restored.recovered is False
+    assert restored.write_attempt is None
