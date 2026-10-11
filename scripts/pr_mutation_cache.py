@@ -117,8 +117,10 @@ def previously_bound_names(nodes: list[ast.stmt]) -> set[str] | None:
                 names.add(node.name)
             elif isinstance(node, (ast.Import, ast.ImportFrom)):
                 for alias in node.names:
-                    if alias.name == "*":
-                        return None
+                    if alias.name == "*" or (
+                        isinstance(node, ast.ImportFrom) and alias.name in dynamic_names
+                    ):
+                        return None  # Imported aliases can hide dynamic primitives.
                     names.add(alias.asname or alias.name.split(".", 1)[0])
             elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
                 names.add(node.id)
