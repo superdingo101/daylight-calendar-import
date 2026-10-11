@@ -97,3 +97,37 @@ async def test_cancelled_enqueue_finishes_commit_before_propagating(monkeypatch)
         await task
     assert store.list_notifications() == (record(),)
     assert backend.saved[-1]["notifications"] == [record().as_dict()]
+
+
+def test_notification_wire_contract_preserves_delivery_fields_and_legacy_defaults():
+    from dataclasses import replace
+    original = replace(record(), target="notify.phone", status="failed", attempts=3,
+        next_attempt_at="2026-10-11T01:01:00+00:00", failure="delivery_failed")
+    payload = original.as_dict()
+    for field, expected in (
+        ("target", "notify.phone"), ("status", "failed"), ("attempts", 3),
+        ("next_attempt_at", "2026-10-11T01:01:00+00:00"), ("failure", "delivery_failed"),
+    ):
+        assert payload[field] == expected
+    assert NotificationRecord.from_dict(payload) == original
+    legacy = record().as_dict()
+    legacy.pop("status")
+    legacy.pop("attempts")
+    restored = NotificationRecord.from_dict(legacy)
+    assert restored.status == "pending"
+    assert restored.attempts == 0
+
+
+def test_delivery_validation_errors_preserve_explicit_messages():
+    payload = record().as_dict()
+    with pytest.raises(ValueError, match=r"^Invalid notification delivery state$"):
+        NotificationRecord.from_dict({**payload, "attempts": 4})
+    with pytest.raises(ValueError, match=r"^Notification retry time must include a timezone$"):
+        NotificationRecord.from_dict({**payload, "next_attempt_at": "2026-10-11T01:00:00"})
+
+
+def test_calendar_notification_record_keeps_event_identity():
+    request = record("calendar_created", "calendar-event-1")
+    assert request is not None
+    assert request.event_id == "calendar-event-1"
+    assert request.event.event_id == "calendar-event-1"
