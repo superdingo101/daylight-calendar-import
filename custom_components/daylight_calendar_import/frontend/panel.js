@@ -1308,7 +1308,7 @@ export class DaylightImportPanel extends HTMLElement {
     const heading = element("h2", "Notifications");
     heading.tabIndex = -1;
     section.append(heading, element("p",
-      "Notifications are off by default. Review-ready alerts are available now; other event types will be enabled when their delivery paths ship. Messages omit private event details.",
+      `Notifications are off by default. Available alerts: ${notificationOptions.map(([, description]) => description.toLowerCase()).join(", ")}. Messages omit private event details.`,
       "settings-help"));
     const form = document.createElement("form");
     const saved = this._settings.notifications ?? {enabled: false, target: null, classes: []};
