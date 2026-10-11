@@ -124,14 +124,17 @@ class AITaskParserProvider:
     ) -> ParseOutcome:
         """Ask AI Task for structured event candidates, then validate each one."""
         entity = self._entity()
-        if (source.attachments and entity is None) or (
-            entity is not None and not getattr(entity, "available", True)
-        ):
+        if source.attachments and entity is None:
             raise ProviderError(
                 "provider_unavailable",
                 "Configured AI Task is temporarily unavailable",
             )
         self._capabilities_for_entity(entity).validate(source)
+        if entity is not None and not getattr(entity, "available", True):
+            raise ProviderError(
+                "provider_unavailable",
+                "Configured AI Task is temporarily unavailable",
+            )
         text = (source.text or "").strip()
         attachments = [
             {"media_content_id": item.content_ref, "media_content_type": item.media_type}

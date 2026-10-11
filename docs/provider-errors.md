@@ -15,7 +15,8 @@ Boundary errors suppress upstream exception chaining in ordinary tracebacks.
 | `provider_invalid_response` | Check the configured AI Task and try again. |
 | `provider_error` | Check the configured AI Task; the failure had no recognized structured category. |
 
-Classification uses typed timeout and connection errors, documented numeric HTTP
+Classification uses typed built-in, aiohttp and httpx timeout/connection errors,
+documented numeric HTTP
 status codes (429, 401/403, 500–599) and explicit exception causes. Exception text
 and implicit exception context are not interpreted. Traversal is bounded and
 cycle-safe. A resolved unavailable AI Task is rejected before invocation;

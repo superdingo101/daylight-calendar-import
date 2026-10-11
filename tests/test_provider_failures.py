@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 from aiohttp import ClientConnectionError, ClientResponseError
 from homeassistant.exceptions import HomeAssistantError
+from httpx import ConnectError, ReadTimeout, HTTPStatusError, Request, Response
 import pytest
 
 from custom_components.daylight_calendar_import import providers
@@ -25,6 +26,10 @@ def http_error(status):
     (TimeoutError("private email"), "provider_timeout"),
     (ConnectionError("private host"), "provider_unavailable"),
     (ClientConnectionError("private host"), "provider_unavailable"),
+    (ReadTimeout("private request"), "provider_timeout"),
+    (ConnectError("private request"), "provider_unavailable"),
+    (HTTPStatusError("private response", request=Request("GET", "https://private.test"),
+                     response=Response(429)), "provider_rate_limited"),
     (http_error(429), "provider_rate_limited"),
     (http_error(401), "provider_authentication"),
     (http_error(403), "provider_authentication"),
@@ -78,7 +83,7 @@ def test_cause_cycles_depth_and_implicit_context_are_bounded():
 
 
 async def test_explicit_entity_unavailable_skips_text_provider(monkeypatch):
-    entity = SimpleNamespace(available=False)
+    entity = SimpleNamespace(available=False, supported_features=0)
     provider = providers.AITaskParserProvider(object(), "ai_task.private")
     monkeypatch.setattr(provider, "_entity", lambda: entity)
     generate = AsyncMock()
@@ -201,3 +206,16 @@ async def test_email_failure_retains_retry_and_acknowledgement_semantics():
     assert result.terminal_failures == 0
     assert result.acknowledged == 0
     store.async_record_parse_failure.assert_awaited_once_with("activity-1", provider_error_code="provider_authentication")
+
+
+async def test_deterministic_validation_precedes_resolved_provider_availability(monkeypatch):
+    provider = providers.AITaskParserProvider(object(), "ai_task.private")
+    monkeypatch.setattr(provider, "_entity", lambda: SimpleNamespace(available=False, supported_features=0))
+    generate = AsyncMock()
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    source = TextSourceAdapter().create("seed")
+    from dataclasses import replace
+    with pytest.raises(providers.SourceValidationError) as caught:
+        await provider.async_parse(replace(source, text=""), reference_datetime="now", time_zone="UTC")
+    assert caught.value.code == "empty_source"
+    generate.assert_not_awaited()
