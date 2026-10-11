@@ -60,8 +60,14 @@ def test_appended_tests_with_collection_side_effects_or_shadowing_are_not_additi
     assert not cache.additive(previous, cache.hash_inputs([path])[1])
 
 
-def test_added_or_deleted_test_files_cannot_keep_old_verdicts():
-    assert not cache.additive({"tests/test_one.py": []}, {
+def test_new_static_test_file_is_allowed_but_deletion_forces_cold(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    tests = Path("tests")
+    tests.mkdir()
+    (tests / "test_two.py").write_text("def test_new(): assert True\n")
+    assert cache.additive({"tests/test_one.py": []}, {
         "tests/test_one.py": [], "tests/test_two.py": [],
     })
     assert not cache.additive({"tests/test_one.py": [], "tests/test_two.py": []}, {
@@ -82,7 +88,7 @@ def make_context(tests=None, **changes):
 def setup_state(tmp_path, monkeypatch, old, new):
     monkeypatch.chdir(tmp_path)
     t = Path("tests/test_app.py")
-    t.parent.mkdir()
+    t.parent.mkdir(exist_ok=True)
     t.write_text("def test_existing():\n    assert True\n\ndef test_added():\n    assert True\n")
     cache.ROOT.mkdir()
     (cache.ROOT / "tests").mkdir()
