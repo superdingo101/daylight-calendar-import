@@ -5156,3 +5156,21 @@ test("notification settings retain hidden future classes through unrelated edits
   form.change();
   assert.equal(panel._settingsDrafts.notifications, null);
 });
+
+
+test("enabling review-ready keeps previously saved hidden classes in the submitted policy", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {
+    "notify.phone": {entity_id: "notify.phone", state: "idle", attributes: {}},
+  }};
+  panel._settings = {entry_id: "entry-1",
+    notifications: {enabled: false, target: "notify.phone", classes: ["parse_failed"]},
+    email: {}};
+  const form = find(panel.notificationSettingsView(), "form");
+  form.elements.namedItem("notification_enabled").checked = true;
+  form.elements.namedItem("notify_review_ready").checked = true;
+  form.change();
+  assert.deepEqual(panel._settingsDrafts.notifications.notifications, {
+    enabled: true, target: "notify.phone", classes: ["parse_failed", "review_ready"],
+  });
+});
