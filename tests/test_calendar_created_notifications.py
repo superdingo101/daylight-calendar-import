@@ -83,3 +83,28 @@ async def test_calendar_created_category_can_be_enabled_independently():
     })
     assert not connection.errors
     assert connection.results[-1][1]["notifications"]["classes"] == ["calendar_created"]
+
+
+def test_created_journal_keeps_multiple_distinct_events_and_deduplicates(monkeypatch):
+    """A skipped source must not suppress creation notifications later in the batch."""
+    store = make_store(monkeypatch, FakeStoreBackend())
+    enable(store)
+    at = "2026-10-12T12:00:00+00:00"
+
+    def activity(import_id, kind, event_id):
+        return {"id": import_id, "transitions": [
+            {"type": kind, "at": at, "event_id": event_id},
+        ]}
+
+    first = activity("import-a", "calendar_created", "event-1")
+    second = activity("import-b", "calendar_created", "event-2")
+    journal = store._journal_for_activity((
+        {"id": "no-transitions", "transitions": []},
+        activity("event-level-review", "review_ready", "event-0"),
+        first, first, second,
+    ))
+    assert [(request.import_id, request.event_id, request.event.type) for request in journal] == [
+        ("import-a", "event-1", "calendar_created"),
+        ("import-b", "event-2", "calendar_created"),
+    ]
+    assert all(request.target == "notify.phone" for request in journal)
