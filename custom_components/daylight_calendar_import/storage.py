@@ -359,14 +359,20 @@ class PendingImportStore:
             if item["status"] in ("discovered", "processing")
         ]
         activity = self._activity
+        recovered_failures = []
         for activity_id in interrupted:
             activity = self._finish_submission(
                 activity_id, "failed", "Processing was interrupted. Check the source and submit it again.",
                 activity=activity,
             )
+            # Each newly completed source is newest in the proposed history.
+            # Keep its transition even if later recoveries prune that history.
+            recovered_failures.append(activity[-1])
         if interrupted or self._source_claims:
             async def commit_recovery() -> None:
-                await self._async_save(self._items, activity=activity, source_claims={})
+                journal = self._journal_for_activity(tuple(recovered_failures))
+                await self._async_save(self._items, activity=activity, source_claims={},
+                                       notifications=journal)
                 self._activity = activity
                 self._source_claims = {}
 
@@ -946,7 +952,7 @@ class PendingImportStore:
             record["guidance"] = guidance
         record["transitions"].append({"type": status, "at": datetime.now(UTC).isoformat(),
                                       "event_id": None})
-        history = [item if item["id"] != activity_id else record for item in baseline]
+        history = [item for item in baseline if item["id"] != activity_id] + [record]
         active_ids = set(self._items) | {
             item["id"] for item in baseline if item["status"] in ("discovered", "processing")
         }

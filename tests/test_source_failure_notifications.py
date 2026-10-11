@@ -156,3 +156,37 @@ async def test_source_failure_category_can_be_enabled_independently():
     })
     assert not connection.errors
     assert connection.results[-1][1]["notifications"]["classes"] == ["parse_failed"]
+
+
+async def test_old_processing_failure_not_lost_at_full_activity_limit(monkeypatch):
+    import custom_components.daylight_calendar_import.storage as storage_module
+    monkeypatch.setattr(storage_module, "ACTIVITY_LIMIT", 2)
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    identifier = await begin(store, "old-live")
+    for index in range(2):
+        completed = await begin(store, str(index))
+        await store.async_record_parse_failure(completed)
+    enable(store)
+    await store.async_record_parse_failure(identifier)
+    assert len(store._activity) == 2
+    assert store.list_notifications()[0].import_id == identifier
+    assert store.get_activity(identifier)["status"] == "failed"
+
+
+async def test_recovery_alerts_survive_pruning_more_than_activity_limit(monkeypatch):
+    import custom_components.daylight_calendar_import.storage as storage_module
+    monkeypatch.setattr(storage_module, "ACTIVITY_LIMIT", 2)
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    identifiers = [await begin(store, str(index)) for index in range(5)]
+    backend.load_result = backend.saved[-1]
+    restored = make_store(monkeypatch, backend)
+    enable(restored)
+    await restored.async_load()
+    assert len(restored._activity) == 2
+    assert {record.import_id for record in restored.list_notifications()} == set(identifiers)
+    assert len(backend.saved[-1]["notifications"]) == 5
+    backend.load_result = backend.saved[-1]
+    await restored.async_load()
+    assert len(restored.list_notifications()) == 5
