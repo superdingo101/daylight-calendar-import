@@ -711,15 +711,16 @@ export class DaylightImportPanel extends HTMLElement {
     // All server snapshots (including saves from other tabs) must rebase
     // untouched Routing fields before the next render or save.
     this._settings = settings;
-    if (this._notificationConflictNeedsRebase && this._settingsDrafts.notifications) {
-      // The earlier conflict refresh was unavailable. Keep the user draft,
-      // but require a fresh server baseline before permitting another save.
-      this._notificationDraftBaseline = {
-        ...settings.notifications, classes: [...settings.notifications.classes],
-      };
+    if (this._notificationConflictNeedsRebase) {
+      // A known conflict invalidates the *entire* submitted policy. Never
+      // rebase a stale full-policy draft onto another administrator's version:
+      // that would turn a retry into an unreviewed overwrite.
+      this._settingsDrafts.notifications = null;
+      this._notificationDraftBaseline = null;
       this._notificationConflictNeedsRebase = false;
       this._settingsError =
-        "Notification settings changed elsewhere. Review your retained choices before saving.";
+        "Notification settings changed elsewhere. The conflicting unsaved choices " +
+        "were discarded; review these current settings and re-enter your changes.";
     }
     // Any refresh or recovered save which confirms the drafted policy has
     // persisted must also discard its obsolete optimistic concurrency token.
