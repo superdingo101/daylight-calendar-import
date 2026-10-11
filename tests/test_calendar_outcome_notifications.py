@@ -335,3 +335,66 @@ def test_legacy_uncertain_notification_defaults_to_non_recovered():
     restored = NotificationRecord.from_dict(payload)
     assert restored.recovered is False
     assert restored.write_attempt is None
+
+
+def test_uncertain_journal_identity_preserves_write_attempt_across_serialization():
+    """Losing an attempt ID would conflate distinct ambiguous calendar writes."""
+    from custom_components.daylight_calendar_import.notification_journal import notification_record
+
+    activity = {"id": "import-private"}
+    transition = {"type": "calendar_write_uncertain", "at": "2026-10-11T02:00:00+00:00",
+                  "event_id": "event-a", "write_attempt": "attempt-one"}
+    original = notification_record(activity, transition)
+    assert original is not None
+    assert original.write_attempt == "attempt-one"
+    assert original.as_dict()["write_attempt"] == "attempt-one"
+    restored = NotificationRecord.from_dict(original.as_dict())
+    assert restored == original
+    assert restored.event.idempotency_key == original.event.idempotency_key
+    second = notification_record(activity, {**transition, "write_attempt": "attempt-two"})
+    assert second is not None
+    assert second.write_attempt == "attempt-two"
+    assert second.event.idempotency_key != original.event.idempotency_key
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"), [
+        ("recovered", "yes"),
+        ("write_attempt", True),
+        ("write_attempt", ""),
+        ("write_attempt", 17),
+    ],
+)
+def test_invalid_recovery_provenance_has_stable_validation_error(field, invalid):
+    """Invalid persisted attempt state must be rejected with the documented reason."""
+    request = NotificationRecord(
+        "import-1", "calendar_write_uncertain", "2026-10-11T02:00:00+00:00",
+        "event-1", target="notify.phone",
+    )
+    payload = request.as_dict()
+    payload[field] = invalid
+    with pytest.raises(ValueError, match="^Invalid notification recovery provenance$"):
+        NotificationRecord.from_dict(payload)
+
+
+async def test_failed_preflight_transition_keeps_event_identity_and_reviewable_queue(monkeypatch):
+    """A preflight failure cannot lose its event ID or mark a pending import terminal."""
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    enable(store)
+    item, event = await pending(store)
+    processor = AsyncMock()
+    processor.async_preflight = AsyncMock(side_effect=RuntimeError("preflight failed"))
+    with pytest.raises(RuntimeError, match="preflight failed"):
+        await store.async_approve_event(item.id, event.id, processor)
+    processor.assert_not_awaited()
+    record = store.get_activity(item.id)
+    assert record is not None
+    assert record["status"] == "review_ready"
+    assert record["transitions"][-1]["type"] == "calendar_create_failed"
+    assert record["transitions"][-1]["event_id"] == event.id
+    assert store.get(item.id).events[0].id == event.id
+    assert backend.saved[-1]["activity"][-1] == record
+    notification = store.list_notifications()[0]
+    assert notification.event.type == "calendar_create_failed"
+    assert notification.event_id == event.id
