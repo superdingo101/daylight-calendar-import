@@ -88,12 +88,31 @@ def previously_bound_names(nodes: list[ast.stmt]) -> set[str] | None:
     """Conservatively detect names already exposed by existing test modules.
 
     Existing pytest callables can arrive via imports or assignments, not just
-    definitions. A wildcard import has unknown bindings and forces cold.
+    definitions. Wildcard imports and dynamic namespace operations can bind
+    arbitrary test names, so they force a clean run on test additions.
     Inspecting nested scopes may reject safe reuse but cannot create unsafe hits.
     """
+    dynamic_names = {"globals", "locals", "vars", "exec", "eval", "setattr"}
     names: set[str] = set()
     for statement in nodes:
         for node in ast.walk(statement):
+            # Python can install collected test names through a module dict
+            # without ever binding an ast.Name(Store), e.g. globals()[name].
+            # Conservatively fall back to uncached runs for such modules.
+            if isinstance(node, ast.Name) and node.id in dynamic_names:
+                return None
+            if isinstance(node, ast.Attribute) and node.attr in (
+                dynamic_names | {"__dict__"}
+            ):
+                return None
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                # getattr(module, "__dict__") can expose the writable module
+                # namespace even without a literal __dict__ attribute node.
+                if node.func.id == "getattr" and any(
+                    isinstance(arg, ast.Constant) and arg.value == "__dict__"
+                    for arg in node.args[1:]
+                ):
+                    return None
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 names.add(node.name)
             elif isinstance(node, (ast.Import, ast.ImportFrom)):

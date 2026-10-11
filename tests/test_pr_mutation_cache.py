@@ -204,3 +204,45 @@ def test_unrelated_named_import_does_not_block_appended_test(tmp_path, monkeypat
     before = cache.hash_inputs([path])[1]
     path.write_text("import pytest\nfrom helpers import test_other\n\ndef test_new():\n    assert True\n")
     assert cache.additive(before, cache.hash_inputs([path])[1])
+
+
+
+@pytest.mark.parametrize("existing", [
+    'globals()["test_shadow"] = lambda: True\n',
+    'globals().update(test_shadow=lambda: True)\n',
+    'vars()["test_shadow"] = lambda: True\n',
+    'locals()["test_shadow"] = lambda: True\n',
+    'setattr(sys.modules[__name__], "test_shadow", lambda: True)\n',
+    'exec("test_shadow = lambda: True")\n',
+    'eval("globals()")["test_shadow"] = lambda: True\n',
+    'import builtins\nbuiltins.globals()["test_shadow"] = lambda: True\n',
+    'from builtins import globals as namespace\nnamespace()["test_shadow"] = lambda: True\n',
+    'sys.modules[__name__].__dict__["test_shadow"] = lambda: True\n',
+    'getattr(sys.modules[__name__], "__dict__")["test_shadow"] = lambda: True\n',
+])
+def test_appended_function_cannot_shadow_dynamic_module_binding(
+    tmp_path, monkeypatch, existing,
+):
+    """Unknown dynamic exports force cold instead of retaining old kills."""
+    monkeypatch.chdir(tmp_path)
+    file = Path("tests/test_dynamic.py")
+    file.parent.mkdir()
+    file.write_text(existing)
+    before = cache.hash_inputs([file])[1]
+    file.write_text(existing + "\ndef test_shadow():\n    assert True\n")
+    assert not cache.additive(before, cache.hash_inputs([file])[1])
+
+
+def test_new_test_in_a_different_file_does_not_reuse_dynamic_binder(
+    tmp_path, monkeypatch,
+):
+    """A dynamic binder is conservative only in the test module being extended."""
+    monkeypatch.chdir(tmp_path)
+    first = Path("tests/test_dynamic.py")
+    first.parent.mkdir()
+    first.write_text('globals()["test_shadow"] = lambda: True\n')
+    second = Path("tests/test_simple.py")
+    second.write_text("def test_original():\n    assert True\n")
+    before = cache.hash_inputs([first, second])[1]
+    second.write_text(second.read_text() + "\ndef test_added():\n    assert True\n")
+    assert cache.additive(before, cache.hash_inputs([first, second])[1])
