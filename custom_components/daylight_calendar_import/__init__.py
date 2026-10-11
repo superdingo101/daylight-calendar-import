@@ -671,6 +671,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # can occur meanwhile. Never label an old result as the current draft.
         if pending_store.get_event(pending_id, event_id) != event:
             raise ServiceValidationError("Pending event changed during calendar check; refresh")
+        if any(match.kind in ("exact_duplicate", "possible_duplicate", "conflict") for match in matches):
+            try:
+                current = await pending_store.async_record_conflict(pending_id, event, scope)
+            except Exception:
+                # Notification storage must not hide a valid calendar result.
+                _LOGGER.warning("Daylight conflict notification could not be persisted")
+            else:
+                if not current:
+                    raise ServiceValidationError("Pending event changed during calendar check; refresh")
+        if pending_store.get_event(pending_id, event_id) != event:
+            raise ServiceValidationError("Pending event changed during calendar check; refresh")
         return {
             "pending_id": pending_id,
             "event_id": event_id,

@@ -15,7 +15,7 @@ NOTIFICATION_CLASSES = frozenset({
 
 
 DELIVERABLE_NOTIFICATION_CLASSES = frozenset({
-    "review_ready", "calendar_created", "calendar_create_failed", "calendar_write_uncertain", "parse_failed",
+    "review_ready", "calendar_created", "calendar_create_failed", "calendar_write_uncertain", "parse_failed", "conflict_detected",
 })
 
 

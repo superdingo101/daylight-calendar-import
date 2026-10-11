@@ -8,6 +8,7 @@ const notificationOptions = [
   ["calendar_create_failed", "Calendar writes that could not start"],
   ["calendar_write_uncertain", "Calendar writes needing confirmation"],
   ["parse_failed", "Sources that could not be processed"],
+  ["conflict_detected", "Calendar conflicts and possible duplicates"],
 ];
 
 const css = `
@@ -1338,8 +1339,7 @@ export class DaylightImportPanel extends HTMLElement {
     form.append(targetLabel);
     const classes = document.createElement("fieldset");
     classes.append(element("legend", "Notify me about"));
-    // Other lifecycle classes exist in the domain contract, but have no
-    // delivery path until a later v0.7 PR. Do not advertise them yet.
+    // All supported categories have independent, explicit opt-in controls.
     for (const [value, description] of notificationOptions) {
       const label = document.createElement("label");
       const checkbox = document.createElement("input");

@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import re
 from collections.abc import Mapping
 
 
@@ -63,11 +64,14 @@ def notification_from_transition(
     occurred_at = transition.get("at")
     event_id = transition.get("event_id")
     write_attempt = transition.get("write_attempt")
+    conflict_revision = transition.get("conflict_revision")
     if (
         not isinstance(import_id, str) or not import_id.strip()
         or not isinstance(occurred_at, str) or not occurred_at.strip()
         or (event_id is not None and (not isinstance(event_id, str) or not event_id.strip()))
         or (write_attempt is not None and (not isinstance(write_attempt, str) or not write_attempt.strip()))
+        or (conflict_revision is not None and (not isinstance(conflict_revision, str)
+            or re.fullmatch(r"[0-9a-f]{64}", conflict_revision) is None))
     ):
         return None
     kind, title, message, severity = template
@@ -79,6 +83,8 @@ def notification_from_transition(
         coordinates = [import_id, raw_type, occurred_at, event_id]
         if write_attempt is not None:
             coordinates.append(write_attempt)
+        if conflict_revision is not None:
+            coordinates.append({"conflict_revision": conflict_revision})
         identity = json.dumps(
             coordinates,
             ensure_ascii=False, separators=(",", ":"),

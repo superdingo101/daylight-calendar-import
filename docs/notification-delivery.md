@@ -8,7 +8,7 @@ bounded activity history; deleting a reviewed import does not delete its request
 
 Records contain import ID, event ID, transition type and timestamp, plus the
 notify entity ID, delivery status, attempt count, next retry timestamp and a
-fixed failure code. Notify entity IDs can identify a person or device. These
+fixed failure code, and optional conflict revision digest. Notify entity IDs can identify a person or device. These
 fields, including terminal requests, are currently retained indefinitely in
 private HA storage; the separate retention work item will bound that history.
 Safe messages are regenerated from the notification contract rather than persisting
@@ -84,3 +84,28 @@ does not create another request for the same failure. Enabling the category does
 not replay historical failures. Delivery uses a generic message without source
 text, source titles, attachment details, or provider errors. Processing status
 and source retry/deduplication rules remain authoritative and unchanged.
+
+
+### Conflict observations
+
+The `conflict_detected` opt-in uses the existing on-demand, permission-checked
+calendar check. Exact duplicates, possible duplicates and scheduling overlaps
+are actionable review results. Empty or failed observations and obsolete drafts
+produce no request. This adds no calendar polling and changes no calendar writes,
+approval rules or pending lifecycle status. Approval preflight keeps its existing
+failure/uncertainty notifications; it does not create conflict requests.
+
+One request is retained per pending event revision and observed calendar scope,
+across repeated/concurrent checks, delivery retries and reloads. A revision is a
+SHA-256 digest of the exact pending event snapshot and sorted calendar scope;
+only the digest (`conflict_revision`) is retained in the notification journal.
+Edited drafts or changed scopes can alert again. Returning to an already alerted
+revision stays silent, and clear checks do not reset this identity. No observed
+calendar titles, times or event details enter the request or generic message.
+The digest shares the journal's private, currently indefinite retention policy.
+Legacy requests without the field retain their original identities.
+
+The store revalidates the observed snapshot under its lock before saving the
+request. Notification save errors leave the journal unchanged, log a generic
+warning and preserve the calendar-check response. Cancellation still finishes
+notification persistence before propagating. Notifications remain off by default.

@@ -63,8 +63,8 @@ async def test_notifications_ws_validation_rejects_bad_policy_without_writes():
     for index, invalid in enumerate([
         {"enabled": True}, {"classes": ["unknown"]},
         {"target": "notify.missing", "enabled": "yes"},
-        {"enabled": True, "target": "notify.phone", "classes": ["conflict_detected"]},
-        {"enabled": True, "target": "notify.phone", "classes": ["review_ready", "conflict_detected"]},
+        {"enabled": True, "target": "notify.phone", "classes": ["unknown_future_category"]},
+        {"enabled": True, "target": "notify.phone", "classes": ["review_ready", "unknown_future_category"]},
         {"enabled": True, "target": "notify.phone"},
     ]):
         await invoke(settings_api.websocket_update_notifications, hass, connection, {
@@ -159,8 +159,8 @@ async def test_enable_review_ready_preserves_existing_dormant_classes():
 
 
 @pytest.mark.asyncio
-async def test_enabled_policy_cannot_add_new_undelivered_classes():
-    """Only dormant classes present in the optimistic baseline can survive."""
+async def test_enabled_policy_rejects_unknown_classes():
+    """Unknown categories cannot be introduced into an enabled policy."""
     from custom_components.daylight_calendar_import.const import CONF_NOTIFICATION_PREFERENCES
 
     previous = {"enabled": False, "target": "notify.phone",
@@ -169,9 +169,9 @@ async def test_enabled_policy_cannot_add_new_undelivered_classes():
     hass = hass_for(config_entry)
     connection = FakeConnection()
     for index, classes in enumerate([
-        ["conflict_detected"],
-        ["review_ready", "conflict_detected"],
-        ["review_ready", "parse_failed", "conflict_detected"],
+        ["unknown_future_category"],
+        ["review_ready", "unknown_future_category"],
+        ["review_ready", "parse_failed", "unknown_future_category"],
     ]):
         await invoke(settings_api.websocket_update_notifications, hass, connection, {
             "id": 330 + index, "entry_id": "entry-1",
@@ -222,7 +222,7 @@ async def test_disabled_policy_cannot_stage_unsupported_class_for_later_activati
         "id": 360, "entry_id": "entry-1",
         "expected_notifications": previous,
         "notifications": {"enabled": False, "target": "notify.phone",
-                          "classes": ["conflict_detected"]},
+                          "classes": ["unknown_future_category"]},
     })
     assert connection.errors[0][1] == "invalid_notifications"
     assert CONF_NOTIFICATION_PREFERENCES not in config_entry.options
