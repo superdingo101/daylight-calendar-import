@@ -5067,7 +5067,7 @@ test("Notification settings never advertise unsupported lifecycle notification t
     notifications: {enabled: false, target: null, classes: []}, email: {}};
   const checkboxes = panel.notificationSettingsView().querySelectorAll("input")
     .filter(input => input.name?.startsWith("notify_"));
-  assert.deepEqual(checkboxes.map(x => x.value), ["review_ready", "calendar_created"]);
+  assert.deepEqual(checkboxes.map(x => x.value), ["review_ready", "calendar_created", "calendar_create_failed", "calendar_write_uncertain"]);
 });
 
 

@@ -218,6 +218,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise RuntimeError("Previous Daylight sensor rollback is incomplete")
         hass.data[DOMAIN].pop(entry.entry_id, None)
     pending_store = PendingImportStore(hass)
+    pending_store.notification_preferences = lambda: effective_notification_preferences(entry)
     await pending_store.async_load()
     pending_store.active_submissions = set()
     # Keep task ownership across config-entry reloads. Providers that ignore
@@ -245,7 +246,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.exception("Pending-added notification could not be published")
 
     notify_preferences = effective_notification_preferences(entry)
-    pending_store.notification_preferences = lambda: effective_notification_preferences(entry)
     worker = None
 
     @callback

@@ -370,6 +370,46 @@ class PendingImportStore:
             )
             self._source_claims = {}
 
+        await self._async_recover_uncertain_notifications()
+
+    async def _async_commit_activity(self, activity: tuple[dict[str, Any], ...]) -> None:
+        """Finish outcome persistence/publication before propagating cancellation."""
+        async def commit() -> None:
+            await self._async_save(self._items, activity=activity)
+            self._activity = activity
+
+        _, cancelled = await self._async_complete_transaction(commit())
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _async_recover_uncertain_notifications(self) -> None:
+        """Observe durable event checkpoints, independently of prunable history.
+
+        One request per write attempt (including legacy unknown attempts). A
+        restart never turns an ambiguous write into a confirmed failure/success.
+        This helper runs during load or while the caller owns the store lock.
+        """
+        policy = self.notification_preferences()
+        if not policy.permits("calendar_write_uncertain"):
+            return
+        journal = self._notifications
+        known = {(record.import_id, record.event_id, record.write_attempt)
+                 for record in journal if record.transition_type == "calendar_write_uncertain"}
+        for pending in self._items.values():
+            for event in pending.events:
+                identity = (pending.id, event.id, event.write_attempt)
+                if event.status != "write_uncertain" or identity in known:
+                    continue
+                request = NotificationRecord(
+                    pending.id, "calendar_write_uncertain", datetime.now(UTC).isoformat(), event.id,
+                    target=policy.target, write_attempt=event.write_attempt, recovered=True,
+                )
+                NotificationRecord.from_dict(request.as_dict())
+                journal += (request,)
+                known.add(identity)
+        if journal != self._notifications:
+            await self._async_save(self._items, notifications=journal)
+
     def list_notifications(self) -> tuple[NotificationRecord, ...]:
         """Return immutable requests, unaffected by pending/activity pruning."""
         return self._notifications
@@ -381,6 +421,7 @@ class PendingImportStore:
         and proposed journal together. This standalone API does not infer or
         replay notifications from historical activity.
         """
+        NotificationRecord.from_dict(record.as_dict())
         result, cancelled = await self._async_complete_transaction(
             self._async_enqueue_notification_transaction(record)
         )
@@ -441,6 +482,11 @@ class PendingImportStore:
                     or (request.event.type == "review_ready" and request.event_id is not None)
                     or transition in previous.get(record["id"], {}).get("transitions", ())):
                 continue
+            if request.event.type == "calendar_write_uncertain":
+                checkpoint = self.get_event(request.import_id, request.event_id)
+                if checkpoint is None or checkpoint.status != "write_uncertain":
+                    continue
+                request = replace(request, write_attempt=checkpoint.write_attempt)
             if policy.permits(request.event.type):
                 key = request.event.idempotency_key
                 if key not in known:
@@ -911,6 +957,9 @@ class PendingImportStore:
         transitions = list(previous["transitions"]) if previous else []
         transitions.append({"type": kind, "at": datetime.now(UTC).isoformat(),
                             "event_id": event_id})
+        if kind == "calendar_write_uncertain":
+            checkpoint = self.get_event(pending.id, event_id)
+            transitions[-1]["write_attempt"] = checkpoint.write_attempt if checkpoint is not None else None
         created = (previous.get("created_count", 0) if previous else 0) + (kind == "calendar_created")
         rejected = (previous.get("rejected_count", 0) if previous else 0) + (
             len(pending.events) if kind == "event_rejected" and event_id is None else
@@ -1399,7 +1448,18 @@ class PendingImportStore:
         # is not an ambiguous external calendar write.
         preflight = getattr(processor, "async_preflight", None)
         if preflight is not None:
-            await preflight(event)
+            try:
+                await preflight(event)
+            except Exception:
+                # This processor has not attempted a write. Keep the event
+                # reviewable and report a confirmed non-write only after save.
+                failed = self._transition(pending, "calendar_create_failed", event_id=event.id,
+                                          remaining=pending.events)
+                try:
+                    await self._async_commit_activity(failed)
+                except Exception:
+                    pass
+                raise
         in_flight = replace(pending, events=tuple(
                 replace(item, status="write_uncertain", write_attempt=str(uuid4()))
                 if item.id == event.id else item
@@ -1414,15 +1474,13 @@ class PendingImportStore:
 
         try:
             await processor(event)
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             uncertain = self._transition(pending, "calendar_write_uncertain", event_id=event.id)
             try:
-                await self._async_save(self._items, activity=uncertain)
+                await self._async_commit_activity(uncertain)
             except Exception:
                 # The write-started checkpoint already records an uncertain status.
                 pass
-            else:
-                self._activity = uncertain
             raise
 
         remaining = tuple(item for item in pending.events if item.id != event.id)
@@ -1444,16 +1502,31 @@ class PendingImportStore:
 
         activity = self._transition(pending, "calendar_created", event_id=event.id,
                                     remaining=remaining)
-        await self._async_save(
-            items,
-            seen_source_fingerprints=seen_sources,
-            seen_event_fingerprints=seen_events,
-            activity=activity,
-        )
-        self._commit_items(items)
-        self._activity = activity
-        self._seen_source_fingerprints = seen_sources
-        self._seen_event_fingerprints = seen_events
+        async def commit_created() -> None:
+            await self._async_save(
+                items,
+                seen_source_fingerprints=seen_sources,
+                seen_event_fingerprints=seen_events,
+                activity=activity,
+            )
+            self._commit_items(items)
+            self._activity = activity
+            self._seen_source_fingerprints = seen_sources
+            self._seen_event_fingerprints = seen_events
+
+        try:
+            _, cancelled = await self._async_complete_transaction(commit_created())
+        except (Exception, asyncio.CancelledError):
+            # Cancellation can mask a failed save inside the transaction.
+            # The external call completed, but the accepted outcome did not
+            # commit. The durable write checkpoint remains authoritative.
+            try:
+                await self._async_complete_transaction(self._async_recover_uncertain_notifications())
+            except (Exception, asyncio.CancelledError):
+                pass
+            raise
+        if cancelled:
+            raise asyncio.CancelledError
         return updated
 
     async def async_remove_storage(self) -> None:

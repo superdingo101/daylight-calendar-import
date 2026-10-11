@@ -5,6 +5,8 @@ import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, 
 const notificationOptions = [
   ["review_ready", "Imports ready for review"],
   ["calendar_created", "Events added to a calendar"],
+  ["calendar_create_failed", "Calendar writes that could not start"],
+  ["calendar_write_uncertain", "Calendar writes needing confirmation"],
 ];
 
 const css = `

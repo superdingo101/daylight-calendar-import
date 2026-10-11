@@ -1,6 +1,6 @@
 """Private notification identities, independent of prunable activity history.
 
-Transition coordinates, the notify entity, and bounded delivery state are
+Transition coordinates, the notify entity, recovery provenance and bounded delivery state are
 persisted until a retention policy is introduced. Messages are regenerated from
 the safe contract; source text and provider errors never enter this journal.
 Delivery state remains separate from calendar lifecycle truth.
@@ -30,13 +30,16 @@ class NotificationRecord:
     attempts: int = 0
     next_attempt_at: str | None = None
     failure: str | None = None
+    write_attempt: str | None = None
+    recovered: bool = False
 
     @property
     def event(self) -> NotificationEvent:
         """Regenerate the public message from validated transition coordinates."""
         event = notification_from_transition(
             {"id": self.import_id},
-            {"type": self.transition_type, "at": self.occurred_at, "event_id": self.event_id},
+            {"type": self.transition_type, "at": self.occurred_at, "event_id": self.event_id,
+             "write_attempt": self.write_attempt},
         )
         if event is None:
             raise ValueError("Invalid notification identity")
@@ -47,19 +50,24 @@ class NotificationRecord:
         return {"import_id": self.import_id, "transition_type": self.transition_type,
                 "occurred_at": self.occurred_at, "event_id": self.event_id,
                 "target": self.target, "status": self.status, "attempts": self.attempts,
-                "next_attempt_at": self.next_attempt_at, "failure": self.failure}
+                "next_attempt_at": self.next_attempt_at, "failure": self.failure,
+                "write_attempt": self.write_attempt, "recovered": self.recovered}
 
     @classmethod
     def from_dict(cls, raw: Mapping) -> NotificationRecord:
         """Fail closed on invalid persisted identity rather than silently dropping it."""
         record = cls(raw["import_id"], raw["transition_type"], raw["occurred_at"], raw["event_id"],
                      raw.get("target"), raw.get("status", "pending"), raw.get("attempts", 0),
-                     raw.get("next_attempt_at"), raw.get("failure"))
+                     raw.get("next_attempt_at"), raw.get("failure"),
+                     raw.get("write_attempt"), raw.get("recovered", False))
         normalize_notification_preferences({"target": record.target})
         if (record.status not in {"pending", "sent", "failed", "cancelled"}
                 or type(record.attempts) is not int or not 0 <= record.attempts <= 3
                 or record.failure not in {None, "delivery_failed", "delivery_interrupted", "policy_changed"}):
             raise ValueError("Invalid notification delivery state")
+        if (type(record.recovered) is not bool or (record.write_attempt is not None and
+                (not isinstance(record.write_attempt, str) or not record.write_attempt.strip()))):
+            raise ValueError("Invalid notification recovery provenance")
         if record.next_attempt_at is not None:
             if datetime.fromisoformat(record.next_attempt_at).tzinfo is None:
                 raise ValueError("Notification retry time must include a timezone")
@@ -72,4 +80,5 @@ def notification_record(activity: Mapping, transition: Mapping) -> NotificationR
     event = notification_from_transition(activity, transition)
     if event is None:
         return None
-    return NotificationRecord(event.import_id, transition["type"], event.occurred_at, event.event_id)
+    return NotificationRecord(event.import_id, transition["type"], event.occurred_at, event.event_id,
+                              write_attempt=transition.get("write_attempt"))
