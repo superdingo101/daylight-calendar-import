@@ -30,12 +30,12 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
 def changed_paths(base: str, head: str, kind: str = "ACMRTD") -> set[str]:
-    """Use NUL-separated filenames to handle renames and unusual path names."""
+    """Use NUL-separated names and merge-base diff to ignore base-only changes."""
     if not SHA.fullmatch(base) or not SHA.fullmatch(head):
         raise ValueError("Expected 40-character base and head Git SHAs")
     output = subprocess.check_output([
         "git", "diff", "--name-only", "-z", f"--diff-filter={kind}",
-        base, head, "--",
+        f"{base}...{head}", "--",
     ])
     return {os.fsdecode(p) for p in output.split(b"\0") if p}
 
