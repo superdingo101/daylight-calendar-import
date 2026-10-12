@@ -1,0 +1,67 @@
+name: Mutation scope shadow
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-shadow-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Proposed mutation scope (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Start wall-clock measurement
+        run: echo "SHADOW_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+      # Git-only scope classification needs no Home Assistant dependencies.
+      - name: Classify PR files before installing dependencies
+        id: classify
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 -m scripts.mutation_shadow --base "$PR_BASE" --head "$PR_HEAD" --no-coverage
+          if python3 -c 'import json,sys; sys.exit(not bool(json.load(open("mutation-shadow-plan.json"))["test_files_measured"]))'; then
+            echo "needs_coverage=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_coverage=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-python@v6
+        if: ${{ steps.classify.outputs.needs_coverage == 'true' }}
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+      - if: ${{ steps.classify.outputs.needs_coverage == 'true' }}
+        run: python -m pip install --upgrade pip
+      - if: ${{ steps.classify.outputs.needs_coverage == 'true' }}
+        run: pip install -r requirements_test.txt
+      - name: Measure fixture-aware execution (never substitutes for Mutation score)
+        if: ${{ steps.classify.outputs.needs_coverage == 'true' }}
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python -m scripts.mutation_shadow --base "$PR_BASE" --head "$PR_HEAD"
+      - name: Report wall-clock cost
+        if: always()
+        run: |
+          if [[ -n "${SHADOW_STARTED_AT:-}" ]]; then
+            echo "- Elapsed time since checkout, including dependency setup: $(($(date +%s) - SHADOW_STARTED_AT)) seconds" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload shadow plan
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-shadow-plan
+          path: mutation-shadow-plan.json
+          if-no-files-found: warn
