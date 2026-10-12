@@ -234,3 +234,8 @@ def test_different_resolved_shard_environment_rejected(sample):
 def test_corrupt_environment_evidence_rejected(sample):
     with pytest.raises(ValueError, match="environment"):
         ms.validate_environment({"details": {}, "sha256": "a" * 64})
+
+
+def test_skipped_mutants_cannot_count_as_complete_clean_validation(sample):
+    with pytest.raises(ValueError, match="skipped"):
+        ms.stats_checked(stats(killed=99, survived=0, skipped=1), require_nonempty=True)

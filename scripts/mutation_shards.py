@@ -135,6 +135,8 @@ def stats_checked(stats: dict, *, require_nonempty: bool) -> dict[str, int]:
         raise ValueError(f"Invalid total mutant count: {total!r}")
     if sum(normalized.values()) != total:
         raise ValueError("Incomplete statistics: statuses do not sum to total")
+    if normalized["skipped"]:
+        raise ValueError("Clean mutation validation skipped mutants")
     normalized["total"] = total
     return normalized
 
