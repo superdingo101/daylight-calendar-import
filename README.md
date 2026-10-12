@@ -99,6 +99,8 @@ To choose a destination for an individual event, call `edit_pending_event` with 
 
 If an approval stops with an uncertain write, check the actual calendar before calling `resolve_pending_event`. Use `created` if the event exists (record it as handled), `not_created` if it definitely does not exist (restore the same draft and ID for retry), or `discard` if you want to abandon it (record it as rejected). The last two choices are different: `not_created` allows retry while `discard` suppresses the same event through deduplication. Batch rejection now refuses an import with any unresolved uncertain write.
 
+Daylight stops setup if local import storage cannot be safely decoded and shows a Home Assistant Repairs issue. Follow the [storage recovery guidance](docs/storage-recovery.md) to preserve pending events, uncertain writes and deduplication evidence before restoring a backup.
+
 ### Manual development install
 
 Copy `custom_components/daylight_calendar_import` into Home Assistant's `custom_components` directory and restart Home Assistant. Then add **Daylight Calendar Import** under **Settings → Devices & services**.

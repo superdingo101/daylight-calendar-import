@@ -13,6 +13,7 @@ import voluptuous as vol
 from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.core import Context, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError, Unauthorized, UnknownUser
+from homeassistant.helpers import issue_registry as ir
 
 from custom_components.daylight_calendar_import import (
     EDIT_EVENT_SCHEMA,
@@ -113,7 +114,7 @@ class FakeHass:
     def __init__(self, user=None):
         self.services = FakeServices()
         self.auth = FakeAuth(user)
-        self.data = {}
+        self.data = {ir.DATA_REGISTRY: Mock()}
         self.config = SimpleNamespace(time_zone="America/Los_Angeles")
         self.bus = SimpleNamespace(async_fire=Mock())
         self.config_entries = SimpleNamespace(

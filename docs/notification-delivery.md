@@ -17,7 +17,8 @@ source content or provider error text. The canonical transition hash identifies
 a request; concurrent enqueue calls and reloads do not insert the same request
 again. Old storage files without the journal load with an empty journal, with no
 historical notification replay. Invalid journal identities fail loading rather
-than silently dropping durable requests.
+than silently dropping durable requests. Corruption preserves the original storage and
+surfaces [repair guidance](storage-recovery.md) before new work starts.
 
 External HA notify delivery is at-least-once, never exactly-once: a
 crash between service completion and persisted delivery state can repeat a

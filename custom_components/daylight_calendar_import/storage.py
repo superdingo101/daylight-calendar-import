@@ -15,8 +15,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
+from homeassistant.util.json import json_loads
 
 from .const import DOMAIN
 from .dedup import (
@@ -166,10 +166,9 @@ def _read_pending_storage(path: str) -> dict[str, Any] | None:
             result[key] = value
         return result
 
-    def finite_json(_value):
-        raise ValueError("non-finite storage number")
-
-    envelope = json.loads(content, object_pairs_hook=unique_object, parse_constant=finite_json)
+    envelope = json.loads(content, object_pairs_hook=unique_object)
+    # HA's strict parser also rejects non-finite numbers and invalid Unicode.
+    json_loads(content)
     return _validate_pending_envelope(envelope)
 
 
@@ -206,7 +205,7 @@ class _PendingStore(Store[dict[str, Any]]):
             if data is None:
                 raise PendingImportStorageError(_STORAGE_ERROR)
             return data
-        except (HomeAssistantError, OSError, KeyError, TypeError, ValueError, AttributeError, PendingImportStorageError):
+        except Exception:
             raise PendingImportStorageError(_STORAGE_ERROR) from None
         finally:
             # Do not cache this read across reloads, and never discard a new
@@ -373,7 +372,10 @@ def _decode_storage_data(data: Any) -> tuple:
         if len(values) != len(set(values)):
             raise ValueError("duplicate storage identity")
 
-    loaded_items = tuple(PendingImport.from_dict(raw) for raw in rows(_STORAGE_ITEMS))
+    item_rows = rows(_STORAGE_ITEMS)
+    if any(not isinstance(raw.get("warnings", ()), (list, tuple)) for raw in item_rows):
+        raise ValueError("invalid import warnings")
+    loaded_items = tuple(PendingImport.from_dict(raw) for raw in item_rows)
     unique([item.id for item in loaded_items])
     for item in loaded_items:
         text(item.id)
@@ -492,7 +494,7 @@ class PendingImportStore:
                 snapshot = ({}, (), (), (), (), {})
             else:
                 snapshot = _decode_storage_data(data)
-        except (HomeAssistantError, OSError, KeyError, TypeError, ValueError, AttributeError, PendingImportStorageError):
+        except Exception:
             self._storage_blocked = True
             self.accepting_services = False
             raise PendingImportStorageError(_STORAGE_ERROR) from None
