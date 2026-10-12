@@ -1,7 +1,7 @@
 """Private notification identities, independent of prunable activity history.
 
 Transition coordinates, the notify entity, recovery provenance and bounded delivery state are
-persisted until a retention policy is introduced. Messages are regenerated from
+retained under the completed-history policy. Messages are regenerated from
 the safe contract; source text and provider errors never enter this journal.
 Delivery state remains separate from calendar lifecycle truth.
 """
@@ -33,6 +33,7 @@ class NotificationRecord:
     write_attempt: str | None = None
     recovered: bool = False
     conflict_revision: str | None = None
+    terminal_at: str | None = None
 
     @property
     def event(self) -> NotificationEvent:
@@ -53,7 +54,7 @@ class NotificationRecord:
                 "target": self.target, "status": self.status, "attempts": self.attempts,
                 "next_attempt_at": self.next_attempt_at, "failure": self.failure,
                 "write_attempt": self.write_attempt, "recovered": self.recovered,
-                "conflict_revision": self.conflict_revision}
+                "conflict_revision": self.conflict_revision, "terminal_at": self.terminal_at}
 
     @classmethod
     def from_dict(cls, raw: Mapping) -> NotificationRecord:
@@ -61,7 +62,7 @@ class NotificationRecord:
         record = cls(raw["import_id"], raw["transition_type"], raw["occurred_at"], raw["event_id"],
                      raw.get("target"), raw.get("status", "pending"), raw.get("attempts", 0),
                      raw.get("next_attempt_at"), raw.get("failure"),
-                     raw.get("write_attempt"), raw.get("recovered", False), raw.get("conflict_revision"))
+                     raw.get("write_attempt"), raw.get("recovered", False), raw.get("conflict_revision"), raw.get("terminal_at"))
         normalize_notification_preferences({"target": record.target})
         if (record.status not in {"pending", "sent", "failed", "cancelled"}
                 or type(record.attempts) is not int or not 0 <= record.attempts <= 3
@@ -73,6 +74,9 @@ class NotificationRecord:
         if record.next_attempt_at is not None:
             if datetime.fromisoformat(record.next_attempt_at).tzinfo is None:
                 raise ValueError("Notification retry time must include a timezone")
+        if record.terminal_at is not None:
+            if datetime.fromisoformat(record.terminal_at).tzinfo is None:
+                raise ValueError("Notification terminal time must include a timezone")
         record.event
         return record
 

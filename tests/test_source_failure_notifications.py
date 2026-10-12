@@ -169,7 +169,8 @@ async def test_old_processing_failure_not_lost_at_full_activity_limit(monkeypatc
         await store.async_record_parse_failure(completed)
     enable(store)
     await store.async_record_parse_failure(identifier)
-    assert len(store._activity) == 2
+    # Pending delivery protects its source metadata in addition to the two completed records.
+    assert len(store._activity) == 3
     assert store.list_notifications()[0].import_id == identifier
     assert store.get_activity(identifier)["status"] == "failed"
 
@@ -184,7 +185,8 @@ async def test_recovery_alerts_survive_pruning_more_than_activity_limit(monkeypa
     restored = make_store(monkeypatch, backend)
     enable(restored)
     await restored.async_load()
-    assert len(restored._activity) == 2
+    # All five failure deliveries are unresolved and retain their source metadata.
+    assert len(restored._activity) == 5
     assert {record.import_id for record in restored.list_notifications()} == set(identifiers)
     assert len(backend.saved[-1]["notifications"]) == 5
     backend.load_result = backend.saved[-1]

@@ -145,6 +145,7 @@ Open **Daylight imports → Recent activity**. For AI provider timeouts, authent
 - [Settings API reference](docs/settings-api.md)
 - [Safe reprocessing of pending text](docs/source-reprocessing.md)
 - [Reset one handled source or event identity](docs/targeted-dedupe-reset.md)
+- [Local history retention](docs/retention.md)
 - [Technical architecture and future hosted API](docs/hosted-api.md)
 - [Mutation testing and CI policy](docs/mutation-ci.md)
 
