@@ -68,3 +68,55 @@ jobs:
             mutation-shadow-plan.json
             mutation-impact-plan.json
           if-no-files-found: warn
+
+  replay:
+    # Temporary non-gating verification of the actual stacked feature PRs.
+    # Remove this job after the replay and keep its run artifacts in PR #125.
+    name: Replay bounded impact PR #${{ matrix.target }}
+    if: ${{ github.event.pull_request.number == 125 }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [120, 121, 123]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: planner
+      - name: Resolve stacked target refs
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_PR: ${{ matrix.target }}
+        run: |
+          response="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$TARGET_PR")"
+          echo "head_sha=$(jq -r '.head.sha' <<< "$response")" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$(jq -r '.base.sha' <<< "$response")" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.target.outputs.head_sha }}
+          path: target
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: target/requirements_test.txt
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r target/requirements_test.txt
+      - name: Run bounded planner from PR 125 on exact target head and base
+        working-directory: target
+        env:
+          PR_BASE: ${{ steps.target.outputs.base_sha }}
+          PR_HEAD: ${{ steps.target.outputs.head_sha }}
+        run: |
+          python "$GITHUB_WORKSPACE/planner/scripts/mutation_impact.py" prepare --base "$PR_BASE" --head "$PR_HEAD"
+          cat mutation-impact-plan.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-impact-replay-pr-${{ matrix.target }}
+          path: target/mutation-impact-plan.json
+          if-no-files-found: warn
