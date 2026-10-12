@@ -182,23 +182,23 @@ def test_invalid_identity_or_partial_stats_fail_closed(sample, corruption):
         ms.reduce(ms.MANIFEST, directory, Path("mutation-shards/aggregate.json"))
 
 
-@pytest.mark.parametrize("corruption", [{"check_was_interrupted_by_user":True},
-                                        {"no_tests":1,"killed":94,"survived":4},
-                                        {"killed":-1,"survived":101}])
+@pytest.mark.parametrize("corruption", [
+    {"check_was_interrupted_by_user": True},
+    {"killed": -1, "survived": 101},
+])
 def test_reject_interrupted_or_invalid_counts(sample, corruption):
     raw = stats()
     raw.update(corruption)
-    if raw.get("no_tests", 0) == 1:
-        raw["total"] = sum(raw[k] for k in ms.FIELDS)
     with pytest.raises(ValueError):
-        if raw.get("no_tests"):
-            # This quality issue is validated by the existing score checker,
-            # not by stats shape: intentionally reject in the checker below.
-            from scripts import check_mutation_score
-            ms.write_json(ms.STATS, raw)
-            assert check_mutation_score.main() == 0
-        else:
-            ms.stats_checked(raw, require_nonempty=True)
+        ms.stats_checked(raw, require_nonempty=True)
+
+
+def test_no_tests_count_fails_original_quality_gate(sample):
+    from scripts import check_mutation_score
+    raw = stats(killed=95, survived=4, no_tests=1)
+    ms.write_json(ms.STATS, raw)
+    assert ms.stats_checked(raw, require_nonempty=True)["no_tests"] == 1
+    assert check_mutation_score.main() == 1
 
 
 def test_zero_mutants_not_valid_clean_shard(sample):
