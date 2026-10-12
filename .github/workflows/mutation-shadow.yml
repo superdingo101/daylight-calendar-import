@@ -21,6 +21,8 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
+      - name: Start wall-clock measurement
+        run: echo "SHADOW_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       # Git-only scope classification needs no Home Assistant dependencies.
       - name: Classify PR files before installing dependencies
         id: classify
@@ -50,6 +52,12 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: python -m scripts.mutation_shadow --base "$PR_BASE" --head "$PR_HEAD"
+      - name: Report wall-clock cost
+        if: always()
+        run: |
+          if [[ -n "${SHADOW_STARTED_AT:-}" ]]; then
+            echo "- Elapsed time since checkout, including dependency setup: $(($(date +%s) - SHADOW_STARTED_AT)) seconds" >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Upload shadow plan
         if: always()
         uses: actions/upload-artifact@v4
