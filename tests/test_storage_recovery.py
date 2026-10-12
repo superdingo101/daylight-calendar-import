@@ -492,27 +492,25 @@ def test_valid_optional_source_metadata_preserved_on_load():
     (("seen_event_fingerprints", 0), "event"),
     (("source_claims", "live"), "source"),
 ])
-@pytest.mark.parametrize("invalid", [
-    "invalid-hash",
-    "v1:event:" + "a" * 64,
-    "v2:source:" + "a" * 64,
-    "v1:source:" + "a" * 63,
-    "v1:source:" + "A" * 64,
-    "v1:source:" + "g" * 64,
+@pytest.mark.parametrize("failure", [
+    "opaque", "wrong-kind", "unknown-version",
+    "short-digest", "uppercase-digest", "nonhex-digest",
 ])
-def test_corrupt_fingerprint_formats_are_rejected(path, valid_kind, invalid):
+def test_corrupt_fingerprint_formats_are_rejected(path, valid_kind, failure):
     """Every durable dedupe location must reject hashes it cannot recognize."""
     from custom_components.daylight_calendar_import.storage import _decode_storage_data
     data = valid_data()
     data["source_claims"]["live"] = source_fingerprint("claimed-source")
-    # Include cross-kind and well-formed-but-wrong-version examples for events.
-    if valid_kind == "event" and invalid.startswith("v1:source:"):
-        bad_value = invalid
-    elif valid_kind == "source" and invalid.startswith("v1:event:"):
-        bad_value = invalid
-    else:
-        bad_value = invalid
-    set_field(data, path, bad_value)
+    other_kind = "event" if valid_kind == "source" else "source"
+    invalid = {
+        "opaque": "invalid-hash",
+        "wrong-kind": f"v1:{other_kind}:" + "a" * 64,
+        "unknown-version": f"v2:{valid_kind}:" + "a" * 64,
+        "short-digest": f"v1:{valid_kind}:" + "a" * 63,
+        "uppercase-digest": f"v1:{valid_kind}:" + "A" * 64,
+        "nonhex-digest": f"v1:{valid_kind}:" + "g" * 64,
+    }[failure]
+    set_field(data, path, invalid)
     with pytest.raises(ValueError, match="^invalid stored fingerprint$"):
         _decode_storage_data(data)
 
