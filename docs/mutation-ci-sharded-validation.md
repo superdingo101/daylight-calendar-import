@@ -28,7 +28,9 @@ limit during the initial rehearsal; the target faster wall-clock budget is
 unproven, not promised.
 
 Each successful shard records its exact source SHA, manifest fingerprint,
-assigned module list, duration, and the raw mutmut status counts. The reducer
+assigned module list, duration, raw mutmut status counts, and a canonical
+source/module mutant-identity-to-outcome map read from mutmut metadata.
+The map must account for every reported mutant and may not duplicate identities. The reducer
 rejects missing/extra/duplicated results, failed/incomplete shards,
 inconsistent source revisions, changed fingerprints, non-exhaustive module
 coverage, and malformed counts. Only after validation does it sum
@@ -46,7 +48,9 @@ The optional comparison is now part of this same workflow run. Both engines
 consume the planning job's exact target SHA and manifest and use identical pip
 setup. A dependent comparison job requires both engines to succeed, verifies
 their source/manifest identities and resolved-environment fingerprints, and
-rejects population or scored-outcome differences. Kills and timeouts can
+compares every mutant identity and its scored outcome rather than relying on
+balanced aggregate counts. Missing/substituted identities or exchanged
+killed/survived outcomes fail even when totals match. Kills and timeouts can
 exchange counts without changing the existing score semantics; other status
 changes require investigation. No separate run can be mistaken for matching
 proof. The temporary fixed-SHA comparison workflow has been removed.

@@ -49,6 +49,15 @@ def stats(killed=96, survived=4, skipped=0, **others):
     return raw
 
 
+def mutant_map(modules, data):
+    result = {path: {} for path in modules}
+    first = modules[0]
+    for status in ms.FIELDS:
+        for n in range(data[status]):
+            result[first][f"{first}.function_{status}_{n}__mutmut_1"] = status
+    return result
+
+
 def write_results(manifest, sample, *, data=None):
     root, _ = sample
     directory = root / "mutation-shards/results"
@@ -60,6 +69,7 @@ def write_results(manifest, sample, *, data=None):
             target_sha=manifest["target_sha"],
             index=item["index"], modules=item["modules"],
             complete=True, seconds=12, stats=data or stats(), environment=ms.environment(),
+            mutants=mutant_map(item["modules"], data or stats()),
         )
         ms.write_json(directory / f"shard-{item['index']}.json", result)
     return directory
@@ -131,6 +141,7 @@ def test_weighted_score_not_mean_of_per_shard_percentages(sample):
     poor = directory / "shard-0.json"
     value = json.loads(poor.read_text())
     value["stats"] = stats(killed=1, survived=99)
+    value["mutants"] = mutant_map(value["modules"], value["stats"])
     ms.write_json(poor, value)
     result = ms.reduce(ms.MANIFEST, directory, Path("mutation-shards/aggregate.json"))
     assert result["score"] == 84.125
@@ -242,12 +253,19 @@ def test_skipped_mutants_cannot_count_as_complete_clean_validation(sample):
 
 
 @pytest.fixture
-def comparison_evidence(sample):
+def comparison_evidence(sample, monkeypatch):
     _, sha = sample
     manifest = ms.plan(sha, 8, ms.MANIFEST)
     directory = write_results(manifest, sample)
     aggregate = Path("mutation-shards/aggregate.json")
-    ms.reduce(ms.MANIFEST, directory, aggregate)
+    evidence = ms.reduce(ms.MANIFEST, directory, aggregate)
+    codes = {"killed": 1, "survived": 0, "timeout": 36}
+    for module, verdicts in evidence["mutants"].items():
+        ms.write_json(Path("mutants") / (module + ".meta"),
+                      {"exit_code_by_key": {key: codes[status] for key, status in verdicts.items()}})
+    collector = ms.collect_mutants
+    monkeypatch.setattr(ms, "collect_mutants", lambda modules: collector(
+        modules, statuses={1: "killed", 0: "survived", 36: "timeout"}))
     unsharded = Path("mutation-shards/unsharded.json")
     ms.record_unsharded(ms.MANIFEST, 12, unsharded)
     return aggregate, unsharded
@@ -294,6 +312,9 @@ def test_comparison_retains_timeout_score_semantics(comparison_evidence):
     obj = json.loads(unsharded.read_text())
     obj["stats"]["killed"] -= 1
     obj["stats"]["timeout"] += 1
+    verdicts = next(v for v in obj["mutants"].values() if "killed" in v.values())
+    key = next(k for k, status in verdicts.items() if status == "killed")
+    verdicts[key] = "timeout"
     ms.write_json(unsharded, obj)
     assert ms.compare(ms.MANIFEST, aggregate, unsharded, Path("equivalence.json"))["equivalent"]
 
@@ -320,3 +341,43 @@ def test_workflow_target_and_comparison_contracts():
         assert "pip install -r requirements_test.txt" in commands
     assert any("scripts.mutation_shards compare" in s.get("run", "") for s in jobs["equivalence"]["steps"])
     assert not (root / ".github/workflows/mutation-comparison.yml").exists()
+
+
+@pytest.mark.parametrize("corruption", ["renamed_identity", "exchanged_outcomes"])
+def test_equal_aggregate_counts_cannot_hide_different_mutants(comparison_evidence, corruption):
+    aggregate, unsharded = comparison_evidence
+    obj = json.loads(unsharded.read_text())
+    verdicts = next(v for v in obj["mutants"].values() if "killed" in v.values())
+    killed = next(k for k, status in verdicts.items() if status == "killed")
+    if corruption == "renamed_identity":
+        verdicts[killed + "different_mutant"] = verdicts.pop(killed)
+    else:
+        survived = next(k for k, status in verdicts.items() if status == "survived")
+        verdicts[killed], verdicts[survived] = "survived", "killed"
+    ms.write_json(unsharded, obj)
+    assert obj["stats"] == json.loads(aggregate.read_text())["stats"]
+    with pytest.raises(ValueError, match="identities or per-mutant"):
+        ms.compare(ms.MANIFEST, aggregate, unsharded, Path("equivalence.json"))
+
+
+def test_incomplete_mutant_metadata_fails_closed(sample):
+    module = ms.source_paths()[0]
+    path = Path("mutants") / (module + ".meta")
+    with pytest.raises(OSError):
+        ms.collect_mutants([module], statuses={1: "killed"})
+    ms.write_json(path, {"exit_code_by_key": {"unfinished_mutant": None}})
+    with pytest.raises(ValueError, match="Incomplete"):
+        ms.collect_mutants([module], statuses={1: "killed"})
+
+
+def test_reducer_rejects_identity_outcomes_inconsistent_with_stats(sample):
+    _, sha = sample
+    manifest = ms.plan(sha, 8, ms.MANIFEST)
+    directory = write_results(manifest, sample)
+    path = directory / "shard-0.json"
+    obj = json.loads(path.read_text())
+    verdicts = next(v for v in obj["mutants"].values() if v)
+    verdicts.pop(next(iter(verdicts)))
+    ms.write_json(path, obj)
+    with pytest.raises(ValueError, match="reported statistics"):
+        ms.reduce(ms.MANIFEST, directory, Path("aggregate.json"))

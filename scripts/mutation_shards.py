@@ -141,6 +141,62 @@ def stats_checked(stats: dict, *, require_nonempty: bool) -> dict[str, int]:
     return normalized
 
 
+
+def collect_mutants(modules: list[str], *, statuses: dict | None = None) -> dict:
+    """Read every generated identity and verdict without spawning a CLI per mutant."""
+    if statuses is None:
+        # Keep the policy helper importable in HA compatibility tests, which
+        # deliberately do not install the mutation engine.
+        from mutmut.stats import status_by_exit_code
+        statuses = status_by_exit_code
+    result = {}
+    for module in modules:
+        path = Path("mutants") / (module + ".meta")
+        # mutmut 3.8 creates metadata even for selected files with zero mutants.
+        # Missing metadata must not masquerade as an empty mutation population.
+        metadata = json.loads(path.read_text())
+        verdicts = metadata.get("exit_code_by_key")
+        if not isinstance(verdicts, dict):
+            raise ValueError(f"Missing mutant verdicts for {module}")
+        result[module] = {}
+        for identity, exit_code in verdicts.items():
+            if type(exit_code) is not int:
+                raise ValueError(f"Incomplete or invalid mutant verdict: {identity}")
+            status = statuses.get(exit_code, "suspicious").replace(" ", "_")
+            if status not in FIELDS:
+                raise ValueError(f"Unsupported/incomplete mutant outcome: {status}")
+            result[module][identity] = status
+    return result
+
+
+def validate_mutants(mutants: dict, modules: list[str], stats: dict) -> None:
+    """Bind canonical per-source mutant identities to the exact raw counts."""
+    if not isinstance(mutants, dict) or sorted(mutants) != sorted(modules):
+        raise ValueError("Mutant identity map has missing or unexpected source modules")
+    counts = dict.fromkeys(FIELDS, 0)
+    seen = set()
+    for module, verdicts in mutants.items():
+        if not isinstance(verdicts, dict):
+            raise ValueError(f"Malformed mutant identity map for {module}")
+        for identity, status in verdicts.items():
+            if not isinstance(identity, str) or not identity or identity in seen:
+                raise ValueError("Missing or duplicated mutant identity")
+            if not isinstance(status, str) or status not in FIELDS:
+                raise ValueError("Invalid mutant outcome")
+            seen.add(identity)
+            counts[status] += 1
+    counts["total"] = len(seen)
+    if counts != stats_checked(stats, require_nonempty=True):
+        raise ValueError("Mutant identity outcomes do not match reported statistics")
+
+
+def scored_mutants(mutants: dict) -> dict:
+    # Preserve the existing quality policy for each identity, not just totals.
+    return {module: {identity: "killed" if status == "timeout" else status
+                     for identity, status in verdicts.items()}
+            for module, verdicts in mutants.items()}
+
+
 def write_json(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -185,11 +241,14 @@ def record(manifest_path: Path, index: int, out: Path, duration: int) -> dict:
     stats = stats_checked(json.loads(STATS.read_text()), require_nonempty=True)
     if duration < 0:
         raise ValueError("Invalid elapsed time")
+    mutants = collect_mutants(entry["modules"])
+    validate_mutants(mutants, entry["modules"], stats)
     result = {
         "schema": SCHEMA, "manifest_sha256": manifest["manifest_sha256"],
         "target_sha": manifest["target_sha"], "index": index,
         "modules": entry["modules"], "complete": True,
         "seconds": duration, "stats": stats, "environment": environment(),
+        "mutants": mutants,
     }
     write_json(out, result)
     print(f"Recorded shard {index}: {stats['total']} mutants in {duration}s")
@@ -207,6 +266,7 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
     sums = {key: 0 for key in (*FIELDS, "total")}
     runtimes = {}
     resolved_environment = None
+    all_mutants = {}
     for index in range(manifest["shard_count"]):
         obj = json.loads((results_dir / f"shard-{index}.json").read_text(encoding="utf-8"))
         entry = shard_entry(manifest, index)
@@ -223,6 +283,8 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
         elif resolved_environment != current_environment:
             raise ValueError("Shard resolved environments differ")
         counts = stats_checked(obj.get("stats"), require_nonempty=True)
+        validate_mutants(obj.get("mutants"), entry["modules"], counts)
+        all_mutants.update(obj["mutants"])
         for key, value in counts.items():
             sums[key] += value
         secs = obj.get("seconds")
@@ -232,6 +294,7 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
         observed_modules.extend(entry["modules"])
     if sorted(observed_modules) != source_paths() or len(set(observed_modules)) != len(observed_modules):
         raise ValueError("Module coverage is incomplete or duplicated")
+    validate_mutants(all_mutants, source_paths(), sums)
     score = 100 * (sums["killed"] + sums["timeout"]) / (sums["total"] - sums["skipped"]) if sums["total"] > sums["skipped"] else 0
     result = {
         "schema": SCHEMA, "mode": "complete-sharded", "target_sha": manifest["target_sha"],
@@ -239,6 +302,7 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
         "shard_count": manifest["shard_count"], "stats": sums,
         "score": round(score, 6), "shard_seconds": runtimes,
         "environment": resolved_environment,
+        "modules": sorted(observed_modules), "mutants": all_mutants,
         "complete": True,
     }
     # Keep the original quality checker and exactly its global threshold.
@@ -261,6 +325,8 @@ def record_unsharded(manifest_path: Path, duration: int, out: Path) -> dict:
         "environment": environment(),
         "stats": stats_checked(json.loads(STATS.read_text()), require_nonempty=True),
     }
+    result["mutants"] = collect_mutants(result["modules"])
+    validate_mutants(result["mutants"], result["modules"], result["stats"])
     write_json(out, result)
     return result
 
@@ -279,6 +345,9 @@ def compare(manifest_path: Path, sharded_path: Path, unsharded_path: Path, out: 
             raise ValueError("Engine evidence is incomplete or belongs to a different target")
         validate_environment(result.get("environment"))
         stats = stats_checked(result.get("stats"), require_nonempty=True)
+        if result.get("modules") != source_paths():
+            raise ValueError("Engine evidence omits production source")
+        validate_mutants(result.get("mutants"), source_paths(), stats)
         if any(stats[key] for key in ("no_tests", "suspicious", "segfault")):
             raise ValueError("Engine benchmark contains error statuses")
     if sharded.get("shard_count") != manifest["shard_count"]:
@@ -293,10 +362,13 @@ def compare(manifest_path: Path, sharded_path: Path, unsharded_path: Path, out: 
     if (any(a[key] != b[key] for key in ("total", "survived", "skipped"))
             or a["killed"] + a["timeout"] != b["killed"] + b["timeout"]):
         raise ValueError("Engine mutant population or scored outcomes differ")
+    if scored_mutants(sharded["mutants"]) != scored_mutants(unsharded["mutants"]):
+        raise ValueError("Engine mutant identities or per-mutant outcomes differ")
     result = {"schema": SCHEMA, "equivalent": True,
               "target_sha": manifest["target_sha"],
               "environment_sha256": sharded["environment"]["sha256"],
-              "sharded_stats": a, "unsharded_stats": b}
+              "sharded_stats": a, "unsharded_stats": b,
+              "mutant_population_sha256": sha256(canonical(scored_mutants(sharded["mutants"]))) }
     write_json(out, result)
     return result
 
