@@ -31,6 +31,7 @@ jobs:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 -m scripts.mutation_shadow --base "$PR_BASE" --head "$PR_HEAD" --no-coverage
+          python3 -m scripts.mutation_impact prepare --base "$PR_BASE" --head "$PR_HEAD" --no-coverage
           if python3 -c 'import json,sys; sys.exit(not bool(json.load(open("mutation-shadow-plan.json"))["test_files_measured"]))'; then
             echo "needs_coverage=true" >> "$GITHUB_OUTPUT"
           else
@@ -46,12 +47,12 @@ jobs:
         run: python -m pip install --upgrade pip
       - if: ${{ steps.classify.outputs.needs_coverage == 'true' }}
         run: pip install -r requirements_test.txt
-      - name: Measure fixture-aware execution (never substitutes for Mutation score)
+      - name: Measure bounded base/head impact (never substitutes for Mutation score)
         if: ${{ steps.classify.outputs.needs_coverage == 'true' }}
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: python -m scripts.mutation_shadow --base "$PR_BASE" --head "$PR_HEAD"
+        run: python -m scripts.mutation_impact prepare --base "$PR_BASE" --head "$PR_HEAD"
       - name: Report wall-clock cost
         if: always()
         run: |
@@ -63,5 +64,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mutation-shadow-plan
-          path: mutation-shadow-plan.json
+          path: |
+            mutation-shadow-plan.json
+            mutation-impact-plan.json
           if-no-files-found: warn
