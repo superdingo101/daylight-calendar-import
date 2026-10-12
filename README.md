@@ -1,6 +1,18 @@
 # Daylight Calendar Import
 
+
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/superdingo101/daylight-calendar-import#hacs-custom-repository)
+[![GitHub release](https://img.shields.io/github/v/release/superdingo101/daylight-calendar-import)](https://github.com/superdingo101/daylight-calendar-import/releases)
+[![GitHub stars](https://img.shields.io/github/stars/superdingo101/daylight-calendar-import.svg)](https://github.com/superdingo101/daylight-calendar-import/stargazers)
+[![GitHub issues](https://img.shields.io/github/issues/superdingo101/daylight-calendar-import.svg)](https://github.com/superdingo101/daylight-calendar-import/issues)
+[![License](https://img.shields.io/github/license/superdingo101/daylight-calendar-import.svg)](LICENSE)
+
+[![Tests](https://github.com/superdingo101/daylight-calendar-import/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/superdingo101/daylight-calendar-import/actions/workflows/tests.yml)
+[![HACS Validation](https://github.com/superdingo101/daylight-calendar-import/actions/workflows/hacs.yaml/badge.svg?branch=main)](https://github.com/superdingo101/daylight-calendar-import/actions/workflows/hacs.yaml)
 [![Nightly clean mutation](https://github.com/superdingo101/daylight-calendar-import/actions/workflows/mutation-clean.yml/badge.svg?event=schedule)](https://github.com/superdingo101/daylight-calendar-import/actions/workflows/mutation-clean.yml?query=event%3Aschedule)
+
+[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-pink?logo=github)](https://github.com/sponsors/superdingo101)
+[![Donate](https://img.shields.io/badge/Donate-Buy%20me%20a%20beer-yellow?logo=buy-me-a-coffee)](https://buymeacoffee.com/superdingo101)
 
 The [mutation testing policy](docs/mutation-ci.md) runs uncached changed-module mutation checks on PRs, nightly full clean verification, and an independent clean release gate.
 
