@@ -325,3 +325,91 @@ async def test_actual_submission_sanitizes_throwing_entity_availability(monkeypa
     assert "private" not in "".join(traceback.format_exception(caught.value))
     store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected)
     generate.assert_not_awaited()
+
+
+class ThrowingCauseError(Exception):
+    @property
+    def __cause__(self):
+        raise ValueError("private SDK cause descriptor")
+
+
+class InvalidCauseError(Exception):
+    @property
+    def __cause__(self):
+        return "private malformed cause"
+
+
+@pytest.mark.parametrize("phase", ["cause", "invalid_cause", "resolution", "features", "huge_confidence"])
+async def test_actual_submission_has_coherent_untrusted_provider_boundaries(monkeypatch, phase):
+    import traceback
+    from homeassistant.core import Context
+    from custom_components.daylight_calendar_import import async_setup_entry
+    from custom_components.daylight_calendar_import.const import DOMAIN, SERVICE_SUBMIT_TEXT
+    from tests.test_init import FakeHass, entry
+    from tests.test_parser import VALID
+
+    class Entity:
+        @property
+        def supported_features(self):
+            raise HomeAssistantError("private entity feature data")
+
+    def resolve(_entity_id):
+        if phase == "resolution":
+            raise HomeAssistantError("private entity resolution data")
+        return Entity()
+
+    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [{**VALID, "confidence": 10 ** 1000}]}))
+    if phase == "cause":
+        generate.side_effect = ThrowingCauseError("private original provider error")
+    elif phase == "invalid_cause":
+        generate.side_effect = InvalidCauseError("private original provider error")
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+                            async_begin_submission=AsyncMock(return_value="activity-id"),
+                            async_record_parse_failure=AsyncMock())
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_review_panel", AsyncMock())
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_track_time_interval", Mock(return_value=Mock()))
+    hass = FakeHass()
+    if phase in ("resolution", "features"):
+        hass.data[providers.DATA_COMPONENT] = SimpleNamespace(get_entity=resolve)
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
+    with pytest.raises(providers.ProviderError) as caught:
+        await handler(SimpleNamespace(data={"text": "source details"}, context=Context(user_id=None)))
+    expected = "provider_invalid_response" if phase == "huge_confidence" else "provider_error"
+    assert caught.value.code == expected
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
+    assert "private" not in "".join(traceback.format_exception(caught.value))
+    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected)
+    if phase in ("resolution", "features"):
+        generate.assert_not_awaited()
+        with pytest.raises(providers.ProviderError) as capabilities_error:
+            _ = providers.AITaskParserProvider(hass, "ai_task.test").capabilities
+        assert capabilities_error.value.code == "provider_error"
+        assert "private" not in "".join(traceback.format_exception(capabilities_error.value))
+
+
+@pytest.mark.parametrize("phase", ["discovery", "result", "classification"])
+async def test_provider_boundary_does_not_convert_cancellation(monkeypatch, phase):
+    provider = providers.AITaskParserProvider(object(), "ai_task.test")
+    class CancellationData:
+        @property
+        def data(self):
+            raise asyncio.CancelledError
+    class CancellationCause(Exception):
+        @property
+        def __cause__(self):
+            raise asyncio.CancelledError
+    if phase == "discovery":
+        def cancelled_discovery():
+            raise asyncio.CancelledError
+        monkeypatch.setattr(provider, "_entity", cancelled_discovery)
+    if phase == "classification":
+        generate = AsyncMock(side_effect=CancellationCause())
+    else:
+        generate = AsyncMock(return_value=CancellationData())
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    with pytest.raises(asyncio.CancelledError):
+        await provider.async_parse(TextSourceAdapter().create("source"), reference_datetime="now", time_zone="UTC")
