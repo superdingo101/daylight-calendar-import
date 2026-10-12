@@ -304,3 +304,129 @@ async def test_v1_migration_queued_during_shutdown_is_not_cleared(hass, monkeypa
         assert await hass.async_add_executor_job(path.read_bytes) == content
     finally:
         hass.state = CoreState.running
+
+
+@pytest.mark.parametrize("path,value,message", [
+    (("source_archive",), "private bytes", "unsupported pending storage envelope"),
+    (("items",), {}, "invalid storage collection"),
+    (("items", 0, "id"), "", "invalid storage identity"),
+    (("items", 0, "warnings"), "malformed", "invalid import warnings"),
+    (("items", 0, "source_text"), [], "invalid pending import"),
+    (("items", 0, "duplicate_events"), True, "invalid source metadata"),
+    (("items", 0, "source_title"), {}, "invalid source metadata"),
+    (("items", 0, "events", 0, "routing_unresolved"), "false", "invalid routing checkpoint"),
+    (("activity", 0, "transitions"), {}, "invalid lifecycle history"),
+    (("activity", 0, "created_count"), -1, "invalid lifecycle count"),
+    (("source_claims",), [], "invalid source claims"),
+    (("activity", 0, "status"), "processing ", "invalid lifecycle status"),
+])
+def test_storage_decoder_rejects_invalid_data_with_precise_category(path, value, message):
+    """Recovery checks should distinguish corrupt fields without leaking their data."""
+    from custom_components.daylight_calendar_import.storage import _decode_storage_data
+    data = deepcopy(valid_data())
+    set_field(data, path, value)
+    with pytest.raises(ValueError) as error:
+        _decode_storage_data(data)
+    assert str(error.value) == message
+
+
+@pytest.mark.parametrize("collection", ["items", "activity", "notifications"])
+def test_storage_decoder_rejects_duplicate_identities_with_precise_error(collection):
+    from custom_components.daylight_calendar_import.storage import _decode_storage_data
+    data = valid_data()
+    data[collection].append(deepcopy(data[collection][0]))
+    with pytest.raises(ValueError, match="^duplicate storage identity$"):
+        _decode_storage_data(data)
+
+
+@pytest.mark.parametrize("minor", [None, 0, 2, False, "1"])
+def test_envelope_validation_checks_explicit_minor_version(minor):
+    from custom_components.daylight_calendar_import.storage import _validate_pending_envelope
+    data = envelope(valid_data(), minor_version=minor)
+    with pytest.raises(PendingImportStorageError, match="^Daylight import storage needs repair"):
+        _validate_pending_envelope(data)
+
+
+def test_envelope_default_minor_version_is_backwards_compatible():
+    from custom_components.daylight_calendar_import.storage import _validate_pending_envelope
+    data = envelope(valid_data())
+    del data["minor_version"]
+    assert _validate_pending_envelope(data) == data
+
+
+@pytest.mark.parametrize("value", ["other", None, False])
+def test_envelope_validates_explicit_storage_key(value):
+    from custom_components.daylight_calendar_import.storage import _validate_pending_envelope
+    data = envelope(valid_data(), key=value)
+    with pytest.raises(PendingImportStorageError, match="^Daylight import storage needs repair"):
+        _validate_pending_envelope(data)
+
+
+def test_envelope_missing_key_remains_legacy_compatible():
+    from custom_components.daylight_calendar_import.storage import _validate_pending_envelope
+    data = envelope(valid_data())
+    del data["key"]
+    assert _validate_pending_envelope(data) == data
+
+
+def test_missing_required_items_cannot_be_loaded_as_an_empty_queue():
+    from custom_components.daylight_calendar_import.storage import _decode_storage_data
+    data = valid_data()
+    del data["items"]
+    with pytest.raises(KeyError, match="items"):
+        _decode_storage_data(data)
+
+
+def test_storage_decoder_preserves_valid_transition_and_count_defaults():
+    from custom_components.daylight_calendar_import.storage import _decode_storage_data
+    data = valid_data()
+    data["activity"][0]["transitions"] = ({"type": "processing", "at": "2026-01-01T00:00:00+00:00"},)
+    data["activity"][0].pop("created_count")
+    data["activity"][0].pop("rejected_count")
+    decoded = _decode_storage_data(data)
+    assert decoded[1][0]["transitions"] == [{"type": "processing", "at": "2026-01-01T00:00:00+00:00"}]
+    assert "created_count" not in decoded[1][0]
+    assert "rejected_count" not in decoded[1][0]
+
+
+async def test_malformed_activity_status_preserves_old_snapshot_and_blocks_retention(monkeypatch):
+    good = valid_data()
+    backend = FakeStoreBackend(good)
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    prior = store.list_activity()
+    broken = deepcopy(good)
+    broken["activity"][0]["status"] = "processing "
+    backend.load_result = broken
+    before = len(backend.saved)
+    with pytest.raises(PendingImportStorageError):
+        await store.async_load()
+    assert store.list_activity() == prior
+    assert store._storage_blocked
+    assert len(backend.saved) == before
+    with pytest.raises(PendingImportStorageError):
+        await store.async_apply_retention()
+    assert backend.load_result == broken
+
+
+@pytest.mark.parametrize("status", [
+    "discovered", "processing", "failed", "duplicate", "no_events",
+    "review_ready", "source_reprocessed", "event_rejected", "mixed",
+    "calendar_write_started", "calendar_write_uncertain",
+    "calendar_created", "calendar_create_failed",
+])
+def test_supported_lifecycle_statuses_remain_loadable(status):
+    from custom_components.daylight_calendar_import.storage import _decode_storage_data
+    data = valid_data()
+    data["activity"][0]["status"] = status
+    assert _decode_storage_data(data)[1][0]["status"] == status
+
+
+async def test_duplicate_original_json_keys_rejected_without_exposing_bytes(hass, monkeypatch):
+    actual_disk_loader(monkeypatch)
+    content = b'{"version":2,"minor_version":1,"key":"daylight_calendar_import.pending_imports","data":{"items":[],"items":[]}}'
+    path = await write_original(hass, content)
+    store = PendingImportStore(hass)
+    with pytest.raises(PendingImportStorageError, match="^Daylight import storage needs repair"):
+        await store.async_load()
+    assert await hass.async_add_executor_job(path.read_bytes) == content
