@@ -140,6 +140,7 @@ Open **Daylight imports → Recent activity**. For AI provider timeouts, authent
 - [Report a bug or suggest a feature](https://github.com/superdingo101/daylight-calendar-import/issues)
 - [Direct IMAP setup, privacy, and recovery](docs/direct-imap.md)
 - [Calendar routing, conflicts, and sensors](docs/v0.6.md)
+- [Redacted Home Assistant diagnostics](docs/diagnostics.md)
 - [Advanced review actions and permissions](docs/review-api.md)
 - [Settings API reference](docs/settings-api.md)
 - [Safe reprocessing of pending text](docs/source-reprocessing.md)
