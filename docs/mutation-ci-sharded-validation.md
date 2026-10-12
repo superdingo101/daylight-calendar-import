@@ -12,7 +12,9 @@ score equivalence with the unsharded `mutmut run` on the **same exact SHA**.
 
 The new GitHub Actions workflow **Clean mutation shards (rehearsal)** runs
 on `workflow_dispatch` after it reaches `main`, or on pull requests
-explicitly labeled `mutation-shards-rehearsal`. The label is opt-in because
+explicitly labeled `mutation-shards-rehearsal`. To benchmark both engines,
+use `compare_unsharded: true` on a manual dispatch or the
+`mutation-comparison` PR label instead. The label is opt-in because
 running eight full Python dependency environments consumes more total GitHub
 Actions minutes than a single long job even if wall-clock duration falls.
 
@@ -39,6 +41,16 @@ The aggregate artifact `mutation-sharded-aggregate` is explicitly
 **not** the release mutation proof. The existing release publisher continues
 to accept only its first-party clean proof; this PR deliberately creates no
 release proof and posts no successful release validation statuses.
+
+The optional comparison is now part of this same workflow run. Both engines
+consume the planning job's exact target SHA and manifest and use identical pip
+setup. A dependent comparison job requires both engines to succeed, verifies
+their source/manifest identities and resolved-environment fingerprints, and
+rejects population or scored-outcome differences. Kills and timeouts can
+exchange counts without changing the existing score semantics; other status
+changes require investigation. No separate run can be mistaken for matching
+proof. The temporary fixed-SHA comparison workflow has been removed.
+
 
 ## Validation before production cutover
 

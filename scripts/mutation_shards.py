@@ -248,6 +248,59 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
     return result
 
 
+def record_unsharded(manifest_path: Path, duration: int, out: Path) -> dict:
+    manifest = load_manifest(manifest_path)
+    verify_manifest(manifest)
+    if type(duration) is not int or duration < 0:
+        raise ValueError("Invalid elapsed time")
+    result = {
+        "schema": SCHEMA, "mode": "complete-unsharded", "complete": True,
+        "target_sha": manifest["target_sha"],
+        "manifest_sha256": manifest["manifest_sha256"],
+        "modules": source_paths(), "seconds": duration,
+        "environment": environment(),
+        "stats": stats_checked(json.loads(STATS.read_text()), require_nonempty=True),
+    }
+    write_json(out, result)
+    return result
+
+
+def compare(manifest_path: Path, sharded_path: Path, unsharded_path: Path, out: Path) -> dict:
+    """Reject a mixed-environment or incomplete engine benchmark."""
+    manifest = load_manifest(manifest_path)
+    verify_manifest(manifest)
+    sharded = json.loads(sharded_path.read_text())
+    unsharded = json.loads(unsharded_path.read_text())
+    for result, mode in ((sharded, "complete-sharded"), (unsharded, "complete-unsharded")):
+        if (result.get("schema") != SCHEMA or result.get("mode") != mode
+                or result.get("complete") is not True
+                or result.get("target_sha") != manifest["target_sha"]
+                or result.get("manifest_sha256") != manifest["manifest_sha256"]):
+            raise ValueError("Engine evidence is incomplete or belongs to a different target")
+        validate_environment(result.get("environment"))
+        stats = stats_checked(result.get("stats"), require_nonempty=True)
+        if any(stats[key] for key in ("no_tests", "suspicious", "segfault")):
+            raise ValueError("Engine benchmark contains error statuses")
+    if sharded.get("shard_count") != manifest["shard_count"]:
+        raise ValueError("Sharded comparison partition count differs")
+    if unsharded.get("modules") != source_paths():
+        raise ValueError("Unsharded evidence omits production source")
+    if sharded["environment"] != unsharded["environment"]:
+        raise ValueError("Sharded and unsharded resolved environments differ")
+    a, b = sharded["stats"], unsharded["stats"]
+    # Timeouts retain the repository's killed-mutant score semantics. A
+    # kill/timeout split can vary with scheduling without changing the score.
+    if (any(a[key] != b[key] for key in ("total", "survived", "skipped"))
+            or a["killed"] + a["timeout"] != b["killed"] + b["timeout"]):
+        raise ValueError("Engine mutant population or scored outcomes differ")
+    result = {"schema": SCHEMA, "equivalent": True,
+              "target_sha": manifest["target_sha"],
+              "environment_sha256": sharded["environment"]["sha256"],
+              "sharded_stats": a, "unsharded_stats": b}
+    write_json(out, result)
+    return result
+
+
 def main() -> int:
     cli = argparse.ArgumentParser()
     parts = cli.add_subparsers(dest="command", required=True)
@@ -267,6 +320,15 @@ def main() -> int:
     p.add_argument("--manifest", type=Path, default=MANIFEST)
     p.add_argument("--results", type=Path, default=Path("mutation-shards/results"))
     p.add_argument("--out", type=Path, default=Path("mutation-shards/aggregate.json"))
+    p = parts.add_parser("record-unsharded")
+    p.add_argument("--manifest", type=Path, default=MANIFEST)
+    p.add_argument("--seconds", required=True, type=int)
+    p.add_argument("--out", type=Path, default=Path("mutation-shards/unsharded.json"))
+    p = parts.add_parser("compare")
+    p.add_argument("--manifest", type=Path, default=MANIFEST)
+    p.add_argument("--sharded", type=Path, default=Path("mutation-shards/aggregate.json"))
+    p.add_argument("--unsharded", type=Path, default=Path("mutation-shards/unsharded.json"))
+    p.add_argument("--out", type=Path, default=Path("mutation-shards/equivalence.json"))
     args = cli.parse_args()
     try:
         if args.command == "plan":
@@ -276,6 +338,11 @@ def main() -> int:
             prepare(args.manifest, args.index)
         elif args.command == "record":
             record(args.manifest, args.index, args.out, args.seconds)
+        elif args.command == "record-unsharded":
+            record_unsharded(args.manifest, args.seconds, args.out)
+        elif args.command == "compare":
+            compare(args.manifest, args.sharded, args.unsharded, args.out)
+            print("Exact-SHA mutation engines have equivalent scored outcomes in the same environment")
         else:
             result = reduce(args.manifest, args.results, args.out)
             print(f"Complete sharded mutation score: {result['score']:.2f}% across {result['stats']['total']} mutants")

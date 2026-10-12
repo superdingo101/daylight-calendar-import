@@ -239,3 +239,84 @@ def test_corrupt_environment_evidence_rejected(sample):
 def test_skipped_mutants_cannot_count_as_complete_clean_validation(sample):
     with pytest.raises(ValueError, match="skipped"):
         ms.stats_checked(stats(killed=99, survived=0, skipped=1), require_nonempty=True)
+
+
+@pytest.fixture
+def comparison_evidence(sample):
+    _, sha = sample
+    manifest = ms.plan(sha, 8, ms.MANIFEST)
+    directory = write_results(manifest, sample)
+    aggregate = Path("mutation-shards/aggregate.json")
+    ms.reduce(ms.MANIFEST, directory, aggregate)
+    unsharded = Path("mutation-shards/unsharded.json")
+    ms.record_unsharded(ms.MANIFEST, 12, unsharded)
+    return aggregate, unsharded
+
+
+def test_comparison_accepts_complete_same_environment_evidence(comparison_evidence):
+    aggregate, unsharded = comparison_evidence
+    result = ms.compare(ms.MANIFEST, aggregate, unsharded, Path("equivalence.json"))
+    assert result["equivalent"] is True
+    assert result["sharded_stats"]["total"] == 800
+
+
+@pytest.mark.parametrize("corruption", ["environment", "sha", "checksum", "complete", "modules", "population", "score", "interrupted"])
+def test_comparison_rejects_incompatible_engine_evidence(comparison_evidence, corruption):
+    aggregate, unsharded = comparison_evidence
+    obj = json.loads(unsharded.read_text())
+    if corruption == "environment":
+        obj["environment"]["details"]["python"] = "3.14.999"
+        obj["environment"]["sha256"] = ms.sha256(ms.canonical(obj["environment"]["details"]))
+    elif corruption == "sha":
+        obj["target_sha"] = "a" * 40
+    elif corruption == "checksum":
+        obj["manifest_sha256"] = "a" * 64
+    elif corruption == "complete":
+        obj["complete"] = False
+    elif corruption == "modules":
+        obj["modules"] = obj["modules"][:-1]
+    elif corruption == "population":
+        obj["stats"]["killed"] += 1
+        obj["stats"]["total"] += 1
+    elif corruption == "score":
+        obj["stats"]["killed"] -= 1
+        obj["stats"]["survived"] += 1
+    else:
+        obj["stats"]["check_was_interrupted_by_user"] = 1
+    ms.write_json(unsharded, obj)
+    with pytest.raises(ValueError):
+        ms.compare(ms.MANIFEST, aggregate, unsharded, Path("equivalence.json"))
+    assert not Path("equivalence.json").exists()
+
+
+def test_comparison_retains_timeout_score_semantics(comparison_evidence):
+    aggregate, unsharded = comparison_evidence
+    obj = json.loads(unsharded.read_text())
+    obj["stats"]["killed"] -= 1
+    obj["stats"]["timeout"] += 1
+    ms.write_json(unsharded, obj)
+    assert ms.compare(ms.MANIFEST, aggregate, unsharded, Path("equivalence.json"))["equivalent"]
+
+
+def test_workflow_target_and_comparison_contracts():
+    import yaml
+    root = Path(__file__).resolve().parents[1]
+    file = root / ".github/workflows/mutation-sharded.yml"
+    if not file.exists() and root.name == "mutants":
+        pytest.skip("Workflow not copied to mutation sandbox")
+    workflow = yaml.safe_load(file.read_text())
+    jobs = workflow["jobs"]
+    target = next(s for s in jobs["plan"]["steps"] if s.get("id") == "target")
+    assert target["env"]["PR_HEAD"] == "${{ github.event.pull_request.head.sha }}"
+    assert '${PR_HEAD:-${MANUAL_SHA:-$DEFAULT_SHA}}' in target["run"]
+    assert "github.event.pull_request.number" in workflow["concurrency"]["group"]
+    assert "github.event.label.name" in workflow["concurrency"]["group"]
+    assert workflow["concurrency"]["cancel-in-progress"] is False
+    assert set(jobs["equivalence"]["needs"]) == {"plan", "aggregate", "unsharded"}
+    assert "always()" in jobs["equivalence"]["if"]
+    for engine in ("shards", "unsharded"):
+        commands = [s.get("run") for s in jobs[engine]["steps"]]
+        assert "python -m pip install --upgrade pip" in commands
+        assert "pip install -r requirements_test.txt" in commands
+    assert any("scripts.mutation_shards compare" in s.get("run", "") for s in jobs["equivalence"]["steps"])
+    assert not (root / ".github/workflows/mutation-comparison.yml").exists()

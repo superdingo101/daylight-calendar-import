@@ -11,31 +11,39 @@ on:
         description: "Optional exact SHA to validate; otherwise use selected ref"
         required: false
         type: string
+      compare_unsharded:
+        description: "Also run a cold unsharded engine and enforce exact-SHA/environment equivalence"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: mutation-shards-${{ github.event.pull_request.number || inputs.target_sha || github.ref }}
+  group: mutation-shards-${{ github.event.pull_request.number || inputs.target_sha || github.ref }}-${{ github.event_name }}-${{ github.event.action }}-${{ github.event.label.name }}
   cancel-in-progress: false
 
 jobs:
   plan:
-    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'mutation-shards-rehearsal') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && (github.event.label.name == 'mutation-shards-rehearsal' || github.event.label.name == 'mutation-comparison')) || (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'mutation-shards-rehearsal') || contains(github.event.pull_request.labels.*.name, 'mutation-comparison'))) }}
     name: Full mutation partition
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       target_sha: ${{ steps.target.outputs.sha }}
+      compare_unsharded: ${{ steps.target.outputs.compare }}
     steps:
       - name: Resolve immutable target
         id: target
         env:
-          PR_HEAD: 70fb812bb4fccf74a41d075fd1bdd1c6cc2aee7e
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
           MANUAL_SHA: ${{ inputs.target_sha }}
           DEFAULT_SHA: ${{ github.sha }}
+          COMPARE: ${{ inputs.compare_unsharded || contains(github.event.pull_request.labels.*.name, 'mutation-comparison') }}
         run: |
           echo "sha=${PR_HEAD:-${MANUAL_SHA:-$DEFAULT_SHA}}" >> "$GITHUB_OUTPUT"
+          echo "compare=$COMPARE" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
         with:
           ref: ${{ steps.target.outputs.sha }}
@@ -143,5 +151,84 @@ jobs:
           path: |
             mutation-shards/aggregate.json
             mutants/mutmut-cicd-stats.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  unsharded:
+    needs: plan
+    if: needs.plan.outputs.compare_unsharded == 'true'
+    name: Clean unsharded comparison engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.target_sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutation-shard-manifest
+          path: mutation-shards
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements_test.txt
+      - name: Execute clean complete engine and record equivalent evidence
+        run: |
+          set -euo pipefail
+          rm -rf mutants
+          started=$SECONDS
+          mutmut run
+          mutmut export-cicd-stats
+          python -m scripts.mutation_shards record-unsharded --seconds "$((SECONDS-started))"
+          python scripts/check_mutation_score.py
+      - name: Preserve unsharded evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-unsharded-evidence
+          path: mutation-shards/unsharded.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  equivalence:
+    if: ${{ always() && needs.plan.outputs.compare_unsharded == 'true' }}
+    needs: [plan, aggregate, unsharded]
+    name: Enforce exact-SHA engine equivalence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both engines to complete successfully
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          SHARDED_RESULT: ${{ needs.aggregate.result }}
+          UNSHARDED_RESULT: ${{ needs.unsharded.result }}
+        run: |
+          test "$PLAN_RESULT" = success
+          test "$SHARDED_RESULT" = success
+          test "$UNSHARDED_RESULT" = success
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.target_sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutation-shard-manifest
+          path: mutation-shards
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutation-sharded-aggregate
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutation-unsharded-evidence
+          path: mutation-shards
+      - name: Fail closed on SHA, environment, population or score disagreement
+        run: python3 -m scripts.mutation_shards compare
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-engine-equivalence
+          path: mutation-shards/equivalence.json
           if-no-files-found: warn
           retention-days: 14
