@@ -4,6 +4,9 @@ on:
     branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: mutation-equivalence-129
+  cancel-in-progress: true
 jobs:
   comparison:
     if: github.event.pull_request.number == 129
@@ -12,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: 4162f0bdd5c88cda0aeccd0301f53547b34d654f
+          ref: 70fb812bb4fccf74a41d075fd1bdd1c6cc2aee7e
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
@@ -24,11 +27,14 @@ jobs:
           rm -rf mutants
           mutmut run
           mutmut export-cicd-stats
+          python -c 'from scripts.mutation_shards import environment, write_json; from pathlib import Path; write_json(Path("unsharded-environment.json"), environment())'
           python scripts/check_mutation_score.py
       - name: Preserve exact-SHA comparison diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: exact-sha-unsharded-comparison
-          path: mutants/mutmut-cicd-stats.json
+          path: |
+            mutants/mutmut-cicd-stats.json
+            unsharded-environment.json
           if-no-files-found: error

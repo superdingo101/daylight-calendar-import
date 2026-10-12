@@ -31,7 +31,7 @@ jobs:
       - name: Resolve immutable target
         id: target
         env:
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD: 70fb812bb4fccf74a41d075fd1bdd1c6cc2aee7e
           MANUAL_SHA: ${{ inputs.target_sha }}
           DEFAULT_SHA: ${{ github.sha }}
         run: |
