@@ -24,7 +24,7 @@ def git_value(*args: str) -> str:
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
-def create(tag: str) -> None:
+def create(tag: str, *, sharded: bool = False) -> None:
     if not TAG_PATTERN.fullmatch(tag):
         raise ValueError("Invalid release tag")
     manifest = json.loads(Path("custom_components/daylight_calendar_import/manifest.json").read_text())
@@ -33,6 +33,18 @@ def create(tag: str) -> None:
     stats = json.loads(Path("mutants/mutmut-cicd-stats.json").read_text())
     if not stats.get("total") or stats.get("check_was_interrupted_by_user"):
         raise ValueError("Missing or incomplete mutation statistics")
+    evidence = None
+    if sharded:
+        from scripts import mutation_shards, check_mutation_score
+        evidence = mutation_shards.reduce(
+            mutation_shards.MANIFEST, Path("mutation-shards/results"),
+            Path("mutation-shards/aggregate.json"),
+        )
+        if evidence["target_sha"] != git_value("rev-parse", "HEAD"):
+            raise ValueError("Sharded proof revision mismatch")
+        if check_mutation_score.main() != 0:
+            raise ValueError("Sharded release score failed")
+        stats = evidence["stats"]
     proof = {
         "schema": PROOF_SCHEMA,
         "mode": "clean",
@@ -42,6 +54,12 @@ def create(tag: str) -> None:
         "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
         "score_stats": stats,
     }
+    if evidence is not None:
+        proof["execution"] = {
+            "mode": "complete-sharded", "shard_count": evidence["shard_count"],
+            "manifest_sha256": evidence["manifest_sha256"],
+            "environment_sha256": evidence["environment"]["sha256"],
+        }
     PROOF_FILE.write_text(json.dumps(proof, indent=2, sort_keys=True) + "\n")
 
 
@@ -116,12 +134,12 @@ def verify(tag: str) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) != 3 or sys.argv[1] not in {"create", "verify"}:
-        print("Usage: release_mutation_proof.py [create|verify] vX.Y.Z", file=sys.stderr)
+    if len(sys.argv) != 3 or sys.argv[1] not in {"create", "create-sharded", "verify"}:
+        print("Usage: release_mutation_proof.py [create|create-sharded|verify] vX.Y.Z", file=sys.stderr)
         return 2
     try:
-        if sys.argv[1] == "create":
-            create(sys.argv[2])
+        if sys.argv[1] in {"create", "create-sharded"}:
+            create(sys.argv[2], sharded=sys.argv[1] == "create-sharded")
         else:
             verify(sys.argv[2])
     except (ValueError, RuntimeError, subprocess.CalledProcessError, KeyError, OSError) as exc:
