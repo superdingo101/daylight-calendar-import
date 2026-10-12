@@ -59,7 +59,7 @@ def write_results(manifest, sample, *, data=None):
             manifest_sha256=manifest["manifest_sha256"],
             target_sha=manifest["target_sha"],
             index=item["index"], modules=item["modules"],
-            complete=True, seconds=12, stats=data or stats(),
+            complete=True, seconds=12, stats=data or stats(), environment=ms.environment(),
         )
         ms.write_json(directory / f"shard-{item['index']}.json", result)
     return directory
@@ -216,3 +216,21 @@ def test_empty_or_duplicate_paths_cannot_be_claimed_complete(sample):
     ms.write_json(directory / "shard-0.json", altered)
     with pytest.raises(ValueError):
         ms.reduce(ms.MANIFEST, directory, Path("mutation-shards/aggregate.json"))
+
+
+def test_different_resolved_shard_environment_rejected(sample):
+    _, sha = sample
+    m = ms.plan(sha, 8, ms.MANIFEST)
+    directory = write_results(m, sample)
+    path = directory / "shard-2.json"
+    obj = json.loads(path.read_text())
+    obj["environment"]["details"]["python"] = "3.14.999"
+    obj["environment"]["sha256"] = ms.sha256(ms.canonical(obj["environment"]["details"]))
+    ms.write_json(path, obj)
+    with pytest.raises(ValueError, match="environments differ"):
+        ms.reduce(ms.MANIFEST, directory, Path("out.json"))
+
+
+def test_corrupt_environment_evidence_rejected(sample):
+    with pytest.raises(ValueError, match="environment"):
+        ms.validate_environment({"details": {}, "sha256": "a" * 64})

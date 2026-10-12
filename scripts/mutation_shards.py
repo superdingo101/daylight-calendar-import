@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
+import platform
 import json
 import os
 from pathlib import Path
@@ -34,6 +36,26 @@ def canonical(data: dict) -> bytes:
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def environment() -> dict:
+    """Bind all clean verdicts to one interpreter, runner and package set."""
+    packages = sorted((d.metadata["Name"].lower().replace("_", "-"), d.version)
+                      for d in importlib.metadata.distributions())
+    details = {"python": platform.python_version(), "implementation": platform.python_implementation(),
+               "system": platform.system(), "machine": platform.machine(),
+               "runner_image": os.environ.get("ImageOS", ""),
+               "runner_image_version": os.environ.get("ImageVersion", ""),
+               "packages": packages}
+    # JSON roundtrip removes tuple/list differences when loading evidence.
+    details = json.loads(canonical(details))
+    return {"details": details, "sha256": sha256(canonical(details))}
+
+
+def validate_environment(value: dict) -> None:
+    if (not isinstance(value, dict) or not isinstance(value.get("details"), dict)
+            or value.get("sha256") != sha256(canonical(value["details"]))):
+        raise ValueError("Missing or corrupt resolved environment evidence")
 
 
 def source_paths() -> list[str]:
@@ -165,7 +187,7 @@ def record(manifest_path: Path, index: int, out: Path, duration: int) -> dict:
         "schema": SCHEMA, "manifest_sha256": manifest["manifest_sha256"],
         "target_sha": manifest["target_sha"], "index": index,
         "modules": entry["modules"], "complete": True,
-        "seconds": duration, "stats": stats,
+        "seconds": duration, "stats": stats, "environment": environment(),
     }
     write_json(out, result)
     print(f"Recorded shard {index}: {stats['total']} mutants in {duration}s")
@@ -182,6 +204,7 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
     observed_modules = []
     sums = {key: 0 for key in (*FIELDS, "total")}
     runtimes = {}
+    resolved_environment = None
     for index in range(manifest["shard_count"]):
         obj = json.loads((results_dir / f"shard-{index}.json").read_text(encoding="utf-8"))
         entry = shard_entry(manifest, index)
@@ -191,6 +214,12 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
                 or type(obj.get("index")) is not int or obj["index"] != index
                 or obj.get("modules") != entry["modules"]):
             raise ValueError(f"Shard {index} missing success evidence or manifest mismatch")
+        current_environment = obj.get("environment")
+        validate_environment(current_environment)
+        if resolved_environment is None:
+            resolved_environment = current_environment
+        elif resolved_environment != current_environment:
+            raise ValueError("Shard resolved environments differ")
         counts = stats_checked(obj.get("stats"), require_nonempty=True)
         for key, value in counts.items():
             sums[key] += value
@@ -207,6 +236,7 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
         "manifest_sha256": manifest["manifest_sha256"],
         "shard_count": manifest["shard_count"], "stats": sums,
         "score": round(score, 6), "shard_seconds": runtimes,
+        "environment": resolved_environment,
         "complete": True,
     }
     # Keep the original quality checker and exactly its global threshold.
