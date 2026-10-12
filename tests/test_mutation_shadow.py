@@ -49,6 +49,7 @@ def test_fixture_coverage_and_imports(tmp_path,monkeypatch):
     (package/"called.py").write_text("def called():\n    return 7\n")
     (package/"fixture_only.py").write_text("def setup():\n    return 2\n")
     (package/"inline.py").write_text("def single(): return 5\n")
+    (package/"collection_call.py").write_text("def collected(): return 3\n")
     (tmp_path/"custom_components/__init__.py").touch()
     test=tmp_path/"tests/test_a.py"
     test.parent.mkdir()
@@ -57,6 +58,8 @@ def test_fixture_coverage_and_imports(tmp_path,monkeypatch):
         "from custom_components.daylight_calendar_import.called import called\n"
         "from custom_components.daylight_calendar_import.fixture_only import setup\n"
         "from custom_components.daylight_calendar_import.inline import single\n"
+        "from custom_components.daylight_calendar_import.collection_call import collected\n"
+        "assert collected() == 3\n"
         "@pytest.fixture\n"
         "def fixture():\n    return setup()\n"
         "def test_a(fixture):\n    assert called()+fixture==9\n    assert single()==5\n"
@@ -70,6 +73,10 @@ def test_fixture_coverage_and_imports(tmp_path,monkeypatch):
     assert set(report["execution_modules"]) == {SOURCE+"called.py",SOURCE+"fixture_only.py",SOURCE+"inline.py"}
     assert "setup" in report["execution_phases"][SOURCE+"fixture_only.py"]
     assert "run" in report["execution_phases"][SOURCE+"inline.py"]
+    # Import-only module initialization must stay excluded, but real
+    # collection-time calls into production functions must be surfaced.
+    assert report["collection_function_modules"] == [SOURCE+"collection_call.py"]
+    assert SOURCE+"collection_call.py" not in report["execution_modules"]
 
 @pytest.mark.parametrize("number,changed,modified,expected", [
     (119,{SOURCE+"__init__.py",SOURCE+"storage.py","tests/test_parser.py"},{"tests/test_parser.py"},"needs-base-and-head-coverage"),
@@ -222,3 +229,29 @@ def test_unmeasured_preview_does_not_claim_a_final_mixed_scope(tmp_path, monkeyp
     preview = shadow.plan("a" * 40, "b" * 40, measure=False)
     assert preview["mode"] == "coverage-required"
     assert preview["source_modules"] == [production]
+
+
+def test_collection_function_detector_ignores_module_level_import_assignments(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    source_file = SOURCE + "imported.py"
+    make(tmp_path, source_file)
+    report = {
+        "files": {
+            source_file: {
+                "contexts": {"1": [""], "2": [""]},
+                "executed_lines": [1, 2],
+            }
+        }
+    }
+    assert shadow.collection_function_modules(report) == []
+
+
+def test_shadow_preview_is_explicitly_not_the_authoritative_plan(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(shadow, "changed", lambda *args, **kwargs: {"README.md"})
+    preliminary = shadow.plan("a" * 40, "b" * 40, measure=False)
+    assert preliminary["report_role"] == "preliminary"
+    assert preliminary["authoritative_plan"] == "mutation-impact-plan.json"
+    final = shadow.plan("a" * 40, "b" * 40, measure=True)
+    assert final["report_role"] == "final"
+    assert final["authoritative_plan"] is None
