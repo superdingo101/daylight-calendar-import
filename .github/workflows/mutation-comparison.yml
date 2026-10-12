@@ -2,6 +2,7 @@ name: Exact-SHA mutation comparison
 on:
   pull_request:
     branches: [main]
+    types: [labeled]
 permissions:
   contents: read
 concurrency:
@@ -9,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   comparison:
-    if: github.event.pull_request.number == 129
+    if: github.event.pull_request.number == 129 && github.event.label.name == 'mutation-comparison'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
