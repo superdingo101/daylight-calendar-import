@@ -252,3 +252,33 @@ async def test_overlapping_submission_source_stays_protected_until_last_parser_e
         await second
     assert not store.processing_source_fingerprints
     assert await store.async_reset_deduplication(source_id='shared-source')
+
+async def test_service_rejects_overflowing_confidence_after_authorization_without_reset(monkeypatch):
+    from unittest.mock import Mock
+    from test_init import FakeHass, FakePermissions, entry
+    from custom_components.daylight_calendar_import import async_setup_entry
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    permissions = FakePermissions(True)
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    monkeypatch.setattr('custom_components.daylight_calendar_import.PendingImportStore', lambda _hass: store)
+    monkeypatch.setattr('custom_components.daylight_calendar_import.async_register_review_panel', AsyncMock())
+    monkeypatch.setattr('custom_components.daylight_calendar_import.async_track_time_interval', Mock(return_value=Mock()))
+    monkeypatch.setattr('custom_components.daylight_calendar_import.async_setup_email_runtime', AsyncMock(return_value=None))
+    await async_setup_entry(hass, entry())
+    await handled(store, 'source', draft())
+    sources, events = store._seen_source_fingerprints, store._seen_event_fingerprints
+    save_attempts = backend.save_attempts
+    invalid = {**draft().as_dict(), 'confidence': 10 ** 1000}
+    handler = hass.services.handlers[(DOMAIN, SERVICE_RESET_DEDUPLICATION)][0]
+    call = SimpleNamespace(data={'event': invalid}, context=Context(user_id='user'))
+    permissions.allowed = False
+    with pytest.raises(Unauthorized):
+        await handler(call)
+    permissions.allowed = True
+    with pytest.raises(ServiceValidationError, match='Invalid event draft for deduplication reset'):
+        await handler(call)
+    assert store._seen_source_fingerprints == sources
+    assert store._seen_event_fingerprints == events
+    assert backend.save_attempts == save_attempts
+    assert not store.active_service_handlers
