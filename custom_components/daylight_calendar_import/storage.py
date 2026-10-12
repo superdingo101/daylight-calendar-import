@@ -308,6 +308,7 @@ class PendingImportStore:
         self._source_claim_releases: set[str] = set()
         self._source_claim_release_provider_codes: dict[str, str] = {}
         self._reprocessing: set[str] = set()
+        self.processing_source_fingerprints: dict[asyncio.Task, str] = {}
         self._lock = asyncio.Lock()
         self._subscribers: set[Callable[[], None]] = set()
         self.on_review_ready: Callable[[PendingImport], None] | None = None
@@ -1082,6 +1083,49 @@ class PendingImportStore:
                                      if item["id"] not in active_ids))
             history.pop(oldest_completed)
         return tuple(history)
+
+    def _check_reset_target_inactive(self, fingerprint: str, *, source: bool) -> None:
+        """Never forget the identity of pending or currently processing work."""
+        active = (any(item.source_fingerprint == fingerprint for item in self._items.values())
+                  or fingerprint in self._source_claims.values()
+                  or fingerprint in self.processing_source_fingerprints.values()) if source else (
+                      fingerprint in self._active_event_fingerprints())
+        if active:
+            raise PendingEventEditError("Pending or processing dedupe targets cannot be reset")
+
+    async def async_reset_deduplication(
+        self, *, source_id: str | None = None, event: EventDraft | None = None,
+    ) -> bool:
+        """Explicitly forget one handled identity, retaining every other record."""
+        if (source_id is None) == (event is None):
+            raise ValueError("Specify exactly one source ID or event")
+        source = source_id is not None
+        fingerprint = build_source_fingerprint(source_id) if source else event_fingerprint(event)
+        # Refuse immediately if an approval currently holds the store lock;
+        # waiting for its completion must not turn a pending-target refusal into
+        # permission to forget its newly confirmed outcome.
+        self._check_reset_target_inactive(fingerprint, source=source)
+        result, cancelled = await self._async_complete_transaction(
+            self._async_reset_deduplication_transaction(fingerprint, source=source)
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    async def _async_reset_deduplication_transaction(self, fingerprint: str, *, source: bool) -> bool:
+        async with self._lock:
+            self._check_reset_target_inactive(fingerprint, source=source)
+            baseline = self._seen_source_fingerprints if source else self._seen_event_fingerprints
+            if fingerprint not in baseline:
+                return False
+            updated = tuple(item for item in baseline if item != fingerprint)
+            if source:
+                await self._async_save(self._items, seen_source_fingerprints=updated)
+                self._seen_source_fingerprints = updated
+            else:
+                await self._async_save(self._items, seen_event_fingerprints=updated)
+                self._seen_event_fingerprints = updated
+            return True
 
     async def async_reprocess(
         self,
