@@ -5,16 +5,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import json
+import re
 from hashlib import sha256
 from copy import deepcopy
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from pathlib import Path
 from uuid import uuid4
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.util.json import json_loads
 
 from .const import DOMAIN
 from .dedup import (
@@ -42,6 +45,13 @@ _STORAGE_NOTIFICATIONS = "notifications"
 _STORAGE_SOURCE_CLAIMS = "source_claims"
 _STORAGE_SEEN_SOURCES = "seen_source_fingerprints"
 _STORAGE_SEEN_EVENTS = "seen_event_fingerprints"
+
+
+class PendingImportStorageError(RuntimeError):
+    """Local data needs repair; preserve it and refuse further writes."""
+
+
+_STORAGE_ERROR = "Daylight import storage needs repair. Preserve the original file and restore a known-good backup with Home Assistant stopped."
 
 
 class PendingImportApprovalUncertainError(RuntimeError):
@@ -139,15 +149,79 @@ def _migrate_v1(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _read_pending_storage(path: str) -> dict[str, Any] | None:
+    """Validate original bytes before HA can rename corrupt JSON and load empty."""
+    storage_path = Path(path)
+    try:
+        content = storage_path.read_bytes()
+    except FileNotFoundError:
+        if any(storage_path.parent.glob(f"{storage_path.name}.corrupt.*")):
+            raise PendingImportStorageError(_STORAGE_ERROR) from None
+        return None
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate storage key")
+            result[key] = value
+        return result
+
+    envelope = json.loads(content, object_pairs_hook=unique_object)
+    # HA's strict parser also rejects non-finite numbers and invalid Unicode.
+    json_loads(content)
+    return _validate_pending_envelope(envelope)
+
+
+def _validate_pending_envelope(envelope: Any) -> dict[str, Any]:
+    """Validate both HA pending data and original file envelopes."""
+    if (not isinstance(envelope, dict) or type(envelope.get("version")) is not int
+            or envelope["version"] not in (1, STORAGE_VERSION)
+            or type(envelope.get("minor_version", 1)) is not int
+            or envelope.get("minor_version", 1) != 1
+            or envelope.get("key", STORAGE_KEY) != STORAGE_KEY):
+        raise PendingImportStorageError(_STORAGE_ERROR)
+    data = envelope["data"]
+    _decode_storage_data(_migrate_v1(data) if envelope["version"] == 1 else data)
+    return envelope
+
+
 class _PendingStore(Store[dict[str, Any]]):
     """Migrate existing Home Assistant Store data before it is loaded."""
+
+    async def _async_load_data(self) -> dict[str, Any] | None:
+        """Inspect original data under HA's concurrent-load guard."""
+        temporary = self._data is None
+        envelope = None
+        try:
+            envelope = (_validate_pending_envelope(deepcopy(self._data)) if not temporary
+                        else await self.hass.async_add_executor_job(_read_pending_storage, self.path))
+            if envelope is None:
+                return None
+            # Use validated original bytes for HA's version/migration path.
+            # A legitimate pending write already in _data keeps its ownership.
+            if temporary:
+                self._data = envelope
+            data = await super()._async_load_data()
+            if data is None:
+                raise PendingImportStorageError(_STORAGE_ERROR)
+            return data
+        except Exception:
+            raise PendingImportStorageError(_STORAGE_ERROR) from None
+        finally:
+            # Do not cache this read across reloads, and never discard a new
+            # queued migration/write produced while HA was loading the envelope.
+            if temporary and self._data is envelope:
+                self._data = None
 
     async def _async_migrate_func(
         self, old_major_version: int, old_minor_version: int, old_data: dict[str, Any]
     ) -> dict[str, Any]:
         if old_major_version != 1:
             raise ValueError(f"Unsupported pending storage version: {old_major_version}")
-        return _migrate_v1(old_data)
+        migrated = _migrate_v1(old_data)
+        _decode_storage_data(migrated)
+        return migrated
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +352,102 @@ class PendingImport:
         return any(event.status == "write_uncertain" for event in self.events)
 
 
+def _decode_storage_data(data: Any) -> tuple:
+    """Decode all durable collections before installing any of the snapshot."""
+    fields = {_STORAGE_ITEMS, _STORAGE_ACTIVITY, _STORAGE_NOTIFICATIONS,
+              _STORAGE_SOURCE_CLAIMS, _STORAGE_SEEN_SOURCES, _STORAGE_SEEN_EVENTS}
+    if not isinstance(data, dict) or set(data) - fields:
+        raise ValueError("unsupported pending storage envelope")
+
+    def rows(key):
+        value = data[key] if key == _STORAGE_ITEMS else data.get(key, ())
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("invalid storage collection")
+        return value
+
+    def text(value):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("invalid storage identity")
+
+    def unique(values):
+        if len(values) != len(set(values)):
+            raise ValueError("duplicate storage identity")
+
+    def stored_fingerprint(value: str, kind: str) -> None:
+        # The only historically persisted format is a v1 SHA-256 fingerprint.
+        # Keep this explicit if future formats are introduced so older evidence
+        # remains supported; accepting opaque strings would silently defeat dedupe.
+        if re.fullmatch(rf"v1:{kind}:[0-9a-f]{{64}}", value) is None:
+            raise ValueError("invalid stored fingerprint")
+
+    item_rows = rows(_STORAGE_ITEMS)
+    if any(not isinstance(raw.get("warnings", ()), (list, tuple)) for raw in item_rows):
+        raise ValueError("invalid import warnings")
+    loaded_items = tuple(PendingImport.from_dict(raw) for raw in item_rows)
+    unique([item.id for item in loaded_items])
+    for item in loaded_items:
+        text(item.id)
+        text(item.created_at)
+        text(item.source_kind)
+        if not isinstance(item.source_text, str) or not item.events:
+            raise ValueError("invalid pending import")
+        if (any(not isinstance(warning, str) for warning in item.warnings)
+                or type(item.duplicate_events) is not int or item.duplicate_events < 0):
+            raise ValueError("invalid source metadata")
+        for value in (item.source_fingerprint, item.source_title, item.source_sender):
+            if value is not None and not isinstance(value, str):
+                raise ValueError("invalid source metadata")
+        if item.source_fingerprint is not None:
+            stored_fingerprint(item.source_fingerprint, "source")
+        unique([event.id for event in item.events])
+        for event in item.events:
+            text(event.id)
+            if type(event.routing_unresolved) is not bool:
+                raise ValueError("invalid routing checkpoint")
+            for value in (event.calendar_entity, event.write_attempt):
+                if value is not None:
+                    text(value)
+
+    activity = deepcopy(rows(_STORAGE_ACTIVITY))
+    unique([record["id"] for record in activity])
+    for record in activity:
+        text(record["id"])
+        text(record["status"])
+        # Unknown statuses must not become eligible for retention pruning.
+        # Each value below is produced by the lifecycle transaction methods.
+        if record["status"] not in {
+            "discovered", "processing", "failed", "duplicate", "no_events",
+            "review_ready", "source_reprocessed", "event_rejected", "mixed",
+            "calendar_write_started", "calendar_write_uncertain",
+            "calendar_created", "calendar_create_failed",
+        }:
+            raise ValueError("invalid lifecycle status")
+        transitions = record["transitions"]
+        if not isinstance(transitions, (list, tuple)) or any(not isinstance(row, dict) for row in transitions):
+            raise ValueError("invalid lifecycle history")
+        record["transitions"] = list(transitions)
+        for name in ("created_count", "rejected_count"):
+            if type(record.get(name, 0)) is not int or record.get(name, 0) < 0:
+                raise ValueError("invalid lifecycle count")
+    journal = tuple(NotificationRecord.from_dict(raw) for raw in rows(_STORAGE_NOTIFICATIONS))
+    unique([record.event.idempotency_key for record in journal])
+    histories = []
+    for key, kind in ((_STORAGE_SEEN_SOURCES, "source"), (_STORAGE_SEEN_EVENTS, "event")):
+        fingerprints = rows(key)
+        for fingerprint in fingerprints:
+            text(fingerprint)
+            stored_fingerprint(fingerprint, kind)
+        histories.append(tuple(fingerprints))
+    claims = data.get(_STORAGE_SOURCE_CLAIMS, {})
+    if not isinstance(claims, dict):
+        raise ValueError("invalid source claims")
+    for identifier, fingerprint in claims.items():
+        text(identifier)
+        text(fingerprint)
+        stored_fingerprint(fingerprint, "source")
+    return {item.id: item for item in loaded_items}, tuple(activity), journal, *histories, dict(claims)
+
+
 @dataclass(frozen=True, slots=True)
 class PendingImportAddResult:
     """Result of adding a possibly duplicate import."""
@@ -298,6 +468,7 @@ class PendingImportStore:
             STORAGE_KEY,
             private=True,
         )
+        self._storage_blocked = False
         self._items: dict[str, PendingImport] = {}
         self._activity: tuple[dict[str, Any], ...] = ()
         self._notifications: tuple[NotificationRecord, ...] = ()
@@ -335,34 +506,27 @@ class PendingImportStore:
 
     async def async_load(self) -> None:
         """Load pending imports and deduplication history."""
-        data = await self._store.async_load()
-        if data is None:
-            self._items = {}
-            self._activity = ()
-            self._notifications = ()
-            self._seen_source_fingerprints = ()
-            self._seen_event_fingerprints = ()
-            self._source_claims = {}
-            self._source_claim_releases = set()
-            self._source_claim_release_provider_codes = {}
-            return
+        try:
+            data = await self._store.async_load()
+            if data is None:
+                if any((self._items, self._activity, self._notifications, self._source_claims,
+                        self._seen_source_fingerprints, self._seen_event_fingerprints)):
+                    raise PendingImportStorageError(_STORAGE_ERROR)
+                snapshot = ({}, (), (), (), (), {})
+            else:
+                snapshot = _decode_storage_data(data)
+        except Exception:
+            self._storage_blocked = True
+            self.accepting_services = False
+            raise PendingImportStorageError(_STORAGE_ERROR) from None
 
-        items = (
-            PendingImport.from_dict(raw) for raw in data[_STORAGE_ITEMS]
-        )
-        self._items = {item.id: item for item in items}
-        self._activity = tuple(data.get(_STORAGE_ACTIVITY, ()))
-        self._notifications = tuple(NotificationRecord.from_dict(raw)
-                                    for raw in data.get(_STORAGE_NOTIFICATIONS, ()))
-        self._seen_source_fingerprints = tuple(
-            data.get(_STORAGE_SEEN_SOURCES, ())
-        )
-        self._seen_event_fingerprints = tuple(
-            data.get(_STORAGE_SEEN_EVENTS, ())
-        )
-        self._source_claims = dict(data.get(_STORAGE_SOURCE_CLAIMS, {}))
+        (self._items, self._activity, self._notifications, self._seen_source_fingerprints,
+         self._seen_event_fingerprints, self._source_claims) = snapshot
+        self._storage_blocked = False
         self._source_claim_releases = set()
         self._source_claim_release_provider_codes = {}
+        if data is None:
+            return
         interrupted = [
             item["id"]
             for item in self._activity
@@ -1788,6 +1952,8 @@ class PendingImportStore:
         notifications: tuple[NotificationRecord, ...] | None = None,
     ) -> None:
         """Persist a proposed collection and deduplication history."""
+        if self._storage_blocked:
+            raise PendingImportStorageError(_STORAGE_ERROR)
         seen_sources = (
             self._seen_source_fingerprints
             if seen_source_fingerprints is None

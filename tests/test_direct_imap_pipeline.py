@@ -223,6 +223,8 @@ class PipelineEnvironment:
             "parse_source_with_provider",
             parser,
         )
+        monkeypatch.setattr(integration_module.ir, "async_create_issue", Mock())
+        monkeypatch.setattr(integration_module.ir, "async_delete_issue", Mock())
         monkeypatch.setattr(integration_module, "async_track_time_interval", Mock(return_value=Mock()))
         monkeypatch.setattr(
             integration_module,
