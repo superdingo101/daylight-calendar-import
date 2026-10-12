@@ -18,6 +18,7 @@ CI_TESTS = {
     "tests/test_pr_mutation_scope.py",
     "tests/test_pr_mutation_cache.py",
     "tests/test_mutation_shadow.py",
+    "tests/test_mutation_impact.py",
     "tests/test_mutation_cache_reuse.py",
     "tests/test_pr_mutation_rebuild_workflow.py",
 }
@@ -116,6 +117,27 @@ def report_modules(report):
             phases[name] = hits
     return sorted(inclusive), sorted(executed), phases
 
+def collection_function_modules(report):
+    """Production function bodies run before pytest assigns a test context.
+
+    Plain module imports/assignments have no function-body execution and do not
+    trigger this conservative signal. Collection-time function calls cannot
+    reliably be attributed to a single test, so the impact policy escalates.
+    """
+    found = []
+    for name, info in report.get("files", {}).items():
+        if not source(name) or not Path(name).is_file():
+            continue
+        collection_lines = {
+            int(line)
+            for line, contexts in info.get("contexts", {}).items()
+            if any(context == "" for context in contexts)
+        }
+        if body_executed(name, collection_lines):
+            found.append(name)
+    return sorted(found)
+
+
 def coverage(tests):
     start = time.monotonic()
     report = Path(".mutation-shadow-coverage.json")
@@ -124,8 +146,15 @@ def coverage(tests):
         env = {**os.environ, "COVERAGE_CORE": "ctrace"}
         subprocess.run([sys.executable, "-m", "pytest", "-q", "--cov=custom_components.daylight_calendar_import", "--cov-context=test", "--cov-report=", "--cov-fail-under=0", *tests], check=True, env=env)
         subprocess.run([sys.executable, "-m", "coverage", "json", "--show-contexts", "--fail-under=0", "-o", str(report)], check=True)
-        inclusive, executed, phases = report_modules(json.loads(report.read_text()))
-        return {"import_inclusive_modules": inclusive, "execution_modules": executed, "execution_phases": phases, "duration_seconds": round(time.monotonic()-start, 3)}
+        data = json.loads(report.read_text())
+        inclusive, executed, phases = report_modules(data)
+        return {
+            "import_inclusive_modules": inclusive,
+            "execution_modules": executed,
+            "collection_function_modules": collection_function_modules(data),
+            "execution_phases": phases,
+            "duration_seconds": round(time.monotonic()-start, 3),
+        }
     finally:
         report.unlink(missing_ok=True)
 
@@ -139,6 +168,8 @@ def plan(base, head, measure=True):
               "existing_test_edits": sorted(modified & {p for p in paths if app_test(p)}),
               "mode": mode, "reason": reason, "source_modules": modules,
               "test_files_measured": tests, "coverage": None,
+              "report_role": "preliminary" if not measure else "final",
+              "authoritative_plan": "mutation-impact-plan.json" if not measure else None,
               "estimated_mutants": None, "estimated_runtime_seconds": None}
     if measure and tests:
         result["coverage"] = coverage(tests)
@@ -176,7 +207,7 @@ def main():
     # require dependency installation. Avoid duplicate workflow summaries.
     if summary and not (args.no_coverage and result.get("test_files_measured")):
         with Path(summary).open("a") as out:
-            out.write("### Mutation scope shadow (not a quality gate)\n\n")
+            out.write("### Mutation scope shadow (preliminary; not a quality gate)\n\n" if args.no_coverage else "### Mutation scope shadow (not a quality gate)\n\n")
             out.write(f"- Proposed mode: {result['mode']}\n- Reason: {result['reason']}\n")
             out.write("- Existing required Mutation score: unchanged\n")
             if result.get("coverage"):
