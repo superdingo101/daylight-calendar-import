@@ -27,6 +27,8 @@ CI_TESTS = {
     # Shadow instrumentation tests exercise CI policy, not application code.
     "tests/test_mutation_shadow.py",
     "tests/test_mutation_impact.py",
+    "tests/test_mutation_shards.py",
+    "tests/test_mutation_pr_gate.py",
     # Removed obsolete cache-specific test modules are CI-only too.
     "tests/test_mutation_cache_reuse.py",
     "tests/test_pr_mutation_rebuild_workflow.py",
