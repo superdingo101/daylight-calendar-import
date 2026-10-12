@@ -428,3 +428,54 @@ async def test_duplicate_original_json_keys_rejected_without_exposing_bytes(hass
     with pytest.raises(PendingImportStorageError, match="^Daylight import storage needs repair"):
         await store.async_load()
     assert await hass.async_add_executor_job(path.read_bytes) == content
+
+
+def test_original_duplicate_json_key_reports_precise_decoder_failure(tmp_path):
+    from custom_components.daylight_calendar_import.storage import _read_pending_storage
+    path = tmp_path / STORAGE_KEY
+    path.write_bytes(b'{"items":[],"items":[]}')
+    with pytest.raises(ValueError, match="^duplicate storage key$"):
+        _read_pending_storage(str(path))
+
+
+def test_corrupt_backup_without_original_reports_safe_recovery_error(tmp_path):
+    from custom_components.daylight_calendar_import.storage import _read_pending_storage
+    original = tmp_path / STORAGE_KEY
+    (tmp_path / (STORAGE_KEY + ".corrupt.old")).write_bytes(b"private bytes")
+    with pytest.raises(PendingImportStorageError) as error:
+        _read_pending_storage(str(original))
+    assert str(error.value).startswith("Daylight import storage needs repair")
+    assert "private bytes" not in str(error.value)
+
+
+def test_missing_original_without_corrupt_backup_is_new_install(tmp_path):
+    from custom_components.daylight_calendar_import.storage import _read_pending_storage
+    assert _read_pending_storage(str(tmp_path / STORAGE_KEY)) is None
+
+
+@pytest.mark.parametrize("collection", ["seen_source_fingerprints", "seen_event_fingerprints"])
+def test_invalid_fingerprint_identity_has_precise_error(collection):
+    from custom_components.daylight_calendar_import.storage import _decode_storage_data
+    data = valid_data()
+    data[collection] = [""]
+    with pytest.raises(ValueError, match="^invalid storage identity$"):
+        _decode_storage_data(data)
+
+
+@pytest.mark.parametrize("collection", ["seen_source_fingerprints", "seen_event_fingerprints"])
+def test_valid_fingerprints_survive_decoding(collection):
+    from custom_components.daylight_calendar_import.storage import _decode_storage_data
+    data = valid_data()
+    assert tuple(data[collection]) in _decode_storage_data(data)
+
+
+def test_valid_optional_source_metadata_preserved_on_load():
+    from custom_components.daylight_calendar_import.storage import _decode_storage_data
+    data = valid_data()
+    data["items"][0]["source_title"] = "Recovered document"
+    data["items"][0]["source_sender"] = "sender@example.test"
+    data["items"][0]["source_fingerprint"] = "exact-fingerprint"
+    restored = next(iter(_decode_storage_data(data)[0].values()))
+    assert (restored.source_title, restored.source_sender, restored.source_fingerprint) == (
+        "Recovered document", "sender@example.test", "exact-fingerprint"
+    )
