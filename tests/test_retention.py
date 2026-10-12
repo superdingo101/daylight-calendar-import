@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from custom_components.daylight_calendar_import import storage as storage_module
+from custom_components.daylight_calendar_import.dedup import source_fingerprint, event_fingerprint
 from custom_components.daylight_calendar_import.notification_journal import NotificationRecord
 from custom_components.daylight_calendar_import.notification_preferences import normalize_notification_preferences
 from test_storage import FakeStoreBackend, make_store, draft
@@ -41,10 +42,10 @@ async def test_expire_completed_history_but_keep_every_kind_of_active_identity(m
     )
     await store._async_save(store._items,
         activity=tuple(records) + (activity("expired", ago(31)), activity("recent", ago(1))),
-        source_claims={"claimed": "fingerprint"}, notifications=requests)
+        source_claims={"claimed": source_fingerprint("claimed")}, notifications=requests)
     assert {record["id"] for record in store.list_activity()} == set(identifiers) | {"recent"}
     assert {record.import_id for record in store.list_notifications()} == set(identifiers) | {"recent"}
-    assert backend.saved[-1]["source_claims"] == {"claimed": "fingerprint"}
+    assert backend.saved[-1]["source_claims"] == {"claimed": source_fingerprint("claimed")}
     assert backend.saved[-1]["items"] == [item.as_dict()]
 
 
@@ -202,14 +203,16 @@ async def test_pending_conflict_identity_stays_silent_after_reload_with_zero_ter
 
 
 async def test_retention_never_expires_dedup_fingerprints(monkeypatch):
+    handled_source = source_fingerprint("source-identity")
+    handled_event = event_fingerprint(draft())
     backend = FakeStoreBackend({"items": [], "activity": [activity("old", ago(60))],
-        "seen_source_fingerprints": ["source-fingerprint"],
-        "seen_event_fingerprints": ["event-fingerprint"]})
+        "seen_source_fingerprints": [handled_source],
+        "seen_event_fingerprints": [handled_event]})
     store = make_store(monkeypatch, backend)
     await store.async_load()
     assert store._activity == ()
-    assert backend.saved[-1] == {"items": [], "seen_source_fingerprints": ["source-fingerprint"],
-                               "seen_event_fingerprints": ["event-fingerprint"]}
+    assert backend.saved[-1] == {"items": [], "seen_source_fingerprints": [handled_source],
+                               "seen_event_fingerprints": [handled_event]}
 
 
 async def test_reprocessing_does_not_restore_pruned_history(monkeypatch):
