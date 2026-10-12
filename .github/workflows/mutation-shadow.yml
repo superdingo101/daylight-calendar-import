@@ -1,0 +1,42 @@
+name: Mutation scope shadow
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-shadow-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Proposed mutation scope (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements_test.txt
+      - name: Compute shadow plan (never substitutes for Mutation score)
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python -m scripts.mutation_shadow --base "$PR_BASE" --head "$PR_HEAD"
+      - name: Upload shadow plan
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-shadow-plan
+          path: mutation-shadow-plan.json
+          if-no-files-found: warn
