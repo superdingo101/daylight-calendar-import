@@ -613,6 +613,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         except PendingEventEditError as err:
             raise ServiceValidationError(str(err)) from err
+        except OverflowError as err:
+            # A valid local timestamp near year 1/9999 can overflow while
+            # calculating its canonical UTC fingerprint.
+            raise ServiceValidationError("Invalid event draft for deduplication reset") from err
         return {"reset": reset, "kind": "source" if event is None else "event"}
 
     async def handle_reprocess_pending(call: ServiceCall) -> ServiceResponse:

@@ -253,6 +253,43 @@ async def test_overlapping_submission_source_stays_protected_until_last_parser_e
     assert not store.processing_source_fingerprints
     assert await store.async_reset_deduplication(source_id='shared-source')
 
+@pytest.mark.parametrize(("start", "end"), [
+    ("9999-12-31T22:00:00-14:00", "9999-12-31T23:00:00-14:00"),
+    ("0001-01-01T01:00:00+14:00", "0001-01-01T02:00:00+14:00"),
+])
+async def test_service_rejects_utc_fingerprint_overflow_without_reset(monkeypatch, start, end):
+    """A locally valid boundary timestamp must produce a service validation error."""
+    from unittest.mock import Mock
+    from test_init import FakeHass, FakePermissions, entry
+    from custom_components.daylight_calendar_import import async_setup_entry
+    from custom_components.daylight_calendar_import.models import EventDraft
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(True)))
+    monkeypatch.setattr('custom_components.daylight_calendar_import.PendingImportStore', lambda _hass: store)
+    monkeypatch.setattr('custom_components.daylight_calendar_import.async_register_review_panel', AsyncMock())
+    monkeypatch.setattr('custom_components.daylight_calendar_import.async_track_time_interval', Mock(return_value=Mock()))
+    monkeypatch.setattr('custom_components.daylight_calendar_import.async_setup_email_runtime', AsyncMock(return_value=None))
+    await async_setup_entry(hass, entry())
+    await handled(store, 'source', draft())
+
+    boundary = {**draft().as_dict(), 'start': start, 'end': end}
+    assert EventDraft.from_mapping(boundary).start == start
+    sources, events = store._seen_source_fingerprints, store._seen_event_fingerprints
+    save_attempts = backend.save_attempts
+    handler = hass.services.handlers[(DOMAIN, SERVICE_RESET_DEDUPLICATION)][0]
+    call = SimpleNamespace(data={'event': boundary}, context=Context(user_id='user'))
+
+    with pytest.raises(ServiceValidationError, match='Invalid event draft for deduplication reset') as error:
+        await handler(call)
+    assert isinstance(error.value.__cause__, OverflowError)
+    assert store._seen_source_fingerprints == sources
+    assert store._seen_event_fingerprints == events
+    assert backend.save_attempts == save_attempts
+    assert not store.active_service_handlers
+
+
 async def test_service_rejects_overflowing_confidence_after_authorization_without_reset(monkeypatch):
     from unittest.mock import Mock
     from test_init import FakeHass, FakePermissions, entry
