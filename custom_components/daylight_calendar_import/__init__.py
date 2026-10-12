@@ -605,7 +605,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await check_read_permission(call)
         try:
             event = EventDraft.from_mapping(call.data["event"]) if "event" in call.data else None
-        except DraftValidationError as err:
+        except (DraftValidationError, OverflowError) as err:
             raise ServiceValidationError("Invalid event draft for deduplication reset") from err
         try:
             reset = await pending_store.async_reset_deduplication(
