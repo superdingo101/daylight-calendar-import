@@ -274,3 +274,14 @@ resolve_pending_event:
       description: Optional event snapshot; reject the resolution if the uncertain write changed since review.
       selector:
         object:
+
+reprocess_pending:
+  name: Reprocess retained source
+  description: Reparse retained manual text and append only novel drafts to an unchanged, entirely pending import. Existing drafts and all dedupe history are preserved. Original email/upload material and handled or uncertain imports cannot be reprocessed. Requires an authenticated user with control access to the AI Task and all allowed calendars.
+  fields:
+    pending_id:
+      name: Pending import ID
+      description: ID of the manual-text import still awaiting review.
+      required: true
+      selector:
+        text:

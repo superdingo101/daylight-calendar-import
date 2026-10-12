@@ -17,7 +17,7 @@ from homeassistant.exceptions import ServiceValidationError, Unauthorized, Unkno
 from homeassistant.util import dt as dt_util
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_interval
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from .const import (
     ATTR_EVENT_ID,
@@ -33,6 +33,7 @@ from .const import (
     SERVICE_APPROVE_PENDING_EVENT,
     SERVICE_EDIT_PENDING_EVENT,
     SERVICE_GET_PENDING,
+    SERVICE_REPROCESS_PENDING,
     SERVICE_GET_PENDING_EVENT,
     SERVICE_CHECK_PENDING_EVENT,
     SERVICE_IMPORT_TEXT,
@@ -68,6 +69,7 @@ from .storage import (
     PendingEventEditError,
     PendingEventResolutionError,
     PendingEvent,
+    PendingImport,
     PendingImportApprovalUncertainError,
     PendingImportStore,
 )
@@ -88,6 +90,7 @@ _ENTRY_SERVICES = (
     SERVICE_LIST_ACTIVITY,
     SERVICE_GET_ACTIVITY,
     SERVICE_GET_PENDING,
+    SERVICE_REPROCESS_PENDING,
     SERVICE_GET_PENDING_EVENT,
     SERVICE_CHECK_PENDING_EVENT,
     SERVICE_EDIT_PENDING_EVENT,
@@ -586,6 +589,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for calendar_entity in allowed_calendars:
             await _async_check_entity_control_permission(hass, calendar_entity, call.context)
 
+    async def handle_reprocess_pending(call: ServiceCall) -> ServiceResponse:
+        """Explicitly reparse available source text without replacing user work."""
+        await check_read_permission(call)
+
+        async def reparse(original: PendingImport):
+            source = SourceDocument(
+                id=original.id, kind=SourceKind.MANUAL_TEXT,
+                received_at=datetime.fromisoformat(original.created_at),
+                text=original.source_text, title=original.source_title,
+            )
+            route = route_review_source(source)
+            outcome = await _async_parse_source(
+                hass, route.parser_source, ai_task_entity,
+                reference_datetime=source.received_at,
+            )
+            assumptions = outcome.event_assumptions or ((),) * len(outcome.events)
+            candidates = tuple(PendingEvent.create(
+                event, route.calendar_entity,
+                routing_unresolved=route.requires_confirmation,
+                date_time_assumptions=notes,
+            ) for event, notes in zip(outcome.events, assumptions, strict=True))
+            return candidates, tuple([*outcome.warnings, *route.warnings])
+
+        task = asyncio.current_task()
+        pending_store.active_submissions.add(task)
+        try:
+            try:
+                updated, added, duplicates = await pending_store.async_reprocess(
+                    call.data[ATTR_PENDING_ID], reparse,
+                )
+            except PendingEventEditError as err:
+                raise ServiceValidationError(str(err)) from err
+            return {"pending": updated.as_service_dict(), "added_events": added,
+                    "duplicate_events": duplicates}
+        finally:
+            pending_store.active_submissions.discard(task)
+
     async def handle_list_pending(call: ServiceCall) -> ServiceResponse:
         await check_read_permission(call)
         return {"imports": [
@@ -878,6 +918,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
         )
         hass.services.async_register(
+            DOMAIN, SERVICE_REPROCESS_PENDING, tracked(handle_reprocess_pending),
+            schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
             DOMAIN, SERVICE_GET_PENDING, tracked(handle_get_pending),
             schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
         )
@@ -1066,6 +1110,8 @@ async def _async_parse_source(
     hass: HomeAssistant,
     source: SourceDocument,
     ai_task_entity: str,
+    *,
+    reference_datetime: datetime | None = None,
 ) -> ParseOutcome:
     """Feed a normalized source into the current text parser boundary."""
     if source.text is None and not source.attachments:
@@ -1077,6 +1123,7 @@ async def _async_parse_source(
         hass,
         source=source,
         ai_task_entity=ai_task_entity,
+        **({"reference_datetime": reference_datetime} if reference_datetime is not None else {}),
     )
 
 

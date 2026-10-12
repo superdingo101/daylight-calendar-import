@@ -212,6 +212,16 @@ async def test_retention_never_expires_dedup_fingerprints(monkeypatch):
                                "seen_event_fingerprints": ["event-fingerprint"]}
 
 
+async def test_reprocessing_does_not_restore_pruned_history(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = (await store.async_add(source_text="retained source", events=[draft()])).pending
+    store._activity += (activity("expired", ago(60)),)
+    await store.async_reprocess(item.id, AsyncMock(return_value=((), ())))
+    assert store.get_activity("expired") is None
+    assert all(record["id"] != "expired" for record in backend.saved[-1]["activity"])
+
+
 async def test_terminal_request_with_live_provider_protected_until_task_finishes(monkeypatch):
     monkeypatch.setattr(storage_module, "TERMINAL_NOTIFICATION_LIMIT", 0)
     store = make_store(monkeypatch, FakeStoreBackend())

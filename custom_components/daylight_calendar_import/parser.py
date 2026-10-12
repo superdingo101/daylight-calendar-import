@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import voluptuous as vol
@@ -120,18 +121,24 @@ async def async_parse_text(
 
 
 async def async_parse_source(
-    hass: HomeAssistant, *, source: SourceDocument, ai_task_entity: str
+    hass: HomeAssistant, *, source: SourceDocument, ai_task_entity: str,
+    reference_datetime: datetime | None = None,
 ) -> ParseOutcome:
     """Route a normalized source through the configured parser provider."""
     from .providers import AITaskParserProvider
 
     time_zone = hass.config.time_zone
     local_tz = dt_util.get_time_zone(time_zone)
-    reference_datetime = dt_util.now(time_zone=local_tz).isoformat()
+    if reference_datetime is None:
+        reference = dt_util.now(time_zone=local_tz)
+    else:
+        if reference_datetime.utcoffset() is None:
+            raise ValueError("reference datetime must include a time zone")
+        reference = reference_datetime.astimezone(local_tz)
     provider = AITaskParserProvider(hass, ai_task_entity)
     return await provider.async_parse(
         source,
-        reference_datetime=reference_datetime,
+        reference_datetime=reference.isoformat(),
         time_zone=time_zone,
     )
 
