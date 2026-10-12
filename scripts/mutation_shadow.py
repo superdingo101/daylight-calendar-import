@@ -207,7 +207,7 @@ def main():
     # require dependency installation. Avoid duplicate workflow summaries.
     if summary and not (args.no_coverage and result.get("test_files_measured")):
         with Path(summary).open("a") as out:
-            out.write("### Mutation scope shadow (preliminary; not a quality gate)\n\n" if not measure else "### Mutation scope shadow (not a quality gate)\n\n")
+            out.write("### Mutation scope shadow (preliminary; not a quality gate)\n\n" if args.no_coverage else "### Mutation scope shadow (not a quality gate)\n\n")
             out.write(f"- Proposed mode: {result['mode']}\n- Reason: {result['reason']}\n")
             out.write("- Existing required Mutation score: unchanged\n")
             if result.get("coverage"):
