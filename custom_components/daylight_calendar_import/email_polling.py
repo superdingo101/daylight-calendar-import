@@ -11,7 +11,7 @@ from typing import Protocol
 from .email_normalize import EmailNormalizationError, normalize_email
 from .email_safety import ExactSenderAllowlist
 from .email_source import EmailDisposition, EmailEnvelope, EmailSource
-from .providers import SourceValidationError
+from .providers import SourceValidationError, ProviderError
 from .sources import SourceDocument
 from .storage import PendingImportStore
 
@@ -276,7 +276,12 @@ async def async_poll_email_source(
                     acknowledgement_failures += 1
                 continue
 
-            await store.async_record_parse_failure(activity_id)
+            if isinstance(error, ProviderError):
+                await store.async_record_parse_failure(
+                    activity_id, provider_error_code=error.code,
+                )
+            else:
+                await store.async_record_parse_failure(activity_id)
             processing_failures += 1
             continue
 
