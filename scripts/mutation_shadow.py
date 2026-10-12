@@ -83,7 +83,7 @@ def coverage(tests):
     start = time.monotonic()
     report = Path(".mutation-shadow-coverage.json")
     try:
-        subprocess.run([sys.executable, "-m", "pytest", "-q", "--cov=custom_components.daylight_calendar_import", "--cov-context=test", "--cov-report=", "--cov-fail-under=0", *tests], check=True)
+        # Coverage sys.monitoring cannot record dynamic per-test contexts;\n        # require the C tracer so fixture/setup/run/teardown selection is valid.\n        env = {**os.environ, "COVERAGE_CORE": "ctrace"}\n        subprocess.run([sys.executable, "-m", "pytest", "-q", "--cov=custom_components.daylight_calendar_import", "--cov-context=test", "--cov-report=", "--cov-fail-under=0", *tests], check=True, env=env)
         subprocess.run([sys.executable, "-m", "coverage", "json", "--show-contexts", "--fail-under=0", "-o", str(report)], check=True)
         inclusive, executed, phases = report_modules(json.loads(report.read_text()))
         return {"import_inclusive_modules": inclusive, "execution_modules": executed, "execution_phases": phases, "duration_seconds": round(time.monotonic()-start, 3)}
