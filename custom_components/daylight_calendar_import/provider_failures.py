@@ -17,31 +17,32 @@ PROVIDER_FAILURE_GUIDANCE = {
 
 def classify_provider_failure(error: Exception) -> str:
     """Use typed causes, never provider exception text or arbitrary attributes."""
-    seen: set[int] = set()
-    current: BaseException | None = error
-    while current is not None and id(current) not in seen and len(seen) < 16:
-        seen.add(id(current))
-        if isinstance(current, (TimeoutError, TimeoutException)):
-            return "provider_timeout"
-        try:
+    try:
+        seen: set[int] = set()
+        current: BaseException | None = error
+        while current is not None and id(current) not in seen and len(seen) < 16:
+            seen.add(id(current))
+            if isinstance(current, (TimeoutError, TimeoutException)):
+                return "provider_timeout"
             if isinstance(current, ClientResponseError):
                 status = current.status
             elif isinstance(current, HTTPStatusError):
                 status = current.response.status_code
             else:
                 status = getattr(current, "status_code", None)
-        except Exception:
-            return "provider_error"
-        if type(status) is int:
-            if status == 429:
-                return "provider_rate_limited"
-            if status in (401, 403):
-                return "provider_authentication"
-            if 500 <= status <= 599:
+            if type(status) is int:
+                if status == 429:
+                    return "provider_rate_limited"
+                if status in (401, 403):
+                    return "provider_authentication"
+                if 500 <= status <= 599:
+                    return "provider_unavailable"
+            if isinstance(current, (ConnectionError, ClientConnectionError, NetworkError)):
                 return "provider_unavailable"
-        if isinstance(current, (ConnectionError, ClientConnectionError, NetworkError)):
-            return "provider_unavailable"
-        # Only explicit causal chains are evidence. Implicit context may be an
-        # unrelated exception handled by the upstream implementation.
-        current = current.__cause__
+            # Only explicit exception causes are evidence. Descriptors and
+            # malformed cause values are untrusted provider implementation data.
+            cause = current.__cause__
+            current = cause if isinstance(cause, BaseException) else None
+    except Exception:
+        pass
     return "provider_error"
