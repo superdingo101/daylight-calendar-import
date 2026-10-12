@@ -197,3 +197,58 @@ async def test_service_authorizes_validates_and_returns_target_result(monkeypatc
         hass.auth.user.permissions.allowed=permissions
         with pytest.raises(Unauthorized):
             await handler(SimpleNamespace(data={'source_id':'source'},context=Context(user_id=user)))
+
+@pytest.mark.parametrize('kind', ['text', 'image', 'pdf'])
+async def test_overlapping_submission_source_stays_protected_until_last_parser_exits(monkeypatch, kind):
+    from contextlib import asynccontextmanager
+    from unittest.mock import Mock
+    from test_init import FakeHass, FakePermissions, entry
+    from custom_components.daylight_calendar_import import async_setup_entry
+    from custom_components.daylight_calendar_import.parser import ParseOutcome
+    from custom_components.daylight_calendar_import.sources import SourceDocument, SourceKind
+    store = make_store(monkeypatch, FakeStoreBackend())
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(True)))
+    monkeypatch.setattr('custom_components.daylight_calendar_import.PendingImportStore', lambda _hass: store)
+    monkeypatch.setattr('custom_components.daylight_calendar_import.async_register_review_panel', AsyncMock())
+    monkeypatch.setattr('custom_components.daylight_calendar_import.async_track_time_interval', Mock(return_value=Mock()))
+    monkeypatch.setattr('custom_components.daylight_calendar_import.async_setup_email_runtime', AsyncMock(return_value=None))
+    @asynccontextmanager
+    async def upload(*_args):
+        yield SourceDocument('upload', SourceKind(kind), datetime.now(UTC), text='retained')
+    monkeypatch.setattr('custom_components.daylight_calendar_import.async_image_source', upload)
+    monkeypatch.setattr('custom_components.daylight_calendar_import.async_pdf_source', upload)
+    entered = [asyncio.Event(), asyncio.Event()]
+    release = [asyncio.Event(), asyncio.Event()]
+    calls = 0
+    async def parse(*_args):
+        nonlocal calls
+        index = calls
+        calls += 1
+        entered[index].set()
+        await release[index].wait()
+        return ParseOutcome([draft()], [])
+    monkeypatch.setattr('custom_components.daylight_calendar_import._async_parse_source', parse)
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, 'submit_' + kind)][0]
+    data = {'source_id':'shared-source', 'text':'retained'}
+    if kind != 'text':
+        data['file_id'] = 'a' * 32
+    def call():
+        return SimpleNamespace(data=data, context=Context(user_id='user'))
+    first = asyncio.create_task(handler(call()))
+    await entered[0].wait()
+    second = asyncio.create_task(handler(call()))
+    await entered[1].wait()
+    assert list(store.processing_source_fingerprints.values()) == [source_fingerprint('shared-source')] * 2
+    release[0].set()
+    result = await first
+    await store.async_remove(result['pending']['id'])
+    assert len(store.processing_source_fingerprints) == 1
+    with pytest.raises(PendingEventEditError, match='processing'):
+        await store.async_reset_deduplication(source_id='shared-source')
+    # Cancellation releases only this invocation's registry entry.
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+    assert not store.processing_source_fingerprints
+    assert await store.async_reset_deduplication(source_id='shared-source')

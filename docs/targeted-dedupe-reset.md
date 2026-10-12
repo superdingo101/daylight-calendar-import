@@ -19,6 +19,11 @@ calendar, matching access to private pending records. Pending imports, uncertain
 calendar writes, active source claims, and calendar writes currently in flight
 cannot have their identities reset. Resolve or finish that work first. Other
 fingerprints, notifications, lifecycle history, and pending drafts stay intact.
+Manual text and image/PDF submissions also protect their source fingerprints
+from authorized source normalization through parsing and durable acceptance.
+Overlapping submissions of the same ID retain protection until the last one
+finishes or is canceled.
+
 Removal is atomic and survives restart; storage failures preserve the original
 history. Once the storage transaction starts, cancellation waits for it to finish.
 

@@ -306,6 +306,7 @@ class PendingImportStore:
         self._source_claims: dict[str, str] = {}
         self._source_claim_releases: set[str] = set()
         self._reprocessing: set[str] = set()
+        self.processing_source_fingerprints: dict[asyncio.Task, str] = {}
         self._lock = asyncio.Lock()
         self._subscribers: set[Callable[[], None]] = set()
         self.on_review_ready: Callable[[PendingImport], None] | None = None
@@ -1049,7 +1050,8 @@ class PendingImportStore:
     def _check_reset_target_inactive(self, fingerprint: str, *, source: bool) -> None:
         """Never forget the identity of pending or currently processing work."""
         active = (any(item.source_fingerprint == fingerprint for item in self._items.values())
-                  or fingerprint in self._source_claims.values()) if source else (
+                  or fingerprint in self._source_claims.values()
+                  or fingerprint in self.processing_source_fingerprints.values()) if source else (
                       fingerprint in self._active_event_fingerprints())
         if active:
             raise PendingEventEditError("Pending or processing dedupe targets cannot be reset")
