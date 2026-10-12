@@ -137,6 +137,8 @@ def plan(
     result = {
         "schema": 1,
         "informational": True,
+        "report_role": "authoritative_candidate",
+        "supersedes": "mutation-shadow-plan.json",
         "required_gate_unchanged": True,
         "base_sha": base,
         "head_sha": head,
@@ -281,6 +283,8 @@ def main() -> int:
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as exc:
         result = {
             "schema": 1, "informational": True,
+            "report_role": "authoritative_candidate",
+            "supersedes": "mutation-shadow-plan.json",
             "mode": "error", "reason": f"{type(exc).__name__}: {exc}",
             "may_execute_mutmut": False,
         }
