@@ -130,7 +130,13 @@ class AITaskParserProvider:
                 "Configured AI Task is temporarily unavailable",
             )
         self._capabilities_for_entity(entity).validate(source)
-        if entity is not None and not getattr(entity, "available", True):
+        try:
+            unavailable = entity is not None and not getattr(entity, "available", True)
+        except Exception as err:
+            raise ProviderError(
+                classify_provider_failure(err), "AI Task availability could not be checked"
+            ) from None
+        if unavailable:
             raise ProviderError(
                 "provider_unavailable",
                 "Configured AI Task is temporarily unavailable",

@@ -285,3 +285,43 @@ async def test_actual_submission_boundary_sanitizes_malformed_provider_contracts
     assert caught.value.__suppress_context__ is True
     assert "private" not in "".join(traceback.format_exception(caught.value))
     store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected)
+
+
+@pytest.mark.parametrize(("error", "expected"), [
+    (ValueError("private availability details"), "provider_error"),
+    (TimeoutError("private availability request"), "provider_timeout"),
+])
+async def test_actual_submission_sanitizes_throwing_entity_availability(monkeypatch, error, expected):
+    import traceback
+    from homeassistant.core import Context
+    from custom_components.daylight_calendar_import import async_setup_entry
+    from custom_components.daylight_calendar_import.const import DOMAIN, SERVICE_SUBMIT_TEXT
+    from tests.test_init import FakeHass, entry
+
+    class Entity:
+        supported_features = 0
+        @property
+        def available(self):
+            raise error
+
+    generate = AsyncMock()
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+                            async_begin_submission=AsyncMock(return_value="activity-id"),
+                            async_record_parse_failure=AsyncMock())
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_review_panel", AsyncMock())
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_track_time_interval", Mock(return_value=Mock()))
+    hass = FakeHass()
+    hass.data[providers.DATA_COMPONENT] = SimpleNamespace(get_entity=lambda _entity_id: Entity())
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
+    with pytest.raises(providers.ProviderError) as caught:
+        await handler(SimpleNamespace(data={"text": "source details"}, context=Context(user_id=None)))
+    assert caught.value.code == expected
+    assert str(caught.value) == "AI Task availability could not be checked"
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
+    assert "private" not in "".join(traceback.format_exception(caught.value))
+    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected)
+    generate.assert_not_awaited()
