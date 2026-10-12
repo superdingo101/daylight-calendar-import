@@ -10,7 +10,8 @@ from homeassistant.components.ai_task.const import AITaskEntityFeature, DATA_COM
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from .parser import EVENTS_STRUCTURE, PROMPT_TEMPLATE, TASK_NAME, ParseOutcome, parse_ai_data
+from .parser import EVENTS_STRUCTURE, PROMPT_TEMPLATE, TASK_NAME, ParseOutcome, ParseResultError, parse_ai_data
+from .provider_failures import classify_provider_failure
 from .sources import SourceDocument
 
 IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
@@ -129,6 +130,17 @@ class AITaskParserProvider:
                 "Configured AI Task is temporarily unavailable",
             )
         self._capabilities_for_entity(entity).validate(source)
+        try:
+            unavailable = entity is not None and not getattr(entity, "available", True)
+        except Exception as err:
+            raise ProviderError(
+                classify_provider_failure(err), "AI Task availability could not be checked"
+            ) from None
+        if unavailable:
+            raise ProviderError(
+                "provider_unavailable",
+                "Configured AI Task is temporarily unavailable",
+            )
         text = (source.text or "").strip()
         attachments = [
             {"media_content_id": item.content_ref, "media_content_type": item.media_type}
@@ -148,6 +160,19 @@ class AITaskParserProvider:
                 structure=EVENTS_STRUCTURE,
                 **({"attachments": attachments} if attachments else {}),
             )
-        except HomeAssistantError as err:
-            raise ProviderError("provider_error", "AI Task could not parse the source") from err
-        return parse_ai_data(result.data)
+        except Exception as err:
+            raise ProviderError(
+                classify_provider_failure(err), "AI Task could not parse the source"
+            ) from None
+        try:
+            data = result.data
+        except Exception:
+            raise ProviderError(
+                "provider_invalid_response", "AI Task returned an invalid result"
+            ) from None
+        try:
+            return parse_ai_data(data)
+        except ParseResultError:
+            raise ProviderError(
+                "provider_invalid_response", "AI Task returned an invalid result"
+            ) from None

@@ -34,6 +34,7 @@ from .const import (
     SERVICE_EDIT_PENDING_EVENT,
     SERVICE_GET_PENDING,
     SERVICE_REPROCESS_PENDING,
+    SERVICE_RESET_DEDUPLICATION,
     SERVICE_GET_PENDING_EVENT,
     SERVICE_CHECK_PENDING_EVENT,
     SERVICE_IMPORT_TEXT,
@@ -53,10 +54,11 @@ from .email_runtime import (
     email_review_source_text,
 )
 from .models import DraftValidationError, EventDraft
+from .dedup import source_fingerprint
 from .calendar_observation import CalendarObservationError, async_classify_conflicts
 from .parser import ParseOutcome, async_parse_source as parse_source_with_provider
 from .pdfs import async_pdf_source
-from .providers import SourceValidationError
+from .providers import SourceValidationError, ProviderError
 from .review_panel import async_register_review_panel, async_remove_review_panel
 from .settings import effective_ai_task_entity, effective_calendar_options, effective_calendar_intelligence
 from .settings_api import async_register_settings_api
@@ -91,6 +93,7 @@ _ENTRY_SERVICES = (
     SERVICE_GET_ACTIVITY,
     SERVICE_GET_PENDING,
     SERVICE_REPROCESS_PENDING,
+    SERVICE_RESET_DEDUPLICATION,
     SERVICE_GET_PENDING_EVENT,
     SERVICE_CHECK_PENDING_EVENT,
     SERVICE_EDIT_PENDING_EVENT,
@@ -118,6 +121,12 @@ SUBMIT_SCHEMA = vol.Schema(
         ),
     }
 )
+RESET_DEDUPLICATION_SCHEMA = vol.Schema(vol.Any(
+    {vol.Required(ATTR_SOURCE_ID): vol.All(
+        cv.string, lambda value: value.strip(), vol.Length(min=1, max=2048),
+    )},
+    {vol.Required("event"): dict},
+))
 SUBMIT_IMAGE_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_FILE_ID): vol.All(cv.string, vol.Match(r"^[0-9a-f]{32}$")),
@@ -229,6 +238,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pending_store.notification_tasks = registry.setdefault(entry.entry_id, set())
     await pending_store.async_load()
     pending_store.active_submissions = set()
+    pending_store.processing_source_fingerprints = {}
     # Track entry service calls *before* their first await so unload cannot
     # miss a request waiting for authorization or a source claim.
     pending_store.active_service_handlers = set()
@@ -284,15 +294,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     entry.async_on_unload(pending_store.notification_unsubscribe)
 
-    def tracked(handler):
+    def tracked(handler, *, source_submission=False):
         async def invoke(call):
             if not pending_store.accepting_services:
                 raise ServiceValidationError("Daylight is unloading; retry after reload")
             task = asyncio.current_task()
             pending_store.active_service_handlers.add(task)
             try:
+                if source_submission:
+                    await _async_check_entity_control_permission(hass, ai_task_entity, call.context)
+                    source_id = call.data.get(ATTR_SOURCE_ID)
+                    if source_id is not None:
+                        pending_store.processing_source_fingerprints[task] = source_fingerprint(source_id)
                 return await handler(call)
             finally:
+                pending_store.processing_source_fingerprints.pop(task, None)
                 pending_store.active_service_handlers.discard(task)
 
         return invoke
@@ -309,9 +325,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Finish a stopped parser without obscuring its original error."""
         try:
             return await _async_parse_source(hass, source, ai_task_entity)
-        except (asyncio.CancelledError, Exception):
+        except (asyncio.CancelledError, Exception) as error:
             try:
-                await pending_store.async_record_parse_failure(activity_id)
+                if isinstance(error, ProviderError):
+                    await pending_store.async_record_parse_failure(
+                        activity_id, provider_error_code=error.code,
+                    )
+                else:
+                    await pending_store.async_record_parse_failure(activity_id)
             except Exception:
                 pass
             raise
@@ -371,9 +392,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def handle_submit_text(call: ServiceCall) -> ServiceResponse:
         source_id = call.data.get(ATTR_SOURCE_ID)
-        await _async_check_entity_control_permission(
-            hass, ai_task_entity, call.context
-        )
 
         if (
             source_id is not None
@@ -461,9 +479,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def handle_submit_image(call: ServiceCall) -> ServiceResponse:
         """Queue event drafts from an uploaded image and optional source text."""
-        await _async_check_entity_control_permission(
-            hass, ai_task_entity, call.context
-        )
         async with async_image_source(hass, call.data[ATTR_FILE_ID]) as image:
             source = replace(image, text=call.data.get(ATTR_TEXT, "").strip() or None,
                              upstream_source_id=call.data.get(ATTR_SOURCE_ID))
@@ -471,9 +486,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def handle_submit_pdf(call: ServiceCall) -> ServiceResponse:
         """Queue event drafts from a text PDF or attachment-capable parser."""
-        await _async_check_entity_control_permission(
-            hass, ai_task_entity, call.context
-        )
         async with async_pdf_source(hass, call.data[ATTR_FILE_ID], call.data.get(ATTR_TEXT, "")) as pdf:
             return await submit_attachment_source(
                 replace(pdf, upstream_source_id=call.data.get(ATTR_SOURCE_ID))
@@ -588,6 +600,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         for calendar_entity in allowed_calendars:
             await _async_check_entity_control_permission(hass, calendar_entity, call.context)
+
+    async def handle_reset_deduplication(call: ServiceCall) -> ServiceResponse:
+        """Authorize an explicit reset of one handled source or event identity."""
+        await check_read_permission(call)
+        try:
+            event = EventDraft.from_mapping(call.data["event"]) if "event" in call.data else None
+        except DraftValidationError as err:
+            raise ServiceValidationError("Invalid event draft for deduplication reset") from err
+        try:
+            reset = await pending_store.async_reset_deduplication(
+                source_id=call.data.get(ATTR_SOURCE_ID), event=event,
+            )
+        except PendingEventEditError as err:
+            raise ServiceValidationError(str(err)) from err
+        return {"reset": reset, "kind": "source" if event is None else "event"}
 
     async def handle_reprocess_pending(call: ServiceCall) -> ServiceResponse:
         """Explicitly reparse available source text without replacing user work."""
@@ -879,16 +906,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.services.async_register(
             DOMAIN,
             SERVICE_SUBMIT_TEXT,
-            tracked(handle_submit_text),
+            tracked(handle_submit_text, source_submission=True),
             schema=SUBMIT_SCHEMA,
             supports_response=SupportsResponse.ONLY,
         )
         hass.services.async_register(
-            DOMAIN, SERVICE_SUBMIT_IMAGE, tracked(handle_submit_image),
+            DOMAIN, SERVICE_SUBMIT_IMAGE, tracked(handle_submit_image, source_submission=True),
             schema=SUBMIT_IMAGE_SCHEMA, supports_response=SupportsResponse.ONLY,
         )
         hass.services.async_register(
-            DOMAIN, SERVICE_SUBMIT_PDF, tracked(handle_submit_pdf),
+            DOMAIN, SERVICE_SUBMIT_PDF, tracked(handle_submit_pdf, source_submission=True),
             schema=SUBMIT_PDF_SCHEMA, supports_response=SupportsResponse.ONLY,
         )
         hass.services.async_register(
@@ -916,6 +943,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.services.async_register(
             DOMAIN, SERVICE_GET_ACTIVITY, tracked(handle_get_activity),
             schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_RESET_DEDUPLICATION, tracked(handle_reset_deduplication),
+            schema=RESET_DEDUPLICATION_SCHEMA, supports_response=SupportsResponse.ONLY,
         )
         hass.services.async_register(
             DOMAIN, SERVICE_REPROCESS_PENDING, tracked(handle_reprocess_pending),

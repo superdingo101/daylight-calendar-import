@@ -16,6 +16,7 @@ The integration supports:
 - UI configuration of a default calendar and an allowed list of writable calendars
 - `daylight_calendar_import.parse_text`: parse text and return validated drafts without changing a calendar
 - `daylight_calendar_import.import_text`: parse text and create the validated events on the configured calendar
+- `daylight_calendar_import.reset_deduplication`: explicitly forget one handled source or event identity; see [targeted dedupe reset](docs/targeted-dedupe-reset.md)
 - `daylight_calendar_import.reprocess_pending`: explicitly reparse retained manual text and append novel drafts without replacing existing review work; see [safe source reprocessing](docs/source-reprocessing.md)
 - `daylight_calendar_import.submit_text`: parse text, deduplicate it, and persist only new events for review
 - `daylight_calendar_import.submit_image`: upload a PNG, JPEG, or WebP image with optional text, then queue drafts for review
@@ -109,6 +110,8 @@ text, image, or PDF adapter -> SourceDocument -> ParserProvider -> EventDraft[] 
 ```
 
 Text actions normalize into a `SourceDocument` before parsing. The document describes source identity, kind, text, and attachment references; raw attachment bytes do not belong in pending review storage. The `ParserProvider` interface takes the normalized source and reference time. Its AI Task implementation is the configured parser. The current local implementation returns `ParseOutcome`; the public hosted wire contract formalizes the roadmap's richer `ParseResult` without changing downstream calendar ownership.
+
+Provider failures record a stable category and generic recovery advice in the import activity. See [parser provider failures](docs/provider-errors.md) for timeout, rate-limit, availability, authentication, and invalid-result guidance.
 
 Parser capabilities validate media type, attachment count, aggregate size, and text/attachment support before calling the provider. The AI Task adapter checks its entity's attachment feature before passing images or PDFs, while a text-layer PDF uses the text-only path.
 
