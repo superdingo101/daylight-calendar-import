@@ -7,7 +7,10 @@ nightly/release mutation validation have **not** been replaced.
 ## Candidate classification
 
 The shadow workflow writes `mutation-impact-plan.json` alongside
-`mutation-shadow-plan.json`.
+`mutation-shadow-plan.json`. The latter is explicitly marked
+`report_role: preliminary`; the former is the authoritative *candidate
+decision* after any required coverage collection. Neither is an execution
+or mutation-score pass.
 
 - `skip`: no mutation-relevant application inputs changed. This is an
   impact-plan classification, **not** a claim that a mutation score passed.
@@ -28,7 +31,14 @@ test-context analysis as the merged shadow planner, and unions the head and
 base application modules with changed production files. Failure in either
 probe escalates instead of silently dropping the old coverage. Changed
 shared fixtures/config, deleted application modules and non-frontend runtime
-resources also escalate.
+resources also escalate. The planner deliberately escalates if it detects
+functions executed during pytest collection (they cannot be safely attributed
+to the changed tests without including ordinary import side effects), or if
+an edited test module contains exported fixtures, helpers, classes or
+module-level state that may affect unselected consumer tests.
+
+The cap on directly changed production modules is checked **before** any
+base/head coverage probes, with a second cap check after impact union.
 
 ## Cost and score guarantees
 
