@@ -403,6 +403,15 @@ def _decode_storage_data(data: Any) -> tuple:
     for record in activity:
         text(record["id"])
         text(record["status"])
+        # Unknown statuses must not become eligible for retention pruning.
+        # Each value below is produced by the lifecycle transaction methods.
+        if record["status"] not in {
+            "discovered", "processing", "failed", "duplicate", "no_events",
+            "review_ready", "source_reprocessed", "event_rejected", "mixed",
+            "calendar_write_started", "calendar_write_uncertain",
+            "calendar_created", "calendar_create_failed",
+        }:
+            raise ValueError("invalid lifecycle status")
         transitions = record["transitions"]
         if not isinstance(transitions, (list, tuple)) or any(not isinstance(row, dict) for row in transitions):
             raise ValueError("invalid lifecycle history")
