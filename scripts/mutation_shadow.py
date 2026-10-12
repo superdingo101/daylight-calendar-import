@@ -11,7 +11,16 @@ import sys
 import time
 
 SOURCE = "custom_components/daylight_calendar_import/"
-CI_TESTS = {"tests/test_mutation_ci_strategy.py", "tests/test_export_mutation_survivors.py", "tests/test_pr_mutation_scope.py", "tests/test_pr_mutation_cache.py", "tests/test_mutation_shadow.py"}
+# Keep this policy in sync with scripts.pr_mutation.CI_TESTS until the old gate is retired.
+CI_TESTS = {
+    "tests/test_mutation_ci_strategy.py",
+    "tests/test_export_mutation_survivors.py",
+    "tests/test_pr_mutation_scope.py",
+    "tests/test_pr_mutation_cache.py",
+    "tests/test_mutation_shadow.py",
+    "tests/test_mutation_cache_reuse.py",
+    "tests/test_pr_mutation_rebuild_workflow.py",
+}
 GLOBAL = {"pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg", "conftest.py", "tests/conftest.py", SOURCE + "manifest.json"}
 OUT = Path("mutation-shadow-plan.json")
 
@@ -28,23 +37,51 @@ def app_test(path):
     return path.startswith("tests/") and path not in CI_TESTS
 
 def classify(paths, modified, added):
+    """Plan conservatively: unknown impact is never a clean skip."""
     modules = sorted(p for p in paths if source(p) and Path(p).is_file())
     tests = {p for p in paths if app_test(p)}
     measurable = sorted(p for p in tests if Path(p).is_file() and Path(p).name.startswith("test_") and p.endswith(".py"))
-    global_change = any(p in GLOBAL or p.startswith(("requirements", "tests/fixtures/", "tests/data/")) or (p.startswith("tests/") and p.endswith("/conftest.py")) for p in paths)
+    added_tests = sorted(added & set(measurable))
+
+    global_change = any(
+        p in GLOBAL or p.startswith(("requirements", "tests/fixtures/", "tests/data/"))
+        or (p.startswith("tests/") and p.endswith("/conftest.py"))
+        for p in paths
+    )
     if global_change:
         return "comprehensive-sharded", modules, "Shared dependency, fixture or configuration changed", measurable
+
+    # --no-renames reports the old name of a rename as a deletion. Losing a
+    # production module can affect other modules even though its file no longer
+    # exists, so do not drop it and erroneously report a safe skip.
+    deleted_source = sorted(p for p in paths if source(p) and not Path(p).is_file())
+    if deleted_source:
+        return "comprehensive-sharded", modules, "Deleted/renamed-away production module: impact unknown", measurable
+
+    # Runtime resources can change program behavior without changing .py
+    # files. Only frontend assets have been deliberately exempted.
+    runtime_resources = sorted(
+        p for p in paths if p.startswith(SOURCE) and not p.startswith(SOURCE + "frontend/")
+        and not source(p)
+    )
+    if runtime_resources:
+        return "comprehensive-sharded", modules, "Integration runtime resource changed", measurable
+
     if modified & tests:
         return "needs-base-and-head-coverage", modules, "Edited/deleted test requires both base and head coverage", measurable
     if any(not p.endswith(".py") or not Path(p).name.startswith("test_") for p in tests):
         return "comprehensive-sharded", modules, "Shared test helper changed", measurable
+
+    # A test added alongside changed production might kill existing mutants
+    # in other, unchanged modules. We must union its executed-function modules
+    # with changed production before declaring the scoped plan complete.
+    if added_tests:
+        return "coverage-required", modules, "Added tests require fixture-aware execution coverage", added_tests
     if modules:
-        return "scoped", modules, "Changed production modules only; imports do not widen scope", measurable
-    new_tests = sorted(added & tests & set(measurable))
-    if new_tests:
-        return "coverage-required", [], "Test-only additions require execution coverage", new_tests
+        return "scoped", modules, "Changed production modules; no newly added application tests", []
     if tests:
         return "comprehensive-sharded", [], "Unknown application test impact", measurable
+
     return "skip", [], "No mutation-relevant changes", []
 
 def body_executed(path, lines):
@@ -57,7 +94,7 @@ def body_executed(path, lines):
         for statement in node.body:
             start = getattr(statement, "lineno", 0)
             end = getattr(statement, "end_lineno", start)
-            if start > node.lineno and any(start <= n <= end for n in lines):
+            if any(start <= n <= end for n in lines):
                 return True
     return False
 
@@ -107,9 +144,15 @@ def plan(base, head, measure=True):
         result["coverage"] = coverage(tests)
         if mode == "coverage-required":
             found = result["coverage"]["execution_modules"]
-            result["mode"] = "scoped" if found else "comprehensive-sharded"
-            result["source_modules"] = found
-            result["reason"] = ("Test-only addition mapped by fixture-aware coverage" if found else "No verifiable execution: escalate")
+            if found:
+                # Do not omit modules whose existing mutants may now be killed
+                # by new tests, even in mixed production + test changes.
+                result["mode"] = "scoped"
+                result["source_modules"] = sorted(set(modules) | set(found))
+                result["reason"] = "Changed modules plus function execution by added tests"
+            else:
+                result["mode"] = "comprehensive-sharded"
+                result["reason"] = "No verifiable execution from new tests: escalate"
     return result
 
 def main():
@@ -129,7 +172,9 @@ def main():
     OUT.write_text(json.dumps(result, indent=2)+"\n")
     print(f"Shadow plan: {result['mode']}: {result['reason']}")
     summary = os.getenv("GITHUB_STEP_SUMMARY")
-    if summary:
+    # The lightweight preview is superseded by the measured plan when tests
+    # require dependency installation. Avoid duplicate workflow summaries.
+    if summary and not (args.no_coverage and result.get("test_files_measured")):
         with Path(summary).open("a") as out:
             out.write("### Mutation scope shadow (not a quality gate)\n\n")
             out.write(f"- Proposed mode: {result['mode']}\n- Reason: {result['reason']}\n")
