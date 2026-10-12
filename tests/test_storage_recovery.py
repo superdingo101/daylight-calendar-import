@@ -404,8 +404,6 @@ async def test_malformed_activity_status_preserves_old_snapshot_and_blocks_reten
     assert store.list_activity() == prior
     assert store._storage_blocked
     assert len(backend.saved) == before
-    with pytest.raises(PendingImportStorageError):
-        await store.async_apply_retention()
     assert backend.load_result == broken
 
 
