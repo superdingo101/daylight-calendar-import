@@ -1,7 +1,6 @@
 # Daylight Calendar Import
 
-
-[![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/superdingo101/daylight-calendar-import#hacs-custom-repository)
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/superdingo101/daylight-calendar-import#install-with-hacs)
 [![GitHub release](https://img.shields.io/github/v/release/superdingo101/daylight-calendar-import)](https://github.com/superdingo101/daylight-calendar-import/releases)
 [![GitHub stars](https://img.shields.io/github/stars/superdingo101/daylight-calendar-import.svg)](https://github.com/superdingo101/daylight-calendar-import/stargazers)
 [![GitHub issues](https://img.shields.io/github/issues/superdingo101/daylight-calendar-import.svg)](https://github.com/superdingo101/daylight-calendar-import/issues)
@@ -14,136 +13,139 @@
 [![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-pink?logo=github)](https://github.com/sponsors/superdingo101)
 [![Donate](https://img.shields.io/badge/Donate-Buy%20me%20a%20beer-yellow?logo=buy-me-a-coffee)](https://buymeacoffee.com/superdingo101)
 
-The [mutation testing policy](docs/mutation-ci.md) runs uncached changed-module mutation checks on PRs, nightly full clean verification, and an independent clean release gate.
+**Turn event emails, school newsletters, flyers, screenshots, and PDFs into Home Assistant calendar events — without entering every detail by hand.**
 
-A Home Assistant custom integration that turns unstructured text into validated calendar event drafts using the user's existing **AI Task** provider.
+Daylight Calendar Import uses your existing Home Assistant **AI Task** provider to find dates, times, titles, and locations. It creates drafts for you to **review, edit, and approve** before adding anything to your calendar.
 
-This repository is intentionally separate from [Daylight Calendar Card](https://github.com/superdingo101/daylight-calendar-card). The import integration owns ingestion, parsing, and review; the card may later provide an optional shortcut.
+The integration runs in your own Home Assistant installation. **No Daylight Cloud account or subscription is required.** Your chosen AI provider may have its own charges and privacy policies.
 
-## v0.5.0 review and lifecycle
+## How it works
 
-The integration supports:
+1. **Send in event information.** Connect a dedicated email mailbox, or submit text, an image, or a PDF through Home Assistant's Actions tools.
+2. **Let AI identify the events.** A single email or newsletter can contain several events.
+3. **Review the results.** Open **Daylight imports → Review inbox** to check dates, correct details, choose calendars, and inspect possible conflicts.
+4. **Approve the events you want.** Daylight adds approved events to your selected Home Assistant calendars; rejected drafts are not added.
 
-- UI configuration of an existing Home Assistant AI Task entity
-- UI configuration of a default calendar and an allowed list of writable calendars
-- `daylight_calendar_import.parse_text`: parse text and return validated drafts without changing a calendar
-- `daylight_calendar_import.import_text`: parse text and create the validated events on the configured calendar
-- `daylight_calendar_import.reprocess_pending`: explicitly reparse retained manual text and append novel drafts without replacing existing review work; see [safe source reprocessing](docs/source-reprocessing.md)
-- `daylight_calendar_import.submit_text`: parse text, deduplicate it, and persist only new events for review
-- `daylight_calendar_import.submit_image`: upload a PNG, JPEG, or WebP image with optional text, then queue drafts for review
-- `daylight_calendar_import.submit_pdf`: upload a PDF with optional context; extract its text layer locally or use an attachment-capable parser
-- `daylight_calendar_import.approve_pending`: approve pending events after routing confirmation and a fresh destination-calendar exact-duplicate preflight for each event; a later event can fail after earlier events were created
-- `daylight_calendar_import.reject_pending`: remove a pending import without creating calendar events
-- `daylight_calendar_import.list_pending`: list pending import IDs, titles, counts, and uncertain-write flags
-- `daylight_calendar_import.get_pending`: retrieve a pending import with its source text and event drafts
-- `daylight_calendar_import.get_pending_event`: retrieve a draft using its pending import ID and stable event ID
-- `daylight_calendar_import.edit_pending_event`: replace a draft or select its allowed calendar before approval, preserving its ID and checking for duplicates
-- `daylight_calendar_import.reject_pending_event`: reject one draft while retaining other events in the import
-- `daylight_calendar_import.approve_pending_event`: create one draft after routing confirmation and a fresh destination-calendar exact-duplicate check, retaining siblings
-- `daylight_calendar_import.resolve_pending_event`: explicitly resolve a calendar write whose outcome is uncertain
-- `daylight_calendar_import.list_activity` and `get_activity`: inspect recent lifecycle state and bounded transition history
-- multiple events in one input
-- timed and all-day events
-- strict validation of AI output
-- persistent deduplication by optional upstream source ID and normalized event fingerprint
+You stay in control: emails do **not** automatically create calendar events just because they arrive.
 
-For v0.6, the parser's structured-output request requires an assumptions list
-for each returned candidate, including an empty list when dates and times are
-explicit. Contextual time resolutions are shown only on their corresponding
-pending review events; edits to the event's time/date clear stale assumptions.
-This is an AI self-disclosure and **not** independent source-grounded proof that
-the parser made no unsupported inference.
+## Features
 
-The parser instructs the AI not to invent missing event data. Invalid individual events are skipped with indexed `warnings` in parse, import, and submit responses; valid events in the same response remain available. An invalid top-level AI response still fails without creating calendar events. When every event is invalid, no event is imported or queued.
+- **Email imports:** Watch one IMAP mailbox for event announcements and supported attachments.
+- **Text, image, and PDF imports:** Extract events from copied announcements, photos, screenshots, flyers, and PDFs.
+- **Review before adding:** Edit or approve events individually or in a group.
+- **Multiple calendars:** Choose a default calendar, select a destination per event, and set up friendly calendar names such as `Kids` or `Family`.
+- **Duplicate and conflict checks:** Avoid known duplicates and check other calendars for potential overlaps before approval.
+- **Activity history:** See what was processed, approved, rejected, or failed in **Recent activity**.
+- **Optional notifications:** Use a Home Assistant `notify` entity to receive selected updates, including events ready for review.
+- **Home Assistant automations:** Two sensors expose the number of pending imports and pending events.
 
-The current minimum supported Home Assistant version is **2026.7.4**. CI tests that version explicitly alongside the current development test environment.
+## What you'll need
 
+- **Home Assistant 2026.7.4 or newer.**
+- At least one writable Home Assistant calendar entity.
+- A working **[Home Assistant AI Task](https://www.home-assistant.io/integrations/ai_task)** entity from an AI integration you have configured. The provider must support attachments if you want it to interpret images or scanned documents.
+- **HACS** for the recommended installation method. Manual installation is also possible.
+- Optionally, an IMAP-compatible email account or folder for automatic email pickup.
 
-## v0.5.0 Direct IMAP ingestion
+## Install with HACS
 
-v0.5.0 adds optional self-hosted Direct IMAP ingestion. Administrators can configure it from **Daylight imports → Settings → Email** (with the Home Assistant integration **Configure** flow retained as a fallback) and provide an IMAP host, port, username, password/app password, mailbox, TLS verification setting, and (in v0.6) an optional exact sender allowlist. Saved passwords remain server-side; the panel only shows whether a password is configured, and leaving the replacement field blank keeps the existing credential.
+Daylight Calendar Import is currently added as a **HACS custom repository**, not through the HACS default catalog.
 
-**Before enabling it, read [Direct IMAP setup and recovery](docs/direct-imap.md).** The first poll runs immediately and the fixed v0.5 search selects every unread, undeleted message already present in the configured mailbox. Transient failures before a durable local outcome are left unread for retry. Deterministic source-validation failures are recorded as durable failed outcomes so unchanged poison messages do not retry forever; Daylight then attempts to mark them read just like other durable outcomes. An acknowledgement transport failure can leave the upstream read state uncertain while preserving the local result.
+1. In Home Assistant, open **HACS**.
+2. Select the **three-dot menu → Custom repositories**.
+3. Enter `https://github.com/superdingo101/daylight-calendar-import` and choose **Integration** as the type.
+4. Add the repository, find **Daylight Calendar Import** in HACS, and install it.
+5. **Restart Home Assistant.**
+6. Go to **Settings → Devices & services → Add integration** and select **Daylight Calendar Import**.
+7. Select your AI Task entity, a **default calendar**, and the **allowed calendars** to which Daylight may write. Make sure the default calendar is also in the allowed list.
 
-The v0.5 Direct IMAP runtime uses a deliberately bounded transport policy: it polls the selected mailbox for unseen, undeleted messages immediately at setup and every five minutes, does not overlap polling cycles, and attempts to mark a message seen only after its source identity is durably handled locally. Normalized messages reuse the existing parser, pending-review store, default calendar, lifecycle history, deduplication, and temporary attachment-staging pipeline. Normalization failures, transient parser/provider failures, storage failures, and acknowledgement failures remain retryable. Deterministic source-validation errors such as empty/unsupported input, empty attachments, and hard size/count limits are terminal for that source identity and are not sent through AI repeatedly. Completed polls summarize retryable failures separately from terminal rejections; unexpected storage or poll exceptions use the generic error path instead.
+Once configured, open **Daylight imports** in your Home Assistant sidebar. Its **Review inbox**, **Recent activity**, and **Settings** screens are where you'll manage imports.
 
-v0.6 adds an optional exact sender allowlist to Email settings. Non-matching messages are skipped before parsing, remain unread and can be rediscovered on later polls. Matching the `From` header is not sender authentication and does not prevent Daylight from fetching unread messages; a dedicated mailbox/folder remains strongly recommended. Leaving successfully handled messages unread, custom IMAP searches/flags, MOVE rules, OAuth/provider-specific setup, multiple mailboxes/accounts, and hosted forwarding remain unsupported.
+**Prefer manual installation?** Copy the `custom_components/daylight_calendar_import` directory into your Home Assistant `custom_components` folder, restart Home Assistant, and then add the integration under **Settings → Devices & services**.
 
-For a guided description of v0.6 calendar aliases, conflict checks, review-queue sensors, permissions and upgrade behavior, see [the v0.6 guide](docs/v0.6.md).
+## Try your first import
 
-## Installation
+The simplest way to get started is with some copied text — no email setup needed.
 
-### HACS custom repository
+1. Open **Developer Tools → Actions** in Home Assistant.
+2. Choose **Daylight Calendar Import: Submit text for review** (`daylight_calendar_import.submit_text`).
+3. Paste something like:
 
-1. Open **HACS** in Home Assistant.
-2. Open the three-dot menu in the top-right corner and choose **Custom repositories**.
-3. Add:
-   - **Repository:** `https://github.com/superdingo101/daylight-calendar-import`
-   - **Type:** `Integration`
-4. Click **Add**.
-5. Find **Daylight Calendar Import** in HACS and install it.
-6. Restart Home Assistant.
-7. Go to **Settings → Devices & services → Add integration** and add **Daylight Calendar Import**.
-8. Choose an AI Task entity, a default writable calendar, and the allowed writable calendars. Include the default in the allowed list.
+   ```text
+   School movie night
+   November 6, 2026, 6:30 PM
+   School gym
+   ```
 
-Existing installations migrate their configured calendar into the allowed list automatically when the integration next loads. After setup, administrators can open **Daylight imports → Settings** to change the AI Task entity, default calendar, allowed writable calendars, or Direct IMAP settings without returning to Devices & services. The existing integration **Configure** flow remains available as a fallback and uses the same settings model. The default calendar must remain in the allowed calendar list; other allowed calendars can be added or removed explicitly.
+4. Run the action, then open **Daylight imports → Review inbox**.
+5. Open the new import, check its details, and choose **Approve** to create the calendar event — or **Reject** to discard it.
 
-The **Daylight imports** sidebar panel provides **Review inbox**, **Recent activity**, and administrator-only **Settings** views. The review inbox lists imports awaiting review, their source type and time, event count, parser warnings, duplicates skipped, and any uncertain calendar write. Select an import to inspect its source context, warnings, and individual event drafts. You can edit a pending event's title, ISO start/end, all-day flag, location, description, and destination calendar in the panel. The calendar selector is limited to the integration's allowed calendars and preserves each event's current destination. If a source names an unknown or conflicting calendar, Daylight retains the fallback as a preview but blocks approval until you edit the event, explicitly choose a writable destination (even if it is the fallback), and save it. **Approve all** refuses the entire batch if any event still needs routing confirmation; **Reject all** remains available. Timed values need an explicit UTC offset; all-day end dates are exclusive. Approve or reject individual events with a confirmation step; the panel refuses a decision if the event changed since review. For imports with multiple pending events, confirm Approve all or Reject all to process each event independently and see individual results. For an uncertain calendar write, check the destination calendar, then confirm whether it was created, return it to review if it was not created, or discard it. The **Recent activity** view shows completed and failed submissions, outcome totals, and recent transitions. Parse failures include retry guidance. History retains the newest 500 completed records plus active imports and the latest 32 transitions per import; source text and upload bytes are excluded from activity summaries.
+You can also submit an **image** or **PDF** from Developer Tools → Actions using **Submit image for review** or **Submit PDF for review**. Images must be PNG, JPEG, or WebP (up to 10 MiB); PDFs can be up to 10 MiB and 30 pages. The AI Task entity must support attachments when visual interpretation is required.
 
-In the event detail view, **Check calendars** performs an optional, on-demand read-only check of the selected destination plus configured conflict-observation calendars. It reports exact duplicates, possible duplicates, and scheduling overlaps, or an explicit incomplete/unavailable error. The results are **advisory**, are not stored, and may become outdated; the approval action independently rechecks the selected destination for exact duplicates immediately before each write. If that check is incomplete or finds an exact duplicate, approval stops and the current event stays pending. Authenticated approvals now require both read and control access to the destination calendar; otherwise the preflight rejects approval before reading any private calendar events. Trusted userless Home Assistant automations may invoke bulk `approve_pending`; the single-event `approve_pending_event` action requires an authenticated user. The exact-duplicate guard checks the start of long-running events against their full original interval without trying to read the entire calendar duration. Possible duplicates and overlaps remain advisory. This button does not create events, bypass routing confirmation, block approval, or resolve a previously uncertain calendar write. The review API and observation permission requirements are described in [the review API documentation](docs/review-api.md).
+> **Always review AI-generated dates, times, and time zones.** Daylight shows some assumptions made during extraction, but AI may still misunderstand ambiguous announcements.
 
-Then test `daylight_calendar_import.parse_text` from **Developer Tools → Actions**.
+## Import events from email (optional)
 
-Use `parse_text` first while evaluating extraction quality. For the review workflow, use `submit_text` and then pass the returned pending import ID to `approve_pending` or `reject_pending`. `submit_text` accepts an optional stable `source_id`; exact source duplicates can then be skipped before invoking AI. It also filters events already pending or previously approved/rejected using normalized fingerprints. `import_text` remains the explicit immediate-import path and intentionally bypasses the pending-review deduplication pipeline.
+For hands-off collection of announcements, Daylight can check a mailbox directly using IMAP. **We strongly recommend a dedicated mailbox or folder used only for calendar imports.**
 
-For a photographed schedule or flyer, use `submit_image` in **Developer Tools → Actions**, choose an image file (maximum 10 MiB), and optionally provide context text and a stable source ID. The configured AI Task entity must support attachments. The upload and its temporary local media copy are removed after parsing or an error; pending review stores the context and image digest, not the image bytes.
+1. In **Daylight imports → Settings → Email**, enable **Direct IMAP**.
+2. Enter your IMAP server, port, username, password or app password, and mailbox/folder. The connection uses encrypted IMAP (typically port `993`).
+3. Optionally add an **allowed senders** list, with one full email address per line.
+4. Send or forward an event announcement to the mailbox.
+5. Open **Review inbox** to check and approve any events Daylight extracts.
 
-For a PDF, use `submit_pdf` with a file up to 10 MiB and 30 pages. Selectable text is extracted locally and combined with optional context, so a text-only PDF can be parsed without sending the attachment. PDFs with scanned pages, images, or page content that cannot be safely extracted retain a temporary attachment alongside any extracted text; this requires an AI Task entity that supports attachments, and PDF interpretation still depends on that entity. Invalid, encrypted, and oversized PDFs return explicit errors. Uploads and temporary copies are cleaned after processing, and pending review stores extracted text and the attachment digest together when both exist, never PDF bytes or temporary media references.
+Daylight checks the mailbox immediately after enabling the connection and about every five minutes afterward. It processes **unread, undeleted** messages and attempts to mark messages as read after their result has been saved (including certain failed messages).
 
-The three pending read actions return responses from **Developer Tools → Actions**. `list_pending` returns summaries without the original source text; `get_pending` returns the full source and drafts; `get_pending_event` accepts both `pending_id` and `event_id`. Reads require an authenticated Home Assistant user with control permission for both the configured AI Task and calendar entities. Pending data remains available after a Home Assistant restart.
+> **Important privacy note:** Email access is not limited to messages that actually contain events. When connected, Daylight can fetch every unread, undeleted email in its configured mailbox, including existing unread mail. Sender filtering is not a security boundary, and event content may be sent to your configured AI provider. **Do not connect your primary personal inbox without understanding this behavior.** Read the [Direct IMAP setup and privacy guide](docs/direct-imap.md) before enabling it.
 
-To correct an event, call `edit_pending_event` with `pending_id`, `event_id`, and a complete `event` mapping (title, start, end, all_day, optional location/description/confidence). It validates the replacement, rejects exact duplicates in pending or handled history, and keeps the event ID. It also requires control of both configured entities. An event with an uncertain calendar write cannot be edited until that write is resolved.
+The email connector supports one IMAP mailbox per integration configuration, with password/app-password authentication over implicit TLS. OAuth-only sign-in and hosted email forwarding are not currently supported.
 
-Use `reject_pending_event` with `pending_id` and `event_id` to remove only that draft. The rejection is remembered for exact event deduplication; other drafts retain their IDs and review status. The source is marked handled once the last event is resolved. A write-uncertain event requires explicit recovery before per-event rejection.
+## Use different calendars
 
-To choose a destination for an individual event, call `edit_pending_event` with the complete `event` mapping and a top-level `calendar_entity` from the allowed list. The chosen destination survives restarts and appears in pending event responses. New submissions start with the configured default; existing pending events without a saved destination continue to use the default. Approval of one event or an entire import writes each event to its selected calendar. Review reads require control of every allowed calendar, and batch approval checks control of every destination before writing. Both per-event and approve-all actions persist a write-in-flight checkpoint before calling the calendar and checkpoint the confirmed result afterward. An interrupted or ambiguous write blocks automatic retry until its outcome is resolved.
+Under **Daylight imports → Settings**, configure your default calendar, allowed writable calendars, and optional calendar aliases. For example, create an alias `Kids` for your children's calendar.
 
-If an approval stops with an uncertain write, check the actual calendar before calling `resolve_pending_event`. Use `created` if the event exists (record it as handled), `not_created` if it definitely does not exist (restore the same draft and ID for retry), or `discard` if you want to abandon it (record it as rejected). The last two choices are different: `not_created` allows retry while `discard` suppresses the same event through deduplication. Batch rejection now refuses an import with any unresolved uncertain write.
+Then start an email body or a manual text submission with:
 
-### Manual development install
-
-Copy `custom_components/daylight_calendar_import` into Home Assistant's `custom_components` directory and restart Home Assistant. Then add **Daylight Calendar Import** under **Settings → Devices & services**.
-
-## Architecture
-
-```
-text, image, or PDF adapter -> SourceDocument -> ParserProvider -> EventDraft[] -> validation -> deduplication -> pending review -> calendar
+```text
+Calendar: Kids
+School concert on November 12, 2026 at 7:00 PM
 ```
 
-Text actions normalize into a `SourceDocument` before parsing. The document describes source identity, kind, text, and attachment references; raw attachment bytes do not belong in pending review storage. The `ParserProvider` interface takes the normalized source and reference time. Its AI Task implementation is the configured parser. The current local implementation returns `ParseOutcome`; the public hosted wire contract formalizes the roadmap's richer `ParseResult` without changing downstream calendar ownership.
+Daylight uses that alias to suggest the destination calendar for the extracted events. You can still change individual events during review. An unknown or conflicting calendar hint must be explicitly resolved before approval.
 
-Provider failures record a stable category and generic recovery advice in the import activity. See [parser provider failures](docs/provider-errors.md) for timeout, rate-limit, availability, authentication, and invalid-result guidance.
+You can also select **Check calendars** on a draft to look for exact duplicates, possible duplicates, and scheduling overlaps. These results are advisory and may become outdated. Daylight makes a fresh **exact-duplicate check against the destination calendar** before writing an approved event; it does not automatically block all overlapping events.
 
-Parser capabilities validate media type, attachment count, aggregate size, and text/attachment support before calling the provider. The AI Task adapter checks its entity's attachment feature before passing images or PDFs, while a text-layer PDF uses the text-only path.
+See the [v0.6 feature guide](docs/v0.6.md) for calendar routing, permissions, and queue sensors.
 
-### Hosted API v1 contract
+## Frequently asked questions
 
-The canonical public client/server contract for the future managed parser is documented in [`docs/hosted-api.md`](docs/hosted-api.md), with executable JSON Schemas under [`schemas/hosted/v1/`](schemas/hosted/v1/). The private `daylight-cloud` service must implement and contract-test against these public schemas; review, deduplication, conflict detection, lifecycle state, notifications, and calendar writes remain local to Home Assistant.
+**Do I need Daylight Calendar Card?**  
+No. [Daylight Calendar Card](https://github.com/superdingo101/daylight-calendar-card) is a separate Home Assistant dashboard card. Calendar Import works with your existing Home Assistant calendar integrations.
 
-Hosted relay services and SMS ingestion remain future work. Direct IMAP ingestion is available in v0.5.0.
+**Does Daylight send my information to an AI service?**  
+Daylight uses the **AI Task entity you choose**. Depending on that entity and provider, submitted text, email content, or attachments may leave your Home Assistant instance. Review your AI provider's privacy and billing terms. Daylight does not require its own hosted service.
 
-## Tests
+**Will Daylight add every event automatically?**  
+No. The normal email and submission workflow saves drafts for your approval. There is a separate advanced immediate-import action for automations, but it bypasses the usual review workflow.
 
-```bash
-pip install -r requirements_test.txt
-pytest --cov --cov-branch --cov-fail-under=100
-mutmut run
-mutmut export-cicd-stats
-python scripts/check_mutation_score.py
-```
+**What if an event looks wrong?**  
+Edit or reject it in **Review inbox**. If a calendar write has an uncertain outcome, inspect your actual calendar before choosing a recovery action; Daylight will not blindly retry it.
 
-CI requires 100% statement/branch coverage for the Python integration package. The required `Mutation score` check runs automatically when a pull request is opened or updated; **do not apply the retired `mutation-ready` label**. Ordinary PRs mutate changed production Python modules relative to the PR's merge base (including stacked PRs); changes to existing tests and shared mutation inputs conservatively trigger a full uncached run. Documentation-, frontend- and CI-only PRs with no affected Python code explicitly report that mutation testing is not applicable. Do not merge if any required check fails. An independent full clean mutation validation is mandatory for release. This check uses the normal `pull_request` trigger, not a same-repository label gate.
+**Where do I see errors or imports that didn't create events?**  
+Open **Daylight imports → Recent activity**. For AI provider timeouts, authentication problems, and similar errors, see the [provider troubleshooting guide](docs/provider-errors.md).
 
-The mutation gate enforces the baseline in `mutation-baseline.json` via `scripts/check_mutation_score.py`.
+## Help and documentation
 
-The measured mutation score was raised on September 26, 2026 to **95.23%** after adding real Home Assistant lifecycle integration tests: 1,416 of 1,487 generated mutants were killed, 71 survived, and none were untested, suspicious, skipped, timed out, or interrupted. CI enforces a **95.22%** floor to avoid two-decimal rounding rejecting that exact result, and also requires zero untested, suspicious, or segfaulting mutants.
+- [Latest releases and updates](https://github.com/superdingo101/daylight-calendar-import/releases)
+- [Report a bug or suggest a feature](https://github.com/superdingo101/daylight-calendar-import/issues)
+- [Direct IMAP setup, privacy, and recovery](docs/direct-imap.md)
+- [Calendar routing, conflicts, and sensors](docs/v0.6.md)
+- [Advanced review actions and permissions](docs/review-api.md)
+- [Settings API reference](docs/settings-api.md)
+- [Safe reprocessing of pending text](docs/source-reprocessing.md)
+- [Technical architecture and future hosted API](docs/hosted-api.md)
+- [Mutation testing and CI policy](docs/mutation-ci.md)
+
+## License
+
+Daylight Calendar Import is open-source software under the [MIT License](LICENSE).
