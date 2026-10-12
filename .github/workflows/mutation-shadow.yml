@@ -32,7 +32,7 @@ jobs:
         run: |
           python3 -m scripts.mutation_shadow --base "$PR_BASE" --head "$PR_HEAD" --no-coverage
           python3 -m scripts.mutation_impact prepare --base "$PR_BASE" --head "$PR_HEAD" --no-coverage
-          if python3 -c 'import json,sys; sys.exit(not bool(json.load(open("mutation-shadow-plan.json"))["test_files_measured"]))'; then
+          if python3 -c 'import json,sys; sys.exit(json.load(open("mutation-impact-plan.json"))["mode"] not in ("coverage-required", "needs-base-and-head-coverage"))'; then
             echo "needs_coverage=true" >> "$GITHUB_OUTPUT"
           else
             echo "needs_coverage=false" >> "$GITHUB_OUTPUT"
