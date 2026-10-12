@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import json
+import re
 from hashlib import sha256
 from copy import deepcopy
 from collections.abc import Awaitable, Callable, Iterable
@@ -372,6 +373,13 @@ def _decode_storage_data(data: Any) -> tuple:
         if len(values) != len(set(values)):
             raise ValueError("duplicate storage identity")
 
+    def stored_fingerprint(value: str, kind: str) -> None:
+        # The only historically persisted format is a v1 SHA-256 fingerprint.
+        # Keep this explicit if future formats are introduced so older evidence
+        # remains supported; accepting opaque strings would silently defeat dedupe.
+        if re.fullmatch(rf"v1:{kind}:[0-9a-f]{{64}}", value) is None:
+            raise ValueError("invalid stored fingerprint")
+
     item_rows = rows(_STORAGE_ITEMS)
     if any(not isinstance(raw.get("warnings", ()), (list, tuple)) for raw in item_rows):
         raise ValueError("invalid import warnings")
@@ -389,6 +397,8 @@ def _decode_storage_data(data: Any) -> tuple:
         for value in (item.source_fingerprint, item.source_title, item.source_sender):
             if value is not None and not isinstance(value, str):
                 raise ValueError("invalid source metadata")
+        if item.source_fingerprint is not None:
+            stored_fingerprint(item.source_fingerprint, "source")
         unique([event.id for event in item.events])
         for event in item.events:
             text(event.id)
@@ -422,10 +432,11 @@ def _decode_storage_data(data: Any) -> tuple:
     journal = tuple(NotificationRecord.from_dict(raw) for raw in rows(_STORAGE_NOTIFICATIONS))
     unique([record.event.idempotency_key for record in journal])
     histories = []
-    for key in (_STORAGE_SEEN_SOURCES, _STORAGE_SEEN_EVENTS):
+    for key, kind in ((_STORAGE_SEEN_SOURCES, "source"), (_STORAGE_SEEN_EVENTS, "event")):
         fingerprints = rows(key)
         for fingerprint in fingerprints:
             text(fingerprint)
+            stored_fingerprint(fingerprint, kind)
         histories.append(tuple(fingerprints))
     claims = data.get(_STORAGE_SOURCE_CLAIMS, {})
     if not isinstance(claims, dict):
@@ -433,6 +444,7 @@ def _decode_storage_data(data: Any) -> tuple:
     for identifier, fingerprint in claims.items():
         text(identifier)
         text(fingerprint)
+        stored_fingerprint(fingerprint, "source")
     return {item.id: item for item in loaded_items}, tuple(activity), journal, *histories, dict(claims)
 
 

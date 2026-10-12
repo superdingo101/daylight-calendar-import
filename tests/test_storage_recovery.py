@@ -14,6 +14,7 @@ from homeassistant.helpers.storage import Store
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daylight_calendar_import.const import DOMAIN, CONF_AI_TASK_ENTITY, CONF_CALENDAR_ENTITY
+from custom_components.daylight_calendar_import.dedup import event_fingerprint, source_fingerprint
 from custom_components.daylight_calendar_import.storage import (
     PendingImport, PendingImportStore, PendingImportStorageError, STORAGE_KEY, STORAGE_VERSION, _PendingStore,
 )
@@ -28,13 +29,17 @@ def isolated_disk_storage(hass, tmp_path):
 
 
 def valid_data():
-    pending = PendingImport.create(source_text="private-source", events=[draft()], source_fingerprint="source-hash")
+    pending = PendingImport.create(
+        source_text="private-source", events=[draft()],
+        source_fingerprint=source_fingerprint("private-source"),
+    )
     item = pending.as_dict()
     item["events"][0].update(status="write_uncertain", write_attempt="attempt-1")
     return {"items": [item], "activity": [{"id": item["id"], "status": "calendar_write_uncertain",
         "created_count": 0, "rejected_count": 0, "transitions": []}],
-        "notifications": [notification().as_dict()], "seen_source_fingerprints": ["handled-source"],
-        "seen_event_fingerprints": ["handled-event"], "source_claims": {}}
+        "notifications": [notification().as_dict()],
+        "seen_source_fingerprints": [source_fingerprint("handled-source")],
+        "seen_event_fingerprints": [event_fingerprint(draft())], "source_claims": {}}
 
 
 def set_field(data, path, value):
@@ -474,8 +479,74 @@ def test_valid_optional_source_metadata_preserved_on_load():
     data = valid_data()
     data["items"][0]["source_title"] = "Recovered document"
     data["items"][0]["source_sender"] = "sender@example.test"
-    data["items"][0]["source_fingerprint"] = "exact-fingerprint"
+    data["items"][0]["source_fingerprint"] = source_fingerprint("exact-source")
     restored = next(iter(_decode_storage_data(data)[0].values()))
     assert (restored.source_title, restored.source_sender, restored.source_fingerprint) == (
-        "Recovered document", "sender@example.test", "exact-fingerprint"
+        "Recovered document", "sender@example.test", source_fingerprint("exact-source")
     )
+
+
+@pytest.mark.parametrize("path,valid_kind", [
+    (("items", 0, "source_fingerprint"), "source"),
+    (("seen_source_fingerprints", 0), "source"),
+    (("seen_event_fingerprints", 0), "event"),
+    (("source_claims", "live"), "source"),
+])
+@pytest.mark.parametrize("invalid", [
+    "invalid-hash",
+    "v1:event:" + "a" * 64,
+    "v2:source:" + "a" * 64,
+    "v1:source:" + "a" * 63,
+    "v1:source:" + "A" * 64,
+    "v1:source:" + "g" * 64,
+])
+def test_corrupt_fingerprint_formats_are_rejected(path, valid_kind, invalid):
+    """Every durable dedupe location must reject hashes it cannot recognize."""
+    from custom_components.daylight_calendar_import.storage import _decode_storage_data
+    data = valid_data()
+    data["source_claims"]["live"] = source_fingerprint("claimed-source")
+    # Include cross-kind and well-formed-but-wrong-version examples for events.
+    if valid_kind == "event" and invalid.startswith("v1:source:"):
+        bad_value = invalid
+    elif valid_kind == "source" and invalid.startswith("v1:event:"):
+        bad_value = invalid
+    else:
+        bad_value = invalid
+    set_field(data, path, bad_value)
+    with pytest.raises(ValueError, match="^invalid stored fingerprint$"):
+        _decode_storage_data(data)
+
+
+@pytest.mark.parametrize("path", [
+    ("items", 0, "source_fingerprint"),
+    ("seen_source_fingerprints", 0),
+    ("seen_event_fingerprints", 0),
+    ("source_claims", "live"),
+])
+async def test_malformed_fingerprint_on_disk_preserves_original_file(hass, monkeypatch, path):
+    """A corrupt hash cannot bypass the repair gate or silently enable duplicates."""
+    actual_disk_loader(monkeypatch)
+    data = valid_data()
+    data["source_claims"]["live"] = source_fingerprint("claimed-source")
+    set_field(data, path, "corrupt-identity")
+    original = json.dumps(envelope(data)).encode()
+    location = await write_original(hass, original)
+    store = PendingImportStore(hass)
+    with pytest.raises(PendingImportStorageError, match="storage needs repair"):
+        await store.async_load()
+    assert await hass.async_add_executor_job(location.read_bytes) == original
+    assert list(location.parent.glob(f"{STORAGE_KEY}.corrupt.*")) == []
+    assert not store.accepting_services
+    with pytest.raises(PendingImportStorageError):
+        await store.async_add(source_text="new source", events=[draft()])
+    assert await hass.async_add_executor_job(location.read_bytes) == original
+
+
+def test_valid_source_claim_and_fingerprint_kinds_survive_decoding():
+    from custom_components.daylight_calendar_import.storage import _decode_storage_data
+    data = valid_data()
+    data["source_claims"]["active"] = source_fingerprint("active-source")
+    result = _decode_storage_data(data)
+    assert result[3] == (source_fingerprint("handled-source"),)
+    assert result[4] == (event_fingerprint(draft()),)
+    assert result[5] == {"active": source_fingerprint("active-source")}
