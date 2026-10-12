@@ -83,7 +83,7 @@ def test_deleted_test_uses_old_execution_only(tmp_path, monkeypatch):
     monkeypatch.setattr(impact, "_run_probe",
                         lambda *args: pytest.fail("Deleted test must not run on head"))
     monkeypatch.setattr(impact, "base_test_coverage",
-                        lambda *args: {"execution_modules": [module], "collection_function_modules": [], "collection_function_modules": []})
+                        lambda *args: {"execution_modules": [module], "collection_function_modules": []})
     result = impact.plan(BASE, HEAD)
     assert result["mode"] == "scoped"
     assert result["selected_modules"] == [module]
