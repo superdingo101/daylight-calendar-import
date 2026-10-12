@@ -125,6 +125,8 @@ class FakeHass:
 @pytest.fixture(autouse=True)
 def fake_review_panel_for_service_unit_tests(monkeypatch):
     """Service-only fakes exercise the panel separately from registration."""
+    monkeypatch.setattr("custom_components.daylight_calendar_import.ir.async_create_issue", Mock())
+    monkeypatch.setattr("custom_components.daylight_calendar_import.ir.async_delete_issue", Mock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_review_panel", AsyncMock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_remove_review_panel", Mock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_classify_conflicts", AsyncMock(return_value=()))

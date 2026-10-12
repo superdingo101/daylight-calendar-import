@@ -13,9 +13,10 @@ from homeassistant.auth.permissions.const import CAT_ENTITIES, POLICY_CONTROL
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DESCRIPTION
 from homeassistant.core import callback, Context, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
-from homeassistant.exceptions import ServiceValidationError, Unauthorized, UnknownUser
+from homeassistant.exceptions import ConfigEntryError, ServiceValidationError, Unauthorized, UnknownUser
 from homeassistant.util import dt as dt_util
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_track_time_interval
 from datetime import datetime, timedelta
 
@@ -72,6 +73,7 @@ from .storage import (
     PendingImport,
     PendingImportApprovalUncertainError,
     PendingImportStore,
+    PendingImportStorageError,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -227,7 +229,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # cancellation must not become invisible when the old store unloads.
     registry = hass.data.setdefault(f"{DOMAIN}_notification_tasks", {})
     pending_store.notification_tasks = registry.setdefault(entry.entry_id, set())
-    await pending_store.async_load()
+    try:
+        await pending_store.async_load()
+    except PendingImportStorageError:
+        ir.async_create_issue(
+            hass, DOMAIN, "storage_recovery", is_fixable=False,
+            severity=ir.IssueSeverity.ERROR, translation_key="storage_recovery",
+            is_persistent=True,
+        )
+        raise ConfigEntryError(
+            "Daylight import storage needs repair. See Settings > System > Repairs."
+        ) from None
+    ir.async_delete_issue(hass, DOMAIN, "storage_recovery")
     pending_store.active_submissions = set()
     # Track entry service calls *before* their first await so unload cannot
     # miss a request waiting for authorization or a source claim.
