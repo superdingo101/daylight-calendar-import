@@ -94,6 +94,10 @@ def test_pr_mutation_scope_never_requires_rebuild_cache():
     assert "pr_mutation_cache.py" not in str(jobs)
     assert "actions/cache/restore" not in str(jobs) and "actions/cache/save" not in str(jobs)
     assert "mutmut run" in str(jobs)
+    run = '\n'.join(str(step.get('run', '')) for step in jobs['scoped']['steps'])
+    assert 'python -m scripts.mutation_pr_gate' not in run
+    for name in ('mutation_pr_gate.py', 'pr_mutation.py', 'export_mutation_survivors.py'):
+        assert f'python "$RUNNER_TEMP/mutation-driver/scripts/{name}"' in run
 
 
 def test_full_nightly_and_release_checks_remain():

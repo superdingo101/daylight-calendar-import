@@ -3,13 +3,55 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from scripts import mutation_pr_gate as gate
 from scripts import mutation_shards as shards
+
+
+def test_copied_driver_overrides_an_existing_older_base_driver(tmp_path):
+    driver = tmp_path / 'driver'
+    shutil.copytree(Path(gate.__file__).parent, driver / 'scripts',
+                    ignore=shutil.ignore_patterns('__pycache__'))
+    base = tmp_path / 'base'
+    (base / 'scripts').mkdir(parents=True)
+    for name in ('mutation_pr_gate.py', 'mutation_shards.py', 'pr_mutation.py'):
+        (base / 'scripts' / name).write_text('raise RuntimeError("Older checkout driver loaded")\n')
+    module = shards.SOURCE + 'sample.py'
+    source = base / module
+    source.parent.mkdir(parents=True)
+    source.write_text('def check(): return 1\n')
+    original = '[tool.mutmut]\npaths_to_mutate = ["custom_components/"]\n'
+    (base / 'pyproject.toml').write_text(original)
+    def git(*args):
+        return subprocess.check_output(['git', *args], cwd=base, text=True).strip()
+    git('init', '-q')
+    git('config', 'user.name', 'Driver test')
+    git('config', 'user.email', 'test@example.invalid')
+    git('add', '.')
+    git('commit', '-qm', 'Older base fixture')
+    sha = git('rev-parse', 'HEAD')
+    plan = dict(mode='scoped', may_execute_mutmut=True, selected_modules=[module],
+                max_modules_per_job=4, head_sha=sha, merge_base_sha=sha)
+    (base / gate.PLAN).write_text(json.dumps(plan))
+    env = {**os.environ, 'PYTHONPATH': str(driver)}
+    old = subprocess.run([sys.executable, '-m', 'scripts.mutation_pr_gate', 'prepare',
+                          '--revision', 'base'], cwd=base, env=env, capture_output=True, text=True)
+    assert old.returncode and 'Older checkout driver loaded' in old.stderr
+    subprocess.run([sys.executable, str(driver / 'scripts/mutation_pr_gate.py'),
+                    'prepare', '--revision', 'base'], cwd=base, env=env, check=True)
+    execution = json.loads((base / gate.EXECUTION).read_text())
+    assert execution['sha'] == sha and execution['modules'] == [module]
+    subprocess.run([sys.executable, str(driver / 'scripts/pr_mutation.py'), 'restore'],
+                   cwd=base, env=env, check=True)
+    assert (base / 'pyproject.toml').read_text() == original
 
 
 def counts(killed=97, survived=3, **extra):

@@ -94,14 +94,14 @@ jobs:
         run: |
           set -euo pipefail
           export PYTHONPATH="$RUNNER_TEMP/mutation-driver"
-          trap 'python -m scripts.pr_mutation restore' EXIT
+          trap 'python "$RUNNER_TEMP/mutation-driver/scripts/pr_mutation.py" restore' EXIT
           rm -rf mutants
-          python -m scripts.mutation_pr_gate prepare --revision "$REVISION"
+          python "$RUNNER_TEMP/mutation-driver/scripts/mutation_pr_gate.py" prepare --revision "$REVISION"
           mutmut run
           mutmut export-cicd-stats
-          python -m scripts.export_mutation_survivors
-          python -m scripts.pr_mutation restore
-          python -m scripts.mutation_pr_gate record --revision "$REVISION"
+          python "$RUNNER_TEMP/mutation-driver/scripts/export_mutation_survivors.py"
+          python "$RUNNER_TEMP/mutation-driver/scripts/pr_mutation.py" restore
+          python "$RUNNER_TEMP/mutation-driver/scripts/mutation_pr_gate.py" record --revision "$REVISION"
           trap - EXIT
       - uses: actions/upload-artifact@v4
         if: always()

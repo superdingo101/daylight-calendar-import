@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   target:
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.label.name == 'mutation-cutover-rehearsal' && github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (contains(fromJSON('["mutation-cutover-rehearsal", "mutation-scoped-rehearsal"]'), github.event.label.name) && github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -37,6 +37,7 @@ jobs:
           PY
   release-chain:
     needs: target
+    if: github.event.label.name != 'mutation-scoped-rehearsal'
     uses: ./.github/workflows/mutation-clean.yml
     with:
       target_sha: ${{ needs.target.outputs.sha }}
@@ -66,15 +67,26 @@ jobs:
           mkdir -p "$RUNNER_TEMP/mutation-driver"
           cp -r scripts "$RUNNER_TEMP/mutation-driver/"
           export PYTHONPATH="$RUNNER_TEMP/mutation-driver"
-          trap 'python -m scripts.pr_mutation restore' EXIT
-          base=$(git rev-parse HEAD)
+          trap 'python "$RUNNER_TEMP/mutation-driver/scripts/pr_mutation.py" restore' EXIT
           git config user.name "Mutation CI verification"
           git config user.email "ci@example.invalid"
+          # An older checked-out CLI must never win over the copied driver.
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/mutation_pr_gate.py')
+          text = path.read_text()
+          assert 'raise SystemExit(main())' in text
+          guard = 'if Path(__file__).resolve() == Path("scripts/mutation_pr_gate.py").resolve():\n        raise SystemExit("Checked-out older CLI must not execute")\n    raise SystemExit(main())'
+          path.write_text(text.replace('raise SystemExit(main())', guard))
+          PY
+          git add scripts/mutation_pr_gate.py
+          git commit -m "Temporary older driver CLI tripwire"
+          base=$(git rev-parse HEAD)
           echo '# Cold bounded source-scope rehearsal.' >> custom_components/daylight_calendar_import/notification_preferences.py
           git add custom_components/daylight_calendar_import/notification_preferences.py
           git commit -m "Temporary isolated bounded mutation fixture"
           head=$(git rev-parse HEAD)
-          python -m scripts.mutation_pr_gate plan --base "$base" --head "$head"
+          python "$RUNNER_TEMP/mutation-driver/scripts/mutation_pr_gate.py" plan --base "$base" --head "$head"
           python - <<'PY'
           import json
           plan = json.load(open('mutation-impact-plan.json'))
@@ -84,16 +96,16 @@ jobs:
           for revision in base head; do
             if [[ "$revision" == base ]]; then git checkout "$base"; else git checkout "$head"; fi
             rm -rf mutants
-            python -m scripts.mutation_pr_gate prepare --revision "$revision"
+            python "$RUNNER_TEMP/mutation-driver/scripts/mutation_pr_gate.py" prepare --revision "$revision"
             started=$SECONDS
             mutmut run
             mutmut export-cicd-stats
-            python -m scripts.export_mutation_survivors
-            python -m scripts.pr_mutation restore
-            python -m scripts.mutation_pr_gate record --revision "$revision"
+            python "$RUNNER_TEMP/mutation-driver/scripts/export_mutation_survivors.py"
+            python "$RUNNER_TEMP/mutation-driver/scripts/pr_mutation.py" restore
+            python "$RUNNER_TEMP/mutation-driver/scripts/mutation_pr_gate.py" record --revision "$revision"
             echo "- Cold $revision execution: $((SECONDS-started)) seconds" >> "$GITHUB_STEP_SUMMARY"
           done
-          python -m scripts.mutation_pr_gate enforce
+          python "$RUNNER_TEMP/mutation-driver/scripts/mutation_pr_gate.py" enforce
           trap - EXIT
       - uses: actions/upload-artifact@v4
         if: always()
