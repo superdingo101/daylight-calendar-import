@@ -21,8 +21,10 @@ status codes (429, 401/403, 500–599) and explicit exception causes. Exception 
 and implicit exception context are not interpreted. Traversal is bounded and
 cycle-safe. A resolved unavailable AI Task is rejected before invocation;
 text-only submissions retain Home Assistant's existing lazy entity lookup.
-Malformed top-level AI results are classified separately; individually invalid
-candidate events still produce the existing validation warnings.
+Malformed AI results are classified separately. Candidate validation failures
+handled by the existing parser still produce per-event warnings; unexpected
+malformed-result exceptions are contained as invalid responses. Provider entity
+discovery and exception descriptors are guarded without copying their errors.
 
 The category and guidance are committed in the existing atomic failed-source
 transaction, including any opted-in failure notification. The notification
