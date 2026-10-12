@@ -59,7 +59,10 @@ def test_fixture_coverage_and_imports(tmp_path,monkeypatch):
         "def fixture():\n    return setup()\n"
         "def test_a(fixture):\n    assert called()+fixture==9\n"
     )
-    # The synthetic package is intentionally independent of Home Assistant.\n    # Do not collect unrelated repository-wide autouse/plugin fixtures.\n    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")\n    monkeypatch.setenv("PYTEST_ADDOPTS", "-p pytest_cov.plugin")\n    report=shadow.coverage((str(test),))
+    # The synthetic package must not inherit unrelated HA pytest fixtures.
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-p pytest_cov.plugin")
+    report=shadow.coverage((str(test),))
     assert SOURCE+"extra.py" in report["import_inclusive_modules"]
     assert SOURCE+"extra.py" not in report["execution_modules"]
     assert set(report["execution_modules"]) == {SOURCE+"called.py",SOURCE+"fixture_only.py"}
