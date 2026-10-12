@@ -7,6 +7,7 @@ unsharded full mutation run or an unearned passing score.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 from pathlib import Path
@@ -66,6 +67,55 @@ def base_test_coverage(base: str, head: str, tests: list[str]) -> dict:
             )
 
 
+def _shared_test_risk_in_source(body: str, path: str) -> str | None:
+    """Detect test modules that may export behavior to unselected tests.
+
+    Only modules consisting of imports and standalone test functions can be
+    treated as isolated. Fixtures, helper callables, class definitions and
+    module-level executable statements/assignments may affect other modules.
+    The scan checks both the old and new text, so deleting an export is caught.
+    """
+    tree = ast.parse(body, filename=path)
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not node.name.startswith("test_"):
+                return f"Exportable fixture/helper {node.name} in {path}"
+            for decorator in node.decorator_list:
+                # Even a test_* callable can be repurposed as a fixture via a
+                # decorator, and decorators themselves can register providers.
+                text = ast.unparse(decorator)
+                if "fixture" in text or "pytest_plugins" in text:
+                    return f"Potentially shared test decorator in {path}"
+            continue
+        # Classes, assignments, registrations, pytest hooks, mutations and
+        # other module-level statements may expose behavior outside this file.
+        return f"Module-level exported/shared state in {path}"
+    return None
+
+
+def shared_test_risk(base: str, head: str, paths: list[str]) -> str | None:
+    """Assess both source revisions without executing or trusting imports."""
+    commit = merge_base(base, head)
+    for path in paths:
+        old_body = subprocess.check_output(
+            ["git", "show", f"{commit}:{path}"], text=True,
+        )
+        risk = _shared_test_risk_in_source(old_body, path)
+        if risk:
+            return f"Old revision: {risk}"
+        if Path(path).is_file():
+            risk = _shared_test_risk_in_source(
+                Path(path).read_text(encoding="utf-8"), path,
+            )
+            if risk:
+                return f"Current revision: {risk}"
+    return None
+
+
 def _escalate(result: dict, reason: str) -> dict:
     result.update(
         mode="comprehensive-sharded",
@@ -98,6 +148,8 @@ def plan(
         "existing_test_edits": list(preview["existing_test_edits"]),
         "head_execution_modules": [],
         "base_execution_modules": [],
+        "head_collection_function_modules": [],
+        "base_collection_function_modules": [],
         "max_modules_per_job": max_modules,
         "pr_job_budget_minutes": budget,
         "may_execute_mutmut": False,
@@ -108,6 +160,14 @@ def plan(
     mode = preview["mode"]
     if mode in {"skip", "comprehensive-sharded"}:
         return result
+
+    # If the known directly edited production scope already exceeds the
+    # budget, no old/head pytest probe could make it smaller.
+    if len(result["selected_modules"]) > max_modules:
+        return _escalate(
+            result, f"{len(result['selected_modules'])} directly changed modules "
+                    f"exceed the {max_modules}-module PR work budget"
+        )
 
     if not measure:
         if mode in {"coverage-required", "needs-base-and-head-coverage"}:
@@ -123,15 +183,40 @@ def plan(
                 p for p in added & affected if Path(p).is_file() and p.endswith(".py")
             )
             old_tests = sorted(edited & affected)
+            if old_tests:
+                shared_risk = shared_test_risk(base, head, old_tests)
+                if shared_risk:
+                    return _escalate(
+                        result, "Edited test may affect other test modules: "
+                                + shared_risk,
+                    )
             head_tests = sorted(set(new_tests) | {
                 p for p in old_tests if Path(p).is_file()
             })
             if head_tests:
                 head_coverage = _run_probe(head_tests)
                 result["head_execution_modules"] = head_coverage["execution_modules"]
+                result["head_collection_function_modules"] = head_coverage[
+                    "collection_function_modules"
+                ]
             if old_tests:
                 old_coverage = base_test_coverage(base, head, old_tests)
                 result["base_execution_modules"] = old_coverage["execution_modules"]
+                result["base_collection_function_modules"] = old_coverage[
+                    "collection_function_modules"
+                ]
+            # Dynamic pytest contexts cannot attribute a function called
+            # during module collection to one test. These are genuine
+            # function-body executions, not mere package import lines.
+            # Fail closed rather than returning an incomplete scoped plan.
+            collection = set(result["head_collection_function_modules"]) | set(
+                result["base_collection_function_modules"]
+            )
+            if collection:
+                return _escalate(
+                    result, "Production function executed during test "
+                            "collection: " + ", ".join(sorted(collection))
+                )
             evidence = set(result["head_execution_modules"]) | set(
                 result["base_execution_modules"]
             )
