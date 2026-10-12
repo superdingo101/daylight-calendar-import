@@ -84,41 +84,36 @@ def workflow(name):
 
 
 def test_pr_mutation_scope_never_requires_rebuild_cache():
-    job = workflow("mutation.yml")["jobs"]["mutation"]
-    assert job["name"] == "Mutation score"
-    steps = job["steps"]
-    run = "\n".join(str(step.get("run", "")) for step in steps)
-    assert "scripts/pr_mutation.py prepare" in run
-    assert "scripts/pr_mutation.py restore" in run
-    assert "mutmut run" in run
-    assert "scripts/check_mutation_score.py" in run
-    # The old baseline-rebuild cache is forbidden; a new, PR-scoped cache
-    # is allowed only with provenance validation and post-run stamping.
-    restore = [step for step in steps if step.get("uses") == "actions/cache/restore@v4"]
-    save = [step for step in steps if step.get("uses") == "actions/cache/save@v4"]
-    assert len(restore) == len(save) == 1
-    assert "github.event.pull_request.number" in restore[0]["with"]["key"]
-    assert restore[0]["with"]["key"] == save[0]["with"]["key"]
-    assert "scripts/pr_mutation_cache.py restore" in run
-    assert "scripts/pr_mutation_cache.py stamp" in run
-    assert all("scripts/mutation_cache.py" not in str(step) for step in steps)
+    jobs = workflow("mutation.yml")["jobs"]
+    assert "Mutation score" in jobs["mutation"]["name"]
+    assert "always()" in jobs["mutation"]["if"]
+    assert "github.event.label.name" in jobs["mutation"]["name"]
+    assert set(jobs["mutation"]["needs"]) == {"plan", "scoped", "comprehensive"}
+    assert jobs["scoped"]["timeout-minutes"] == 20
+    assert jobs["comprehensive"]["uses"] == "./.github/workflows/mutation-sharded.yml"
+    assert "pr_mutation_cache.py" not in str(jobs)
+    assert "actions/cache/restore" not in str(jobs) and "actions/cache/save" not in str(jobs)
+    assert "mutmut run" in str(jobs)
+    run = '\n'.join(str(step.get('run', '')) for step in jobs['scoped']['steps'])
+    assert 'python -m scripts.mutation_pr_gate' not in run
+    for name in ('mutation_pr_gate.py', 'pr_mutation.py', 'export_mutation_survivors.py'):
+        assert f'python "$RUNNER_TEMP/mutation-driver/scripts/{name}"' in run
 
 
 def test_full_nightly_and_release_checks_remain():
     clean = workflow("mutation-clean.yml")
-    job = clean["jobs"]["clean"]
     trigger = clean.get("on", clean.get(True))
     assert "schedule" in trigger and "workflow_call" in trigger
-    assert job["timeout-minutes"] == 60
-    scripts = "\n".join(str(step.get("run", "")) for step in job["steps"])
-    assert "rm -rf mutants" in scripts
-    assert "mutmut run" in scripts
+    assert clean["jobs"]["comprehensive"]["uses"] == "./.github/workflows/mutation-sharded.yml"
+    scripts = str(clean["jobs"]["clean"]["steps"])
     assert "Release Mutation Validation" in scripts
+    assert "mutation_shards reduce" in scripts
+    assert "scripts.release_mutation_proof create-sharded" in scripts
     updater = workflow("update-integration-version.yml")
     assert updater["jobs"]["clean-release-mutation"]["uses"] == "./.github/workflows/mutation-clean.yml"
     publisher = workflow("publish-hacs-release.yml")
-    scripts = "\n".join(str(step.get("run", "")) for step in publisher["jobs"]["publish"]["steps"])
-    assert "release_mutation_proof.py verify" in scripts
+    assert "release_mutation_proof.py verify" in str(publisher["jobs"]["publish"]["steps"])
+
 
 def test_nightly_reporting_does_not_require_a_deleted_cache_step(monkeypatch, tmp_path):
     from scripts import report_nightly_mutation

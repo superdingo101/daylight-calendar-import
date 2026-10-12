@@ -20,6 +20,7 @@ CI_TESTS = {
     "tests/test_mutation_shadow.py",
     "tests/test_mutation_impact.py",
     "tests/test_mutation_shards.py",
+    "tests/test_mutation_pr_gate.py",
     "tests/test_mutation_cache_reuse.py",
     "tests/test_pr_mutation_rebuild_workflow.py",
 }

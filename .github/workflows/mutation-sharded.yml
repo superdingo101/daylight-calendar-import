@@ -1,10 +1,16 @@
-name: Clean mutation shards (rehearsal)
+name: Comprehensive mutation validation
 
-# Opt-in comparison run. Do NOT use this check as a release proof or a
-# replacement for Clean mutation validation before score equivalence is proven.
+# Cold comprehensive executor shared by PR, nightly and release validation.
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
+  workflow_call:
+    inputs:
+      target_sha:
+        required: true
+        type: string
+      compare_unsharded:
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       target_sha:
@@ -21,12 +27,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: mutation-shards-${{ github.event.pull_request.number || inputs.target_sha || github.ref }}-${{ github.event_name }}-${{ github.event.action }}-${{ github.event.label.name }}
+  group: comprehensive-mutation-${{ github.run_id }}-${{ github.run_attempt }}
   cancel-in-progress: false
 
 jobs:
   plan:
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.action == 'labeled' && (github.event.label.name == 'mutation-shards-rehearsal' || github.event.label.name == 'mutation-comparison')) || (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'mutation-shards-rehearsal') || contains(github.event.pull_request.labels.*.name, 'mutation-comparison'))) }}
     name: Full mutation partition
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -37,12 +42,14 @@ jobs:
       - name: Resolve immutable target
         id: target
         env:
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          MANUAL_SHA: ${{ inputs.target_sha }}
-          DEFAULT_SHA: ${{ github.sha }}
-          COMPARE: ${{ inputs.compare_unsharded || contains(github.event.pull_request.labels.*.name, 'mutation-comparison') }}
+          TARGET_SHA: ${{ inputs.target_sha || github.sha }}
+          COMPARE: ${{ inputs.compare_unsharded }}
         run: |
-          echo "sha=${PR_HEAD:-${MANUAL_SHA:-$DEFAULT_SHA}}" >> "$GITHUB_OUTPUT"
+          if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Target must be an exact commit SHA"
+            exit 1
+          fi
+          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
           echo "compare=$COMPARE" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
         with:
@@ -56,6 +63,7 @@ jobs:
           name: mutation-shard-manifest
           path: mutation-shards/manifest.json
           if-no-files-found: error
+          overwrite: true
 
   shards:
     needs: plan
@@ -103,6 +111,23 @@ jobs:
             --out "mutation-shards/results/shard-$SHARD_INDEX.json" \
             --seconds "$((SECONDS-started))"
           trap - EXIT
+      - name: Export shard diagnostics even on failure
+        if: always()
+        run: |
+          mutmut export-cicd-stats
+          python scripts/export_mutation_survivors.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-shard-diagnostics-${{ matrix.index }}
+          path: |
+            mutants/mutmut-cicd-stats.json
+            mutation-survivors.txt
+            mutation-survivor-names.txt
+            mutation-survivor-report.txt
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 14
       - name: Upload shard result only after full run
         if: always()
         uses: actions/upload-artifact@v4
@@ -111,6 +136,7 @@ jobs:
           path: mutation-shards/results/shard-${{ matrix.index }}.json
           if-no-files-found: warn
           retention-days: 14
+          overwrite: true
 
   aggregate:
     if: ${{ always() && needs.plan.result == 'success' }}
@@ -139,20 +165,32 @@ jobs:
           pattern: mutation-shard-result-*
           path: mutation-shards/results
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutation-shard-diagnostics-*
+          path: shard-diagnostics
+      - name: Combine all survivor diagnostics
+        run: python3 -m scripts.mutation_shards join-diagnostics
       - name: Verify shard identities, completeness and global mutation score
         run: |
           python3 -m scripts.mutation_shards reduce
           python3 scripts/check_mutation_score.py
-      - name: Upload combined evidence (informational, not a release proof)
+      - name: Upload verified full-project evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mutation-sharded-aggregate
           path: |
             mutation-shards/aggregate.json
+            mutation-shards/manifest.json
+            mutation-shards/results/
+            mutation-survivors.txt
+            mutation-survivor-names.txt
+            mutation-survivor-report.txt
             mutants/mutmut-cicd-stats.json
           if-no-files-found: warn
           retention-days: 14
+          overwrite: true
 
   unsharded:
     needs: plan
@@ -192,6 +230,7 @@ jobs:
           path: mutation-shards/unsharded.json
           if-no-files-found: warn
           retention-days: 14
+          overwrite: true
 
   equivalence:
     if: ${{ always() && needs.plan.outputs.compare_unsharded == 'true' }}
@@ -232,3 +271,4 @@ jobs:
           path: mutation-shards/equivalence.json
           if-no-files-found: warn
           retention-days: 14
+          overwrite: true
