@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from .parser import EVENTS_STRUCTURE, PROMPT_TEMPLATE, TASK_NAME, ParseOutcome, parse_ai_data
+from .provider_failures import classify_provider_failure
 from .sources import SourceDocument
 
 IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
@@ -113,22 +114,43 @@ class AITaskParserProvider:
             max_total_bytes=AI_TASK_MAX_TOTAL_BYTES,
         )
 
+    def _discover(self):
+        """Resolve provider implementation properties through the safe boundary."""
+        try:
+            entity = self._entity()
+            return entity, self._capabilities_for_entity(entity)
+        except Exception as err:
+            raise ProviderError(
+                classify_provider_failure(err), "AI Task capabilities could not be checked"
+            ) from None
+
     @property
     def capabilities(self) -> ParserCapabilities:
         """Discover whether the configured AI Task entity accepts attachments."""
-        return self._capabilities_for_entity(self._entity())
+        return self._discover()[1]
 
     async def async_parse(
         self, source: SourceDocument, *, reference_datetime: str, time_zone: str
     ) -> ParseOutcome:
         """Ask AI Task for structured event candidates, then validate each one."""
-        entity = self._entity()
+        entity, capabilities = self._discover()
         if source.attachments and entity is None:
             raise ProviderError(
                 "provider_unavailable",
                 "Configured AI Task is temporarily unavailable",
             )
-        self._capabilities_for_entity(entity).validate(source)
+        capabilities.validate(source)
+        try:
+            unavailable = entity is not None and not getattr(entity, "available", True)
+        except Exception as err:
+            raise ProviderError(
+                classify_provider_failure(err), "AI Task availability could not be checked"
+            ) from None
+        if unavailable:
+            raise ProviderError(
+                "provider_unavailable",
+                "Configured AI Task is temporarily unavailable",
+            )
         text = (source.text or "").strip()
         attachments = [
             {"media_content_id": item.content_ref, "media_content_type": item.media_type}
@@ -148,6 +170,13 @@ class AITaskParserProvider:
                 structure=EVENTS_STRUCTURE,
                 **({"attachments": attachments} if attachments else {}),
             )
-        except HomeAssistantError as err:
-            raise ProviderError("provider_error", "AI Task could not parse the source") from err
-        return parse_ai_data(result.data)
+        except Exception as err:
+            raise ProviderError(
+                classify_provider_failure(err), "AI Task could not parse the source"
+            ) from None
+        try:
+            return parse_ai_data(result.data)
+        except Exception:
+            raise ProviderError(
+                "provider_invalid_response", "AI Task returned an invalid result"
+            ) from None

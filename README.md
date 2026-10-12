@@ -110,6 +110,8 @@ text, image, or PDF adapter -> SourceDocument -> ParserProvider -> EventDraft[] 
 
 Text actions normalize into a `SourceDocument` before parsing. The document describes source identity, kind, text, and attachment references; raw attachment bytes do not belong in pending review storage. The `ParserProvider` interface takes the normalized source and reference time. Its AI Task implementation is the configured parser. The current local implementation returns `ParseOutcome`; the public hosted wire contract formalizes the roadmap's richer `ParseResult` without changing downstream calendar ownership.
 
+Provider failures record a stable category and generic recovery advice in the import activity. See [parser provider failures](docs/provider-errors.md) for timeout, rate-limit, availability, authentication, and invalid-result guidance.
+
 Parser capabilities validate media type, attachment count, aggregate size, and text/attachment support before calling the provider. The AI Task adapter checks its entity's attachment feature before passing images or PDFs, while a text-layer PDF uses the text-only path.
 
 ### Hosted API v1 contract
