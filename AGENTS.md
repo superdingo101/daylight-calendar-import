@@ -2,21 +2,19 @@
 
 ## Mutation testing and release gate
 
-- Ordinary PRs use **changed-module mutation testing** with a stable
-  `Mutation score` check; compare against the PR's actual base branch, including
-  stacked PRs. New application tests also select source they exercise.
-  PR-local mutation results may be reused only when strict provenance validates
-  unchanged production inputs, dependency environment, and mutation scope.
-  Strictly appended, undecorated test functions may retain killed verdicts only
-  when they do not shadow earlier module bindings; all non-killed mutants are
-  retested. Modified existing tests, fixtures, shared helpers or dependencies
-  require a clean fallback. Invalid or missing caches always start clean.
-  Do not restore the retired PR-baseline rebuilding system.
+- Ordinary PRs use the bounded impact planner and cold base/head execution
+  of identical module scopes with a stable `Mutation score` check. Each
+  scoped job has a 20-minute hard timeout, including dependency setup. Unknown,
+  broad, shared test/resource/dependency changes and new production modules
+  use complete comprehensive shards. There is no cached-verdict dependency
+  and no automatic single-runner full fallback. The scoped floor is 95.22%,
+  with no same-scope regression against the merge-base score. Do not restore
+  the retired custom cache-provenance or PR-baseline rebuild system.
 - Documentation, frontend or CI-only PRs legitimately have no Python mutations;
   record the no-op explicitly in the check summary. Keep normal tests required.
 - Full nightly and release validation remain authoritative for the project-wide
   mutation score; a PR-scoped score only describes its selected modules.
-- The clean full mutation suite runs every night on `main`. The nightly
+- The clean full mutation suite runs in eight cold shards every night on `main`. The nightly
   results and diagnostics stay in Actions. Nightly failures create or update
   a Mutation Health issue; the next successful run closes it. Successful runs
   without an open failure alert do not create an issue.

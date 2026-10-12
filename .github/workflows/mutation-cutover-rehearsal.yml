@@ -1,0 +1,108 @@
+name: Mutation CI cutover verification
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+permissions:
+  contents: read
+  statuses: write
+  issues: write
+concurrency:
+  group: mutation-cutover-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name }}
+  cancel-in-progress: false
+jobs:
+  target:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.label.name == 'mutation-cutover-rehearsal' && github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.target.outputs.sha }}
+      tag: ${{ steps.target.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - id: target
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          from scripts.release_mutation_proof import TAG_PATTERN
+          tag = 'v' + json.loads(Path('custom_components/daylight_calendar_import/manifest.json').read_text())['version']
+          if not TAG_PATTERN.fullmatch(tag):
+              raise ValueError('Invalid candidate release tag')
+          sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'sha={sha}\ntag={tag}\n')
+          PY
+  release-chain:
+    needs: target
+    uses: ./.github/workflows/mutation-clean.yml
+    with:
+      target_sha: ${{ needs.target.outputs.sha }}
+      release_tag: ${{ needs.target.outputs.tag }}
+      rehearsal: true
+  scoped:
+    needs: target
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements_test.txt
+      - name: Rehearse an isolated source-only PR with a cold base and head
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mutation-driver"
+          cp -r scripts "$RUNNER_TEMP/mutation-driver/"
+          export PYTHONPATH="$RUNNER_TEMP/mutation-driver"
+          trap 'python -m scripts.pr_mutation restore' EXIT
+          base=$(git rev-parse HEAD)
+          git config user.name "Mutation CI verification"
+          git config user.email "ci@example.invalid"
+          echo '# Cold bounded source-scope rehearsal.' >> custom_components/daylight_calendar_import/notification_preferences.py
+          git add custom_components/daylight_calendar_import/notification_preferences.py
+          git commit -m "Temporary isolated bounded mutation fixture"
+          head=$(git rev-parse HEAD)
+          python -m scripts.mutation_pr_gate plan --base "$base" --head "$head"
+          python - <<'PY'
+          import json
+          plan = json.load(open('mutation-impact-plan.json'))
+          assert plan['mode'] == 'scoped'
+          assert plan['selected_modules'] == ['custom_components/daylight_calendar_import/notification_preferences.py']
+          PY
+          for revision in base head; do
+            if [[ "$revision" == base ]]; then git checkout "$base"; else git checkout "$head"; fi
+            rm -rf mutants
+            python -m scripts.mutation_pr_gate prepare --revision "$revision"
+            started=$SECONDS
+            mutmut run
+            mutmut export-cicd-stats
+            python -m scripts.export_mutation_survivors
+            python -m scripts.pr_mutation restore
+            python -m scripts.mutation_pr_gate record --revision "$revision"
+            echo "- Cold $revision execution: $((SECONDS-started)) seconds" >> "$GITHUB_STEP_SUMMARY"
+          done
+          python -m scripts.mutation_pr_gate enforce
+          trap - EXIT
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bounded-cutover-verification
+          path: |
+            mutation-impact-plan.json
+            bounded-base.json
+            bounded-head.json
+            bounded-comparison.json
+          if-no-files-found: warn
+          overwrite: true

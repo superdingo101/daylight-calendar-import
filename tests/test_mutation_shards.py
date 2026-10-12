@@ -328,10 +328,10 @@ def test_workflow_target_and_comparison_contracts():
     workflow = yaml.safe_load(file.read_text())
     jobs = workflow["jobs"]
     target = next(s for s in jobs["plan"]["steps"] if s.get("id") == "target")
-    assert target["env"]["PR_HEAD"] == "${{ github.event.pull_request.head.sha }}"
-    assert '${PR_HEAD:-${MANUAL_SHA:-$DEFAULT_SHA}}' in target["run"]
-    assert "github.event.pull_request.number" in workflow["concurrency"]["group"]
-    assert "github.event.label.name" in workflow["concurrency"]["group"]
+    assert target["env"]["TARGET_SHA"] == "${{ inputs.target_sha || github.sha }}"
+    assert 'echo "sha=$TARGET_SHA"' in target["run"]
+    assert "github.run_id" in workflow["concurrency"]["group"]
+    assert "workflow_call" in workflow.get("on", workflow.get(True))
     assert workflow["concurrency"]["cancel-in-progress"] is False
     assert set(jobs["equivalence"]["needs"]) == {"plan", "aggregate", "unsharded"}
     assert "always()" in jobs["equivalence"]["if"]
@@ -381,3 +381,51 @@ def test_reducer_rejects_identity_outcomes_inconsistent_with_stats(sample):
     ms.write_json(path, obj)
     with pytest.raises(ValueError, match="reported statistics"):
         ms.reduce(ms.MANIFEST, directory, Path("aggregate.json"))
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_join_diagnostics_requires_every_shard_file(sample, missing):
+    _, sha = sample
+    manifest = ms.plan(sha, 8, ms.MANIFEST)
+    names = ("mutation-survivors.txt", "mutation-survivor-names.txt", "mutation-survivor-report.txt")
+    for index in range(8):
+        for name in names:
+            path = Path("diagnostics") / f"mutation-shard-diagnostics-{index}" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"shard {index}\n")
+    if missing:
+        path.unlink()
+        with pytest.raises(OSError):
+            ms.join_diagnostics(ms.MANIFEST, Path("diagnostics"), Path("reports"))
+        assert not Path("reports").exists()
+    else:
+        ms.join_diagnostics(ms.MANIFEST, Path("diagnostics"), Path("reports"))
+        assert (Path("reports") / names[0]).read_text().splitlines() == [f"shard {i}" for i in range(8)]
+
+
+@pytest.mark.parametrize("minimum_failure", [False, True])
+def test_sharded_release_proof_rechecks_full_evidence(sample, monkeypatch, minimum_failure):
+    from scripts import release_mutation_proof
+    root, _ = sample
+    file = Path(SOURCE + "manifest.json")
+    file.write_text('{"version":"0.6.1"}')
+    git("add", ".")
+    git("commit", "-qm", "release candidate")
+    sha = git("rev-parse", "HEAD")
+    manifest = ms.plan(sha, 8, ms.MANIFEST)
+    directory = write_results(manifest, sample,
+                              data=stats(killed=94, survived=6) if minimum_failure else stats())
+    ms.reduce(ms.MANIFEST, directory, Path("mutation-shards/aggregate.json"))
+    monkeypatch.setenv("GITHUB_RUN_ID", "12345")
+    if minimum_failure:
+        with pytest.raises(ValueError, match="release score"):
+            release_mutation_proof.create("v0.6.1", sharded=True)
+        assert not release_mutation_proof.PROOF_FILE.exists()
+    else:
+        release_mutation_proof.create("v0.6.1", sharded=True)
+        proof = json.loads(release_mutation_proof.PROOF_FILE.read_text())
+        assert proof["mode"] == "clean" and proof["source_commit"] == sha
+        assert proof["source_tree"] == git("rev-parse", "HEAD^{tree}")
+        assert proof["workflow_run_id"] == 12345
+        assert proof["execution"]["mode"] == "complete-sharded"
+        assert proof["execution"]["manifest_sha256"] == manifest["manifest_sha256"]

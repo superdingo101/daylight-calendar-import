@@ -1,6 +1,6 @@
 """Full, clean mutation sharding with fail-closed aggregate verification.
 
-Non-gating rehearsal until exact-SHA full-run comparison proves equivalence.
+Cold executor validated against an exact-SHA unsharded run in PR #129.
 No cross-PR verdict caches and no partial-job successes.
 """
 from __future__ import annotations
@@ -373,6 +373,21 @@ def compare(manifest_path: Path, sharded_path: Path, unsharded_path: Path, out: 
     return result
 
 
+def join_diagnostics(manifest_path: Path, directory: Path, out: Path) -> None:
+    manifest = load_manifest(manifest_path)
+    verify_manifest(manifest)
+    names = ("mutation-survivors.txt", "mutation-survivor-names.txt", "mutation-survivor-report.txt")
+    # Read every expected file first. Missing diagnostics cannot silently
+    # produce a partial report or an apparently successful release proof.
+    contents = {name: [] for name in names}
+    for index in range(manifest["shard_count"]):
+        for name in names:
+            contents[name].append((directory / f"mutation-shard-diagnostics-{index}" / name).read_text())
+    out.mkdir(parents=True, exist_ok=True)
+    for name, parts in contents.items():
+        (out / name).write_text("".join(parts))
+
+
 def main() -> int:
     cli = argparse.ArgumentParser()
     parts = cli.add_subparsers(dest="command", required=True)
@@ -401,6 +416,10 @@ def main() -> int:
     p.add_argument("--sharded", type=Path, default=Path("mutation-shards/aggregate.json"))
     p.add_argument("--unsharded", type=Path, default=Path("mutation-shards/unsharded.json"))
     p.add_argument("--out", type=Path, default=Path("mutation-shards/equivalence.json"))
+    p = parts.add_parser("join-diagnostics")
+    p.add_argument("--manifest", type=Path, default=MANIFEST)
+    p.add_argument("--directory", type=Path, default=Path("shard-diagnostics"))
+    p.add_argument("--out", type=Path, default=Path("."))
     args = cli.parse_args()
     try:
         if args.command == "plan":
@@ -410,6 +429,8 @@ def main() -> int:
             prepare(args.manifest, args.index)
         elif args.command == "record":
             record(args.manifest, args.index, args.out, args.seconds)
+        elif args.command == "join-diagnostics":
+            join_diagnostics(args.manifest, args.directory, args.out)
         elif args.command == "record-unsharded":
             record_unsharded(args.manifest, args.seconds, args.out)
         elif args.command == "compare":
