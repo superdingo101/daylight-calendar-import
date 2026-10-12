@@ -21,14 +21,31 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
+      # Git-only scope classification needs no Home Assistant dependencies.
+      - name: Classify PR files before installing dependencies
+        id: classify
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 -m scripts.mutation_shadow --base "$PR_BASE" --head "$PR_HEAD" --no-coverage
+          if python3 -c 'import json,sys; sys.exit(not bool(json.load(open("mutation-shadow-plan.json"))["test_files_measured"]))'; then
+            echo "needs_coverage=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_coverage=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-python@v6
+        if: ${{ steps.classify.outputs.needs_coverage == 'true' }}
         with:
           python-version: "3.14"
           cache: pip
           cache-dependency-path: requirements_test.txt
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements_test.txt
-      - name: Compute shadow plan (never substitutes for Mutation score)
+      - if: ${{ steps.classify.outputs.needs_coverage == 'true' }}
+        run: python -m pip install --upgrade pip
+      - if: ${{ steps.classify.outputs.needs_coverage == 'true' }}
+        run: pip install -r requirements_test.txt
+      - name: Measure fixture-aware execution (never substitutes for Mutation score)
+        if: ${{ steps.classify.outputs.needs_coverage == 'true' }}
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
