@@ -245,6 +245,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass, DOMAIN, "storage_recovery", is_fixable=False,
             severity=ir.IssueSeverity.ERROR, translation_key="storage_recovery",
             is_persistent=True,
+            translation_placeholders={"documentation_url":
+                "https://github.com/superdingo101/daylight-calendar-import/blob/main/docs/storage-recovery.md"},
         )
         raise ConfigEntryError(
             "Daylight import storage needs repair. See Settings > System > Repairs."

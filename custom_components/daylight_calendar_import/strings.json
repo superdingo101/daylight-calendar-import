@@ -55,7 +55,7 @@
   "issues": {
     "storage_recovery": {
       "title": "Daylight import storage needs repair",
-      "description": "Daylight could not safely load its local import storage and will not start new import, approval or notification work. The original data is preserved. With Home Assistant stopped, back up the `.storage/daylight_calendar_import.pending_imports` file and any matching `.corrupt.*` file, then restore a known-good backup or repair the original file. Restart Home Assistant or reload Daylight afterward. Keep uncertain writes blocked until you have checked the destination calendar. Do not delete the file or resend sources as a recovery shortcut; this can duplicate calendar events. After a downgrade, restore a compatible integration version. [Recovery guidance](https://github.com/superdingo101/daylight-calendar-import/blob/main/docs/storage-recovery.md)"
+      "description": "Daylight could not safely load its local import storage and will not start new import, approval or notification work. The original data is preserved. With Home Assistant stopped, back up the `.storage/daylight_calendar_import.pending_imports` file and any matching `.corrupt.*` file, then restore a known-good backup or repair the original file. Restart Home Assistant or reload Daylight afterward. Keep uncertain writes blocked until you have checked the destination calendar. Do not delete the file or resend sources as a recovery shortcut; this can duplicate calendar events. After a downgrade, restore a compatible integration version. [Recovery guidance]({documentation_url})"
     }
   }
 }

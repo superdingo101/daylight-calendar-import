@@ -239,7 +239,10 @@ async def test_corruption_blocks_real_ha_setup_and_clears_repair_after_restore(h
     assert not await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.SETUP_ERROR
-    assert ir.async_get(hass).async_get_issue(DOMAIN, "storage_recovery") is not None
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, "storage_recovery")
+    assert issue is not None
+    assert issue.translation_placeholders == {"documentation_url":
+        "https://github.com/superdingo101/daylight-calendar-import/blob/main/docs/storage-recovery.md"}
     assert entry.entry_id not in hass.data.get(DOMAIN, {})
     assert not hass.services.has_service(DOMAIN, "approve_pending_event")
     await hass.async_add_executor_job(path.write_bytes, json.dumps(envelope(valid_data())).encode())
