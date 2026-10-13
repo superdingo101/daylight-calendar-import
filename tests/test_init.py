@@ -240,6 +240,8 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
         )
     )
     assert submit_result == {
+        "status": "pending_review",
+        "activity_id": "activity-id",
         "pending": submitted.as_service_dict(),
         "duplicate": False,
         "duplicate_source": False,
@@ -801,6 +803,8 @@ async def test_submit_text_without_events_records_source_handling(monkeypatch):
     )
 
     assert result == {
+        "status": "no_events",
+        "activity_id": "activity-id",
         "pending": None,
         "duplicate": False,
         "duplicate_source": False,
@@ -945,6 +949,8 @@ async def test_submit_text_skips_ai_for_known_source(monkeypatch):
     )
 
     assert result == {
+        "status": "duplicate",
+        "activity_id": None,
         "pending": None,
         "duplicate": True,
         "duplicate_source": True,
@@ -1036,6 +1042,8 @@ async def test_submit_text_reports_deduplication_races(
         )
     )
 
+    assert result["status"] == ("pending_review" if add_result.pending else "duplicate")
+    assert result["activity_id"] == "activity-id"
     assert result["duplicate"] is expected_duplicate
     assert result["duplicate_source"] is add_result.duplicate_source
     assert result["duplicate_events"] == add_result.duplicate_events
@@ -1120,6 +1128,10 @@ def test_service_schemas_validate_source_and_pending_ids():
         {ATTR_TEXT: "text", ATTR_SOURCE_ID: "  message-1  "}
     )
     assert validated[ATTR_SOURCE_ID] == "message-1"
+    assert SUBMIT_SCHEMA({ATTR_TEXT: "  schedule \n"})[ATTR_TEXT] == "schedule"
+    for text in ("", " ", "\n\t"):
+        with pytest.raises(vol.Invalid):
+            SUBMIT_SCHEMA({ATTR_TEXT: text})
 
     with pytest.raises(vol.Invalid):
         SUBMIT_SCHEMA({ATTR_TEXT: "text", ATTR_SOURCE_ID: "   "})
@@ -1803,9 +1815,11 @@ async def test_submit_image_routes_attachment_and_text_into_review(monkeypatch):
     assert store.async_add.await_args.kwargs["events"] == [draft()]
     assert store.async_add.await_args.kwargs["calendar_entity"] == "calendar.family"
     assert result["pending"] is not None
+    assert result["status"] == "pending_review"
+    assert result["activity_id"] == "activity-id"
     store.is_source_duplicate.return_value = True
     duplicate = await handler(SimpleNamespace(data={ATTR_FILE_ID: "a" * 32, ATTR_SOURCE_ID: "upstream"}, context=Context(user_id=None)))
-    assert duplicate == {"pending": None, "duplicate": True, "duplicate_source": True, "duplicate_events": 0, "warnings": []}
+    assert duplicate == {"status": "duplicate", "activity_id": None, "pending": None, "duplicate": True, "duplicate_source": True, "duplicate_events": 0, "warnings": []}
     assert parse.await_count == 1
     store.is_source_duplicate.assert_called_with("upstream")
 
@@ -1847,7 +1861,7 @@ async def test_submit_image_only_persists_digest_not_bytes(monkeypatch):
     await async_setup_entry(hass, entry())
     result = await hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_IMAGE)][0](
         SimpleNamespace(data={ATTR_FILE_ID: "a" * 32}, context=Context(user_id=None)))
-    assert result == {"pending": None, "duplicate": False, "duplicate_source": False, "duplicate_events": 0, "warnings": ["no events"]}
+    assert result == {"status": "no_events", "activity_id": "activity-id", "pending": None, "duplicate": False, "duplicate_source": False, "duplicate_events": 0, "warnings": ["no events"]}
     assert store.async_add.await_args.kwargs["source_text"] == "Image attachment (SHA-256: digest)"
 
 
@@ -2978,3 +2992,28 @@ async def test_check_pending_event_conflict_notification_boundary(monkeypatch, c
     assert "Private provider information" not in caplog.text
     if outcome == "storage_error":
         assert "conflict notification could not be persisted" in caplog.text
+
+
+@pytest.mark.parametrize("service,adapter", [
+    (SERVICE_SUBMIT_IMAGE, "async_image_source"),
+    (SERVICE_SUBMIT_PDF, "async_pdf_source"),
+])
+async def test_attachment_submission_denies_access_before_upload_lookup(monkeypatch, service, adapter):
+    """Unauthorized callers must not consume or inspect an uploaded file."""
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=False)))
+    source_adapter = Mock()
+    store = SimpleNamespace(
+        async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+        async_begin_submission=AsyncMock(), is_source_duplicate=Mock(),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    monkeypatch.setattr(f"custom_components.daylight_calendar_import.{adapter}", source_adapter)
+    await async_setup_entry(hass, entry())
+    with pytest.raises(Unauthorized):
+        await hass.services.handlers[(DOMAIN, service)][0](SimpleNamespace(
+            data={ATTR_FILE_ID: "a" * 32, ATTR_SOURCE_ID: "guessed"},
+            context=Context(user_id="denied"),
+        ))
+    source_adapter.assert_not_called()
+    store.is_source_duplicate.assert_not_called()
+    store.async_begin_submission.assert_not_awaited()
