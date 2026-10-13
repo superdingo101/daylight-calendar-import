@@ -1,0 +1,27 @@
+name: HACS release packaging
+
+on:
+  pull_request:
+    paths:
+      - hacs.json
+      - custom_components/daylight_calendar_import/**
+      - scripts/build_hacs_release.py
+      - tests/test_hacs_release_package.py
+      - .github/workflows/publish-hacs-release.yml
+      - .github/workflows/hacs-release-packaging.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run packaging regression tests
+        run: python -m unittest discover -s tests -p 'test_hacs_release_package.py' -v
+      - name: Build and validate installable ZIP
+        run: |
+          VERSION="$(python -c 'import json; print(json.load(open("custom_components/daylight_calendar_import/manifest.json"))["version"])')"
+          python -m scripts.build_hacs_release --version "$VERSION" --output daylight-calendar-import.zip

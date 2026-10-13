@@ -170,6 +170,15 @@ jobs:
           echo "" >> RELEASE_NOTES.md
           echo "_Generated from GitHub release notes. Please verify before publishing this draft._" >> RELEASE_NOTES.md
 
+      - name: Run release packaging regression tests
+        run: python -m unittest discover -s tests -p 'test_hacs_release_package.py' -v
+
+      - name: Build and validate HACS integration release ZIP
+        run: |
+          python -m scripts.build_hacs_release \
+            --version "${{ steps.version.outputs.version }}" \
+            --output daylight-calendar-import.zip
+
       - name: Create draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -184,6 +193,7 @@ jobs:
           fi
 
           gh release create "$TAG" \
+            daylight-calendar-import.zip \
             --target "$RELEASE_SHA" \
             --title "$TITLE" \
             --notes-file RELEASE_NOTES.md \
