@@ -344,7 +344,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     await _async_check_entity_control_permission(hass, ai_task_entity, call.context)
                     source_id = call.data.get(ATTR_SOURCE_ID)
                     if source_id is not None:
-                        pending_store.processing_source_fingerprints[task] = source_fingerprint(source_id)
+                        fingerprint = source_fingerprint(source_id)
+                        # Check and register without an await so a retry cannot
+                        # enter the parser before the first request commits.
+                        if fingerprint in pending_store.processing_source_fingerprints.values():
+                            raise ServiceValidationError(
+                                "This submission is still processing; wait and check activity before retrying"
+                            )
+                        pending_store.processing_source_fingerprints[task] = fingerprint
                 return await handler(call)
             finally:
                 pending_store.processing_source_fingerprints.pop(task, None)

@@ -199,7 +199,7 @@ async def test_service_authorizes_validates_and_returns_target_result(monkeypatc
             await handler(SimpleNamespace(data={'source_id':'source'},context=Context(user_id=user)))
 
 @pytest.mark.parametrize('kind', ['text', 'image', 'pdf'])
-async def test_overlapping_submission_source_stays_protected_until_last_parser_exits(monkeypatch, kind):
+async def test_busy_submission_source_stays_protected_until_parser_exits(monkeypatch, kind):
     from contextlib import asynccontextmanager
     from unittest.mock import Mock
     from test_init import FakeHass, FakePermissions, entry
@@ -217,15 +217,14 @@ async def test_overlapping_submission_source_stays_protected_until_last_parser_e
         yield SourceDocument('upload', SourceKind(kind), datetime.now(UTC), text='retained')
     monkeypatch.setattr('custom_components.daylight_calendar_import.async_image_source', upload)
     monkeypatch.setattr('custom_components.daylight_calendar_import.async_pdf_source', upload)
-    entered = [asyncio.Event(), asyncio.Event()]
-    release = [asyncio.Event(), asyncio.Event()]
+    entered = asyncio.Event()
+    release = asyncio.Event()
     calls = 0
     async def parse(*_args):
         nonlocal calls
-        index = calls
         calls += 1
-        entered[index].set()
-        await release[index].wait()
+        entered.set()
+        await release.wait()
         return ParseOutcome([draft()], [])
     monkeypatch.setattr('custom_components.daylight_calendar_import._async_parse_source', parse)
     await async_setup_entry(hass, entry())
@@ -236,22 +235,25 @@ async def test_overlapping_submission_source_stays_protected_until_last_parser_e
     def call():
         return SimpleNamespace(data=data, context=Context(user_id='user'))
     first = asyncio.create_task(handler(call()))
-    await entered[0].wait()
-    second = asyncio.create_task(handler(call()))
-    await entered[1].wait()
-    assert list(store.processing_source_fingerprints.values()) == [source_fingerprint('shared-source')] * 2
-    release[0].set()
-    result = await first
-    await store.async_remove(result['pending']['id'])
-    assert len(store.processing_source_fingerprints) == 1
-    with pytest.raises(PendingEventEditError, match='processing'):
-        await store.async_reset_deduplication(source_id='shared-source')
-    # Cancellation releases only this invocation's registry entry.
-    second.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await second
-    assert not store.processing_source_fingerprints
-    assert await store.async_reset_deduplication(source_id='shared-source')
+    try:
+        await entered.wait()
+        with pytest.raises(ServiceValidationError, match='still processing'):
+            await handler(call())
+        assert calls == 1
+        # A rejected retry must not clear the original request's protection.
+        assert list(store.processing_source_fingerprints.values()) == [source_fingerprint('shared-source')]
+        with pytest.raises(PendingEventEditError, match='processing'):
+            await store.async_reset_deduplication(source_id='shared-source')
+        release.set()
+        result = await first
+        await store.async_remove(result['pending']['id'])
+        assert not store.processing_source_fingerprints
+        assert await store.async_reset_deduplication(source_id='shared-source')
+    finally:
+        release.set()
+        if not first.done():
+            first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
 
 @pytest.mark.parametrize(("start", "end"), [
     ("9999-12-31T22:00:00-14:00", "9999-12-31T23:00:00-14:00"),

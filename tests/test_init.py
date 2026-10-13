@@ -3017,3 +3017,107 @@ async def test_attachment_submission_denies_access_before_upload_lookup(monkeypa
     source_adapter.assert_not_called()
     store.is_source_duplicate.assert_not_called()
     store.async_begin_submission.assert_not_awaited()
+
+
+@pytest.mark.parametrize("service,kind", [
+    (SERVICE_SUBMIT_TEXT, SourceKind.MANUAL_TEXT),
+    (SERVICE_SUBMIT_IMAGE, SourceKind.IMAGE),
+    (SERVICE_SUBMIT_PDF, SourceKind.PDF),
+])
+@pytest.mark.parametrize("completion", ["success", "failure", "cancel"])
+async def test_manual_submission_serializes_source_id_after_authorization(
+    monkeypatch, service, kind, completion,
+):
+    """Only an active identical request blocks retry; other IDs remain usable."""
+    permissions = FakePermissions(allowed=True)
+    hass = FakeHass(user=SimpleNamespace(permissions=permissions))
+    store = SimpleNamespace(
+        async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+        async_begin_submission=AsyncMock(return_value="activity-id"),
+        async_record_parse_failure=AsyncMock(),
+        is_source_duplicate=Mock(return_value=False),
+        async_add=AsyncMock(return_value=PendingImportAddResult(None, False, 0)),
+    )
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def parse(*args, **kwargs):
+        if parser.await_count == 1:
+            entered.set()
+            await finish.wait()
+            if completion == "failure":
+                raise RuntimeError("provider unavailable")
+        return ParseOutcome([], [])
+
+    parser = AsyncMock(side_effect=parse)
+    adapter_calls = []
+
+    @asynccontextmanager
+    async def attachment_source(*args):
+        adapter_calls.append(args)
+        yield replace(TextSourceAdapter().create("Practice"), kind=kind)
+
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _: store)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parser)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_image_source", attachment_source)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_pdf_source", attachment_source)
+    assert await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, service)][0]
+
+    def call(source_id):
+        return SimpleNamespace(
+            data={ATTR_TEXT: "Practice", ATTR_FILE_ID: "a" * 32, ATTR_SOURCE_ID: source_id},
+            context=Context(user_id="test-user"),
+        )
+
+    first = asyncio.create_task(handler(call("same-source")))
+    await entered.wait()
+    try:
+        assert len(store.processing_source_fingerprints) == 1
+        assert first in store.active_service_handlers
+        with pytest.raises(ServiceValidationError, match="still processing; wait and check activity"):
+            await handler(call("same-source"))
+        assert parser.await_count == 1
+        assert len(adapter_calls) == (0 if kind == SourceKind.MANUAL_TEXT else 1)
+        assert len(store.processing_source_fingerprints) == 1
+
+        # The busy-source result must not reveal processing to an unauthorized user.
+        permissions.allowed = False
+        with pytest.raises(Unauthorized):
+            await handler(call("same-source"))
+        permissions.allowed = True
+        assert parser.await_count == 1
+        assert len(store.processing_source_fingerprints) == 1
+
+        await handler(call("other-source"))
+        assert parser.await_count == 2
+        assert len(store.processing_source_fingerprints) == 1
+        assert store.active_service_handlers == {first}
+
+        if completion == "cancel":
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+        else:
+            finish.set()
+            if completion == "failure":
+                with pytest.raises(RuntimeError, match="provider unavailable"):
+                    await first
+            else:
+                await first
+        assert store.processing_source_fingerprints == {}
+        assert store.active_service_handlers == set()
+        assert store.active_submissions == set()
+        if completion != "success":
+            store.async_record_parse_failure.assert_awaited_once_with("activity-id")
+
+        # A failed or cancelled request releases its ephemeral claim. Successful
+        # requests also release it; the existing durable duplicate check applies.
+        await handler(call("same-source"))
+        assert parser.await_count == 3
+        assert store.processing_source_fingerprints == {}
+    finally:
+        finish.set()
+        if not first.done():
+            first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
