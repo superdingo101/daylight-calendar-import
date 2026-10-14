@@ -1,6 +1,8 @@
-/** Manual text intake uses the same durable review service as email imports. */
 import {isSubmissionResponse} from "./submission_response.js";
+import {SubmissionAttempt, SubmissionFeedback} from "./submission_feedback.js";
+export {submissionMessage} from "./submission_feedback.js";
 
+/** Manual text intake uses the same durable review service as email imports. */
 export async function submitText(hass, text, {sourceId} = {}) {
   if (!text.trim()) throw new Error("Paste event details before importing.");
   if (sourceId !== undefined && (typeof sourceId !== "string" || !sourceId.trim())) {
@@ -25,15 +27,6 @@ export function validateSubmissionResponse(response) {
   return response;
 }
 
-export function submissionMessage(response) {
-  if (response.pending) {
-    const count = response.pending.events.length;
-    return `${count} ${count === 1 ? "event is" : "events are"} ready for review. Approve them in the review inbox to add them to your calendar.`;
-  }
-  if (response.duplicate) return "This import contained only duplicates. No new events are awaiting review.";
-  return "No events were found. Add dates and event details, then try again.";
-}
-
 const node = (tag, text = "") => {
   const result = document.createElement(tag);
   result.textContent = text;
@@ -42,7 +35,7 @@ const node = (tag, text = "") => {
 
 /** Keep one form alive so inbox refreshes and view changes preserve its draft. */
 export class ManualSubmission {
-  constructor({getHass, onSubmitted = () => {}}) {
+  constructor({getHass, onSubmitted = () => {}, onReview, onActivity}) {
     this.element = node("section");
     this.element.className = "manual-submission";
     this.element.setAttribute("aria-label", "Import pasted event details");
@@ -59,19 +52,18 @@ export class ManualSubmission {
     this.status = node("p");
     this.status.setAttribute("role", "status");
     this.status.setAttribute("aria-live", "polite");
-    this.form.append(label, this.button, this.status);
-    this.element.append(this.form);
+    this.attempt = new SubmissionAttempt();
+    this.feedback = new SubmissionFeedback(this.status, {onReview, onActivity});
+    this.form.append(label, this.button, this.status, this.feedback.actions);
     this.text.addEventListener("input", () => {
-      if (!this.busy) {
-        this._sourceId = null;
-        this._attemptText = null;
-      }
+      if (!this.busy) { this.attempt.reset(); this.feedback.clear(); }
     });
+    this.element.append(this.form);
     this.form.addEventListener("submit", async event => {
       event.preventDefault();
       if (this.busy) return;
       if (!this.text.value?.trim()) {
-        this.status.textContent = "Paste event details before importing.";
+        this.feedback.processing("Paste event details before importing.");
         this.text.focus();
         return;
       }
@@ -79,18 +71,10 @@ export class ManualSubmission {
       this.button.disabled = true;
       this.text.disabled = true;
       this.button.textContent = "Processing…";
-      this.status.textContent = "Extracting events for review…";
+      this.feedback.processing("Extracting events for review…");
       try {
-        // An unchanged draft keeps its identity across explicit retries, even
-        // when the service stored the import but its acknowledgement was lost.
-        if (!this._sourceId || this._attemptText !== this.text.value) {
-          this._sourceId = Array.from(crypto.getRandomValues(new Uint8Array(16)),
-            byte => byte.toString(16).padStart(2, "0")).join("");
-          this._attemptText = this.text.value;
-        }
-        const response = await submitText(getHass(), this.text.value, {sourceId: this._sourceId});
-        this.status.textContent = submissionMessage(response);
-        if (response.warnings.length) this.status.textContent += ` ${response.warnings.join(" ")}`;
+        const response = await submitText(getHass(), this.text.value, {sourceId: this.attempt.forDraft(this.text.value)});
+        this.feedback.result(response);
         // Keep inbox loading failures separate from successful extraction feedback.
         try {
           await onSubmitted(response);
@@ -98,8 +82,7 @@ export class ManualSubmission {
           this.status.textContent += " Refresh the review inbox to see the latest imports.";
         }
       } catch (error) {
-        this.status.textContent = typeof error?.message === "string" ? error.message :
-          "Could not import these details. Check the review inbox before trying again.";
+        this.feedback.error(error);
       } finally {
         this.busy = false;
         this.button.disabled = false;
