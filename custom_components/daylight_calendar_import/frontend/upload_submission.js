@@ -1,5 +1,6 @@
+import {SubmissionAttempt, SubmissionFeedback} from "./submission_feedback.js";
 import {inspectUpload, submitFile} from "./upload_transport.js";
-import {submissionMessage, validateSubmissionResponse} from "./manual_submission.js";
+import {validateSubmissionResponse} from "./manual_submission.js";
 
 const node = (tag, text = "") => {
   const result = document.createElement(tag);
@@ -11,10 +12,7 @@ const errorMessage = error => typeof error?.message === "string" ? error.message
 
 /** A persistent native file input retains its selection during panel refreshes. */
 export class FileSubmission {
-  constructor({getHass, onSubmitted = () => {}}) {
-    this._sourceId = null;
-    this._attemptFile = null;
-    this._attemptText = null;
+  constructor({getHass, onSubmitted = () => {}, onReview, onActivity}) {
     this.element = node("section");
     this.element.className = "manual-submission";
     this.element.setAttribute("aria-label", "Import an image or PDF");
@@ -38,64 +36,62 @@ export class FileSubmission {
     this.status = node("p");
     this.status.setAttribute("role", "status");
     this.status.setAttribute("aria-live", "polite");
-    this.form.append(fileLabel, this.filename, contextLabel, this.button, this.status);
-    this.element.append(this.form);
+    this._validationSequence = 0;
+    this.attempt = new SubmissionAttempt();
+    this.feedback = new SubmissionFeedback(this.status, {onReview, onActivity});
+    this.form.append(fileLabel, this.filename, contextLabel, this.button, this.status, this.feedback.actions);
     this.text.addEventListener("input", () => {
-      if (!this.busy) this._sourceId = null;
+      if (!this.busy) { this.attempt.reset(); this.feedback.clear(); }
     });
+    this.element.append(this.form);
     this.file.addEventListener("change", async () => {
       if (this.busy) return;
-      this._sourceId = null;
+      const sequence = ++this._validationSequence;
       const selected = this.file.files?.[0];
       this.filename.textContent = selected ? `Selected file: ${selected.name}` : "No file selected.";
-      this.status.textContent = "";
+      this.attempt.reset();
+      this.feedback.clear();
       if (!selected) return;
       try {
         await inspectUpload(selected);
       } catch (error) {
         // A slow file read must not overwrite feedback for a newer selection.
-        if (this.file.files?.[0] === selected) this.status.textContent = errorMessage(error);
+        if (sequence === this._validationSequence && this.file.files?.[0] === selected && !this.busy) this.status.textContent = errorMessage(error);
       }
     });
     this.form.addEventListener("submit", async event => {
       event.preventDefault();
       if (this.busy) return;
+      ++this._validationSequence; // Supersede any earlier selection-only validation.
       const selected = this.file.files?.[0];
       if (!selected) {
-        this.status.textContent = "Choose an image or PDF file before importing.";
+        this.feedback.processing("Choose an image or PDF file before importing.");
         this.file.focus();
         return;
-      }
-      // Retrying an unacknowledged service call must deduplicate the same draft,
-      // even though the transport uploads fresh bytes with a new temporary ID.
-      const text = (this.text.value || "").trim();
-      if (!this._sourceId || this._attemptFile !== selected || this._attemptText !== text) {
-        const bytes = crypto.getRandomValues(new Uint8Array(16));
-        this._sourceId = `manual-${Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("")}`;
-        this._attemptFile = selected;
-        this._attemptText = text;
       }
       this.busy = true;
       this.file.disabled = true;
       this.text.disabled = true;
       this.button.disabled = true;
       this.button.textContent = "Processing…";
-      this.status.textContent = "Uploading file…";
+      this.feedback.processing("Checking file…");
+      let submitted = false;
       try {
+        await inspectUpload(selected);
+        this.feedback.processing("Uploading file…");
         const response = validateSubmissionResponse(await submitFile(getHass(), selected, {
-          text,
-          sourceId: this._sourceId,
-          onUploaded: () => { this.status.textContent = "Extracting events for review…"; },
+          text: this.text.value || "",
+          sourceId: this.attempt.forDraft(this.text.value || "", selected),
+          onUploaded: () => { submitted = true; this.feedback.processing("Extracting events for review…"); },
         }));
-        this.status.textContent = submissionMessage(response);
-        if (response.warnings.length) this.status.textContent += ` ${response.warnings.join(" ")}`;
+        this.feedback.result(response);
         try {
           await onSubmitted(response);
         } catch {
           this.status.textContent += " Refresh the review inbox to see the latest imports.";
         }
       } catch (error) {
-        this.status.textContent = errorMessage(error);
+        this.feedback.error(error, submitted);
       } finally {
         this.busy = false;
         this.file.disabled = false;

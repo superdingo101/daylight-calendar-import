@@ -4,6 +4,7 @@ import {FileSubmission} from "./upload_submission.js";
 class FakeNode {
   constructor(tag) { this.tag = tag; this.children = []; this.attributes = {}; this.value = ""; }
   append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
   addEventListener(name, callback) { this[name] = callback; }
   focus() { this.focused = true; }
@@ -15,7 +16,7 @@ const pending = {...empty, pending: {id: "pending-1", events: [{}]}};
 const fileId = "a".repeat(32);
 const image = () => new File([new Uint8Array([137,80,78,71,13,10,26,10])], "<image>.png", {type: "image/png"});
 const pdf = () => new File(["%PDF-1.4\n"], "events.pdf", {type: "application/pdf"});
-function setup(response = pending) {
+function setup(response = pending, callbacks = {}) {
   const uploads = [];
   const services = [];
   const hass = {
@@ -25,7 +26,7 @@ function setup(response = pending) {
     },
     callWS: async request => { services.push(request); return {response}; },
   };
-  const form = new FileSubmission({getHass: () => hass});
+  const form = new FileSubmission({getHass: () => hass, ...callbacks});
   return {form, uploads, services, hass};
 }
 
@@ -78,7 +79,8 @@ test("images and PDFs use multipart intake with optional context", async () => {
     assert.equal(sent.name, selected.name);
     assert.deepEqual(new Uint8Array(await sent.arrayBuffer()), new Uint8Array(await selected.arrayBuffer()));
     assert.equal(services[0].service, service);
-    assert.deepEqual(services[0].service_data, {file_id: fileId, text: form.text.value, source_id: form._sourceId});
+    assert.deepEqual(services[0].service_data, {file_id: fileId, text: form.text.value, source_id: form.attempt.sourceId});
+    assert.match(services[0].service_data.source_id, /^manual-[a-f0-9]{32}$/);
     assert.match(form.status.textContent, /ready for review/);
     assert.equal(form.file.files[0], selected);
     assert.equal(form.text.value, "Calendar: Family\nThe flyer is for next Tuesday");
@@ -97,6 +99,15 @@ test("file duplicates, no-event and malformed outcomes are clear", async () => {
   }
 });
 
+test("malformed acknowledged upload results do not imply ongoing processing", async () => {
+  const {form} = setup({});
+  form.file.files = [pdf()];
+  await form.form.submit(event);
+  assert.match(form.status.textContent, /submission call completed/);
+  assert.doesNotMatch(form.status.textContent, /processing may still finish/);
+  assert.equal(form.button.disabled, false);
+});
+
 test("provider rejection preserves file selection and supporting draft", async () => {
   const {form, hass} = setup();
   hass.callWS = async () => { throw {code: "home_assistant_error", message: "Select an attachment-capable AI provider"}; };
@@ -108,6 +119,87 @@ test("provider rejection preserves file selection and supporting draft", async (
   assert.equal(form.file.files[0], selected);
   assert.equal(form.text.value, "Optional instructions");
   assert.equal(form.button.disabled, false);
+});
+
+test("under-limit PDF extraction rejections preserve the draft and restore controls", async () => {
+  // A complete one-page PDF, including byte offsets and trailer, rather than
+  // only a signature: the service rejection follows a valid file upload.
+  const objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>"];
+  let contents = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(contents.length);
+    contents += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = contents.length;
+  contents += `xref\n0 4\n0000000000 65535 f \n${offsets.slice(1).map(offset => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  for (const message of ["PDF text exceeds the size limit", "PDF exceeds the extraction resource limit", "PDF extraction timed out", "PDF could not be read"]) {
+    const {form, hass, uploads, services} = setup(pending, {onActivity() {}});
+    const selected = new File([contents], "events.pdf", {type: "application/pdf"});
+    assert.ok(selected.size < 10 * 1024 * 1024);
+    hass.callWS = async request => {
+      services.push(request);
+      throw {code: "home_assistant_error", message};
+    };
+    form.file.files = [selected];
+    form.text.value = "Calendar: Family";
+    await form.form.submit(event);
+    assert.equal(uploads[0].options.method, "POST");
+    assert.equal(services[0].service, "submit_pdf");
+    assert.equal(form.file.files[0], selected);
+    assert.equal(form.text.value, "Calendar: Family");
+    assert.equal(form.busy, false);
+    assert.equal(form.file.disabled, false);
+    assert.equal(form.text.disabled, false);
+    assert.equal(form.button.disabled, false);
+    assert.equal(form.button.textContent, "Import file");
+    assert.match(form.status.textContent, /[Rr]educe or split.*paste its event details/);
+    assert.doesNotMatch(form.status.textContent, /10 MiB|30 pages|Check recent activity|outcome is unknown/);
+    assert.equal(form.feedback.actions.hidden, true);
+    assert.equal(form.feedback.actions.children.length, 0);
+  }
+});
+
+test("HTTP upload authentication failures retain selection and give connection recovery", async () => {
+  for (const status of [401, 403]) {
+    const {form, hass, services} = setup();
+    hass.fetchWithAuth = async () => ({status});
+    const selected = image();
+    form.file.files = [selected];
+    await form.form.submit(event);
+    assert.equal(services.length, 0);
+    assert.equal(form.file.files[0], selected);
+    assert.equal(form.button.disabled, false);
+    assert.match(form.status.textContent, /Sign in to Home Assistant again/);
+    assert.doesNotMatch(form.status.textContent, /AI task/);
+    assert.equal(form.feedback.actions.children.length, 0);
+  }
+});
+
+test("missing local media rejects image or scanned PDF before activity creation", async () => {
+  for (const selected of [image(), pdf()]) {
+    const {form, hass, services} = setup(pending, {onActivity() {}});
+    hass.callWS = async request => {
+      services.push(request);
+      throw {code: "home_assistant_error", message: "No local media directory configured"};
+    };
+    form.file.files = [selected];
+    form.text.value = "Calendar: Family";
+    await form.form.submit(event);
+    assert.equal(services.length, 1);
+    assert.equal(form.file.files[0], selected);
+    assert.equal(form.text.value, "Calendar: Family");
+    assert.equal(form.busy, false);
+    assert.equal(form.file.disabled, false);
+    assert.equal(form.text.disabled, false);
+    assert.equal(form.button.disabled, false);
+    assert.equal(form.button.textContent, "Import file");
+    assert.match(form.status.textContent, /Configure a local media directory.*paste/);
+    assert.doesNotMatch(form.status.textContent, /Check recent activity|outcome is unknown/);
+    assert.equal(form.feedback.actions.hidden, true);
+    assert.equal(form.feedback.actions.children.length, 0);
+  }
 });
 
 test("busy processing blocks repeat submits and separates refresh failure", async () => {
@@ -146,6 +238,77 @@ test("late validation feedback cannot replace a newer file selection", async () 
   assert.equal(form.status.textContent, "");
 });
 
+test("file retry preserves selection/source identity and rotates for changed context or file", async () => {
+  const {form, hass, services, uploads} = setup();
+  hass.callWS = async request => { services.push(request); throw {code: "timeout", message: "Timed out"}; };
+  const selected = image();
+  form.file.files = [selected];
+  form.text.value = "Family calendar";
+  await form.form.submit(event);
+  const initial = services[0].service_data.source_id;
+  assert.match(form.status.textContent, /processing may still finish/);
+  assert.equal(form.file.disabled, false);
+  assert.equal(form.file.files[0], selected);
+  await form.form.submit(event);
+  assert.equal(services[1].service_data.source_id, initial);
+  assert.equal(uploads.filter(request => request.options.method === "POST").length, 2);
+  form.text.value = "Work calendar";
+  await form.form.submit(event);
+  assert.notEqual(services[2].service_data.source_id, initial);
+  const withContext = services[2].service_data.source_id;
+  form.text.input();
+  assert.equal(form.status.textContent, "");
+  await form.form.submit(event);
+  assert.notEqual(services[3].service_data.source_id, withContext);
+  const beforeFile = services[3].service_data.source_id;
+  form.file.files = [pdf()];
+  await form.file.change();
+  await form.form.submit(event);
+  assert.notEqual(services[4].service_data.source_id, beforeFile);
+});
+
+test("file checking, upload and extraction show distinct progress stages", async () => {
+  const {form, hass} = setup();
+  let uploaded, parsed;
+  hass.fetchWithAuth = async (path, options) => {
+    if (options.method === "DELETE") return {status: 404};
+    return new Promise(resolve => {uploaded = resolve;});
+  };
+  hass.callWS = () => new Promise(resolve => {parsed = resolve;});
+  form.file.files = [pdf()];
+  const running = form.form.submit(event);
+  assert.match(form.status.textContent, /Checking file/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(form.status.textContent, /Uploading file/);
+  uploaded({status: 200, json: async () => ({file_id: fileId})});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(form.status.textContent, /Extracting events/);
+  parsed({response: pending});
+  await running;
+  assert.match(form.status.textContent, /ready for review/);
+});
+
+test("a stale file selection check cannot overwrite a completed submission result", async () => {
+  const {form} = setup();
+  const selected = image();
+  const slice = selected.slice.bind(selected);
+  let first = true, finish;
+  selected.slice = (...args) => {
+    if (first) {
+      first = false;
+      return {arrayBuffer: () => new Promise(resolve => {finish = resolve;})};
+    }
+    return slice(...args);
+  };
+  form.file.files = [selected];
+  const checking = form.file.change();
+  await form.form.submit(event);
+  assert.match(form.status.textContent, /ready for review/);
+  finish(new Uint8Array([1, 2, 3]).buffer);
+  await checking;
+  assert.match(form.status.textContent, /ready for review/);
+});
+
 test("an unknown outcome retries with a stable source ID and a fresh upload", async () => {
   const {form, hass, uploads, services} = setup();
   let attempt = 0;
@@ -168,7 +331,7 @@ test("an unknown outcome retries with a stable source ID and a fresh upload", as
   assert.equal(services[1].service_data.source_id, services[0].service_data.source_id);
   assert.notEqual(services[1].service_data.file_id, services[0].service_data.file_id);
   assert.equal(uploads.filter(({options}) => options.method === "POST").length, 2);
-  assert.match(form.status.textContent, /only duplicates/);
+  assert.match(form.status.textContent, /source was already submitted/);
   assert.equal(form.file.files[0], selected);
 });
 
@@ -210,7 +373,7 @@ test("input events during processing cannot erase the submitted identity", async
   await new Promise(resolve => setImmediate(resolve));
   await form.text.input();
   await form.file.change();
-  assert.equal(form._sourceId, services[0].service_data.source_id);
+  assert.equal(form.attempt.sourceId, services[0].service_data.source_id);
   finish({response: pending});
   await running;
 });

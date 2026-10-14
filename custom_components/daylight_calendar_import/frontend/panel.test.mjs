@@ -5319,27 +5319,24 @@ test("panel file intake refreshes reviews without writing any calendar events", 
   assert.match(panel._fileSubmission.status.textContent, /ready for review/);
 });
 
-test("panel file intake waits for refresh and retains acknowledged success when refresh fails", async () => {
+test("submission feedback routes both forms to the exact review/activity record without approval", async () => {
   const panel = new DaylightImportPanel();
-  panel.hass = {
-    fetchWithAuth: async () => ({status: 200, json: async () => ({file_id: "a".repeat(32)})}),
-    callWS: async request => request.service === "submit_pdf" ? {response: {
-      pending: {id: "pending-1", events: [{}]}, duplicate: false,
-      duplicate_source: false, duplicate_events: 0, warnings: [],
-    }} : {response: {imports: []}},
-  };
-  await flush();
-  let finish;
-  panel.refresh = () => new Promise(resolve => { finish = resolve; });
-  panel._fileSubmission.file.files = [new File(["%PDF-1.4"], "events.pdf")];
-  const running = panel._fileSubmission.form.submit({preventDefault() {}});
-  await flush();
-  assert.equal(panel._fileSubmission.busy, true);
-  finish(false);
-  await running;
-  assert.equal(panel._fileSubmission.busy, false);
-  assert.match(panel._fileSubmission.status.textContent, /ready for review/);
-  assert.match(panel._fileSubmission.status.textContent, /Refresh the review inbox/);
+  const actions = [];
+  panel.showImport = async id => {actions.push({view: "review", id});};
+  panel.showActivity = async id => {actions.push({view: "activity", id});};
+  const response = {pending: {id: "draft-1", events: [{}]}, activity_id: "lifecycle-1",
+    duplicate: false, duplicate_source: false, duplicate_events: 0, warnings: []};
+  for (const form of [panel._manualSubmission, panel._fileSubmission]) {
+    form.feedback.result(response);
+    await form.feedback.actions.children[0].click();
+    await form.feedback.actions.children[1].click();
+    form.feedback.error({code: "timeout", message: "Timed out"});
+    await form.feedback.actions.children[0].click();
+  }
+  assert.deepEqual(actions, [
+    {view: "review", id: "draft-1"}, {view: "activity", id: "lifecycle-1"}, {view: "activity", id: null},
+    {view: "review", id: "draft-1"}, {view: "activity", id: "lifecycle-1"}, {view: "activity", id: null},
+  ]);
 });
 
 test("manual paste stays busy while reconciling the inbox", async () => {
@@ -5429,6 +5426,75 @@ test("superseded manual paste reconciliation does not report an inbox failure", 
   assert.equal(manual.busy, false);
 });
 
+test("panel file intake waits for refresh and retains acknowledged success when refresh fails", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    fetchWithAuth: async () => ({status: 200, json: async () => ({file_id: "a".repeat(32)})}),
+    callWS: async request => request.service === "submit_pdf" ? {response: {
+      pending: {id: "pending-1", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }} : {response: {imports: []}},
+  };
+  await flush();
+  let finish;
+  panel.refresh = () => new Promise(resolve => { finish = resolve; });
+  panel._fileSubmission.file.files = [new File(["%PDF-1.4"], "events.pdf")];
+  const running = panel._fileSubmission.form.submit({preventDefault() {}});
+  await flush();
+  assert.equal(panel._fileSubmission.busy, true);
+  finish(false);
+  await running;
+  assert.equal(panel._fileSubmission.busy, false);
+  assert.match(panel._fileSubmission.status.textContent, /ready for review/);
+  assert.match(panel._fileSubmission.status.textContent, /Refresh the review inbox/);
+});
+
+test("manual text retry reconciles a previously stored import after losing its response", async () => {
+  for (const failRefresh of [false, true]) {
+    const panel = new DaylightImportPanel();
+    const requests = [];
+    let submits = 0;
+    let completeRefresh;
+    panel.hass = {callWS: async request => {
+      requests.push(request);
+      if (request.service === "submit_text") {
+        submits++;
+        if (submits === 1) throw new Error("Connection lost");
+        return {response: {pending: null, duplicate: true, duplicate_source: true,
+          duplicate_events: 0, warnings: []}};
+      }
+      if (submits) return new Promise((resolve, reject) => {
+        completeRefresh = () => failRefresh ? reject(new Error("Inbox unavailable")) :
+          resolve({response: {imports: [{id: "stored-before-disconnect"}]}});
+      });
+      return {response: {imports: []}};
+    }};
+    await flush();
+    const manual = panel._manualSubmission;
+    manual.text.value = "Dinner tomorrow 6pm";
+    await manual.form.submit({preventDefault() {}});
+    assert.match(manual.status.textContent, /Connection lost/);
+    const retry = manual.form.submit({preventDefault() {}});
+    await flush();
+    assert.equal(manual.busy, true);
+    assert.equal(manual.button.disabled, true);
+    assert.deepEqual(requests.map(request => request.service),
+      ["list_pending", "submit_text", "submit_text", "list_pending"]);
+    assert.equal(requests[1].service_data.source_id, requests[2].service_data.source_id);
+    completeRefresh();
+    await retry;
+    assert.equal(manual.busy, false);
+    assert.match(manual.status.textContent, /source was already submitted/);
+    if (failRefresh) {
+      assert.match(manual.status.textContent, /Refresh the review inbox/);
+      assert.equal(panel._status, "Inbox unavailable");
+    } else {
+      assert.equal(panel._items[0].id, "stored-before-disconnect");
+      assert.doesNotMatch(manual.status.textContent, /Refresh the review inbox/);
+    }
+  }
+});
+
 test("file retry reconciles a stored review after a lost response returns duplicate source", async () => {
   const panel = new DaylightImportPanel();
   const calls = [];
@@ -5469,48 +5535,3 @@ test("file retry reconciles a stored review after a lost response returns duplic
   assert.doesNotMatch(upload.status.textContent, /Refresh the review inbox/);
 });
 
-test("manual text retry reconciles a previously stored import after losing its response", async () => {
-  for (const failRefresh of [false, true]) {
-    const panel = new DaylightImportPanel();
-    const requests = [];
-    let submits = 0;
-    let completeRefresh;
-    panel.hass = {callWS: async request => {
-      requests.push(request);
-      if (request.service === "submit_text") {
-        submits++;
-        if (submits === 1) throw new Error("Connection lost");
-        return {response: {pending: null, duplicate: true, duplicate_source: true,
-          duplicate_events: 0, warnings: []}};
-      }
-      if (submits) return new Promise((resolve, reject) => {
-        completeRefresh = () => failRefresh ? reject(new Error("Inbox unavailable")) :
-          resolve({response: {imports: [{id: "stored-before-disconnect"}]}});
-      });
-      return {response: {imports: []}};
-    }};
-    await flush();
-    const manual = panel._manualSubmission;
-    manual.text.value = "Dinner tomorrow 6pm";
-    await manual.form.submit({preventDefault() {}});
-    assert.match(manual.status.textContent, /Connection lost/);
-    const retry = manual.form.submit({preventDefault() {}});
-    await flush();
-    assert.equal(manual.busy, true);
-    assert.equal(manual.button.disabled, true);
-    assert.deepEqual(requests.map(request => request.service),
-      ["list_pending", "submit_text", "submit_text", "list_pending"]);
-    assert.equal(requests[1].service_data.source_id, requests[2].service_data.source_id);
-    completeRefresh();
-    await retry;
-    assert.equal(manual.busy, false);
-    assert.match(manual.status.textContent, /duplicates/);
-    if (failRefresh) {
-      assert.match(manual.status.textContent, /Refresh the review inbox/);
-      assert.equal(panel._status, "Inbox unavailable");
-    } else {
-      assert.equal(panel._items[0].id, "stored-before-disconnect");
-      assert.doesNotMatch(manual.status.textContent, /Refresh the review inbox/);
-    }
-  }
-});

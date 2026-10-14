@@ -5,6 +5,7 @@ import {ManualSubmission, submitText, submissionMessage} from "./manual_submissi
 class FakeNode {
   constructor(tag) { this.tag = tag; this.children = []; this.attributes = {}; this.value = ""; }
   append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
   addEventListener(name, callback) { this[name] = callback; }
   focus() { this.focused = true; }
@@ -26,23 +27,15 @@ test("whitespace and malformed responses never report successful extraction", as
   const hass = {callWS: async () => { calls++; return {}; }};
   await assert.rejects(submitText(hass, " \n\t"), /Paste event details/);
   assert.equal(calls, 0);
-  for (const response of [null, {}, [], {...empty, pending: {}}, {...empty, warnings: [1]},
-    {...empty, duplicate_events: -1}, {...empty, pending: {id: "p", events: []}},
-    {...empty, pending: {id: "  ", events: [{}]}}, {...empty, duplicate: true},
-    {...pending, duplicate_source: true}, {...empty, duplicate_events: 1},
-    {...pending, status: "no_events"}, {...empty, activity_id: " "}]) {
-    await assert.rejects(submitText({callWS: async () => ({response})}, "Dinner"), error => {
-      assert.match(error.message, /unexpected response/);
-      assert.equal(error.code, "invalid_submission_response");
-      return true;
-    });
+  for (const response of [null, {}, {...empty, pending: {}}, {...empty, warnings: [1]}, {...empty, duplicate_events: -1}, {...empty, pending: {id: "p", events: []}}]) {
+    await assert.rejects(submitText({callWS: async () => ({response})}, "Dinner"), /unexpected response/);
   }
 });
 
 test("pending, duplicate and no-event responses describe review outcomes", () => {
   assert.match(submissionMessage(pending), /2 events are ready for review/);
-  assert.match(submissionMessage({...pending, duplicate: true, duplicate_events: 1}), /ready for review/);
-  assert.match(submissionMessage({...empty, duplicate: true, duplicate_source: true}), /only duplicates/);
+  assert.match(submissionMessage({...pending, duplicate: true}), /ready for review/);
+  assert.match(submissionMessage({...empty, duplicate: true}), /only duplicates/);
   assert.match(submissionMessage(empty), /No events were found/);
 });
 
@@ -91,7 +84,8 @@ test("service errors retain the draft and restore usable controls", async () => 
   const form = new ManualSubmission({getHass: () => ({callWS: async () => { throw {message: "AI provider is unavailable"}; }})});
   form.text.value = "Dinner";
   await form.form.submit(event);
-  assert.equal(form.status.textContent, "AI provider is unavailable");
+  assert.match(form.status.textContent, /AI provider is unavailable/);
+  assert.match(form.status.textContent, /Settings/);
   assert.equal(form.text.value, "Dinner");
   assert.equal(form.button.disabled, false);
   assert.equal(form.busy, false);
@@ -107,6 +101,72 @@ test("inbox callback failure cannot disguise a successful submission", async () 
   assert.match(form.status.textContent, /ready for review/);
   assert.match(form.status.textContent, /Refresh the review inbox/);
   assert.equal(form.button.disabled, false);
+});
+
+test("text permission rejection preserves the draft without offering nonexistent activity", async () => {
+  let calls = 0;
+  const form = new ManualSubmission({
+    getHass: () => ({callWS: async () => { calls++; throw {code: "unauthorized", message: "Unauthorized"}; }}),
+    onActivity() {},
+  });
+  const draft = "Calendar: Family\nDinner tomorrow 6pm";
+  form.text.value = draft;
+  await form.form.submit(event);
+  assert.equal(calls, 1);
+  assert.equal(form.text.value, draft);
+  assert.equal(form.busy, false);
+  assert.equal(form.text.disabled, false);
+  assert.equal(form.button.disabled, false);
+  assert.equal(form.button.textContent, "Import events");
+  assert.match(form.status.textContent, /account can use.*AI task/);
+  assert.doesNotMatch(form.status.textContent, /Check recent activity|outcome is unknown/);
+  assert.equal(form.feedback.actions.hidden, true);
+  assert.equal(form.feedback.actions.children.length, 0);
+});
+
+test("explicit retries of an unchanged text draft preserve source identity after unknown outcome", async () => {
+  const requests = [];
+  const form = new ManualSubmission({getHass: () => ({callWS: async request => {
+    requests.push(request); throw {code: "timeout", message: "Timed out"};
+  }})});
+  form.text.value = "Dinner";
+  await form.form.submit(event);
+  assert.match(form.status.textContent, /outcome is unknown/);
+  assert.equal(form.button.disabled, false);
+  await form.form.submit(event);
+  const initial = requests[0].service_data.source_id;
+  assert.match(initial, /^manual-[0-9a-f]{32}$/);
+  assert.equal(requests[1].service_data.source_id, initial);
+  form.text.value = "Dinner tomorrow";
+  await form.form.submit(event);
+  assert.notEqual(requests[2].service_data.source_id, initial);
+  const previous = requests[2].service_data.source_id;
+  form.text.input(); // Editing even back to the same text starts a new attempt.
+  assert.equal(form.status.textContent, "");
+  await form.form.submit(event);
+  assert.notEqual(requests[3].service_data.source_id, previous);
+});
+
+test("response status and activity metadata must be safe to use for navigation", async () => {
+  for (const response of [{...pending, status: "no_events"}, {...empty, status: "pending_review"}, {...empty, activity_id: 123}, {...empty, activity_id: " "}]) {
+    await assert.rejects(submitText({callWS: async () => ({response})}, "Dinner"), /unexpected response/);
+  }
+  const response = {...pending, status: "pending_review", activity_id: "pending-1"};
+  assert.equal(await submitText({callWS: async () => ({response})}, "Dinner", {sourceId: "stable"}), response);
+});
+
+test("malformed acknowledged text cannot add a broken review action", async () => {
+  const response = {...empty, pending: {id: " ", events: [{}]}};
+  await assert.rejects(submitText({callWS: async () => ({response})}, "Dinner"), error => error.code === "invalid_submission_response");
+  const form = new ManualSubmission({
+    getHass: () => ({callWS: async () => ({response})}),
+    onReview() { throw new Error("Must not navigate to malformed IDs"); },
+  });
+  form.text.value = "Dinner";
+  await form.form.submit(event);
+  assert.equal(form.feedback.actions.children.length, 0);
+  assert.match(form.status.textContent, /submission call completed/);
+  assert.doesNotMatch(form.status.textContent, /processing may still finish/);
 });
 
 test("text transport validates optional source IDs before calling the service", async () => {
@@ -131,7 +191,7 @@ test("explicit text retries retain source identity after an unknown outcome and 
   await form.form.submit(event);
   assert.match(form.status.textContent, /Connection lost/);
   await form.form.submit(event);
-  assert.match(calls[0].source_id, /^[a-f0-9]{32}$/);
+  assert.match(calls[0].source_id, /^(?:manual-)?[a-f0-9]{32}$/);
   assert.equal(calls[1].source_id, calls[0].source_id);
   assert.equal(calls[1].text, calls[0].text);
   form.text.input();

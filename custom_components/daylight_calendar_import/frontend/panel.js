@@ -566,6 +566,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._announcement.setAttribute("aria-live", "polite");
     this._manualSubmission = new ManualSubmission({
       getHass: () => this._hass,
+      onReview: id => this.showImport(id),
+      onActivity: id => this.showActivity(id),
       onSubmitted: async response => {
         if ((response.pending || response.duplicate_source) && this._view === "inbox" && !this._selectedId &&
             await this.refresh() === false) {
@@ -575,9 +577,13 @@ export class DaylightImportPanel extends HTMLElement {
     });
     this._fileSubmission = new FileSubmission({
       getHass: () => this._hass,
+      onReview: id => this.showImport(id),
+      onActivity: id => this.showActivity(id),
       onSubmitted: async response => {
         if ((response.pending || response.duplicate_source) && this._view === "inbox" && !this._selectedId &&
-            await this.refresh() === false) throw new Error("Could not refresh imports.");
+            await this.refresh() === false) {
+          throw new Error("Could not refresh the review inbox.");
+        }
       },
     });
     this._manualSubmission.element.hidden = true;
