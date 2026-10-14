@@ -1,0 +1,52 @@
+{
+  "id": "routing-scanned-pdf",
+  "source_kind": "pdf",
+  "source_text": "Calendar: kids\nPlease import the attached scan.",
+  "source_title": null,
+  "reference_datetime": "2026-10-14T09:00:00-07:00",
+  "time_zone": "America/Los_Angeles",
+  "provider_response": {
+    "events": [
+      {
+        "title": "Robotics showcase",
+        "start": "2026-10-20T17:00:00-07:00",
+        "end": "2026-10-20T18:00:00-07:00",
+        "all_day": false,
+        "location": "School gym",
+        "description": "Bring the permission slip.",
+        "confidence": 0.98,
+        "assumptions": []
+      }
+    ]
+  },
+  "expected": {
+    "events": [
+      {
+        "title": "Robotics showcase",
+        "start": "2026-10-20T17:00:00-07:00",
+        "end": "2026-10-20T18:00:00-07:00",
+        "all_day": false,
+        "location": "School gym",
+        "description": "Bring the permission slip.",
+        "confidence": 0.98
+      }
+    ],
+    "warnings": [],
+    "event_assumptions": [
+      []
+    ]
+  },
+  "routing_expectation": {
+    "calendar_entity": "calendar.kids",
+    "requires_confirmation": false,
+    "status": "resolved",
+    "parser_text": "Please import the attached scan."
+  },
+  "attachments": [
+    {
+      "name": "routing-scan.pdf",
+      "media_type": "application/pdf",
+      "path": "assets/routing-scan.pdf"
+    }
+  ]
+}
