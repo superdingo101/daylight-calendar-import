@@ -46,6 +46,8 @@ def score_case(case: dict, response: dict) -> dict:
                 valid_type = isinstance(got, str) and bool(got.strip())
             if isinstance(got, str):
                 got = got.strip() or None
+            elif field == "assumptions" and valid_type:
+                got = [note.strip() for note in got]
             counts[field]["correct"] += valid_type and got == wanted
     return {"id": case["id"], "expected_events": len(expected),
             "actual_events": len(actual), "event_count_correct": len(actual) == len(expected),
