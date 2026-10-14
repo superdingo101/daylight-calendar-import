@@ -452,7 +452,13 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   }};
   await flush();
   await panel.showImport("one");
-  assert.equal(panel._content.querySelectorAll(".event-description")[0].textContent, description);
+  const preview = panel._content.querySelectorAll(".event-description")[0];
+  assert.equal(preview.textContent, description);
+  assert.equal(preview.attributes.tabindex, "0");
+  assert.equal(preview.attributes.role, "region");
+  assert.equal(preview.attributes["aria-label"], "Event description");
+  assert.match(find(panel.shadowRoot, "style").textContent,
+    /\.event-description \{[^}]*max-height: 18rem;[^}]*overflow: auto;/);
   const siblingEdit = panel._content.querySelectorAll("button")
     .find(button => button.dataset.eventId === "sibling");
   const edit = panel._content.querySelectorAll("button")
