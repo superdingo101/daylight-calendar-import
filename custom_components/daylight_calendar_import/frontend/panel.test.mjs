@@ -5228,3 +5228,178 @@ test("conflict opt-in can be selected and deselected independently", () => {
   form.change();
   assert.equal(panel._settingsDrafts.notifications, null);
 });
+
+test("manual paste remains available without email and preserves its DOM across views", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async () => ({response: {imports: []}})};
+  await flush();
+  const manual = panel._manualSubmission;
+  assert.equal(manual.element.hidden, false);
+  manual.text.value = "Calendar: Family\nDinner tomorrow 6pm";
+  await panel.refresh();
+  assert.equal(panel._manualSubmission, manual);
+  assert.equal(manual.text.value, "Calendar: Family\nDinner tomorrow 6pm");
+  panel._view = "activity";
+  panel.render();
+  assert.equal(manual.element.hidden, true);
+  panel._view = "inbox";
+  panel._selectedId = "pending-1";
+  panel.render();
+  assert.equal(manual.element.hidden, true);
+  panel._selectedId = null;
+  panel.render();
+  assert.equal(manual.element.hidden, false);
+  assert.equal(manual.text.value, "Calendar: Family\nDinner tomorrow 6pm");
+});
+
+test("manual paste refreshes pending summaries without approving any events", async () => {
+  const calls = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    calls.push(request.service);
+    return request.service === "submit_text" ? {response: {
+      pending: {id: "pending-1", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }} : {response: {imports: []}};
+  }};
+  await flush();
+  panel._manualSubmission.text.value = "Dinner tomorrow 6pm";
+  await panel._manualSubmission.form.submit({preventDefault() {}});
+  await flush();
+  assert.deepEqual(calls, ["list_pending", "submit_text", "list_pending"]);
+  assert.match(panel._manualSubmission.status.textContent, /ready for review/);
+  assert.equal(panel._manualSubmission.element.hidden, false);
+});
+
+test("manual paste stays busy while reconciling the inbox", async () => {
+  const panel = new DaylightImportPanel();
+  const calls = [];
+  let completeRefresh;
+  let submitted = false;
+  panel.hass = {callWS: async request => {
+    calls.push(request.service);
+    if (request.service === "submit_text") {
+      submitted = true;
+      return {response: {pending: {id: "pending-1", events: [{}]}, duplicate: false,
+        duplicate_source: false, duplicate_events: 0, warnings: []}};
+    }
+    if (submitted) return new Promise(resolve => { completeRefresh = resolve; });
+    return {response: {imports: []}};
+  }};
+  await flush();
+  const manual = panel._manualSubmission;
+  manual.text.value = "Dinner tomorrow 6pm";
+  const submit = manual.form.submit({preventDefault() {}});
+  await flush();
+  assert.equal(manual.busy, true);
+  assert.equal(manual.button.disabled, true);
+  assert.equal(manual.text.disabled, true);
+  assert.match(manual.status.textContent, /ready for review/);
+  await manual.form.submit({preventDefault() {}});
+  assert.deepEqual(calls, ["list_pending", "submit_text", "list_pending"]);
+  completeRefresh({response: {imports: [{id: "pending-1"}]}});
+  await submit;
+  assert.equal(manual.busy, false);
+  assert.equal(manual.button.disabled, false);
+  assert.equal(manual.text.disabled, false);
+  assert.equal(panel._items[0].id, "pending-1");
+  assert.doesNotMatch(manual.status.textContent, /Refresh the review inbox/);
+});
+
+test("manual paste preserves stored success when inbox reconciliation fails", async () => {
+  const panel = new DaylightImportPanel();
+  let submitted = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "submit_text") {
+      submitted = true;
+      return {response: {pending: {id: "pending-1", events: [{}]}, duplicate: false,
+        duplicate_source: false, duplicate_events: 0, warnings: []}};
+    }
+    if (submitted) throw new Error("Inbox unavailable");
+    return {response: {imports: []}};
+  }};
+  await flush();
+  const manual = panel._manualSubmission;
+  manual.text.value = "Dinner tomorrow 6pm";
+  await manual.form.submit({preventDefault() {}});
+  assert.match(manual.status.textContent, /ready for review/);
+  assert.match(manual.status.textContent, /Refresh the review inbox to see the latest imports/);
+  assert.equal(panel._status, "Inbox unavailable");
+  assert.equal(manual.busy, false);
+  assert.equal(manual.text.value, "Dinner tomorrow 6pm");
+});
+
+test("superseded manual paste reconciliation does not report an inbox failure", async () => {
+  const panel = new DaylightImportPanel();
+  let completeRefresh;
+  let submitted = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "submit_text") {
+      submitted = true;
+      return {response: {pending: {id: "pending-1", events: [{}]}, duplicate: false,
+        duplicate_source: false, duplicate_events: 0, warnings: []}};
+    }
+    if (submitted) return new Promise(resolve => { completeRefresh = resolve; });
+    return {response: {imports: []}};
+  }};
+  await flush();
+  const manual = panel._manualSubmission;
+  manual.text.value = "Dinner tomorrow 6pm";
+  const submit = manual.form.submit({preventDefault() {}});
+  await flush();
+  panel._view = "settings";
+  panel._generation += 1;
+  panel._status = "Settings unavailable";
+  completeRefresh({response: {imports: []}});
+  await submit;
+  assert.equal(panel._status, "Settings unavailable");
+  assert.match(manual.status.textContent, /ready for review/);
+  assert.doesNotMatch(manual.status.textContent, /Refresh the review inbox/);
+  assert.equal(manual.busy, false);
+});
+
+test("manual text retry reconciles a previously stored import after losing its response", async () => {
+  for (const failRefresh of [false, true]) {
+    const panel = new DaylightImportPanel();
+    const requests = [];
+    let submits = 0;
+    let completeRefresh;
+    panel.hass = {callWS: async request => {
+      requests.push(request);
+      if (request.service === "submit_text") {
+        submits++;
+        if (submits === 1) throw new Error("Connection lost");
+        return {response: {pending: null, duplicate: true, duplicate_source: true,
+          duplicate_events: 0, warnings: []}};
+      }
+      if (submits) return new Promise((resolve, reject) => {
+        completeRefresh = () => failRefresh ? reject(new Error("Inbox unavailable")) :
+          resolve({response: {imports: [{id: "stored-before-disconnect"}]}});
+      });
+      return {response: {imports: []}};
+    }};
+    await flush();
+    const manual = panel._manualSubmission;
+    manual.text.value = "Dinner tomorrow 6pm";
+    await manual.form.submit({preventDefault() {}});
+    assert.match(manual.status.textContent, /Connection lost/);
+    const retry = manual.form.submit({preventDefault() {}});
+    await flush();
+    assert.equal(manual.busy, true);
+    assert.equal(manual.button.disabled, true);
+    assert.deepEqual(requests.map(request => request.service),
+      ["list_pending", "submit_text", "submit_text", "list_pending"]);
+    assert.equal(requests[1].service_data.source_id, requests[2].service_data.source_id);
+    completeRefresh();
+    await retry;
+    assert.equal(manual.busy, false);
+    assert.match(manual.status.textContent, /duplicates/);
+    if (failRefresh) {
+      assert.match(manual.status.textContent, /Refresh the review inbox/);
+      assert.equal(panel._status, "Inbox unavailable");
+    } else {
+      assert.equal(panel._items[0].id, "stored-before-disconnect");
+      assert.doesNotMatch(manual.status.textContent, /Refresh the review inbox/);
+    }
+  }
+});
