@@ -43,6 +43,7 @@ def test_corpus_routes_only_explicit_unquoted_allowed_control(case):
     assert result.requires_confirmation is expected["requires_confirmation"]
     assert bool(result.warnings) is expected["requires_confirmation"]
     assert result.parser_source.text == expected["parser_text"]
+    assert case["parser_source_text"] == result.parser_source.text
     assert source.text == case["source_text"]
     extracted = extract_calendar_route(
         subject=source.title if source.kind is SourceKind.EMAIL else None,
@@ -147,3 +148,48 @@ async def test_corpus_route_and_hostile_fields_survive_review_boundary(
     assert stored.events[0].status == "pending"
     assert stored.events[0].calendar_entity == event["calendar_entity"]
     assert stored.events[0].routing_unresolved is event.get("routing_unresolved", False)
+
+
+def test_optional_evaluator_sends_actual_routed_evidence_without_control_or_gold(
+    monkeypatch, tmp_path,
+):
+    """The optional adapter sees the same source evidence as production parsing."""
+    from types import SimpleNamespace
+    from scripts import evaluate_extraction_corpus as evaluator
+
+    fixtures = {case["id"]: case for case in CASES}
+    # Also protect the unrouted corpus contract: existing cases use source_text.
+    plain = json.loads((ROOT / "explicit-practice.json").read_text())
+    fixtures[plain["id"]] = plain
+    for case in fixtures.values():
+        (tmp_path / f"{case['id']}.json").write_text(json.dumps(case))
+    seen = []
+
+    def capture(runner, *, input, text, capture_output, check, timeout):
+        request = json.loads(input)
+        case = fixtures[request["id"]]
+        source = SourceDocument(
+            id=case["id"], kind=SourceKind(case.get("source_kind", "manual_text")),
+            received_at=datetime.fromisoformat(case["reference_datetime"]),
+            text=case["source_text"], title=case.get("source_title"),
+        )
+        plan = plan_source_routing(
+            source, default_calendar="calendar.family", allowed_calendars=ALLOWED,
+            aliases=ALIASES,
+        )
+        assert request["source_text"] == plan.parser_source.text
+        assert set(request) <= {
+            "id", "source_text", "reference_datetime", "time_zone",
+            "source_kind", "attachments", "fixture_directory",
+        }
+        assert request.get("attachments", []) == case.get("attachments", [])
+        assert request["fixture_directory"] == str(tmp_path.resolve())
+        assert runner == ["reference-adapter"]
+        assert text and capture_output and check and timeout == 120
+        seen.append(request["id"])
+        return SimpleNamespace(stdout=json.dumps(case["provider_response"]))
+
+    monkeypatch.setattr(evaluator.subprocess, "run", capture)
+    report = evaluator.evaluate(tmp_path, ["reference-adapter"])
+    assert sorted(seen) == sorted(fixtures)
+    assert report["event_count_accuracy"] == 1

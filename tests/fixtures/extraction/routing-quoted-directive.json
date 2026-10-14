@@ -41,5 +41,6 @@
     "requires_confirmation": false,
     "status": "none",
     "parser_text": "School office forwarded this:\n----- Forwarded message -----\nCalendar: kids\nRobotics showcase: October 20, 2026, 5-6pm PDT at School gym. Bring the permission slip."
-  }
+  },
+  "parser_source_text": "School office forwarded this:\n----- Forwarded message -----\nCalendar: kids\nRobotics showcase: October 20, 2026, 5-6pm PDT at School gym. Bring the permission slip."
 }

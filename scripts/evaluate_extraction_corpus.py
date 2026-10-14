@@ -30,10 +30,23 @@ def score_case(case: dict, response: dict) -> dict:
     for index in range(min(len(expected), len(actual))):
         for field in FIELDS:
             wanted = assumptions[index] if field == "assumptions" else expected[index].get(field)
-            got = actual[index].get(field, [] if field == "assumptions" else None)
+            candidate = actual[index]
+            if field not in candidate and field not in {"location", "description"}:
+                continue
+            got = candidate.get(field)
+            if field == "all_day":
+                valid_type = isinstance(got, bool)
+            elif field == "assumptions":
+                valid_type = (isinstance(got, list) and len(got) <= 8
+                              and all(isinstance(note, str) and note.strip()
+                                      and len(note) <= 160 for note in got))
+            elif field in {"location", "description"}:
+                valid_type = got is None or isinstance(got, str)
+            else:
+                valid_type = isinstance(got, str) and bool(got.strip())
             if isinstance(got, str):
                 got = got.strip() or None
-            counts[field]["correct"] += got == wanted
+            counts[field]["correct"] += valid_type and got == wanted
     return {"id": case["id"], "expected_events": len(expected),
             "actual_events": len(actual), "event_count_correct": len(actual) == len(expected),
             "fields": counts}
@@ -51,6 +64,10 @@ def evaluate(corpus: Path, runner: list[str], *, timeout: float = 120) -> dict:
         request = {key: value for key, value in case.items()
                    if key in {"id", "source_text", "reference_datetime", "time_zone",
                               "source_kind", "attachments"}}
+        # Routing fixtures record the actual post-routing parser evidence.
+        # Keep this stdlib runner independent of Home Assistant, and never
+        # expose outer routing directives or expected routing decisions to the AI.
+        request["source_text"] = case.get("parser_source_text", case["source_text"])
         request["fixture_directory"] = str(corpus.resolve())
         completed = subprocess.run(runner, input=json.dumps(request), text=True,
                                    capture_output=True, check=True, timeout=timeout)

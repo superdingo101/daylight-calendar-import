@@ -41,5 +41,6 @@
     "requires_confirmation": true,
     "status": "unresolved",
     "parser_text": "Robotics showcase: October 20, 2026, 5-6pm PDT at School gym. Bring the permission slip."
-  }
+  },
+  "parser_source_text": "Robotics showcase: October 20, 2026, 5-6pm PDT at School gym. Bring the permission slip."
 }

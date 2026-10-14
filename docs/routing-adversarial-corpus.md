@@ -12,6 +12,14 @@ confirmation requirement, and evidence text after stripping control directives.
 conflict, and adjacent nonconflict expectations for the newsletter case.
 These expected outcomes are test/evaluation data, not provider input.
 
+`parser_source_text` separately records the evidence delivered to the parser
+after deterministic routing strips outer calendar directives. Corpus tests
+check it against the real routing planner. Both recorded-provider replay and
+the optional evaluator use this evidence as their parser input; original
+`source_text` remains available to the routing tests. The adapter receives no
+expected routing outcomes or outer control directives, while quoted-history
+directives remain evidence exactly as they do in production.
+
 The asset directory includes an actual readable PNG poster, an image-only PDF
 scan, and a PDF containing an extractable text layer. The PNG and scan carry
 attachment references through recorded-provider replay. The text PDF case uses

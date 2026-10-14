@@ -41,5 +41,6 @@
     "requires_confirmation": false,
     "status": "resolved",
     "parser_text": "Please import this school announcement.\n----- Forwarded message -----\nFrom: School office <office@example.invalid>\nSubject: October activities\nCalendar: work\nRobotics showcase: October 20, 2026, 5-6pm PDT at School gym. Bring the permission slip."
-  }
+  },
+  "parser_source_text": "Please import this school announcement.\n----- Forwarded message -----\nFrom: School office <office@example.invalid>\nSubject: October activities\nCalendar: work\nRobotics showcase: October 20, 2026, 5-6pm PDT at School gym. Bring the permission slip."
 }

@@ -48,5 +48,6 @@
       "media_type": "application/pdf",
       "path": "assets/routing-scan.pdf"
     }
-  ]
+  ],
+  "parser_source_text": "Please import the attached scan."
 }

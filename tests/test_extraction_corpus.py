@@ -21,6 +21,7 @@ async def test_recorded_extraction_boundary(path, monkeypatch):
     case = json.loads(path.read_text())
     assert path.stem == case["id"]
     reference = datetime.fromisoformat(case["reference_datetime"])
+    parser_text = case.get("parser_source_text", case["source_text"])
     attachments = tuple(SourceAttachment(
         id=str(index), media_type=item["media_type"],
         size_bytes=(CORPUS / item["path"]).stat().st_size,
@@ -28,7 +29,7 @@ async def test_recorded_extraction_boundary(path, monkeypatch):
         filename=item["name"],
     ) for index, item in enumerate(case.get("attachments", [])))
     source = SourceDocument(case["id"], SourceKind(case.get("source_kind", "manual_text")),
-                            reference, text=case["source_text"], attachments=attachments)
+                            reference, text=parser_text, attachments=attachments)
     generate = AsyncMock(return_value=SimpleNamespace(data=case["provider_response"]))
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     component = SimpleNamespace(get_entity=lambda _id: SimpleNamespace(
@@ -42,7 +43,7 @@ async def test_recorded_extraction_boundary(path, monkeypatch):
     assert [list(notes) for notes in outcome.event_assumptions] == case["expected"]["event_assumptions"]
     generate.assert_awaited_once()
     request = generate.await_args.kwargs
-    assert case["source_text"].strip() in request["instructions"]
+    assert parser_text.strip() in request["instructions"]
     assert f"Home Assistant time zone: {case['time_zone']}" in request["instructions"]
     assert f"Reference datetime: {reference.astimezone(ZoneInfo(case['time_zone'])).isoformat()}" in request["instructions"]
     if attachments:
@@ -81,3 +82,49 @@ def test_optional_runner_protocol(tmp_path):
     assert all(total["correct"] == total["total"] for total in report["field_totals"].values())
     with pytest.raises(ValueError, match="no JSON cases"):
         evaluate(tmp_path, [sys.executable, str(adapter)])
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("all_day", 0), ("all_day", 0.0), ("all_day", "false"),
+    ("all_day", None), ("assumptions", None), ("assumptions", {}),
+    ("assumptions", ""), ("assumptions", [False]),
+    ("title", 1), ("start", False), ("end", []),
+    ("location", 0), ("description", False),
+])
+def test_evaluator_malformed_field_types_never_receive_credit(field, value):
+    fixture = json.loads((CORPUS / "explicit-practice.json").read_text())
+    candidate = {**fixture["provider_response"]["events"][0], field: value}
+    result = score_case(fixture, {"events": [candidate]})
+    assert result["fields"][field] == {"correct": 0, "total": 1}
+
+
+@pytest.mark.parametrize("field", ["title", "start", "end", "all_day", "assumptions"])
+def test_evaluator_missing_required_fields_never_receive_credit(field):
+    fixture = json.loads((CORPUS / "explicit-practice.json").read_text())
+    candidate = dict(fixture["provider_response"]["events"][0])
+    del candidate[field]
+    result = score_case(fixture, {"events": [candidate]})
+    assert result["fields"][field] == {"correct": 0, "total": 1}
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_evaluator_optional_fields_normalize_absent_null_and_empty_text(value):
+    fixture = json.loads((CORPUS / "explicit-practice.json").read_text())
+    fixture["expected"]["events"][0].update(location=None, description=None)
+    candidate = {**fixture["provider_response"]["events"][0],
+                 "location": value, "description": value}
+    result = score_case(fixture, {"events": [candidate]})
+    assert result["fields"]["location"]["correct"] == 1
+    assert result["fields"]["description"]["correct"] == 1
+    del candidate["location"], candidate["description"]
+    result = score_case(fixture, {"events": [candidate]})
+    assert result["fields"]["location"]["correct"] == 1
+    assert result["fields"]["description"]["correct"] == 1
+
+
+def test_evaluator_does_not_credit_numeric_one_as_all_day_true():
+    fixture = json.loads((CORPUS / "explicit-practice.json").read_text())
+    fixture["expected"]["events"][0]["all_day"] = True
+    candidate = {**fixture["provider_response"]["events"][0], "all_day": 1}
+    result = score_case(fixture, {"events": [candidate]})
+    assert result["fields"]["all_day"] == {"correct": 0, "total": 1}
