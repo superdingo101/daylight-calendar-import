@@ -89,6 +89,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.plan.outputs.target_sha }}
+      - name: Trust the checked-out workspace inside the container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/download-artifact@v4
         with:
           name: mutation-shard-manifest
@@ -215,6 +217,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.plan.outputs.target_sha }}
+      - name: Trust the checked-out workspace inside the container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/download-artifact@v4
         with:
           name: mutation-shard-manifest
