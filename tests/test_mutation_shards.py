@@ -341,6 +341,7 @@ def test_workflow_target_and_comparison_contracts():
         node = next(s for s in jobs[engine]["steps"] if s.get("uses") == "actions/setup-node@v4")
         assert node["with"]["node-version"] == "24.22.0"
         commands = [s.get("run") for s in jobs[engine]["steps"]]
+        assert 'git config --global --add safe.directory "$GITHUB_WORKSPACE"' in commands
         assert "python -m pip install --upgrade pip" in commands
         assert "pip install -r requirements_test.txt" in commands
     assert jobs["plan"]["outputs"]["execution_image"] == "${{ steps.target.outputs.image }}"
