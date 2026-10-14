@@ -90,7 +90,16 @@ const css = `
   input, textarea, select { box-sizing: border-box; width: 100%; padding: 8px; font: inherit; color: inherit; background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; }
   input[type=checkbox] { width: auto; }
   textarea { min-height: 10rem; resize: vertical; }
-  .manual-submission { margin-bottom: 24px; }
+  .manual-submission { margin-bottom: 24px; min-width: 0; }
+  .manual-submission form, .manual-submission label { min-width: 0; }
+  .manual-submission input, .manual-submission textarea, .manual-submission button { min-width: 0; min-height: 44px; max-width: 100%; }
+  .manual-submission input:focus-visible, .manual-submission textarea:focus-visible, .manual-submission [role=status]:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 2px; }
+  .manual-submission .submission-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .manual-submission .submission-actions[hidden] { display: none; }
+  @media (max-width: 480px) {
+    .manual-submission button { width: 100%; }
+    .manual-submission .submission-actions { display: grid; }
+  }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
   nav[aria-label="Daylight views"] {
     display: flex;

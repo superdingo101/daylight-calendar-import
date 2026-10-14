@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {focusSubmissionStatus} from "./submission_accessibility.js";
 import {ManualSubmission, submitText, submissionMessage} from "./manual_submission.js";
 
 class FakeNode {
@@ -8,7 +9,9 @@ class FakeNode {
   replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
   addEventListener(name, callback) { this[name] = callback; }
-  focus() { this.focused = true; }
+  getRootNode() { return globalThis.document; }
+  contains(node) { return this === node || this.children.some(child => child.contains(node)); }
+  focus() { this.focused = true; globalThis.document.activeElement = this; }
 }
 globalThis.document = {createElement: tag => new FakeNode(tag)};
 const empty = {pending: null, duplicate: false, duplicate_source: false, duplicate_events: 0, warnings: []};
@@ -201,4 +204,58 @@ test("explicit text retries retain source identity after an unknown outcome and 
   await form.form.submit(event);
   assert.notEqual(calls[3].source_id, calls[2].source_id);
   assert.equal(calls[3].text, "Dinner Friday 7pm");
+});
+
+test("keyboard submission focuses persistent live status before disabling controls and never steals completion focus", async () => {
+  let resolve;
+  const form = new ManualSubmission({getHass: () => ({callWS: () => new Promise(done => {resolve = done;})})});
+  assert.equal(form.text.attributes["aria-describedby"], form.help.id);
+  assert.equal(form.form.children[0].children[0], form.text); // Native wrapped label.
+  assert.equal(form.status.attributes["aria-atomic"], "true");
+  assert.equal(form.status.attributes.tabindex, "-1");
+  form.text.value = "Dinner";
+  form.button.focus();
+  form.status.focus = () => {
+    assert.equal(form.button.disabled, undefined);
+    assert.match(form.status.textContent, /Extracting/);
+    document.activeElement = form.status;
+  };
+  const submitting = form.form.submit(event);
+  assert.equal(document.activeElement, form.status);
+  assert.equal(form.button.attributes["aria-busy"], "true");
+  assert.equal(form.form.attributes["aria-busy"], undefined);
+  const outside = new FakeNode("button");
+  outside.focus();
+  resolve({response: pending});
+  await submitting;
+  assert.equal(document.activeElement, outside);
+  assert.equal(form.button.attributes["aria-busy"], "false");
+});
+
+test("programmatic submission leaves external focus intact even when the provider rejects", async () => {
+  const outside = new FakeNode("button");
+  outside.focus();
+  const form = new ManualSubmission({getHass: () => ({callWS: async () => {throw new Error("offline");}})});
+  form.text.value = "Dinner";
+  await form.form.submit(event);
+  assert.equal(document.activeElement, outside);
+  assert.equal(form.button.disabled, false);
+  assert.equal(form.button.attributes["aria-busy"], "false");
+  assert.match(form.status.textContent, /offline/);
+});
+
+test("focus detection uses the active control inside the shadow root rather than the document host", () => {
+  const form = new FakeNode("form");
+  const control = new FakeNode("button");
+  const status = new FakeNode("p");
+  form.append(control, status);
+  document.activeElement = new FakeNode("daylight-import-panel");
+  const root = {activeElement: control};
+  form.getRootNode = () => root;
+  focusSubmissionStatus(form, status);
+  assert.equal(status.focused, true);
+  status.focused = false;
+  root.activeElement = new FakeNode("button");
+  focusSubmissionStatus(form, status);
+  assert.equal(status.focused, false);
 });

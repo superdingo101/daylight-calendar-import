@@ -7,7 +7,9 @@ class FakeNode {
   replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
   addEventListener(name, callback) { this[name] = callback; }
-  focus() { this.focused = true; }
+  getRootNode() { return globalThis.document; }
+  contains(node) { return this === node || this.children.some(child => child.contains(node)); }
+  focus() { this.focused = true; globalThis.document.activeElement = this; }
 }
 globalThis.document = {createElement: tag => new FakeNode(tag)};
 const event = {preventDefault() {}};
@@ -376,4 +378,37 @@ test("input events during processing cannot erase the submitted identity", async
   assert.equal(form.attempt.sourceId, services[0].service_data.source_id);
   finish({response: pending});
   await running;
+});
+
+test("file descriptions and keyboard processing feedback survive error recovery without refocusing", async () => {
+  let reject;
+  const {form, hass} = setup();
+  assert.equal(form.file.attributes["aria-describedby"], `${form.help.id} ${form.filename.id}`);
+  assert.equal(form.text.attributes["aria-describedby"], form.help.id);
+  assert.equal(form.form.children[0].children[0], form.file);
+  assert.equal(form.form.children[2].children[0], form.text);
+  assert.equal(form.status.attributes["aria-atomic"], "true");
+  assert.equal(form.status.attributes.tabindex, "-1");
+  form.file.files = [image()];
+  hass.fetchWithAuth = () => new Promise((resolve, fail) => {reject = fail;});
+  form.button.focus();
+  form.status.focus = () => {
+    assert.equal(form.button.disabled, undefined);
+    assert.equal(form.file.disabled, undefined);
+    assert.match(form.status.textContent, /Checking file/);
+    document.activeElement = form.status;
+  };
+  const submitting = form.form.submit(event);
+  assert.equal(document.activeElement, form.status);
+  assert.equal(form.button.attributes["aria-busy"], "true");
+  assert.equal(form.form.attributes["aria-busy"], undefined);
+  await new Promise(resolve => setImmediate(resolve));
+  const outside = new FakeNode("button");
+  outside.focus();
+  reject(new Error("Connection lost"));
+  await submitting;
+  assert.equal(document.activeElement, outside);
+  assert.equal(form.button.attributes["aria-busy"], "false");
+  assert.equal(form.file.disabled, false);
+  assert.match(form.status.textContent, /Connection lost/);
 });

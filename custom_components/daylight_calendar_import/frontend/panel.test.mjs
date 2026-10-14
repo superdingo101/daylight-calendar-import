@@ -5535,3 +5535,15 @@ test("file retry reconciles a stored review after a lost response returns duplic
   assert.doesNotMatch(upload.status.textContent, /Refresh the review inbox/);
 });
 
+
+test("both manual forms remain visible on a narrow empty inbox with IMAP explicitly disabled", async () => {
+  const panel = new DaylightImportPanel();
+  panel.narrow = true;
+  panel._settings = {email: {enabled: false}};
+  panel.hass = {callWS: async () => ({response: {imports: []}})};
+  await flush();
+  assert.equal(panel._manualSubmission.element.hidden, false);
+  assert.equal(panel._fileSubmission.element.hidden, false);
+  assert.equal(panel._manualSubmission.button.textContent, "Import events");
+  assert.equal(panel._fileSubmission.button.textContent, "Import file");
+});
