@@ -24,7 +24,7 @@ The maximum file size is 10 MiB. PDFs may have up to 30 pages. The file's conten
 - **Ready for review:** Drafts are saved. Check dates, time zones, meeting details and calendars before approval.
 - **Duplicate:** The source or extracted events were already handled. Check existing drafts and activity; resubmitting does not create a second copy.
 - **No events found:** The provider found no sufficiently complete events. Add explicit dates and start/end times or choose a clearer source before trying again.
-- **Failed:** Read the error and open **Recent activity** for the recorded outcome. Repair the selected AI integration or choose a supported provider/file as appropriate, then explicitly retry. See [provider troubleshooting](provider-errors.md).
+- **Failed:** Read the error shown on the form. Provider or processing failures recorded after submission begins appear in **Recent activity**. Browser validation and upload failures, such as unsupported or oversized files or upload permission/network errors, happen before event processing and may have no activity record. Correct the file or upload problem, or repair the selected AI integration as appropriate, then explicitly retry. See [provider troubleshooting](provider-errors.md).
 
 Daylight retains your text and file selection while you use the page so you can correct a submission. It does not automatically retry a failed request. A file retry uses a fresh temporary upload. If a connection loss leaves the outcome uncertain, check **Review inbox** and **Recent activity** before retrying; processing may still have succeeded. Do not repeatedly click Import while processing.
 
