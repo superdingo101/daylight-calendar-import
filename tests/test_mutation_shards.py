@@ -336,11 +336,56 @@ def test_workflow_target_and_comparison_contracts():
     assert set(jobs["equivalence"]["needs"]) == {"plan", "aggregate", "unsharded"}
     assert "always()" in jobs["equivalence"]["if"]
     for engine in ("shards", "unsharded"):
+        assert jobs[engine]["container"]["image"] == "${{ needs.plan.outputs.execution_image }}"
+        assert jobs[engine]["env"]["MUTATION_EXECUTION_IMAGE"] == jobs[engine]["container"]["image"]
+        node = next(s for s in jobs[engine]["steps"] if s.get("uses") == "actions/setup-node@v4")
+        assert node["with"]["node-version"] == "24.22.0"
         commands = [s.get("run") for s in jobs[engine]["steps"]]
         assert "python -m pip install --upgrade pip" in commands
         assert "pip install -r requirements_test.txt" in commands
+    assert jobs["plan"]["outputs"]["execution_image"] == "${{ steps.target.outputs.image }}"
+    assert 'echo "image=$EXECUTION_IMAGE"' in target["run"]
+    assert "@sha256:" in target["env"]["EXECUTION_IMAGE"]
+    assert workflow["defaults"]["run"]["shell"] == "bash"
     assert any("scripts.mutation_shards compare" in s.get("run", "") for s in jobs["equivalence"]["steps"])
     assert not (root / ".github/workflows/mutation-comparison.yml").exists()
+
+
+def test_pinned_userland_ignores_host_rollout_but_binds_image_and_node(monkeypatch):
+    image = "python:3.14.8-bookworm@sha256:" + "a" * 64
+    monkeypatch.setenv("MUTATION_EXECUTION_IMAGE", image)
+    monkeypatch.setenv("ImageVersion", "old-host")
+    node = "v24.22.0\n"
+
+    def version(command, *, text):
+        assert command == ["node", "--version"] and text
+        return node
+
+    monkeypatch.setattr(subprocess, "check_output", version)
+    original = ms.environment()
+    monkeypatch.setenv("ImageVersion", "new-host")
+    assert ms.environment() == original
+    assert original["details"]["execution_image"] == image
+    assert original["details"]["node"] == "v24.22.0"
+    node = "v24.23.0\n"
+    assert ms.environment() != original
+    node = "v24.22.0\n"
+    monkeypatch.setenv("MUTATION_EXECUTION_IMAGE", image[:-1] + "b")
+    assert ms.environment() != original
+
+
+def test_host_execution_keeps_strict_runner_identity(monkeypatch):
+    monkeypatch.delenv("MUTATION_EXECUTION_IMAGE", raising=False)
+    monkeypatch.setenv("ImageVersion", "old-host")
+    original = ms.environment()
+    monkeypatch.setenv("ImageVersion", "new-host")
+    assert ms.environment() != original
+
+
+def test_mutation_execution_image_requires_immutable_digest(monkeypatch):
+    monkeypatch.setenv("MUTATION_EXECUTION_IMAGE", "python:3.14.8-bookworm")
+    with pytest.raises(ValueError, match="pinned by digest"):
+        ms.environment()
 
 
 @pytest.mark.parametrize("corruption", ["renamed_identity", "exchanged_outcomes"])
