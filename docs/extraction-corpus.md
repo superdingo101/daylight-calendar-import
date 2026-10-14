@@ -36,7 +36,10 @@ credentials on stdout/stderr. The evaluator does not save provider content.
 The report includes each case's event count and exact per-field correctness totals;
 missing and extra events penalize every field. Event order follows source order.
 Confidence is excluded because calibration varies by provider. String fields are
-trimmed like production normalization; timestamps and assumptions are exact, so
+trimmed like production normalization. Missing required fields and invalid field
+types receive no credit (a numeric zero is not a boolean). Optional location and
+description fields normalize absent, null, and empty text to null. Timestamps and
+assumptions are exact, so
 semantically equivalent formatting or reordered events require manual inspection.
 A no-event case contributes to event-count accuracy, not empty field denominators.
 Provider failures/timeouts stop the run rather than becoming false successes.
