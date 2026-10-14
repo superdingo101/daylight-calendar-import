@@ -15,9 +15,10 @@ class DraftValidationError(ValueError):
 class EventDraft:
     """A validated calendar-event draft.
 
-    Descriptions have no integration-imposed length cap. Validation normalizes
-    only surrounding whitespace; substantive content is never sliced. Provider
-    input/output and destination-calendar limits remain external constraints.
+    Local AI Task descriptions have no integration-imposed length cap here.
+    Validation normalizes only surrounding whitespace; content is never sliced.
+    The separate hosted API v1 schema caps descriptions at 65,536 characters.
+    Provider input/output and destination-calendar limits also apply.
     """
 
     title: str
