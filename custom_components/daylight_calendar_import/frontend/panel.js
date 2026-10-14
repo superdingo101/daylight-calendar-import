@@ -2,6 +2,8 @@ import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editD
 import {checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, settingsErrorMessage} from "./settings.js";
 
+import {ManualSubmission} from "./manual_submission.js";
+
 const notificationOptions = [
   ["review_ready", "Imports ready for review"],
   ["calendar_created", "Events added to a calendar"],
@@ -87,6 +89,7 @@ const css = `
   input, textarea, select { box-sizing: border-box; width: 100%; padding: 8px; font: inherit; color: inherit; background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; }
   input[type=checkbox] { width: auto; }
   textarea { min-height: 10rem; resize: vertical; }
+  .manual-submission { margin-bottom: 24px; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
   nav[aria-label="Daylight views"] {
     display: flex;
@@ -560,12 +563,22 @@ export class DaylightImportPanel extends HTMLElement {
     this._navigation.setAttribute("aria-label", "Daylight views");
     this._announcement = document.createElement("div");
     this._announcement.setAttribute("aria-live", "polite");
+    this._manualSubmission = new ManualSubmission({
+      getHass: () => this._hass,
+      onSubmitted: async response => {
+        if ((response.pending || response.duplicate_source) && this._view === "inbox" && !this._selectedId &&
+            await this.refresh() === false) {
+          throw new Error("Could not refresh the review inbox.");
+        }
+      },
+    });
+    this._manualSubmission.element.hidden = true;
     this._viewContent = document.createElement("div");
     // Keep the live region connected so screen readers can observe changes.
     // Renders replace only the view body, never the navigation or announcement.
     this._content.append(this._navigation, this._announcement, this._viewContent);
     const main = document.createElement("main");
-    main.append(this._content);
+    main.append(this._content, this._manualSubmission.element);
     this.shadowRoot.append(style, header, main);
   }
 
@@ -629,6 +642,7 @@ export class DaylightImportPanel extends HTMLElement {
       (button || this._refreshButton).focus();
       this._returnFocusId = null;
     }
+    return this._status === "ready";
   }
 
   async showActivity(id = null) {
@@ -2089,6 +2103,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   render() {
+    this._manualSubmission.element.hidden = this._view !== "inbox" || Boolean(this._selectedId);
     this._refreshButton.disabled = this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     const content = document.createDocumentFragment();
