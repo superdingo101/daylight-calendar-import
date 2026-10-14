@@ -1567,19 +1567,8 @@ class PendingImportStore:
                 accepted_fingerprints.add(fingerprint)
 
             if not accepted_events:
-                status = (
-                    "duplicate"
-                    if duplicate_events
-                    else "no_events"
-                    if source_was_claimed
-                    else "failed"
-                )
-                guidance = (
-                    "No reviewable events were found. Check the source and submit it again."
-                    if status == "failed"
-                    else None
-                )
-                activity = self._finish_submission(activity_id, status, guidance)
+                status = "duplicate" if duplicate_events else "no_events"
+                activity = self._finish_submission(activity_id, status)
                 if source_fp is not None and (
                     duplicate_events or source_was_claimed
                 ):

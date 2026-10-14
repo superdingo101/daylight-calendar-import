@@ -73,6 +73,7 @@ from .storage import (
     PendingEventResolutionError,
     PendingEvent,
     PendingImport,
+    PendingImportAddResult,
     PendingImportApprovalUncertainError,
     PendingImportStore,
     PendingImportStorageError,
@@ -105,6 +106,27 @@ _ENTRY_SERVICES = (
 )
 
 
+def _submission_response(
+    result: PendingImportAddResult, warnings: list[str], activity_id: str | None,
+) -> ServiceResponse:
+    """Describe durable review outcomes without implying a calendar write.
+
+    Known sources skipped before parsing do not create a new activity record.
+    Partial event deduplication still yields a pending review outcome.
+    """
+    duplicate = result.duplicate_source or result.duplicate_events > 0
+    status = "pending_review" if result.pending is not None else "duplicate" if duplicate else "no_events"
+    return {
+        "status": status,
+        "activity_id": activity_id,
+        "pending": result.pending.as_service_dict() if result.pending is not None else None,
+        "duplicate": duplicate,
+        "duplicate_source": result.duplicate_source,
+        "duplicate_events": result.duplicate_events,
+        "warnings": warnings,
+    }
+
+
 def _unregister_entry_services(hass: HomeAssistant) -> None:
     """Remove each registered service; safe for partial entry setup."""
     for name in _ENTRY_SERVICES:
@@ -115,7 +137,9 @@ def _unregister_entry_services(hass: HomeAssistant) -> None:
 PARSE_SCHEMA = vol.Schema({vol.Required(ATTR_TEXT): cv.string})
 SUBMIT_SCHEMA = vol.Schema(
     {
-        vol.Required(ATTR_TEXT): cv.string,
+        vol.Required(ATTR_TEXT): vol.All(
+            cv.string, lambda value: value.strip(), vol.Length(min=1),
+        ),
         vol.Optional(ATTR_SOURCE_ID): vol.All(
             cv.string,
             lambda value: value.strip(),
@@ -320,7 +344,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     await _async_check_entity_control_permission(hass, ai_task_entity, call.context)
                     source_id = call.data.get(ATTR_SOURCE_ID)
                     if source_id is not None:
-                        pending_store.processing_source_fingerprints[task] = source_fingerprint(source_id)
+                        fingerprint = source_fingerprint(source_id)
+                        # Check and register without an await so a retry cannot
+                        # enter the parser before the first request commits.
+                        if fingerprint in pending_store.processing_source_fingerprints.values():
+                            raise ServiceValidationError(
+                                "This submission is still processing; wait and check activity before retrying"
+                            )
+                        pending_store.processing_source_fingerprints[task] = fingerprint
                 return await handler(call)
             finally:
                 pending_store.processing_source_fingerprints.pop(task, None)
@@ -412,13 +443,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             source_id is not None
             and pending_store.is_source_duplicate(source_id)
         ):
-            return {
-                "pending": None,
-                "duplicate": True,
-                "duplicate_source": True,
-                "duplicate_events": 0,
-                "warnings": [],
-            }
+            return _submission_response(PendingImportAddResult(None, True, 0), [], None)
 
         source = TextSourceAdapter().create(call.data[ATTR_TEXT], source_id=source_id)
         activity_id = await pending_store.async_begin_submission(
@@ -442,25 +467,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         finally:
             pending_store.active_submissions.discard(task)
-        return {
-            "pending": (
-                result.pending.as_service_dict()
-                if result.pending is not None
-                else None
-            ),
-            "duplicate": (
-                result.duplicate_source or result.duplicate_events > 0
-            ),
-            "duplicate_source": result.duplicate_source,
-            "duplicate_events": result.duplicate_events,
-            "warnings": [*outcome.warnings, *route.warnings],
-        }
+        return _submission_response(result, [*outcome.warnings, *route.warnings], activity_id)
 
     async def submit_attachment_source(source: SourceDocument) -> ServiceResponse:
         """Send a normalized upload through parsing and pending review."""
         if source.upstream_source_id is not None and pending_store.is_source_duplicate(source.upstream_source_id):
-            return {"pending": None, "duplicate": True, "duplicate_source": True,
-                    "duplicate_events": 0, "warnings": []}
+            return _submission_response(PendingImportAddResult(None, True, 0), [], None)
         activity_id = await pending_store.async_begin_submission(
             source_kind=source.kind.value, source_title=source.title, received_at=source.received_at
         )
@@ -486,11 +498,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         finally:
             pending_store.active_submissions.discard(task)
-        return {"pending": result.pending.as_service_dict() if result.pending else None,
-                "duplicate": result.duplicate_source or result.duplicate_events > 0,
-                "duplicate_source": result.duplicate_source,
-                "duplicate_events": result.duplicate_events,
-                "warnings": [*outcome.warnings, *route.warnings]}
+        return _submission_response(result, [*outcome.warnings, *route.warnings], activity_id)
 
     async def handle_submit_image(call: ServiceCall) -> ServiceResponse:
         """Queue event drafts from an uploaded image and optional source text."""

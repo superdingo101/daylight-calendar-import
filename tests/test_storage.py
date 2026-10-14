@@ -407,9 +407,8 @@ async def test_interrupted_processing_is_failed_on_restart_and_empty_results_fin
     empty = await restarted.async_begin_submission(source_kind="manual_text", source_title=None, received_at=received)
     result = await restarted.async_add(source_text="no events", events=[], activity_id=empty)
     assert result.pending is None
-    assert restarted.get_activity(empty)["status"] == "failed"
-    assert "No reviewable events" in restarted.get_activity(empty)["guidance"]
-    assert restarted.get_activity(empty)["guidance"] == "No reviewable events were found. Check the source and submit it again."
+    assert restarted.get_activity(empty)["status"] == "no_events"
+    assert "guidance" not in restarted.get_activity(empty)
     assert backend.saved[-1]["activity"][-1] == restarted.get_activity(empty)
     existing = (await restarted.async_add(source_text="first", events=[draft()])).pending
     duplicate = await restarted.async_begin_submission(source_kind="manual_text", source_title=None, received_at=received)
@@ -1169,6 +1168,26 @@ async def test_store_allows_retry_when_no_events_were_extracted(monkeypatch):
     assert len(backend.saved) == save_count
     retry = await store.async_add(source_text="corrected", events=[draft()], source_id="empty-source")
     assert retry.pending is not None
+
+    activity_id = await store.async_begin_submission(
+        source_kind="manual_text", source_title=None,
+        received_at=datetime.now(storage_module.UTC),
+    )
+    await store.async_add(
+        source_text="another empty source", events=[],
+        source_id="durable-empty-source", activity_id=activity_id,
+    )
+    assert store.get_activity(activity_id)["status"] == "no_events"
+    backend.load_result = backend.saved[-1]
+    restarted = make_store(monkeypatch, backend)
+    await restarted.async_load()
+    assert restarted.get_activity(activity_id)["status"] == "no_events"
+    assert not restarted.is_source_duplicate("durable-empty-source")
+    corrected = await restarted.async_add(
+        source_text="corrected source", events=[second_draft()],
+        source_id="durable-empty-source",
+    )
+    assert corrected.pending is not None
 
 
 async def test_store_all_duplicate_events_marks_new_source_seen(monkeypatch):
