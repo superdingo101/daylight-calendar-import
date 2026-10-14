@@ -430,7 +430,8 @@ test("detail renders timed events with the Home Assistant time preference", asyn
 
 test("editor preserves long meeting descriptions and retains a stale edit on failure", async () => {
   const panel = new DaylightImportPanel();
-  const description = `Zoom: https://zoom.us/j/123 passcode abc ${"bring cupcakes ".repeat(900)}`;
+  const description = `Zoom: https://zoom.us/j/123 passcode abc\n${"• Préparation: bring cupcakes 🍰\n".repeat(4000)}Final instruction: bring ID.`;
+  assert.ok(description.length > 100000);
   let event = {id: "event", title: "Meeting", start: "2026-10-01T10:00:00-04:00",
     end: "2026-10-01T11:00:00-04:00", all_day: false, status: "pending",
     calendar_entity: "calendar.legacy", confidence: 0.8, description};
@@ -451,6 +452,7 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   }};
   await flush();
   await panel.showImport("one");
+  assert.equal(panel._content.querySelectorAll(".event-description")[0].textContent, description);
   const siblingEdit = panel._content.querySelectorAll("button")
     .find(button => button.dataset.eventId === "sibling");
   const edit = panel._content.querySelectorAll("button")
@@ -489,6 +491,7 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
   assert.equal(activeForm.elements.namedItem("start_date").required, false);
   assert.deepEqual(requests.at(-1).service_data.expected_event, event);
   assert.equal(requests.at(-1).service_data.calendar_entity, "calendar.family");
+  assert.equal(requests.at(-1).service_data.event.description, description);
   stale = false;
   let release;
   const realCallWS = panel._hass.callWS;

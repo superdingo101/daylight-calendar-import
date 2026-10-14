@@ -82,6 +82,8 @@ The simplest way to get started is with some copied text — no email setup need
 
 You can also submit an **image** or **PDF** from Developer Tools → Actions using **Submit image for review** or **Submit PDF for review**. Images must be PNG, JPEG, or WebP (up to 10 MiB); PDFs can be up to 10 MiB and 30 pages. The AI Task entity must support attachments when visual interpretation is required.
 
+Meeting links, IDs, passcodes, dial-in instructions, and lengthy event instructions are kept in the event description for review and approval. Daylight does not impose a description-length cap or silently shorten descriptions; it normalizes surrounding whitespace. Your AI provider can have input/output limits or omit details, and your destination calendar can reject a description it cannot accept. Review important source details before approving. A failed calendar write remains visible for recovery; check the destination calendar before retrying an uncertain write.
+
 > **Always review AI-generated dates, times, and time zones.** Daylight shows some assumptions made during extraction, but AI may still misunderstand ambiguous announcements.
 
 ## Import events from email (optional)

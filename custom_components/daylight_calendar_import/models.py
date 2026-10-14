@@ -13,7 +13,12 @@ class DraftValidationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class EventDraft:
-    """A validated calendar-event draft."""
+    """A validated calendar-event draft.
+
+    Descriptions have no integration-imposed length cap. Validation normalizes
+    only surrounding whitespace; substantive content is never sliced. Provider
+    input/output and destination-calendar limits remain external constraints.
+    """
 
     title: str
     start: str
