@@ -1,3 +1,4 @@
+import {configureSubmissionStatus, focusSubmissionStatus} from "./submission_accessibility.js";
 import {SubmissionAttempt, SubmissionFeedback} from "./submission_feedback.js";
 import {inspectUpload, submitFile} from "./upload_transport.js";
 import {validateSubmissionResponse} from "./manual_submission.js";
@@ -16,8 +17,9 @@ export class FileSubmission {
     this.element = node("section");
     this.element.className = "manual-submission";
     this.element.setAttribute("aria-label", "Import an image or PDF");
-    this.element.append(node("h2", "Upload an image or PDF"),
-      node("p", "Choose a JPEG, PNG, WebP image or PDF up to 10 MiB. Extracted events will await your approval. Email setup is optional."));
+    this.help = node("p", "Choose a JPEG, PNG, WebP image or PDF up to 10 MiB. Extracted events will await your approval. Email setup is optional.");
+    this.help.id = "daylight-file-help";
+    this.element.append(node("h2", "Upload an image or PDF"), this.help);
     this.form = node("form");
     const fileLabel = node("label", "Image or PDF file");
     this.file = node("input");
@@ -26,16 +28,18 @@ export class FileSubmission {
     this.file.accept = ".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf";
     fileLabel.append(this.file);
     this.filename = node("p", "No file selected.");
+    this.filename.id = "daylight-selected-file";
+    this.file.setAttribute("aria-describedby", `${this.help.id} ${this.filename.id}`);
     const contextLabel = node("label", "Supporting text (optional)");
     this.text = node("textarea");
     this.text.name = "file_context";
+    this.text.setAttribute("aria-describedby", this.help.id);
     this.text.rows = 3;
     contextLabel.append(this.text);
     this.button = node("button", "Import file");
     this.button.type = "submit";
     this.status = node("p");
-    this.status.setAttribute("role", "status");
-    this.status.setAttribute("aria-live", "polite");
+    configureSubmissionStatus(this.status);
     this._validationSequence = 0;
     this.attempt = new SubmissionAttempt();
     this.feedback = new SubmissionFeedback(this.status, {onReview, onActivity});
@@ -70,11 +74,13 @@ export class FileSubmission {
         return;
       }
       this.busy = true;
+      this.feedback.processing("Checking file…");
+      focusSubmissionStatus(this.form, this.status);
+      this.button.setAttribute("aria-busy", "true");
       this.file.disabled = true;
       this.text.disabled = true;
       this.button.disabled = true;
       this.button.textContent = "Processing…";
-      this.feedback.processing("Checking file…");
       let submitted = false;
       try {
         await inspectUpload(selected);
@@ -94,6 +100,7 @@ export class FileSubmission {
         this.feedback.error(error, submitted);
       } finally {
         this.busy = false;
+        this.button.setAttribute("aria-busy", "false");
         this.file.disabled = false;
         this.text.disabled = false;
         this.button.disabled = false;

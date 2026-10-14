@@ -1,4 +1,5 @@
 import {isSubmissionResponse} from "./submission_response.js";
+import {configureSubmissionStatus, focusSubmissionStatus} from "./submission_accessibility.js";
 import {SubmissionAttempt, SubmissionFeedback} from "./submission_feedback.js";
 export {submissionMessage} from "./submission_feedback.js";
 
@@ -40,18 +41,20 @@ export class ManualSubmission {
     this.element.className = "manual-submission";
     this.element.setAttribute("aria-label", "Import pasted event details");
     this.element.append(node("h2", "Paste event details"));
-    this.element.append(node("p", "Paste one or more events, including dates and times. Calendar routing directives can be included in the text. Email setup is optional."));
+    this.help = node("p", "Paste one or more events, including dates and times. Calendar routing directives can be included in the text. Email setup is optional.");
+    this.help.id = "daylight-text-help";
+    this.element.append(this.help);
     this.form = node("form");
     const label = node("label", "Event details");
     this.text = node("textarea");
     this.text.name = "event_details";
+    this.text.setAttribute("aria-describedby", this.help.id);
     this.text.rows = 6;
     label.append(this.text);
     this.button = node("button", "Import events");
     this.button.type = "submit";
     this.status = node("p");
-    this.status.setAttribute("role", "status");
-    this.status.setAttribute("aria-live", "polite");
+    configureSubmissionStatus(this.status);
     this.attempt = new SubmissionAttempt();
     this.feedback = new SubmissionFeedback(this.status, {onReview, onActivity});
     this.form.append(label, this.button, this.status, this.feedback.actions);
@@ -68,10 +71,12 @@ export class ManualSubmission {
         return;
       }
       this.busy = true;
+      this.feedback.processing("Extracting events for review…");
+      focusSubmissionStatus(this.form, this.status);
+      this.button.setAttribute("aria-busy", "true");
       this.button.disabled = true;
       this.text.disabled = true;
       this.button.textContent = "Processing…";
-      this.feedback.processing("Extracting events for review…");
       try {
         const response = await submitText(getHass(), this.text.value, {sourceId: this.attempt.forDraft(this.text.value)});
         this.feedback.result(response);
@@ -85,6 +90,7 @@ export class ManualSubmission {
         this.feedback.error(error);
       } finally {
         this.busy = false;
+        this.button.setAttribute("aria-busy", "false");
         this.button.disabled = false;
         this.text.disabled = false;
         this.button.textContent = "Import events";
