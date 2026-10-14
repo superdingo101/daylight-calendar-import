@@ -39,14 +39,24 @@ def sha256(data: bytes) -> str:
 
 
 def environment() -> dict:
-    """Bind all clean verdicts to one interpreter, runner and package set."""
+    """Bind verdicts to the executed userland, interpreter and package set."""
     packages = sorted((d.metadata["Name"].lower().replace("_", "-"), d.version)
                       for d in importlib.metadata.distributions())
     details = {"python": platform.python_version(), "implementation": platform.python_implementation(),
                "system": platform.system(), "machine": platform.machine(),
-               "runner_image": os.environ.get("ImageOS", ""),
-               "runner_image_version": os.environ.get("ImageVersion", ""),
                "packages": packages}
+    execution_image = os.environ.get("MUTATION_EXECUTION_IMAGE", "")
+    if execution_image:
+        if not re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", execution_image):
+            raise ValueError("Mutation execution image must be pinned by digest")
+        details.update(
+            execution_image=execution_image,
+            node=subprocess.check_output(["node", "--version"], text=True).strip(),
+        )
+    else:
+        # Local/legacy host executions still require identical host images.
+        details.update(runner_image=os.environ.get("ImageOS", ""),
+                       runner_image_version=os.environ.get("ImageVersion", ""))
     # JSON roundtrip removes tuple/list differences when loading evidence.
     details = json.loads(canonical(details))
     return {"details": details, "sha256": sha256(canonical(details))}

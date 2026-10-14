@@ -61,6 +61,15 @@ do not restore the retired custom cache engine.
 
 ## Verified comprehensive benchmark
 
+Comprehensive shards and the optional unsharded comparison run inside the same
+digest-pinned Python container with an exact Node version. Their environment
+evidence binds the immutable container, actual Python/Node versions and complete
+resolved Python package set. GitHub may roll the host runner image during a run;
+the host provisioning stamp does not identify the container's userland. Host-only
+local/legacy runs still bind their runner image and version. Environment equality,
+artifact integrity, complete mutant coverage and the 95.22% score gate remain
+required. Runtime-image and Node upgrades require a reviewed workflow change.
+
 On `ae000de` (PR #129), the cold eight-shard path completed in **15m 50s**,
 compared with **58m** unsharded. Both produced exactly the same individual
 outcomes for **9,465 mutants across 33 modules**, scoring **95.52%** in the same
