@@ -81,3 +81,49 @@ def test_optional_runner_protocol(tmp_path):
     assert all(total["correct"] == total["total"] for total in report["field_totals"].values())
     with pytest.raises(ValueError, match="no JSON cases"):
         evaluate(tmp_path, [sys.executable, str(adapter)])
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("all_day", 0), ("all_day", 0.0), ("all_day", "false"),
+    ("all_day", None), ("assumptions", None), ("assumptions", {}),
+    ("assumptions", ""), ("assumptions", [False]),
+    ("title", 1), ("start", False), ("end", []),
+    ("location", 0), ("description", False),
+])
+def test_evaluator_malformed_field_types_never_receive_credit(field, value):
+    fixture = json.loads((CORPUS / "explicit-practice.json").read_text())
+    candidate = {**fixture["provider_response"]["events"][0], field: value}
+    result = score_case(fixture, {"events": [candidate]})
+    assert result["fields"][field] == {"correct": 0, "total": 1}
+
+
+@pytest.mark.parametrize("field", ["title", "start", "end", "all_day", "assumptions"])
+def test_evaluator_missing_required_fields_never_receive_credit(field):
+    fixture = json.loads((CORPUS / "explicit-practice.json").read_text())
+    candidate = dict(fixture["provider_response"]["events"][0])
+    del candidate[field]
+    result = score_case(fixture, {"events": [candidate]})
+    assert result["fields"][field] == {"correct": 0, "total": 1}
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_evaluator_optional_fields_normalize_absent_null_and_empty_text(value):
+    fixture = json.loads((CORPUS / "explicit-practice.json").read_text())
+    fixture["expected"]["events"][0].update(location=None, description=None)
+    candidate = {**fixture["provider_response"]["events"][0],
+                 "location": value, "description": value}
+    result = score_case(fixture, {"events": [candidate]})
+    assert result["fields"]["location"]["correct"] == 1
+    assert result["fields"]["description"]["correct"] == 1
+    del candidate["location"], candidate["description"]
+    result = score_case(fixture, {"events": [candidate]})
+    assert result["fields"]["location"]["correct"] == 1
+    assert result["fields"]["description"]["correct"] == 1
+
+
+def test_evaluator_does_not_credit_numeric_one_as_all_day_true():
+    fixture = json.loads((CORPUS / "explicit-practice.json").read_text())
+    fixture["expected"]["events"][0]["all_day"] = True
+    candidate = {**fixture["provider_response"]["events"][0], "all_day": 1}
+    result = score_case(fixture, {"events": [candidate]})
+    assert result["fields"]["all_day"] == {"correct": 0, "total": 1}
