@@ -1,0 +1,57 @@
+{
+  "id": "dates-all-day-and-multiday",
+  "source_text": "School closure: all day October 16, 2026. Family retreat: all day October 17 through October 19, 2026, inclusive.",
+  "reference_datetime": "2026-10-14T12:00:00-07:00",
+  "time_zone": "America/Los_Angeles",
+  "provider_response": {
+    "events": [
+      {
+        "title": "School closure",
+        "start": "2026-10-16",
+        "end": "2026-10-17",
+        "all_day": true,
+        "location": null,
+        "description": null,
+        "confidence": 0.95,
+        "assumptions": []
+      },
+      {
+        "title": "Family retreat",
+        "start": "2026-10-17",
+        "end": "2026-10-20",
+        "all_day": true,
+        "location": null,
+        "description": null,
+        "confidence": 0.95,
+        "assumptions": []
+      }
+    ]
+  },
+  "expected": {
+    "events": [
+      {
+        "title": "School closure",
+        "start": "2026-10-16",
+        "end": "2026-10-17",
+        "all_day": true,
+        "location": null,
+        "description": null,
+        "confidence": 0.95
+      },
+      {
+        "title": "Family retreat",
+        "start": "2026-10-17",
+        "end": "2026-10-20",
+        "all_day": true,
+        "location": null,
+        "description": null,
+        "confidence": 0.95
+      }
+    ],
+    "warnings": [],
+    "event_assumptions": [
+      [],
+      []
+    ]
+  }
+}

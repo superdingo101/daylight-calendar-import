@@ -1,0 +1,57 @@
+{
+  "id": "dates-explicit-timezones",
+  "source_text": "Tokyo briefing: 2026-10-16 09:00\u201310:00 JST (+09:00). London briefing: 2026-10-16 09:00\u201310:00 BST (+01:00).",
+  "reference_datetime": "2026-10-14T12:00:00-07:00",
+  "time_zone": "America/Los_Angeles",
+  "provider_response": {
+    "events": [
+      {
+        "title": "Tokyo briefing",
+        "start": "2026-10-16T09:00:00+09:00",
+        "end": "2026-10-16T10:00:00+09:00",
+        "all_day": false,
+        "location": null,
+        "description": null,
+        "confidence": 0.95,
+        "assumptions": []
+      },
+      {
+        "title": "London briefing",
+        "start": "2026-10-16T09:00:00+01:00",
+        "end": "2026-10-16T10:00:00+01:00",
+        "all_day": false,
+        "location": null,
+        "description": null,
+        "confidence": 0.95,
+        "assumptions": []
+      }
+    ]
+  },
+  "expected": {
+    "events": [
+      {
+        "title": "Tokyo briefing",
+        "start": "2026-10-16T09:00:00+09:00",
+        "end": "2026-10-16T10:00:00+09:00",
+        "all_day": false,
+        "location": null,
+        "description": null,
+        "confidence": 0.95
+      },
+      {
+        "title": "London briefing",
+        "start": "2026-10-16T09:00:00+01:00",
+        "end": "2026-10-16T10:00:00+01:00",
+        "all_day": false,
+        "location": null,
+        "description": null,
+        "confidence": 0.95
+      }
+    ],
+    "warnings": [],
+    "event_assumptions": [
+      [],
+      []
+    ]
+  }
+}
