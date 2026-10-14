@@ -127,3 +127,14 @@ def test_evaluator_does_not_credit_numeric_one_as_all_day_true():
     candidate = {**fixture["provider_response"]["events"][0], "all_day": 1}
     result = score_case(fixture, {"events": [candidate]})
     assert result["fields"]["all_day"] == {"correct": 0, "total": 1}
+
+
+def test_evaluator_normalizes_assumptions_like_production():
+    fixture = json.loads((CORPUS / "explicit-practice.json").read_text())
+    notes = ["Friday resolved from reference date", "Local time zone applied"]
+    fixture["expected"]["event_assumptions"] = [notes]
+    candidate = {**fixture["provider_response"]["events"][0],
+                 "assumptions": [f"  {note}\n" for note in notes]}
+    result = score_case(fixture, {"events": [candidate]})
+    assert result["fields"]["assumptions"] == {"correct": 1, "total": 1}
+    assert candidate["assumptions"] == [f"  {note}\n" for note in notes]
