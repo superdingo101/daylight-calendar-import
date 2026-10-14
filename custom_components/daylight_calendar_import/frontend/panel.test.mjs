@@ -5271,6 +5271,77 @@ test("manual paste refreshes pending summaries without approving any events", as
   assert.equal(panel._manualSubmission.element.hidden, false);
 });
 
+test("file intake works without email and preserves native input through rerenders", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async () => ({response: {imports: []}})};
+  await flush();
+  const upload = panel._fileSubmission;
+  assert.equal(upload.element.hidden, false);
+  const file = new File(["%PDF-1.4"], "events.pdf", {type: "application/pdf"});
+  upload.file.files = [file];
+  upload.text.value = "Calendar: Family";
+  await upload.file.change();
+  await panel.refresh();
+  assert.equal(panel._fileSubmission, upload);
+  assert.equal(upload.file.files[0], file);
+  assert.equal(upload.text.value, "Calendar: Family");
+  panel._view = "activity";
+  panel.render();
+  assert.equal(upload.element.hidden, true);
+  panel._view = "inbox";
+  panel._selectedId = "pending-1";
+  panel.render();
+  assert.equal(upload.element.hidden, true);
+  panel._selectedId = null;
+  panel.render();
+  assert.equal(upload.element.hidden, false);
+  assert.equal(upload.file.files[0], file);
+});
+
+test("panel file intake refreshes reviews without writing any calendar events", async () => {
+  const calls = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    fetchWithAuth: async () => ({status: 200, json: async () => ({file_id: "a".repeat(32)})}),
+    callWS: async request => {
+      calls.push(request.service);
+      return request.service === "submit_pdf" ? {response: {
+        pending: {id: "pending-1", events: [{}]}, duplicate: false,
+        duplicate_source: false, duplicate_events: 0, warnings: [],
+      }} : {response: {imports: []}};
+    },
+  };
+  await flush();
+  panel._fileSubmission.file.files = [new File(["%PDF-1.4"], "events.pdf")];
+  await panel._fileSubmission.form.submit({preventDefault() {}});
+  await flush();
+  assert.deepEqual(calls, ["list_pending", "submit_pdf", "list_pending"]);
+  assert.match(panel._fileSubmission.status.textContent, /ready for review/);
+});
+
+test("panel file intake waits for refresh and retains acknowledged success when refresh fails", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    fetchWithAuth: async () => ({status: 200, json: async () => ({file_id: "a".repeat(32)})}),
+    callWS: async request => request.service === "submit_pdf" ? {response: {
+      pending: {id: "pending-1", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }} : {response: {imports: []}},
+  };
+  await flush();
+  let finish;
+  panel.refresh = () => new Promise(resolve => { finish = resolve; });
+  panel._fileSubmission.file.files = [new File(["%PDF-1.4"], "events.pdf")];
+  const running = panel._fileSubmission.form.submit({preventDefault() {}});
+  await flush();
+  assert.equal(panel._fileSubmission.busy, true);
+  finish(false);
+  await running;
+  assert.equal(panel._fileSubmission.busy, false);
+  assert.match(panel._fileSubmission.status.textContent, /ready for review/);
+  assert.match(panel._fileSubmission.status.textContent, /Refresh the review inbox/);
+});
+
 test("manual paste stays busy while reconciling the inbox", async () => {
   const panel = new DaylightImportPanel();
   const calls = [];
@@ -5356,6 +5427,46 @@ test("superseded manual paste reconciliation does not report an inbox failure", 
   assert.match(manual.status.textContent, /ready for review/);
   assert.doesNotMatch(manual.status.textContent, /Refresh the review inbox/);
   assert.equal(manual.busy, false);
+});
+
+test("file retry reconciles a stored review after a lost response returns duplicate source", async () => {
+  const panel = new DaylightImportPanel();
+  const calls = [];
+  let submitted = false;
+  let attempts = 0;
+  const sourceIds = [];
+  let finishRefresh;
+  panel.hass = {
+    fetchWithAuth: async () => ({status: 200, json: async () => ({file_id: (++attempts).toString(16).padStart(32, "0")})}),
+    callWS: async request => {
+      calls.push(request.service);
+      if (request.service === "submit_pdf") {
+        sourceIds.push(request.service_data.source_id);
+        submitted = true;
+        if (sourceIds.length === 1) throw new Error("WebSocket connection lost");
+        return {response: {pending: null, duplicate: true, duplicate_source: true,
+          duplicate_events: 0, warnings: [], status: "duplicate", activity_id: null}};
+      }
+      if (submitted) return new Promise(resolve => { finishRefresh = resolve; });
+      return {response: {imports: []}};
+    },
+  };
+  await flush();
+  const upload = panel._fileSubmission;
+  upload.file.files = [new File(["%PDF-1.4"], "events.pdf")];
+  await upload.form.submit({preventDefault() {}});
+  assert.match(upload.status.textContent, /connection lost/);
+  assert.equal(panel._items.length, 0);
+  const retry = upload.form.submit({preventDefault() {}});
+  await flush();
+  assert.equal(upload.busy, true);
+  assert.equal(sourceIds[0], sourceIds[1]);
+  assert.deepEqual(calls, ["list_pending", "submit_pdf", "submit_pdf", "list_pending"]);
+  finishRefresh({response: {imports: [{id: "pending-original"}]}});
+  await retry;
+  assert.equal(upload.busy, false);
+  assert.equal(panel._items[0].id, "pending-original");
+  assert.doesNotMatch(upload.status.textContent, /Refresh the review inbox/);
 });
 
 test("manual text retry reconciles a previously stored import after losing its response", async () => {

@@ -12,7 +12,11 @@ export async function submitText(hass, text, {sourceId} = {}) {
     type: "call_service", domain: "daylight_calendar_import", service: "submit_text",
     service_data: serviceData, return_response: true,
   });
-  const response = result?.response;
+  return validateSubmissionResponse(result?.response);
+}
+
+/** Both manual intake forms share the existing review response contract. */
+export function validateSubmissionResponse(response) {
   if (!isSubmissionResponse(response)) {
     const error = new Error("The import returned an unexpected response. Check the review inbox before trying again.");
     error.code = "invalid_submission_response";
