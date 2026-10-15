@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import contextmanager
 from datetime import datetime
+from hashlib import sha256
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,13 @@ from custom_components.daylight_calendar_import import parser, pdfs, providers, 
 
 ROOT = Path(__file__).parent / "fixtures" / "extraction"
 CASES = [json.loads(path.read_text()) for path in sorted(ROOT.glob("media-*.json"))]
+# Immutable synthetic pages, manually inspected against source_transcript. Hash
+# decoded RGB pixels and dimensions, so PDF metadata/compression can vary without
+# permitting a blank, unrelated, reordered or duplicated page to pass replay.
+SCAN_PAGE_DIGESTS = (
+    "85efe308369b38f1229ae6ed43f2a9cd17305bebe39cf2439ead820f2cc85075",
+    "d3e2a1fd3827552383a980fc1a32e9fde15b51416177b8731df2c20418db75a4",
+)
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["id"])
@@ -67,11 +75,15 @@ def test_multipage_pdf_evidence_has_an_event_on_each_page(variant):
     case = next(case for case in CASES if case["id"] == f"media-multipage-{variant}")
     reader = PdfReader(ROOT / "assets" / f"media-multipage-{variant}.pdf")
     assert len(reader.pages) == 2
-    for page, transcript in zip(reader.pages, case["source_transcript"], strict=True):
+    for index, (page, transcript) in enumerate(
+        zip(reader.pages, case["source_transcript"], strict=True)
+    ):
         if variant == "scan":
             assert page.extract_text().strip() == ""
             assert len(page.images) == 1
-            assert page.images[0].image.size == (1000, 900)
+            image = page.images[0].image.convert("RGB")
+            assert image.size == (1000, 900)
+            assert sha256(str(image.size).encode() + image.tobytes()).hexdigest() == SCAN_PAGE_DIGESTS[index]
         else:
             assert page.extract_text().splitlines() == transcript
             assert len(page.images) == 0

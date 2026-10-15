@@ -28,6 +28,13 @@ and the isolated PDF worker, and checks attachment transport, exact normalized
 recorded results and temporary-file cleanup. The two events have independently
 asserted titles, timestamps, locations and descriptions. Both PDF pages must be
 represented; no source context supplies the scanned pages' missing text.
+The two scanned page images are intentionally immutable synthetic evidence,
+visually checked against their transcripts. Per-page SHA-256 checks pin decoded
+RGB pixels and dimensions in page order, independently of PDF metadata or
+compression. Replacing a page with blank, unrelated or duplicate content fails
+even when a recorded provider response still returns both expected events.
+An intentional artwork change requires inspecting both pages and updating their
+canonical digests alongside the transcripts and expected events as appropriate.
 
 These deterministic tests validate ingestion and response handling. A recorded
 response cannot establish OCR or live-model accuracy for distortion, poor contrast,
