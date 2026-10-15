@@ -24,6 +24,12 @@ SCAN_PAGE_DIGESTS = (
     "85efe308369b38f1229ae6ed43f2a9cd17305bebe39cf2439ead820f2cc85075",
     "d3e2a1fd3827552383a980fc1a32e9fde15b51416177b8731df2c20418db75a4",
 )
+IMAGE_DIGESTS = {
+    "media-camera-photo.jpg": "9ecdd20daf5a79eac1bc3d57ba024e09da13100300fa857614ddc7d4d67d6439",
+    "media-low-contrast.png": "1a3bf144fb63e3b74481767a066e78a267b629b7bc6b2937e20826ea32f7341e",
+    "media-perspective.png": "b9236bbb7d77ce264e48aa88d4802b72044336a4224100ab50f840bfdcdc7b70",
+    "media-screenshot.png": "669837c96f820d6bbea98e2daa007ca75afd51fa336f76bc69a434dfbe5574a9",
+}
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["id"])
@@ -59,6 +65,8 @@ def test_image_evidence_is_decodable_and_keeps_visual_variant(name, format, size
         image.load()
         assert image.format == format
         assert image.size == size
+        rgb = image.convert("RGB")
+        assert sha256(str(rgb.size).encode() + rgb.tobytes()).hexdigest() == IMAGE_DIGESTS[name]
         low, high = image.convert("L").getextrema()
         if "low-contrast" in name:
             assert 0 < high - low < 55
