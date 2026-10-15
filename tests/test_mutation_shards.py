@@ -348,6 +348,20 @@ def test_workflow_target_and_comparison_contracts():
     assert 'echo "image=$EXECUTION_IMAGE"' in target["run"]
     assert "@sha256:" in target["env"]["EXECUTION_IMAGE"]
     assert workflow["defaults"]["run"]["shell"] == "bash"
+    bounded = yaml.safe_load((root / ".github/workflows/mutation.yml").read_text())
+    scoped = bounded["jobs"]["scoped"]
+    runtime = next(s for s in bounded["jobs"]["plan"]["steps"] if s.get("id") == "runtime")
+    assert runtime["env"]["EXECUTION_IMAGE"] == target["env"]["EXECUTION_IMAGE"]
+    assert 'echo "image=$EXECUTION_IMAGE"' in runtime["run"]
+    assert bounded["jobs"]["plan"]["outputs"]["execution_image"] == "${{ steps.runtime.outputs.image }}"
+    assert scoped["container"]["image"] == "${{ needs.plan.outputs.execution_image }}"
+    assert scoped["env"]["MUTATION_EXECUTION_IMAGE"] == scoped["container"]["image"]
+    assert bounded["defaults"]["run"]["shell"] == "bash"
+    scoped_commands = [s.get("run", "") for s in scoped["steps"]]
+    assert 'git config --global --add safe.directory "$GITHUB_WORKSPACE"' in scoped_commands
+    assert any("Preserve current driver" in s.get("name", "") for s in scoped["steps"])
+    scoped_node = next(s for s in scoped["steps"] if s.get("uses") == "actions/setup-node@v4")
+    assert scoped_node["with"]["node-version"] == "24.22.0"
     assert any("scripts.mutation_shards compare" in s.get("run", "") for s in jobs["equivalence"]["steps"])
     assert not (root / ".github/workflows/mutation-comparison.yml").exists()
 

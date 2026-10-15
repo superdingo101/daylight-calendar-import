@@ -8,7 +8,11 @@ Results bind the exact source SHA/config manifest, assigned module list,
 duration, raw counts and canonical mutant-identity/outcome map to a resolved
 environment fingerprint. Missing metadata, incomplete or duplicate identities,
 and counts that disagree with outcomes are rejected. Fingerprints include Python,
-OS/architecture, runner image and every installed distribution version.
+OS/architecture, the digest-pinned execution image, actual Node version and every
+installed Python distribution version. Container runs bind the executed userland
+rather than GitHub's rolling host-image stamp. Local/legacy host-only runs still
+bind their runner image and version. The engines install dependencies without a
+configured pip cache; no mutant verdicts are cached.
 
 The reducer requires every shard job/result and matching environments, sums raw
 counts, and calls the original 95.22% score/error-category checker. Survivor
