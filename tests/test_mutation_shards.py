@@ -229,6 +229,73 @@ def test_empty_or_duplicate_paths_cannot_be_claimed_complete(sample):
         ms.reduce(ms.MANIFEST, directory, Path("mutation-shards/aggregate.json"))
 
 
+
+
+def test_runner_image_version_is_diagnostic_not_resolved_identity(monkeypatch):
+    monkeypatch.setenv("ImageOS", "ubuntu24")
+    monkeypatch.setenv("ImageVersion", "20261004.327.1")
+    first = ms.environment()
+    monkeypatch.setenv("ImageVersion", "20261012.334.1")
+    second = ms.environment()
+    assert first["details"] == second["details"]
+    assert first["sha256"] == second["sha256"]
+    assert first["runner_image_version"] == "20261004.327.1"
+    assert second["runner_image_version"] == "20261012.334.1"
+    assert "runner_image_version" not in first["details"]
+    ms.validate_environment(first)
+    ms.validate_environment(second)
+
+
+def test_mixed_runner_builds_preserve_diagnostics_and_full_score(sample):
+    _, sha = sample
+    ms.plan(sha, 8, ms.MANIFEST)
+    manifest = ms.load_manifest(ms.MANIFEST)
+    directory = write_results(manifest, sample)
+    versions = {}
+    for index in range(8):
+        path = directory / f"shard-{index}.json"
+        obj = json.loads(path.read_text())
+        version = "20261004.327.1" if index < 5 else "20261012.334.1"
+        obj["environment"]["runner_image_version"] = version
+        versions[str(index)] = version
+        ms.write_json(path, obj)
+    result = ms.reduce(ms.MANIFEST, directory, Path("aggregate.json"))
+    assert result["score"] == 96
+    assert result["runner_image_versions"] == versions
+    assert result["environment"]["sha256"] == ms.environment()["sha256"]
+    from scripts import check_mutation_score
+    assert check_mutation_score.main() == 0
+
+
+@pytest.mark.parametrize("field, value", [
+    ("python", "0.0.0"),
+    ("machine", "arm64"),
+    ("runner_image", "ubuntu22"),
+    ("packages", [["pytest", "0.0.0"]]),
+])
+def test_identity_mismatches_still_fail_shard_reduction(sample, field, value):
+    _, sha = sample
+    manifest = ms.plan(sha, 8, ms.MANIFEST)
+    directory = write_results(manifest, sample)
+    path = directory / "shard-1.json"
+    obj = json.loads(path.read_text())
+    obj["environment"]["details"][field] = value
+    obj["environment"]["sha256"] = ms.sha256(ms.canonical(obj["environment"]["details"]))
+    ms.write_json(path, obj)
+    with pytest.raises(ValueError, match="environments differ"):
+        ms.reduce(ms.MANIFEST, directory, Path("aggregate.json"))
+
+
+@pytest.mark.parametrize("value", [None, 123])
+def test_missing_or_invalid_runner_diagnostics_fail_closed(value):
+    environment = ms.environment()
+    if value is None:
+        del environment["runner_image_version"]
+    else:
+        environment["runner_image_version"] = value
+    with pytest.raises(ValueError, match="environment"):
+        ms.validate_environment(environment)
+
 def test_different_resolved_shard_environment_rejected(sample):
     _, sha = sample
     m = ms.plan(sha, 8, ms.MANIFEST)
@@ -306,6 +373,15 @@ def test_comparison_rejects_incompatible_engine_evidence(comparison_evidence, co
         ms.compare(ms.MANIFEST, aggregate, unsharded, Path("equivalence.json"))
     assert not Path("equivalence.json").exists()
 
+
+
+
+def test_comparison_allows_different_runner_image_build(comparison_evidence):
+    aggregate, unsharded = comparison_evidence
+    obj = json.loads(unsharded.read_text())
+    obj["environment"]["runner_image_version"] = "another-ubuntu24-build"
+    ms.write_json(unsharded, obj)
+    assert ms.compare(ms.MANIFEST, aggregate, unsharded, Path("equivalence.json"))["equivalent"]
 
 def test_comparison_retains_timeout_score_semantics(comparison_evidence):
     aggregate, unsharded = comparison_evidence
