@@ -4,6 +4,9 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
 concurrency:
   group: mutation-bounded-${{ github.event.pull_request.number }}-${{ ((github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'mutation-comprehensive') && github.run_id || 'required' }}
   cancel-in-progress: true
@@ -16,11 +19,17 @@ jobs:
       mode: ${{ steps.plan.outputs.mode }}
       base: ${{ steps.plan.outputs.base }}
       head: ${{ github.event.pull_request.head.sha }}
+      execution_image: ${{ steps.runtime.outputs.image }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+      - name: Select immutable mutation runtime
+        id: runtime
+        env:
+          EXECUTION_IMAGE: python:3.14.8-bookworm@sha256:7ee7e4d4fb42c3ad45b8fdc473b64ec69c3cf6e80ae5d52f6fa55f77fac29027
+        run: echo "image=$EXECUTION_IMAGE" >> "$GITHUB_OUTPUT"
       - name: Classify before dependency installation
         id: preview
         env:
@@ -62,6 +71,10 @@ jobs:
     needs: plan
     if: needs.plan.outputs.mode == 'scoped'
     runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.plan.outputs.execution_image }}
+    env:
+      MUTATION_EXECUTION_IMAGE: ${{ needs.plan.outputs.execution_image }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -78,14 +91,14 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ matrix.revision == 'base' && needs.plan.outputs.base || needs.plan.outputs.head }}
+      - name: Trust the checked-out workspace inside the container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/download-artifact@v4
         with:
           name: bounded-impact-plan
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.14"
-          cache: pip
-          cache-dependency-path: requirements_test.txt
+          node-version: "24.22.0"
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements_test.txt
       - name: Execute exact cold bounded scope
