@@ -24,6 +24,7 @@ Rules:
 - For timed events, return ISO 8601 datetimes with explicit UTC offsets.
 - For all-day events, return ISO 8601 dates; end is exclusive, matching calendar semantics.
 - Preserve useful source details in description when appropriate.
+- Preserve complete meeting join details in description: Zoom, Google Meet and Microsoft Teams URLs (including query parameters), meeting IDs, passcodes and dial-in numbers/instructions. Copy these details exactly when present; do not invent missing credentials or links. Keep an explicitly supplied location as well.
 - confidence is from 0 to 1 and reflects confidence in the extracted event.
 - Resolve explicitly relative dates and local clock times using the reference datetime and Home Assistant time zone below.
 - Do not infer missing event durations, end times, dates or years that are not deterministically supported by the source and reference date.
@@ -71,7 +72,7 @@ EVENTS_STRUCTURE = vol.Schema(
                         "selector": {"text": {}},
                     },
                     "description": {
-                        "label": "Useful supporting details from the source",
+                        "label": "Supporting details including complete meeting links, IDs, passcodes and dial-in instructions",
                         "selector": {"text": {"multiline": True}},
                     },
                     "assumptions": {
