@@ -1,0 +1,81 @@
+{
+  "id": "media-camera-photo",
+  "source_kind": "image",
+  "source_text": "",
+  "reference_datetime": "2026-10-14T09:00:00-07:00",
+  "time_zone": "America/Los_Angeles",
+  "provider_response": {
+    "events": [
+      {
+        "title": "Family science night",
+        "start": "2026-10-22T18:00:00-07:00",
+        "end": "2026-10-22T20:00:00-07:00",
+        "all_day": false,
+        "location": "Willow School hall",
+        "description": "Bring a notebook.",
+        "confidence": 0.98,
+        "assumptions": []
+      },
+      {
+        "title": "Garden volunteer morning",
+        "start": "2026-10-24T09:00:00-07:00",
+        "end": "2026-10-24T11:00:00-07:00",
+        "all_day": false,
+        "location": "Cedar Community Garden",
+        "description": "Bring gloves and water.",
+        "confidence": 0.98,
+        "assumptions": []
+      }
+    ]
+  },
+  "expected": {
+    "events": [
+      {
+        "title": "Family science night",
+        "start": "2026-10-22T18:00:00-07:00",
+        "end": "2026-10-22T20:00:00-07:00",
+        "all_day": false,
+        "location": "Willow School hall",
+        "description": "Bring a notebook.",
+        "confidence": 0.98
+      },
+      {
+        "title": "Garden volunteer morning",
+        "start": "2026-10-24T09:00:00-07:00",
+        "end": "2026-10-24T11:00:00-07:00",
+        "all_day": false,
+        "location": "Cedar Community Garden",
+        "description": "Bring gloves and water.",
+        "confidence": 0.98
+      }
+    ],
+    "warnings": [],
+    "event_assumptions": [
+      [],
+      []
+    ]
+  },
+  "attachments": [
+    {
+      "name": "media-camera-photo.jpg",
+      "media_type": "image/jpeg",
+      "path": "assets/media-camera-photo.jpg"
+    }
+  ],
+  "source_transcript": [
+    [
+      "Family science night",
+      "October 22, 2026",
+      "6:00-8:00 pm PDT",
+      "Willow School hall",
+      "Bring a notebook."
+    ],
+    [
+      "Garden volunteer morning",
+      "October 24, 2026",
+      "9:00-11:00 am PDT",
+      "Cedar Community Garden",
+      "Bring gloves and water."
+    ]
+  ]
+}
