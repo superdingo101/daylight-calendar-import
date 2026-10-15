@@ -66,6 +66,10 @@ def evaluate(corpus: Path, runner: list[str], *, timeout: float = 120) -> dict:
         request = {key: value for key, value in case.items()
                    if key in {"id", "source_text", "reference_datetime", "time_zone",
                               "source_kind", "attachments"}}
+        # Routing fixtures record the actual post-routing parser evidence.
+        # Keep this stdlib runner independent of Home Assistant, and never
+        # expose outer routing directives or expected routing decisions to the AI.
+        request["source_text"] = case.get("parser_source_text", case["source_text"])
         request["fixture_directory"] = str(corpus.resolve())
         completed = subprocess.run(runner, input=json.dumps(request), text=True,
                                    capture_output=True, check=True, timeout=timeout)

@@ -21,6 +21,7 @@ async def test_recorded_extraction_boundary(path, monkeypatch):
     case = json.loads(path.read_text())
     assert path.stem == case["id"]
     reference = datetime.fromisoformat(case["reference_datetime"])
+    parser_text = case.get("parser_source_text", case["source_text"])
     attachments = tuple(SourceAttachment(
         id=str(index), media_type=item["media_type"],
         size_bytes=(CORPUS / item["path"]).stat().st_size,
@@ -28,7 +29,7 @@ async def test_recorded_extraction_boundary(path, monkeypatch):
         filename=item["name"],
     ) for index, item in enumerate(case.get("attachments", [])))
     source = SourceDocument(case["id"], SourceKind(case.get("source_kind", "manual_text")),
-                            reference, text=case["source_text"], attachments=attachments)
+                            reference, text=parser_text, attachments=attachments)
     generate = AsyncMock(return_value=SimpleNamespace(data=case["provider_response"]))
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     component = SimpleNamespace(get_entity=lambda _id: SimpleNamespace(
@@ -42,7 +43,7 @@ async def test_recorded_extraction_boundary(path, monkeypatch):
     assert [list(notes) for notes in outcome.event_assumptions] == case["expected"]["event_assumptions"]
     generate.assert_awaited_once()
     request = generate.await_args.kwargs
-    assert case["source_text"].strip() in request["instructions"]
+    assert parser_text.strip() in request["instructions"]
     assert f"Home Assistant time zone: {case['time_zone']}" in request["instructions"]
     assert f"Reference datetime: {reference.astimezone(ZoneInfo(case['time_zone'])).isoformat()}" in request["instructions"]
     if attachments:
