@@ -1,7 +1,7 @@
 {
   "id": "email-birthday-invitation",
   "source_kind": "email",
-  "source_text": "From: host@party.example\nSubject: You are invited to Alex’s birthday!\n\nPlease join us for Alex’s birthday on October 17, 2026, 14:00–16:00 PDT at Maple Community Room, 100 Example Lane.\nPizza and a craft activity are included. Please bring a reusable water bottle.\nRSVP to host@party.example when you can; no RSVP deadline has been set.\n",
+  "source_text": "Please join us for Alex’s birthday on October 17, 2026, 14:00–16:00 PDT at Maple Community Room, 100 Example Lane.\nPizza and a craft activity are included. Please bring a reusable water bottle.\nRSVP to host@party.example when you can; no RSVP deadline has been set.",
   "reference_datetime": "2026-10-01T12:00:00-07:00",
   "time_zone": "America/Los_Angeles",
   "provider_response": {

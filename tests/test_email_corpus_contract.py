@@ -4,8 +4,17 @@ These checks keep recorded fixtures honest; live extraction accuracy is measured
 only by the optional reference-provider evaluator.
 """
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 import json
 from pathlib import Path
+
+from custom_components.daylight_calendar_import.email_normalize import normalize_email
+from custom_components.daylight_calendar_import.email_source import (
+    DirectImapReference,
+    EmailEnvelope,
+    EmailProvenance,
+    EmailSourceType,
+)
 
 
 CORPUS = Path(__file__).parent / "fixtures" / "extraction"
@@ -72,13 +81,21 @@ def test_dense_school_newsletter_keeps_six_events_without_undated_noise():
         "Welcome assembly", "Family science night", "Teacher workday",
         "Autumn break", "Garden club", "PTA budget meeting",
     ]
-    assert [event["start"][:10] for event in events] == [
-        "2026-10-05", "2026-10-07", "2026-10-09",
-        "2026-10-12", "2026-10-15", "2026-10-21",
+    assert [(event["start"], event["end"]) for event in events] == [
+        ("2026-10-05T08:15:00-07:00", "2026-10-05T08:45:00-07:00"),
+        ("2026-10-07T18:00:00-07:00", "2026-10-07T19:30:00-07:00"),
+        ("2026-10-09", "2026-10-10"),
+        ("2026-10-12", "2026-10-15"),  # Inclusive Oct 12–14 closure.
+        ("2026-10-15T15:15:00-07:00", "2026-10-15T16:15:00-07:00"),
+        ("2026-10-21T17:00:00-07:00", "2026-10-21T18:00:00-07:00"),
+    ]
+    assert [line.split(" — ")[0] for line in fixture["source_text"].splitlines()
+            if line.startswith("October ")] == [
+        "October 5, 08:15–08:45", "October 7, 18:00–19:30",
+        "October 9 (all day)", "October 12–14 (all days, inclusive)",
+        "October 15, 15:15–16:15", "October 21, 17:00–18:00",
     ]
     assert [event["all_day"] for event in events] == [False, False, True, True, False, False]
-    assert events[2]["end"] == "2026-10-10"
-    assert events[3]["end"] == "2026-10-15"  # Inclusive Oct 12–14 closure.
     for event in events:
         assert event["title"] in fixture["source_text"]
         assert event["description"] in fixture["source_text"]
@@ -91,8 +108,23 @@ def test_email_cases_explicitly_identify_email_source_and_fixed_context():
     for name in ("sports-24-games", "birthday-invitation", "registration-and-camp", "school-newsletter"):
         fixture = case(name)
         assert fixture["source_kind"] == "email"
-        assert fixture["source_text"].startswith("From: ")
-        assert "\nSubject: " in fixture["source_text"]
+        message = EmailMessage()
+        message["From"] = "sender@corpus.example"
+        message["Subject"] = "Header-only event on December 1, 2026, 09:00–10:00 PDT"
+        message.set_content(fixture["source_text"])
+        source = normalize_email(EmailEnvelope(
+            received_at=datetime.fromisoformat(fixture["reference_datetime"]),
+            raw_message=message.as_bytes(),
+            provenance=EmailProvenance(
+                source_id="corpus", source_type=EmailSourceType.DIRECT_IMAP,
+                transport_reference=DirectImapReference("INBOX", 1, 1),
+            ),
+        ))
+        assert source.text == fixture["source_text"]
+        assert source.title == message["Subject"]
+        assert source.title not in fixture["source_text"]
+        assert source.metadata["sender"] == message["From"]
+        assert message["From"] not in fixture["source_text"]
         reference = datetime.fromisoformat(fixture["reference_datetime"])
         assert reference.utcoffset() == timedelta(hours=-7)
         assert fixture["time_zone"] == "America/Los_Angeles"

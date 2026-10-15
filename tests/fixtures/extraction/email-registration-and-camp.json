@@ -1,7 +1,7 @@
 {
   "id": "email-registration-and-camp",
   "source_kind": "email",
-  "source_text": "From: programs@camp.example\nSubject: Registration deadline and October robotics camp\n\nTwo calendar reminders for families:\nRobotics camp registration deadline: October 9, 2026 (all-day reminder). Submit the form at https://camp.example/register.\nRobotics camp: October 19, 2026, 09:00–15:00 PDT, at Innovation Center, Room 4. Bring a packed lunch and a charged laptop.\nThe deadline is for registration, not the camp date.\n",
+  "source_text": "Two calendar reminders for families:\nRobotics camp registration deadline: October 9, 2026 (all-day reminder). Submit the form at https://camp.example/register.\nRobotics camp: October 19, 2026, 09:00–15:00 PDT, at Innovation Center, Room 4. Bring a packed lunch and a charged laptop.\nThe deadline is for registration, not the camp date.",
   "reference_datetime": "2026-10-01T12:00:00-07:00",
   "time_zone": "America/Los_Angeles",
   "provider_response": {

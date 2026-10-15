@@ -1,10 +1,12 @@
 # Email and newsletter extraction cases
 
 Four synthetic cases in `tests/fixtures/extraction/email-*.json` extend the
-[extraction corpus](extraction-corpus.md) with realistic email structures. Sender
-addresses, links, names, and venues are invented; reserved `.example` domains
-avoid using real mailboxes. Every case fixes the received/reference date to
-October 1, 2026, and declares the Home Assistant timezone and source kind.
+[extraction corpus](extraction-corpus.md) with realistic email structures. Links,
+contact addresses, names, and venues are invented; reserved `.example` domains avoid
+using real mailboxes. Source text is the normalized email body, without transport
+headers, matching the text production sends to AI Task. Every case fixes the
+received/reference date to October 1, 2026, and declares the Home Assistant
+timezone and source kind.
 
 | Case | Expected drafts | Details under test |
 | --- | ---: | --- |
@@ -17,10 +19,12 @@ The existing parameterized replay test automatically includes these cases and
 passes each recorded provider response through the real AI Task/parser boundary.
 `tests/test_email_corpus_contract.py` independently checks sports rows against
 normalized drafts, deadline/event separation, invitation details, newsletter
-completeness, and exclusive all-day end dates. These are fixture and integration
-boundary checks, not evidence of live AI extraction quality. The optional corpus
-evaluator can submit the same source text to an actual provider outside required
-CI; no live provider, network request, or credentials are needed for these tests.
+completeness, exclusive all-day end dates, and normalization through the real
+email adapter (header-only details remain outside the parser input). These are
+fixture and integration boundary checks, not evidence of live AI extraction
+quality. The optional corpus evaluator can submit the same source text to an
+actual provider outside required CI; no live provider, network request, or
+credentials are needed for these tests.
 
 Existing routing fixtures separately cover forwarded/quoted messages, multiple
 calendar aliases, conferencing details, deduplication, and adversarial content.
