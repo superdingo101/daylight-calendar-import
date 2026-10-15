@@ -1,0 +1,138 @@
+{
+  "id": "email-school-newsletter",
+  "source_kind": "email",
+  "source_text": "Dear families, thank you for supporting our library fundraiser. Our reading program has reached 500 books! All dates below are in 2026; timed activities use PDT.\nUPCOMING SCHOOL DATES\nOctober 5, 08:15–08:45 — Welcome assembly — Cedar School Gym. Families may attend; enter through the east doors.\nOctober 7, 18:00–19:30 — Family science night — Cedar School Hall. Bring a recycled cardboard box for the building activity.\nOctober 9 (all day) — Teacher workday. School is closed to students.\nOctober 12–14 (all days, inclusive) — Autumn break. No classes on these three days.\nCLUBS AND VOLUNTEERS\nOctober 15, 15:15–16:15 — Garden club — School Garden. Bring gloves and a water bottle.\nOctober 21, 17:00–18:00 — PTA budget meeting — Library. Read the budget at https://cedarschool.example/budget before attending.\nOTHER NEWS\nOur cafeteria now offers more vegetarian meals. Volunteer training dates will be announced later; there is no scheduled session yet. The lost-and-found cupboard is overflowing. Please label jackets. This bulletin lists each event once; section headings and general reminders are not additional events.\nCedar School Office | https://cedarschool.example",
+  "reference_datetime": "2026-10-01T12:00:00-07:00",
+  "time_zone": "America/Los_Angeles",
+  "provider_response": {
+    "events": [
+      {
+        "title": "Welcome assembly",
+        "start": "2026-10-05T08:15:00-07:00",
+        "end": "2026-10-05T08:45:00-07:00",
+        "all_day": false,
+        "location": "Cedar School Gym",
+        "description": "Families may attend; enter through the east doors.",
+        "confidence": 0.95,
+        "assumptions": []
+      },
+      {
+        "title": "Family science night",
+        "start": "2026-10-07T18:00:00-07:00",
+        "end": "2026-10-07T19:30:00-07:00",
+        "all_day": false,
+        "location": "Cedar School Hall",
+        "description": "Bring a recycled cardboard box for the building activity.",
+        "confidence": 0.95,
+        "assumptions": []
+      },
+      {
+        "title": "Teacher workday",
+        "start": "2026-10-09",
+        "end": "2026-10-10",
+        "all_day": true,
+        "location": null,
+        "description": "School is closed to students.",
+        "confidence": 0.95,
+        "assumptions": []
+      },
+      {
+        "title": "Autumn break",
+        "start": "2026-10-12",
+        "end": "2026-10-15",
+        "all_day": true,
+        "location": null,
+        "description": "No classes on these three days.",
+        "confidence": 0.95,
+        "assumptions": []
+      },
+      {
+        "title": "Garden club",
+        "start": "2026-10-15T15:15:00-07:00",
+        "end": "2026-10-15T16:15:00-07:00",
+        "all_day": false,
+        "location": "School Garden",
+        "description": "Bring gloves and a water bottle.",
+        "confidence": 0.95,
+        "assumptions": []
+      },
+      {
+        "title": "PTA budget meeting",
+        "start": "2026-10-21T17:00:00-07:00",
+        "end": "2026-10-21T18:00:00-07:00",
+        "all_day": false,
+        "location": "Library",
+        "description": "Read the budget at https://cedarschool.example/budget before attending.",
+        "confidence": 0.95,
+        "assumptions": []
+      }
+    ]
+  },
+  "expected": {
+    "events": [
+      {
+        "title": "Welcome assembly",
+        "start": "2026-10-05T08:15:00-07:00",
+        "end": "2026-10-05T08:45:00-07:00",
+        "all_day": false,
+        "location": "Cedar School Gym",
+        "description": "Families may attend; enter through the east doors.",
+        "confidence": 0.95
+      },
+      {
+        "title": "Family science night",
+        "start": "2026-10-07T18:00:00-07:00",
+        "end": "2026-10-07T19:30:00-07:00",
+        "all_day": false,
+        "location": "Cedar School Hall",
+        "description": "Bring a recycled cardboard box for the building activity.",
+        "confidence": 0.95
+      },
+      {
+        "title": "Teacher workday",
+        "start": "2026-10-09",
+        "end": "2026-10-10",
+        "all_day": true,
+        "location": null,
+        "description": "School is closed to students.",
+        "confidence": 0.95
+      },
+      {
+        "title": "Autumn break",
+        "start": "2026-10-12",
+        "end": "2026-10-15",
+        "all_day": true,
+        "location": null,
+        "description": "No classes on these three days.",
+        "confidence": 0.95
+      },
+      {
+        "title": "Garden club",
+        "start": "2026-10-15T15:15:00-07:00",
+        "end": "2026-10-15T16:15:00-07:00",
+        "all_day": false,
+        "location": "School Garden",
+        "description": "Bring gloves and a water bottle.",
+        "confidence": 0.95
+      },
+      {
+        "title": "PTA budget meeting",
+        "start": "2026-10-21T17:00:00-07:00",
+        "end": "2026-10-21T18:00:00-07:00",
+        "all_day": false,
+        "location": "Library",
+        "description": "Read the budget at https://cedarschool.example/budget before attending.",
+        "confidence": 0.95
+      }
+    ],
+    "warnings": [],
+    "event_assumptions": [
+      [],
+      [],
+      [],
+      [],
+      [],
+      []
+    ]
+  }
+}
