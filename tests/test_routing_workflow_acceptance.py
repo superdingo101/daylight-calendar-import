@@ -46,12 +46,15 @@ async def workflow(hass, hass_ws_client, monkeypatch):
                            writes=writes, store=hass.data[DOMAIN][entry.entry_id])
 
 
-@pytest.mark.parametrize(("hint", "destination", "unresolved"), [
-    ("", "calendar.family", False), ("Calendar: Kids\n", "calendar.kids", False),
-    ("Calendar: unknown\n", "calendar.family", True),
-    ("Calendar: kids\nCalendar: work\n", "calendar.family", True),
+@pytest.mark.parametrize(("hint", "destination", "unresolved", "changed"), [
+    ("", "calendar.family", False, "calendar.kids"),
+    ("Calendar: Kids\n", "calendar.kids", False, "calendar.family"),
+    ("Calendar: unknown\n", "calendar.family", True, "calendar.kids"),
+    ("Calendar: kids\nCalendar: work\n", "calendar.family", True, "calendar.kids"),
+    ("Calendar: unknown\n", "calendar.family", True, "calendar.family"),
+    ("Calendar: kids\nCalendar: work\n", "calendar.family", True, "calendar.family"),
 ])
-async def test_route_preview_confirmation_and_destination_change(workflow, hint, destination, unresolved):
+async def test_route_preview_confirmation_and_destination_change(workflow, hint, destination, unresolved, changed):
     runtime = workflow
     submitted = await call(runtime.client, "submit_text", text=hint + "Practice details")
     assert submitted["success"], submitted
@@ -67,8 +70,7 @@ async def test_route_preview_confirmation_and_destination_change(workflow, hint,
         assert "Confirm" in refused["error"]["message"]
         runtime.writes.assert_not_awaited()
         assert runtime.store.get_event(pending["id"], event["id"]).status == "pending"
-    # An explicit edit both confirms unresolved routing and changes resolved/default routing.
-    changed = "calendar.family" if destination == "calendar.kids" else "calendar.kids"
+    # An explicit edit confirms unresolved routing even when the fallback is kept.
     edited = await call(runtime.client, "edit_pending_event", **ids,
                         event=DRAFT.as_dict(), calendar_entity=changed)
     assert edited["success"], edited
@@ -84,7 +86,7 @@ def existing(title, start=DRAFT.start, end=DRAFT.end):
     return CalendarEvent(start=datetime.fromisoformat(start), end=datetime.fromisoformat(end), summary=title)
 
 
-async def test_multicalendar_matches_and_fresh_exact_duplicate_approval_guard(workflow):
+async def test_multicalendar_matches_and_exact_duplicate_approval_guard(workflow):
     runtime = workflow
     submitted = await call(runtime.client, "submit_text", text="Practice details")
     pending = submitted["result"]["response"]["pending"]
@@ -135,4 +137,26 @@ async def test_incomplete_observation_fails_visibly_without_changing_review(work
     assert "Calendar check incomplete" in failed["error"]["message"]
     assert "private provider error" not in str(failed)
     assert runtime.store.get_event(**ids) == before
+    runtime.writes.assert_not_awaited()
+
+
+async def test_approval_rechecks_destination_after_clear_preview(workflow):
+    runtime = workflow
+    submitted = await call(runtime.client, "submit_text", text="Practice details")
+    assert submitted["success"], submitted
+    pending = submitted["result"]["response"]["pending"]
+    ids = {"pending_id": pending["id"], "event_id": pending["events"][0]["id"]}
+    checked = await call(runtime.client, "check_pending_event", **ids)
+    assert checked["success"], checked
+    assert checked["result"]["response"]["matches"] == []
+    destination_reads = runtime.providers["calendar.family"].async_get_events
+    destination_reads.assert_awaited_once()
+    # The calendar changes after preview and before approval. A cached clear
+    # verdict must never authorize a duplicate write.
+    destination_reads.return_value = [existing("Practice")]
+    refused = await call(runtime.client, "approve_pending_event", **ids)
+    assert refused["success"] is False
+    assert "Exact duplicate" in refused["error"]["message"]
+    assert destination_reads.await_count == 2
+    assert runtime.store.get_event(**ids).status == "pending"
     runtime.writes.assert_not_awaited()
