@@ -23,6 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # Cross-layer acceptance runs the shipped frontend transport in Node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
@@ -37,6 +41,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # Cross-layer acceptance runs the shipped frontend transport in Node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"

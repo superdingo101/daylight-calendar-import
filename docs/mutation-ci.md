@@ -39,8 +39,10 @@ applying the **95.22% project-wide threshold**. Shard percentages are never
 averaged. Missing, failed, timed-out or cancelled shards fail the required gate.
 
 Each shard preserves survivor diffs and available diagnostics on failure.
-Successful aggregation requires all expected diagnostic files. The pip cache
-remains an installation optimization and contains no mutant verdicts.
+Successful aggregation requires all expected diagnostic files. Mutation engines
+install dependencies afresh in their pinned container without a configured pip
+cache. Bounded planning may use a pip cache for its host-side coverage measurement;
+it contains no mutant verdicts.
 
 ## Nightly and releases
 
@@ -60,6 +62,16 @@ PR status. A required-workflow rollback is a reviewed revert of this cutover;
 do not restore the retired custom cache engine.
 
 ## Verified comprehensive benchmark
+
+Bounded base/head jobs, comprehensive shards and the optional unsharded
+comparison run inside the same digest-pinned Python container with an exact Node
+version. Their environment
+evidence binds the immutable container, actual Python/Node versions and complete
+resolved Python package set. GitHub may roll the host runner image during a run;
+the host provisioning stamp does not identify the container's userland. Host-only
+local/legacy runs still bind their runner image and version. Environment equality,
+artifact integrity, complete mutant coverage and the 95.22% score gate remain
+required. Runtime-image and Node upgrades require a reviewed workflow change.
 
 On `ae000de` (PR #129), the cold eight-shard path completed in **15m 50s**,
 compared with **58m** unsharded. Both produced exactly the same individual

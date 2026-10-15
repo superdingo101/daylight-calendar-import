@@ -1,0 +1,37 @@
+{
+  "id": "dates-overnight-explicit",
+  "source_text": "Overnight maintenance: October 24, 2026, 23:00 PDT through October 25, 2026, 01:00 PDT.",
+  "reference_datetime": "2026-10-14T12:00:00-07:00",
+  "time_zone": "America/Los_Angeles",
+  "provider_response": {
+    "events": [
+      {
+        "title": "Overnight maintenance",
+        "start": "2026-10-24T23:00:00-07:00",
+        "end": "2026-10-25T01:00:00-07:00",
+        "all_day": false,
+        "location": null,
+        "description": null,
+        "confidence": 0.95,
+        "assumptions": []
+      }
+    ]
+  },
+  "expected": {
+    "events": [
+      {
+        "title": "Overnight maintenance",
+        "start": "2026-10-24T23:00:00-07:00",
+        "end": "2026-10-25T01:00:00-07:00",
+        "all_day": false,
+        "location": null,
+        "description": null,
+        "confidence": 0.95
+      }
+    ],
+    "warnings": [],
+    "event_assumptions": [
+      []
+    ]
+  }
+}

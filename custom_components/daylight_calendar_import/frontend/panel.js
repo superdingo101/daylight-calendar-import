@@ -83,6 +83,7 @@ const css = `
   h2 { font-size: 1.15rem; margin: 0 0 8px; overflow-wrap: anywhere; }
   p { margin: 6px 0; overflow-wrap: anywhere; }
   .error { color: var(--error-color); }
+  .event-description { white-space: pre-wrap; max-height: 18rem; overflow: auto; }
   .source { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; }
   .detail-event { border-top: 1px solid var(--divider-color); padding: 12px 0; }
   form { display: grid; gap: 12px; }
@@ -2382,7 +2383,13 @@ export class DaylightImportPanel extends HTMLElement {
           card.append(element("p", `AI extraction confidence: ${Math.round(event.confidence * 100)}% (estimate)`));
         }
         if (event.location) card.append(element("p", `Location: ${event.location}`));
-        if (event.description) card.append(element("p", event.description));
+        if (event.description) {
+          const description = element("p", event.description, "event-description");
+          description.setAttribute("tabindex", "0");
+          description.setAttribute("role", "region");
+          description.setAttribute("aria-label", "Event description");
+          card.append(description);
+        }
         if (this._calendarCheck?.event === event) {
           const section = element("section", "", "calendar-matches");
           section.setAttribute("role", "region");
