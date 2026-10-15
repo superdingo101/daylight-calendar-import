@@ -36,7 +36,7 @@ credentials on stdout/stderr. The evaluator does not save provider content.
 The report includes per-case and aggregate expected, actual, matched, missed and
 spurious event counts, plus event-count accuracy. An equal count can still hide
 one missed and one spurious event. Events correspond by exact, trimmed title;
-order does not affect scores. For repeated titles, identical start/end intervals
+order does not affect scores. For repeated titles, identical trimmed start/end intervals
 are reserved first, then remaining occurrences pair in source order. This is a
 conservative deterministic identity rule: paraphrased titles count as missed and
 spurious events, and uncertain correspondences need manual inspection.
@@ -44,7 +44,7 @@ spurious events, and uncertain correspondences need manual inspection.
 Exact per-field correctness uses the larger expected/actual count as denominator;
 unmatched events receive no field credit. `dates`/`date_totals` require both start
 and end calendar dates to match for an event, independently of clock times.
-Values must parse as ISO dates for all-day events or ISO datetimes for timed
+Values must parse as ISO dates for all-day events or offset-aware ISO datetimes for timed
 events; dates use each timestamp’s expressed local offset without conversion. Confidence is excluded because calibration
 varies by provider. String fields are trimmed like production normalization.
 Missing required fields and invalid field types receive no credit (numeric zero

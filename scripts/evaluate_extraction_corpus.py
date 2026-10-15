@@ -37,8 +37,12 @@ def _matches(expected: list[dict], actual: list[dict]) -> dict[int, int]:
                 other = actual[candidate]
                 if _title(event) is None or _title(event) != _title(other):
                     continue
-                if exact_interval and any(event.get(key) != other.get(key)
-                                          for key in ("start", "end")):
+                if exact_interval and any(
+                    (value.strip() if isinstance(value, str) else value)
+                    != (other_value.strip() if isinstance(other_value, str) else other_value)
+                    for key in ("start", "end")
+                    for value, other_value in [(event.get(key), other.get(key))]
+                ):
                     continue
                 matched[index] = candidate
                 available.remove(candidate)
@@ -73,7 +77,8 @@ def _calendar_date(value: object, *, all_day: bool) -> date | None:
         # A date alone is not a valid timed-event timestamp.
         if len(value.strip()) <= 10:
             return None
-        return datetime.fromisoformat(value.strip()).date()
+        timestamp = datetime.fromisoformat(value.strip())
+        return timestamp.date() if timestamp.utcoffset() is not None else None
     except ValueError:
         return None
 

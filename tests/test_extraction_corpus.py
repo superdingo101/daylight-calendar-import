@@ -147,7 +147,8 @@ def test_evaluator_normalizes_assumptions_like_production():
     assert candidate["assumptions"] == [f"  {note}\n" for note in notes]
 
 
-def test_evaluator_matches_reordered_events_and_reserves_repeated_title_intervals():
+@pytest.mark.parametrize("padding", ["", "  ", "\n"])
+def test_evaluator_matches_reordered_events_and_reserves_repeated_title_intervals(padding):
     from copy import deepcopy
     case = json.loads((CORPUS / "explicit-practice.json").read_text())
     first = case["provider_response"]["events"][0]
@@ -156,10 +157,14 @@ def test_evaluator_matches_reordered_events_and_reserves_repeated_title_interval
     case["expected"]["events"].append({key: value for key, value in second.items()
                                          if key != "assumptions"})
     case["expected"]["event_assumptions"].append([])
-    reordered = score_case(case, {"events": [second, deepcopy(first)]})
+    padded_second = {**second, **{key: f"{padding}{second[key]}{padding}"
+                                   for key in ("start", "end")}}
+    reordered = score_case(case, {"events": [padded_second, deepcopy(first)]})
     assert reordered["matched_events"] == 2
     assert reordered["dates"] == {"correct": 2, "total": 2}
-    missing = score_case(case, {"events": [second]})
+    for field in ("start", "end"):
+        assert reordered["fields"][field] == {"correct": 2, "total": 2}
+    missing = score_case(case, {"events": [padded_second]})
     assert missing["missed_events"] == 1
     assert missing["spurious_events"] == 0
     assert missing["dates"] == {"correct": 1, "total": 2}
@@ -200,7 +205,8 @@ def test_evaluator_rejects_invalid_meeting_annotations(details):
 
 @pytest.mark.parametrize(("start", "correct"), [
     ("2026-10-15T19:00:00-07:00", 1), ("2026-10-16T17:00:00-07:00", 0),
-    ("2026-10-15T99:00:00-07:00", 0), ("2026-10-15", 0), (False, 0),
+    ("2026-10-15T99:00:00-07:00", 0), ("2026-10-15T17:00:00", 0),
+    ("2026-10-15", 0), (False, 0),
 ])
 def test_evaluator_calendar_dates_are_independent_of_clock_times(start, correct):
     case = json.loads((CORPUS / "explicit-practice.json").read_text())
