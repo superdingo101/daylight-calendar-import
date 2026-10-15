@@ -21,7 +21,7 @@ The integration runs in your own Home Assistant installation. **No Daylight Clou
 
 ## How it works
 
-1. **Send in event information.** Connect a dedicated email mailbox, or submit text, an image, or a PDF through Home Assistant's Actions tools.
+1. **Send in event information.** Paste event details or upload an image/PDF in **Daylight imports → Review inbox**, or connect a dedicated email mailbox.
 2. **Let AI identify the events.** A single email or newsletter can contain several events.
 3. **Review the results.** Open **Daylight imports → Review inbox** to check dates, correct details, choose calendars, and inspect possible conflicts.
 4. **Approve the events you want.** Daylight adds approved events to your selected Home Assistant calendars; rejected drafts are not added.
@@ -67,20 +67,23 @@ Once configured, open **Daylight imports** in your Home Assistant sidebar. Its *
 
 The simplest way to get started is with some copied text — no email setup needed.
 
-1. Open **Developer Tools → Actions** in Home Assistant.
-2. Choose **Daylight Calendar Import: Submit text for review** (`daylight_calendar_import.submit_text`).
-3. Paste something like:
+1. Open **Daylight imports → Review inbox** from the Home Assistant sidebar. Both import forms are available even when the inbox is empty and email is disabled.
+2. In **Paste event details**, paste an announcement with a date and start/end times. You can include several events:
 
    ```text
    School movie night
-   November 6, 2026, 6:30 PM
+   November 6, 2026, 6:30–8:30 PM
    School gym
    ```
 
-4. Run the action, then open **Daylight imports → Review inbox**.
-5. Open the new import, check its details, and choose **Approve** to create the calendar event — or **Reject** to discard it.
+3. Select **Import events**. Keep the page open while processing. A successful submission saves drafts **for review**; it does not create calendar events.
+4. Select **Review events**, inspect the dates, times and destination calendar, then **Approve** to create the event — or **Reject** to discard it.
 
-You can also submit an **image** or **PDF** from Developer Tools → Actions using **Submit image for review** or **Submit PDF for review**. Images must be PNG, JPEG, or WebP (up to 10 MiB); PDFs can be up to 10 MiB and 30 pages. The AI Task entity must support attachments when visual interpretation is required.
+To import a flyer or document instead, use **Upload an image or PDF** on the same page. Choose a PNG, JPEG, WebP image or PDF, optionally add supporting text (such as `Calendar: Kids`), and select **Import file**. Files may be up to **10 MiB**; PDFs may contain up to **30 pages**. Images and scanned PDFs require an AI Task provider with attachment support; PDFs with a usable text layer can work with a text-only provider.
+
+The result explains whether drafts are ready, the source was already processed, or no events were found. On failure, your text/file selection stays available and the form shows the error. **Recent activity** shows provider or processing failures recorded after submission begins. Browser validation and upload failures, such as an unsupported or oversized file or an upload permission/network error, may have no activity record. Fix the reported problem before retrying. If your connection drops or the result is uncertain, check the review inbox and recent activity first; the submission might have completed. See the [manual import guide](docs/manual-import.md) for permissions, provider requirements and recovery.
+
+Advanced automations can still use **Developer Tools → Actions** with `daylight_calendar_import.submit_text`, `submit_image` and `submit_pdf`.
 
 Meeting links, IDs, passcodes, dial-in instructions, and lengthy event instructions are kept in the event description for review and approval. For local AI Task imports, Daylight does not impose a description-length cap or silently shorten descriptions; it normalizes surrounding whitespace. The separate [hosted API v1 contract](schemas/hosted/v1/event-draft.schema.json) limits descriptions to 65,536 characters. Your AI provider can have input/output limits or omit details, and your destination calendar can reject a description it cannot accept. Review important source details before approving. A failed calendar write remains visible for recovery; check the destination calendar before retrying an uncertain write.
 
@@ -140,6 +143,7 @@ Open **Daylight imports → Recent activity**. For AI provider timeouts, authent
 
 - [Latest releases and updates](https://github.com/superdingo101/daylight-calendar-import/releases)
 - [Report a bug or suggest a feature](https://github.com/superdingo101/daylight-calendar-import/issues)
+- [Manual text, image and PDF imports](docs/manual-import.md)
 - [Direct IMAP setup, privacy, and recovery](docs/direct-imap.md)
 - [Calendar routing, conflicts, and sensors](docs/v0.6.md)
 - [Redacted Home Assistant diagnostics](docs/diagnostics.md)
