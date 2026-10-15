@@ -1,0 +1,38 @@
+{
+  "id": "email-birthday-invitation",
+  "source_kind": "email",
+  "source_text": "From: host@party.example\nSubject: You are invited to Alex’s birthday!\n\nPlease join us for Alex’s birthday on October 17, 2026, 14:00–16:00 PDT at Maple Community Room, 100 Example Lane.\nPizza and a craft activity are included. Please bring a reusable water bottle.\nRSVP to host@party.example when you can; no RSVP deadline has been set.\n",
+  "reference_datetime": "2026-10-01T12:00:00-07:00",
+  "time_zone": "America/Los_Angeles",
+  "provider_response": {
+    "events": [
+      {
+        "title": "Alex’s birthday",
+        "start": "2026-10-17T14:00:00-07:00",
+        "end": "2026-10-17T16:00:00-07:00",
+        "all_day": false,
+        "location": "Maple Community Room, 100 Example Lane",
+        "description": "Pizza and a craft activity are included. Please bring a reusable water bottle. RSVP to host@party.example.",
+        "confidence": 0.95,
+        "assumptions": []
+      }
+    ]
+  },
+  "expected": {
+    "events": [
+      {
+        "title": "Alex’s birthday",
+        "start": "2026-10-17T14:00:00-07:00",
+        "end": "2026-10-17T16:00:00-07:00",
+        "all_day": false,
+        "location": "Maple Community Room, 100 Example Lane",
+        "description": "Pizza and a craft activity are included. Please bring a reusable water bottle. RSVP to host@party.example.",
+        "confidence": 0.95
+      }
+    ],
+    "warnings": [],
+    "event_assumptions": [
+      []
+    ]
+  }
+}
