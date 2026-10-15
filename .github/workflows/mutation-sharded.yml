@@ -26,6 +26,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: comprehensive-mutation-${{ github.run_id }}-${{ github.run_attempt }}
   cancel-in-progress: false
@@ -38,12 +42,14 @@ jobs:
     outputs:
       target_sha: ${{ steps.target.outputs.sha }}
       compare_unsharded: ${{ steps.target.outputs.compare }}
+      execution_image: ${{ steps.target.outputs.image }}
     steps:
       - name: Resolve immutable target
         id: target
         env:
           TARGET_SHA: ${{ inputs.target_sha || github.sha }}
           COMPARE: ${{ inputs.compare_unsharded }}
+          EXECUTION_IMAGE: python:3.14.8-bookworm@sha256:7ee7e4d4fb42c3ad45b8fdc473b64ec69c3cf6e80ae5d52f6fa55f77fac29027
         run: |
           if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::Target must be an exact commit SHA"
@@ -51,6 +57,7 @@ jobs:
           fi
           echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
           echo "compare=$COMPARE" >> "$GITHUB_OUTPUT"
+          echo "image=$EXECUTION_IMAGE" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
         with:
           ref: ${{ steps.target.outputs.sha }}
@@ -69,6 +76,10 @@ jobs:
     needs: plan
     name: Clean mutmut shard ${{ matrix.index }}
     runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.plan.outputs.execution_image }}
+    env:
+      MUTATION_EXECUTION_IMAGE: ${{ needs.plan.outputs.execution_image }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -78,15 +89,15 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.plan.outputs.target_sha }}
+      - name: Trust the checked-out workspace inside the container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/download-artifact@v4
         with:
           name: mutation-shard-manifest
           path: mutation-shards
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.14"
-          cache: pip
-          cache-dependency-path: requirements_test.txt
+          node-version: "24.22.0"
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements_test.txt
       - name: Prepare exact shard (no cached mutant verdicts)
@@ -197,20 +208,24 @@ jobs:
     if: needs.plan.outputs.compare_unsharded == 'true'
     name: Clean unsharded comparison engine
     runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.plan.outputs.execution_image }}
+    env:
+      MUTATION_EXECUTION_IMAGE: ${{ needs.plan.outputs.execution_image }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.plan.outputs.target_sha }}
+      - name: Trust the checked-out workspace inside the container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/download-artifact@v4
         with:
           name: mutation-shard-manifest
           path: mutation-shards
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.14"
-          cache: pip
-          cache-dependency-path: requirements_test.txt
+          node-version: "24.22.0"
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements_test.txt
       - name: Execute clean complete engine and record equivalent evidence
