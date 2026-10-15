@@ -46,3 +46,19 @@ Provider failures/timeouts stop the run rather than becoming false successes.
 This evaluation is intentionally optional and never gates deterministic CI. Record
 provider/model/version and run date separately when comparing reports. No live
 provider is called during normal tests.
+
+## Temporal and multi-event cases
+
+The `dates-*` corpus fixes the clock and includes a 24-event workshop schedule,
+single and inclusive multi-day closures (exclusive calendar ends), relative dates
+with contextual assumptions, explicit foreign offsets, both DST transitions,
+overnight events, unresolved numeric dates, missing year/end information, and
+cancellation/rescheduling notices. Unknown year/end/ambiguous dates produce no
+recorded draft. A cancellation-only notice produces no new draft; a replacement
+announcement produces a draft for review, never a calendar modification.
+
+These are explicit expected extraction policies for reference-provider evaluation,
+not a claim that recorded replay proves a live model follows them. Independent
+fixture tests check event completeness, one-hour elapsed DST spans, exclusive
+all-day ends, and contextual disclosures. CI checks the real parser boundary's
+handling of these recorded provider outputs without calling a model.
