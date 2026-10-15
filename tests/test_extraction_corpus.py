@@ -75,10 +75,16 @@ def test_optional_runner_protocol(tmp_path):
     adapter.write_text("import json,sys,pathlib\nc=json.load(sys.stdin)\nassert 'expected' not in c and 'provider_response' not in c\np=pathlib.Path(c['fixture_directory']) / (c['id'] + '.json')\njson.dump(json.loads(p.read_text())['provider_response'],sys.stdout)\n")
     isolated = tmp_path / "corpus"
     isolated.mkdir()
-    for name in ("explicit-practice", "no-events-newsletter"):
+    for name in ("explicit-practice", "no-events-newsletter", "meeting-join-details"):
         (isolated / f"{name}.json").write_bytes((CORPUS / f"{name}.json").read_bytes())
     report = evaluate(isolated, [sys.executable, str(adapter)])
     assert report["event_count_accuracy"] == 1
+    assert report["event_totals"] == {"expected_events": 2, "actual_events": 2,
+                                      "matched_events": 2, "missed_events": 0, "spurious_events": 0}
+    assert report["date_totals"] == {"correct": 2, "total": 2}
+    assert report["meeting_detail_totals"] == {"correct": 4, "total": 4}
+    assert "004201" not in json.dumps(report)
+    assert "example.invalid" not in json.dumps(report)
     assert all(total["correct"] == total["total"] for total in report["field_totals"].values())
     with pytest.raises(ValueError, match="no JSON cases"):
         evaluate(tmp_path, [sys.executable, str(adapter)])
@@ -139,3 +145,85 @@ def test_evaluator_normalizes_assumptions_like_production():
     result = score_case(fixture, {"events": [candidate]})
     assert result["fields"]["assumptions"] == {"correct": 1, "total": 1}
     assert candidate["assumptions"] == [f"  {note}\n" for note in notes]
+
+
+@pytest.mark.parametrize("padding", ["", "  ", "\n"])
+def test_evaluator_matches_reordered_events_and_reserves_repeated_title_intervals(padding):
+    from copy import deepcopy
+    case = json.loads((CORPUS / "explicit-practice.json").read_text())
+    first = case["provider_response"]["events"][0]
+    second = {**first, "start": "2026-10-16T17:00:00-07:00",
+              "end": "2026-10-16T18:00:00-07:00"}
+    case["expected"]["events"].append({key: value for key, value in second.items()
+                                         if key != "assumptions"})
+    case["expected"]["event_assumptions"].append([])
+    padded_second = {**second, **{key: f"{padding}{second[key]}{padding}"
+                                   for key in ("start", "end")}}
+    reordered = score_case(case, {"events": [padded_second, deepcopy(first)]})
+    assert reordered["matched_events"] == 2
+    assert reordered["dates"] == {"correct": 2, "total": 2}
+    for field in ("start", "end"):
+        assert reordered["fields"][field] == {"correct": 2, "total": 2}
+    missing = score_case(case, {"events": [padded_second]})
+    assert missing["missed_events"] == 1
+    assert missing["spurious_events"] == 0
+    assert missing["dates"] == {"correct": 1, "total": 2}
+
+
+def test_evaluator_equal_counts_can_include_missed_and_spurious_events():
+    case = json.loads((CORPUS / "explicit-practice.json").read_text())
+    other = {**case["provider_response"]["events"][0], "title": "Unrelated event"}
+    score = score_case(case, {"events": [other]})
+    assert score["event_count_correct"]
+    assert score["matched_events"] == 0
+    assert score["missed_events"] == score["spurious_events"] == 1
+    assert score["dates"] == {"correct": 0, "total": 1}
+
+
+def test_evaluator_meeting_snippets_detect_query_passcode_and_dialing_loss():
+    from copy import deepcopy
+    case = json.loads((CORPUS / "meeting-join-details.json").read_text())
+    assert score_case(case, case["provider_response"])["meeting_details"] == {
+        "correct": 4, "total": 4}
+    for snippet in case["expected"]["meeting_details"][0]["description"]:
+        response = deepcopy(case["provider_response"])
+        event = response["events"][0]
+        event["description"] = event["description"].replace(snippet, "omitted")
+        assert score_case(case, response)["meeting_details"] == {"correct": 3, "total": 4}
+    assert score_case(case, {"events": []})["meeting_details"] == {"correct": 0, "total": 4}
+
+
+@pytest.mark.parametrize("details", [None, [], [None], [{"title": ["Project meeting"]}],
+                                    [{"description": [""]}], [{"description": ["absent"]}],
+                                    [{"description": ["Passcode: 004201"] * 2}]])
+def test_evaluator_rejects_invalid_meeting_annotations(details):
+    case = json.loads((CORPUS / "meeting-join-details.json").read_text())
+    case["expected"]["meeting_details"] = details
+    with pytest.raises(ValueError, match="meeting detail|meeting_details"):
+        score_case(case, case["provider_response"])
+
+
+@pytest.mark.parametrize(("start", "correct"), [
+    ("2026-10-15T19:00:00-07:00", 1), ("2026-10-16T17:00:00-07:00", 0),
+    ("2026-10-15T99:00:00-07:00", 0), ("2026-10-15T17:00:00", 0),
+    ("2026-10-15", 0), (False, 0),
+])
+def test_evaluator_calendar_dates_are_independent_of_clock_times(start, correct):
+    case = json.loads((CORPUS / "explicit-practice.json").read_text())
+    candidate = {**case["provider_response"]["events"][0], "start": start}
+    result = score_case(case, {"events": [candidate]})
+    assert result["dates"] == {"correct": correct, "total": 1}
+
+
+@pytest.mark.parametrize("fixture", ["explicit-practice", "dates-all-day-and-multiday"])
+@pytest.mark.parametrize("all_day", [True, False, 0, 1, 0.0, 1.0, None, "true", "false", "missing"])
+def test_evaluator_calendar_dates_require_valid_matching_returned_mode(fixture, all_day):
+    case = json.loads((CORPUS / f"{fixture}.json").read_text())
+    case["expected"]["events"] = case["expected"]["events"][:1]
+    case["expected"]["event_assumptions"] = case["expected"]["event_assumptions"][:1]
+    candidate = {**case["provider_response"]["events"][0], "all_day": all_day}
+    if all_day == "missing":
+        del candidate["all_day"]
+    result = score_case(case, {"events": [candidate]})
+    correct = int(isinstance(all_day, bool) and all_day == case["expected"]["events"][0]["all_day"])
+    assert result["dates"] == {"correct": correct, "total": 1}

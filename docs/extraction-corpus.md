@@ -33,16 +33,42 @@ from its own environment. Do not echo fixture `provider_response`: that exercise
 the adapter protocol only, not extraction quality. The adapter must not expose
 credentials on stdout/stderr. The evaluator does not save provider content.
 
-The report includes each case's event count and exact per-field correctness totals;
-missing and extra events penalize every field. Event order follows source order.
-Confidence is excluded because calibration varies by provider. String fields are
-trimmed like production normalization. Missing required fields and invalid field
-types receive no credit (a numeric zero is not a boolean). Optional location and
-description fields normalize absent, null, and empty text to null. Timestamps and
-assumptions are exact, so
-semantically equivalent formatting or reordered events require manual inspection.
-A no-event case contributes to event-count accuracy, not empty field denominators.
-Provider failures/timeouts stop the run rather than becoming false successes.
+The report includes per-case and aggregate expected, actual, matched, missed and
+spurious event counts, plus event-count accuracy. An equal count can still hide
+one missed and one spurious event. Events correspond by exact, trimmed title;
+order does not affect scores. For repeated titles, identical trimmed start/end intervals
+are reserved first, then remaining occurrences pair in source order. This is a
+conservative deterministic identity rule: paraphrased titles count as missed and
+spurious events, and uncertain correspondences need manual inspection.
+
+Exact per-field correctness uses the larger expected/actual count as denominator;
+unmatched events receive no field credit. `dates`/`date_totals` require both start
+and end calendar dates to match for an event, independently of clock times.
+The returned `all_day` mode must be a boolean matching the expected event mode;
+its timestamps are parsed according to that returned mode.
+Values must parse as ISO dates for all-day events or offset-aware ISO datetimes for timed
+events; dates use each timestamp’s expressed local offset without conversion. Confidence is excluded because calibration
+varies by provider. String fields are trimmed like production normalization.
+Missing required fields and invalid field types receive no credit (numeric zero
+is not a boolean). Optional location and description normalize absent, null and
+empty text to null. Timestamp and assumption values are exact; equivalent timestamp
+formatting still fails. A no-event case contributes to count accuracy with zero
+field/date denominators, which should be reported as unmeasured, not 100%.
+
+Optional `expected.meeting_details` aligns with expected events: each object maps
+`location` or `description` to a list of unique exact snippets present in that
+expected field. The evaluator reports preserved snippets under `meeting_details`
+and `meeting_detail_totals`. The annotated meeting fixture separately measures
+full join URL (including query parameters), meeting ID, passcode and dialing
+instructions. Missing events lose all annotated snippets. Non-meeting fixtures
+have zero meeting-detail denominator. This is expected-detail preservation only;
+it does not detect fabricated credentials or additional joins. Exact description
+accuracy remains a separate, stricter metric. Annotations and expected outputs
+are never sent to the provider adapter.
+
+Reports contain only fixture IDs and numeric scores; no returned text or join
+credentials are printed or saved. Provider failures/timeouts stop the run rather
+than becoming false successes.
 This evaluation is intentionally optional and never gates deterministic CI. Record
 provider/model/version and run date separately when comparing reports. No live
 provider is called during normal tests.
