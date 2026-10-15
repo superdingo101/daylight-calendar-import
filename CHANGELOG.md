@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.0
+
+- Submit pasted event details, images, and PDFs directly from the Daylight Imports view, including an empty inbox, without configuring IMAP.
+- Show validation, processing status, recoverable errors, and links to the existing review/lifecycle flow; calendar creation still requires approval.
+- Add authenticated, bounded upload transport and mobile/keyboard improvements for manual submissions.
+- Preserve conferencing details and long descriptions, with deterministic extraction, date, routing, adversarial, and manual-submission acceptance coverage.
+- Expand the synthetic extraction corpus and optional reference-provider metrics. Recorded provider-response tests verify integration contracts; live model accuracy remains a separate evaluation.
+
+### Upgrade from 0.7.1
+
+Restart Home Assistant after updating. Existing configuration, pending reviews, destinations, and lifecycle records remain in place. Manual submission uses the configured AI Task provider and allowed calendars. Image and scanned-PDF submission requires an attachment-capable provider.
+
 ## 0.6.0
 
 - Add deterministic source-level calendar aliases, bounded directive extraction, and explicit review confirmation before any unresolved route may be approved.
