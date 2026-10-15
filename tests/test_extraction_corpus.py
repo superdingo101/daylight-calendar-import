@@ -213,3 +213,17 @@ def test_evaluator_calendar_dates_are_independent_of_clock_times(start, correct)
     candidate = {**case["provider_response"]["events"][0], "start": start}
     result = score_case(case, {"events": [candidate]})
     assert result["dates"] == {"correct": correct, "total": 1}
+
+
+@pytest.mark.parametrize("fixture", ["explicit-practice", "dates-all-day-and-multiday"])
+@pytest.mark.parametrize("all_day", [True, False, 0, 1, 0.0, 1.0, None, "true", "false", "missing"])
+def test_evaluator_calendar_dates_require_valid_matching_returned_mode(fixture, all_day):
+    case = json.loads((CORPUS / f"{fixture}.json").read_text())
+    case["expected"]["events"] = case["expected"]["events"][:1]
+    case["expected"]["event_assumptions"] = case["expected"]["event_assumptions"][:1]
+    candidate = {**case["provider_response"]["events"][0], "all_day": all_day}
+    if all_day == "missing":
+        del candidate["all_day"]
+    result = score_case(case, {"events": [candidate]})
+    correct = int(isinstance(all_day, bool) and all_day == case["expected"]["events"][0]["all_day"])
+    assert result["dates"] == {"correct": correct, "total": 1}

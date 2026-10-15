@@ -44,6 +44,8 @@ spurious events, and uncertain correspondences need manual inspection.
 Exact per-field correctness uses the larger expected/actual count as denominator;
 unmatched events receive no field credit. `dates`/`date_totals` require both start
 and end calendar dates to match for an event, independently of clock times.
+The returned `all_day` mode must be a boolean matching the expected event mode;
+its timestamps are parsed according to that returned mode.
 Values must parse as ISO dates for all-day events or offset-aware ISO datetimes for timed
 events; dates use each timestamp’s expressed local offset without conversion. Confidence is excluded because calibration
 varies by provider. String fields are trimmed like production normalization.

@@ -124,10 +124,14 @@ def score_case(case: dict, response: dict) -> dict:
                 got = [note.strip() for note in got]
             counts[field]["correct"] += valid_type and got == wanted
         candidate = actual[actual_index]
-        dates["correct"] += all(
-            _calendar_date(candidate.get(key), all_day=expected[index]["all_day"])
-            == _calendar_date(expected[index][key], all_day=expected[index]["all_day"])
-            for key in ("start", "end"))
+        all_day = candidate.get("all_day")
+        dates["correct"] += (
+            isinstance(all_day, bool) and all_day == expected[index]["all_day"]
+            and all(
+                _calendar_date(candidate.get(key), all_day=all_day)
+                == _calendar_date(expected[index][key], all_day=expected[index]["all_day"])
+                for key in ("start", "end"))
+        )
         for field, snippets in details[index].items():
             value = candidate.get(field)
             meeting["correct"] += sum(isinstance(value, str) and snippet in value
