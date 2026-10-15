@@ -59,12 +59,17 @@ def environment() -> dict:
                        runner_image_version=os.environ.get("ImageVersion", ""))
     # JSON roundtrip removes tuple/list differences when loading evidence.
     details = json.loads(canonical(details))
-    return {"details": details, "sha256": sha256(canonical(details))}
+    # Keep the host runner build in diagnostics even for digest-pinned
+    # container runs. Only the executed userland belongs to the identity;
+    # local/legacy host executions retain the strict image-version identity.
+    return {"details": details, "sha256": sha256(canonical(details)),
+            "runner_image_version": os.environ.get("ImageVersion", "")}
 
 
 def validate_environment(value: dict) -> None:
     if (not isinstance(value, dict) or not isinstance(value.get("details"), dict)
-            or value.get("sha256") != sha256(canonical(value["details"]))):
+            or value.get("sha256") != sha256(canonical(value["details"]))
+            or not isinstance(value.get("runner_image_version"), str)):
         raise ValueError("Missing or corrupt resolved environment evidence")
 
 
@@ -276,6 +281,7 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
     sums = {key: 0 for key in (*FIELDS, "total")}
     runtimes = {}
     resolved_environment = None
+    runner_image_versions = {}
     all_mutants = {}
     for index in range(manifest["shard_count"]):
         obj = json.loads((results_dir / f"shard-{index}.json").read_text(encoding="utf-8"))
@@ -290,8 +296,9 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
         validate_environment(current_environment)
         if resolved_environment is None:
             resolved_environment = current_environment
-        elif resolved_environment != current_environment:
+        elif resolved_environment["sha256"] != current_environment["sha256"]:
             raise ValueError("Shard resolved environments differ")
+        runner_image_versions[str(index)] = current_environment["runner_image_version"]
         counts = stats_checked(obj.get("stats"), require_nonempty=True)
         validate_mutants(obj.get("mutants"), entry["modules"], counts)
         all_mutants.update(obj["mutants"])
@@ -312,6 +319,7 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
         "shard_count": manifest["shard_count"], "stats": sums,
         "score": round(score, 6), "shard_seconds": runtimes,
         "environment": resolved_environment,
+        "runner_image_versions": runner_image_versions,
         "modules": sorted(observed_modules), "mutants": all_mutants,
         "complete": True,
     }
@@ -364,7 +372,7 @@ def compare(manifest_path: Path, sharded_path: Path, unsharded_path: Path, out: 
         raise ValueError("Sharded comparison partition count differs")
     if unsharded.get("modules") != source_paths():
         raise ValueError("Unsharded evidence omits production source")
-    if sharded["environment"] != unsharded["environment"]:
+    if sharded["environment"]["sha256"] != unsharded["environment"]["sha256"]:
         raise ValueError("Sharded and unsharded resolved environments differ")
     a, b = sharded["stats"], unsharded["stats"]
     # Timeouts retain the repository's killed-mutant score semantics. A

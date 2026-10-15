@@ -132,7 +132,7 @@ def enforce(base_path: Path, head_path: Path) -> dict:
         shards.validate_mutants(result.get("mutants"), modules, counts)
         if any(counts[f] for f in ("no_tests", "suspicious", "segfault")):
             raise ValueError("Scoped mutation evidence contains error outcomes")
-    if base["environment"] != head["environment"]:
+    if base["environment"]["sha256"] != head["environment"]["sha256"]:
         raise ValueError("Base/head resolved environments differ")
     minimum = float(json.loads(Path("mutation-baseline.json").read_text())["minimum_score"])
     head_score, base_score = score(head["stats"]), score(base["stats"])

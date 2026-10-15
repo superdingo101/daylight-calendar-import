@@ -117,6 +117,15 @@ def test_different_resolved_environments_cannot_pass(evidence):
     with pytest.raises(ValueError,match='environments'):gate.enforce(*paths)
 
 
+def test_runner_image_build_change_does_not_fail_scoped_gate(evidence):
+    _, write = evidence
+    paths = write()
+    result = json.loads(paths[1].read_text())
+    result['environment']['runner_image_version'] = '20261012.334.1'
+    shards.write_json(paths[1], result)
+    assert gate.enforce(*paths)['head_score'] == 97
+
+
 def test_prepare_rejects_wrong_checkout(evidence,monkeypatch):
     plan,_=evidence;shards.write_json(gate.PLAN,plan)
     monkeypatch.setattr(shards,'git',lambda *args:'f'*40)
