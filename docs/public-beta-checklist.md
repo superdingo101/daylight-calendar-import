@@ -3,7 +3,7 @@
 Use this checklist on an isolated Home Assistant installation and dedicated test
 calendars. Record the candidate Git SHA, installed version, HA version, browser,
 provider/model and date with each result. Test the minimum supported HA 2026.7.4
-and the current HA version covered by CI. An unchecked item is pending, not a
+and the pinned HA 2026.9 line covered by CI. An unchecked item is pending, not a
 passing result. Keep private sources, mailbox credentials and meeting links out
 of the public evidence record.
 
