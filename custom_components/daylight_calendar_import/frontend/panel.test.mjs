@@ -988,6 +988,7 @@ test("approval requires explicit confirmation and returns to the inbox", async (
     calls.push(request);
     if (request.service === "get_pending") return {response: {pending: {id: "one", events: [event]}}};
     if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "check_pending_event") return {response: {pending_id: "one", event_id: "event", matches: [], observed_calendars: []}};
     return {response: {pending_id: "one", event_id: "event", approved: true}};
   }};
   await flush();
@@ -995,13 +996,14 @@ test("approval requires explicit confirmation and returns to the inbox", async (
   const approve = find(panel._content, "section").querySelectorAll("button")
     .find(button => button.textContent === "Approve Picnic");
   approve.click();
-  assert.equal(globalThis.focusedNode.textContent, "Confirm approve: Picnic");
+  assert.equal(globalThis.focusedNode.textContent, "Cancel");
   assert.equal(calls.filter(call => call.service === "approve_pending_event").length, 0);
   find(panel._content, "section").querySelectorAll("button")[1].click();
   assert.equal(globalThis.focusedNode.dataset.action, "approve");
   globalThis.focusedNode.click();
   const confirm = find(panel._content, "section").querySelector("button");
   assert.match(confirm.textContent, /Confirm approve/);
+  await flush(); // Automatic advisory observations finish before confirmation.
   await panel.runDecision(event, "approve");
   assert.equal(calls.at(-2).service, "approve_pending_event");
   assert.deepEqual(calls.at(-2).service_data.expected_event, event);
@@ -1047,6 +1049,7 @@ test("bulk approval reports each result and leaves failed events in review", asy
     calls.push(request);
     if (request.service === "list_pending") return {response: {imports: [{id: "one"}]}};
     if (request.service === "get_pending") return {response: {pending: {id: "one", events: remaining}}};
+    if (request.service === "check_pending_event") return {response: {pending_id: "one", event_id: request.service_data.event_id, matches: [], observed_calendars: []}};
     if (request.service === "approve_pending_event" && request.service_data.event_id === "second") {
       throw {message: "Calendar write uncertain; verify before retrying"};
     }
@@ -1058,10 +1061,11 @@ test("bulk approval reports each result and leaves failed events in review", asy
   const bulk = panel._content.querySelectorAll("button")
     .find(button => button.dataset.batchAction === "approve");
   bulk.click();
-  assert.equal(globalThis.focusedNode.textContent, "Confirm approve all");
+  assert.equal(globalThis.focusedNode.textContent, "Cancel bulk review");
   assert.equal(calls.filter(call => call.service === "approve_pending_event").length, 0);
   assert.equal(panel._content.querySelectorAll("button")
     .some(button => button.textContent === "Edit Practice"), false);
+  await flush(); // Automatic advisory observations finish before confirmation.
   await panel.runBatch("approve");
   const decisions = calls.filter(call => call.service === "approve_pending_event");
   assert.deepEqual(decisions.map(call => call.service_data.event_id), ["first", "second"]);
@@ -4645,15 +4649,19 @@ test("inbox refresh invalidates a pending calendar check and allows a fresh chec
     .find(item => item.dataset.calendarCheckEventId === "e1");
   assert.equal(button.attributes["aria-disabled"], undefined);
 
-  const freshCheck = panel.checkCalendarEvent(event);
-  assert.equal(checks.length, 2);
+  await panel.checkCalendarEvent(event);
+  assert.equal(checks.length, 1, "refresh cannot release an outstanding transport");
+  assert.equal(panel._calendarCheck.status, "error");
+  assert.match(panel._calendarCheck.message, /previous calendar check is still running/);
   checks[0]({response: {pending_id: "imp", event_id: "e1",
     matches: [{kind: "conflict", calendar_entity: "calendar.family",
       existing_title: "Stale result"}], observed_calendars: ["calendar.family"]}});
   await original;
-  assert.equal(panel._calendarCheck.status, "loading");
+  assert.equal(panel._calendarCheck.status, "error");
   assert.equal(panel._content.querySelector(".calendar-matches")
     .querySelectorAll("li").length, 0);
+  const freshCheck = panel.checkCalendarEvent(event);
+  assert.equal(checks.length, 2);
   checks[1]({response: {pending_id: "imp", event_id: "e1",
     matches: [], observed_calendars: ["calendar.family"]}});
   await freshCheck;
@@ -4834,6 +4842,7 @@ test("bulk approval never infers write certainty from preflight-looking error te
   await panel.showImport("one");
   panel._content.querySelectorAll("button")
     .find(button => button.dataset.batchAction === "approve").click();
+  await flush(); // Automatic advisory observations finish before confirmation.
   await panel.runBatch("approve");
   assert.equal(panel._batchResults[0].outcome, "success");
   assert.equal(panel._batchResults[1].outcome,
@@ -4875,6 +4884,7 @@ test("provider echoes preflight marker after write; bulk approval stays uncertai
   await panel.showImport("pending-1");
   panel._content.querySelectorAll("button")
     .find(button => button.dataset.batchAction === "approve").click();
+  await flush(); // Automatic advisory observations finish before confirmation.
   await panel.runBatch("approve");
 
   assert.equal(panel._batchResults.length, 2);
@@ -5555,4 +5565,202 @@ test("both manual forms remain visible on a narrow empty inbox with IMAP explici
   assert.equal(panel._fileSubmission.element.hidden, false);
   assert.equal(panel._manualSubmission.button.textContent, "Import events");
   assert.equal(panel._fileSubmission.button.textContent, "Import file");
+});
+
+
+// Approval remains a separate, explicit action after the automatic observation.
+test("approval observes independently configured calendars before enabling confirmation", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", calendar_entity: "calendar.family"};
+  const calls = [];
+  let release;
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events: [event]}}};
+    if (request.service === "check_pending_event") {
+      await new Promise(resolve => {release = resolve;});
+      return {response: {pending_id: "one", event_id: "event",
+        observed_calendars: ["calendar.family", "calendar.work"],
+        matches: [{kind: "conflict", calendar_entity: "calendar.work", existing_title: "Dentist"}]}};
+    }
+    return {response: {pending_id: "one", event_id: "event", approved: true}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button").find(button => button.dataset.action === "approve").click();
+  assert.equal(panel._content.querySelector(".actions button").disabled, true);
+  assert.equal(globalThis.focusedNode.textContent, "Cancel");
+  await panel.runDecision(event, "approve");
+  assert.equal(calls.some(request => request.service === "approve_pending_event"), false);
+  assert.deepEqual(calls.at(-1).service_data.expected_event, event);
+  release();
+  await flush();
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("li").textContent,
+    /Scheduling conflict: Dentist \(calendar.work\)/);
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+  assert.equal(calls.some(request => request.service === "approve_pending_event"), false);
+  await panel.runDecision(event, "approve");
+  assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 1);
+});
+
+test("bulk observations are serial, disclose incomplete checks, and remain advisory", async () => {
+  const panel = new DaylightImportPanel();
+  const first = {id: "first", title: "Practice", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending"};
+  const events = [first, {...first, id: "second"}];
+  const calls = [];
+  const releases = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events}}};
+    if (request.service === "check_pending_event") {
+      await new Promise(resolve => releases.push(resolve));
+      if (request.service_data.event_id === "first") throw {message: "Calendar check incomplete: Permission denied"};
+      return {response: {pending_id: "one", event_id: "second", matches: [], observed_calendars: ["calendar.family"]}};
+    }
+    return {response: {pending_id: "one", event_id: request.service_data.event_id, approved: true}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button").find(button => button.dataset.batchAction === "approve").click();
+  await panel.runBatch("approve");
+  assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 0);
+  assert.equal(releases.length, 1);
+  releases[0]();
+  await flush();
+  assert.equal(releases.length, 2);
+  assert.equal(panel._content.querySelector(".actions button").disabled, true);
+  releases[1]();
+  await flush();
+  const sections = panel._content.querySelectorAll(".calendar-matches");
+  assert.match(sections[0].querySelector("p").textContent, /Calendar check incomplete: Permission denied/);
+  assert.match(sections[1].querySelector("p").textContent, /No matches found/);
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+  assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 0);
+  await panel.runBatch("approve");
+  assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 2);
+});
+
+test("canceling automatic observation discards stale results and stops bulk reads", async () => {
+  const panel = new DaylightImportPanel();
+  const first = {id: "first", title: "Practice", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending"};
+  const events = [first, {...first, id: "second"}];
+  const calls = [];
+  let release;
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events}}};
+    await new Promise(resolve => {release = resolve;});
+    return {response: {pending_id: "one", event_id: "first", matches: [], observed_calendars: []}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button").find(button => button.dataset.batchAction === "approve").click();
+  panel._content.querySelectorAll("button").find(button => button.textContent === "Cancel bulk review").click();
+  panel._content.querySelectorAll("button").find(button => button.textContent === "Edit Practice").click();
+  const form = panel._content.querySelector("form");
+  release();
+  await flush();
+  assert.equal(panel._content.querySelector("form"), form);
+  assert.equal(panel._content.querySelector(".calendar-matches"), null);
+  assert.equal(calls.filter(request => request.service === "check_pending_event").length, 1);
+  assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 0);
+});
+
+
+test("never-settling approval checks expire without unlocking the outstanding transport", async t => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending"};
+  let release;
+  let checks = 0;
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events: [event]}}};
+    if (request.service === "check_pending_event") {
+      if (++checks === 1) await new Promise(resolve => {release = resolve;});
+      return {response: {pending_id: "one", event_id: "event", matches: [], observed_calendars: []}};
+    }
+    return {response: {pending_id: "one", event_id: "event", approved: true}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  t.mock.timers.enable({apis: ["setTimeout"]});
+  const approve = () => panel._content.querySelectorAll("button").find(button => button.dataset.action === "approve").click();
+  const cancel = () => panel._content.querySelectorAll("button").find(button => button.textContent === "Cancel").click();
+  approve();
+  assert.equal(panel._content.querySelector(".actions button").disabled, true);
+  t.mock.timers.tick(29_999);
+  await flush();
+  assert.equal(panel._content.querySelector(".actions button").disabled, true);
+  t.mock.timers.tick(1);
+  await flush();
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("p").textContent, /timed out/);
+  cancel();
+  approve();
+  await flush();
+  assert.equal(checks, 1, "timing out or canceling the UI cannot multiply backend work");
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("p").textContent, /still running/);
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+  assert.equal(calls.some(request => request.service === "approve_pending_event"), false);
+  release();
+  await flush();
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("p").textContent, /still running/);
+  cancel();
+  approve();
+  await flush();
+  assert.equal(checks, 2, "the actual request settlement permits a fresh observation");
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("p").textContent, /No matches found/);
+  await panel.runDecision(event, "approve");
+  assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 1);
+});
+
+test("canceling slow bulk checks keeps retries and manual reads single-flight", async () => {
+  const panel = new DaylightImportPanel();
+  const first = {id: "first", title: "Practice", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending"};
+  const events = [first, {...first, id: "second"}];
+  let checks = 0;
+  let release;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events}}};
+    if (request.service === "check_pending_event") {
+      if (++checks === 1) await new Promise(resolve => {release = resolve;});
+      return {response: {pending_id: "one", event_id: request.service_data.event_id,
+        matches: [], observed_calendars: []}};
+    }
+    throw Error("Unexpected write");
+  }};
+  await flush();
+  await panel.showImport("one");
+  const approve = () => panel._content.querySelectorAll("button").find(button => button.dataset.batchAction === "approve").click();
+  const cancel = () => panel._content.querySelectorAll("button").find(button => button.textContent === "Cancel bulk review").click();
+  approve();
+  cancel();
+  approve();
+  await flush();
+  assert.equal(checks, 1);
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+  assert.equal(panel._content.querySelectorAll(".calendar-matches").length, 2);
+  for (const result of panel._content.querySelectorAll(".calendar-matches")) {
+    assert.match(result.querySelector("p").textContent, /still running/);
+  }
+  cancel();
+  await panel.checkCalendarEvent(first);
+  assert.equal(checks, 1, "manual checks share the outstanding transport lock");
+  release();
+  await flush();
+  approve();
+  await flush();
+  assert.equal(checks, 3, "a fresh bulk review reads each event after settlement");
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
 });
