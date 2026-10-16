@@ -62,3 +62,10 @@ def test_text_adapter_accepts_exact_character_limit(text):
 def test_text_adapter_rejects_over_limit_before_trimming(text):
     with pytest.raises(ValueError, match="1,000,000-character limit"):
         TextSourceAdapter().create(text)
+
+
+async def test_direct_text_parser_counts_original_whitespace_before_normalizing():
+    from custom_components.daylight_calendar_import.parser import async_parse_text
+
+    with pytest.raises(ValueError, match="1,000,000-character limit"):
+        await async_parse_text(None, text=" " * 1_000_000 + "x", ai_task_entity="ai_task.test")
