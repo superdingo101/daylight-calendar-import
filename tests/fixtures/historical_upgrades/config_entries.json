@@ -1,0 +1,36 @@
+[
+  {
+    "version": 1,
+    "data": {
+      "ai_task_entity": "ai_task.original",
+      "calendar_entity": "calendar.family"
+    },
+    "options": {
+      "calendar_entity": "calendar.school"
+    }
+  },
+  {
+    "version": 2,
+    "data": {
+      "ai_task_entity": "ai_task.original",
+      "calendar_entity": "calendar.family",
+      "calendar_entities": [
+        "calendar.family",
+        "calendar.school"
+      ]
+    },
+    "options": {
+      "calendar_entity": "calendar.school",
+      "calendar_entities": [
+        "calendar.family",
+        "calendar.school"
+      ],
+      "email_enabled": true,
+      "email_host": "imap.example.test",
+      "email_password": "synthetic-test-secret",
+      "calendar_aliases": {
+        "school": "calendar.school"
+      }
+    }
+  }
+]
