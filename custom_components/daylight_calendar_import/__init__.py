@@ -782,7 +782,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "event_id": event_id,
             "matches": [
                 {"kind": item.kind, "calendar_entity": item.calendar_entity,
-                 "existing_title": item.existing_title}
+                 "existing_title": item.existing_title,
+                 "existing_start": item.existing_start, "existing_end": item.existing_end,
+                 "existing_all_day": item.existing_all_day,
+                 "overlap_start": item.overlap_start, "overlap_end": item.overlap_end}
                 for item in matches
             ],
             "observed_calendars": scope,
