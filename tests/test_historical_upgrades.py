@@ -90,8 +90,15 @@ async def test_historical_storage_disk_round_trip_preserves_decisions(hass, tmp_
     assert migrated["data"]["items"][0]["events"][0]["id"] == event.id
     immediate_restart = PendingImportStore(hass)
     await immediate_restart.async_load()
+    assert immediate_restart.get(pending.id) == pending
     assert immediate_restart.get_event(pending.id, event.id) == event
+    assert immediate_restart._seen_source_fingerprints == tuple(original["data"]["seen_source_fingerprints"])
+    assert immediate_restart._seen_event_fingerprints == tuple(original["data"]["seen_event_fingerprints"])
+    assert immediate_restart.is_source_duplicate("handled-message")
     assert immediate_restart.list_notifications() == notifications
+    with pytest.raises(PendingImportApprovalUncertainError):
+        await immediate_restart.async_approve_event(pending.id, event.id, processor)
+    processor.assert_not_awaited()
 
     # An unrelated public mutation must serialize all historical state.
     await store.async_add(source_text="New submission", events=[replace(event.draft, title="New appointment")])
