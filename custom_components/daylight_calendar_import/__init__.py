@@ -365,6 +365,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return invoke
 
     def route_review_source(source: SourceDocument):
+        # Enforce the original normalized input bound before routing removes
+        # control-data lines from parser evidence, including for IMAP sources.
+        if source.text is not None and len(source.text) > MAX_SOURCE_TEXT_CHARS:
+            raise SourceValidationError("source_too_large", SOURCE_TEXT_LIMIT_MESSAGE)
         return plan_source_routing(
             source,
             default_calendar=default_calendar,

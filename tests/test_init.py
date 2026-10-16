@@ -3146,3 +3146,43 @@ async def test_setup_preserves_legacy_alias_sets_over_new_submission_limit(monke
     assert store.accepting_services is True
     assert configured.options["calendar_aliases"] == aliases
     assert hass.data[DOMAIN][configured.entry_id] is store
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+async def test_email_text_limit_precedes_routing_directive_removal(monkeypatch, extra):
+    from custom_components.daylight_calendar_import.const import MAX_SOURCE_TEXT_CHARS
+
+    hass = FakeHass()
+    parser = AsyncMock(return_value=ParseOutcome([], []))
+    store = SimpleNamespace(
+        async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+        async_add=AsyncMock(),
+    )
+    processors = []
+
+    async def capture_runtime(_hass, _entry, _store, process):
+        processors.append(process)
+        return None
+
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _: store)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parser)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_setup_email_runtime", capture_runtime)
+    assert await async_setup_entry(hass, entry())
+    prefix, suffix = "Calendar: ", "\nParty"
+    body = prefix + "x" * (MAX_SOURCE_TEXT_CHARS + extra - len(prefix) - len(suffix)) + suffix
+    source = SourceDocument(
+        id="bounded-email", kind=SourceKind.EMAIL,
+        received_at=datetime(2026, 10, 16, tzinfo=UTC), text=body,
+    )
+    if extra:
+        with pytest.raises(SourceValidationError) as caught:
+            await processors[0](source, "activity")
+        assert caught.value.code == "source_too_large"
+        assert str(MAX_SOURCE_TEXT_CHARS) in str(caught.value).replace(",", "")
+        parser.assert_not_awaited()
+        store.async_add.assert_not_awaited()
+    else:
+        await processors[0](source, "activity")
+        parser.assert_awaited_once()
+        assert parser.await_args.kwargs["source"].text == "Party"
+        store.async_add.assert_awaited_once()
