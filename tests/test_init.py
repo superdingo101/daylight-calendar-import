@@ -3186,3 +3186,47 @@ async def test_email_text_limit_precedes_routing_directive_removal(monkeypatch, 
         parser.assert_awaited_once()
         assert parser.await_args.kwargs["source"].text == "Party"
         store.async_add.assert_awaited_once()
+
+
+async def test_oversized_combined_pdf_is_rejected_before_activity_creation(monkeypatch):
+    from custom_components.daylight_calendar_import.const import MAX_SOURCE_TEXT_CHARS
+
+    supporting = "C" * (MAX_SOURCE_TEXT_CHARS - 10)
+    combined = supporting + "\n\nExtracted"
+    assert len(combined) == MAX_SOURCE_TEXT_CHARS + 1
+    data = SUBMIT_PDF_SCHEMA({ATTR_FILE_ID: "a" * 32, ATTR_TEXT: supporting})
+    source = SourceDocument(
+        id="large-pdf", kind=SourceKind.PDF,
+        received_at=datetime(2026, 10, 16, tzinfo=UTC), text=combined,
+    )
+    cleaned = []
+
+    @asynccontextmanager
+    async def pdf_source(_hass, file_id, context):
+        assert file_id == "a" * 32
+        assert context == supporting
+        try:
+            yield source
+        finally:
+            cleaned.append(True)
+
+    parser = AsyncMock()
+    store = SimpleNamespace(
+        async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+        async_begin_submission=AsyncMock(), async_add=AsyncMock(),
+        is_source_duplicate=Mock(return_value=False),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_pdf_source", pdf_source)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _: store)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parser)
+    hass = FakeHass()
+    assert await async_setup_entry(hass, entry())
+    submit = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_PDF)][0]
+    with pytest.raises(SourceValidationError) as caught:
+        await submit(SimpleNamespace(data=data, context=Context(user_id=None)))
+    assert caught.value.code == "source_too_large"
+    store.async_begin_submission.assert_not_awaited()
+    store.async_add.assert_not_awaited()
+    parser.assert_not_awaited()
+    assert store.active_submissions == set()
+    assert cleaned == [True]

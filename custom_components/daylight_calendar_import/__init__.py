@@ -455,13 +455,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return _submission_response(PendingImportAddResult(None, True, 0), [], None)
 
         source = TextSourceAdapter().create(call.data[ATTR_TEXT], source_id=source_id)
+        route = route_review_source(source)
         activity_id = await pending_store.async_begin_submission(
             source_kind=source.kind.value, source_title=source.title, received_at=source.received_at
         )
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
         try:
-            route = route_review_source(source)
             outcome = await parse_submission(route.parser_source, activity_id)
             result = await pending_store.async_add(
                 source_text=source.text,
@@ -482,13 +482,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Send a normalized upload through parsing and pending review."""
         if source.upstream_source_id is not None and pending_store.is_source_duplicate(source.upstream_source_id):
             return _submission_response(PendingImportAddResult(None, True, 0), [], None)
+        route = route_review_source(source)
         activity_id = await pending_store.async_begin_submission(
             source_kind=source.kind.value, source_title=source.title, received_at=source.received_at
         )
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
         try:
-            route = route_review_source(source)
             outcome = await parse_submission(route.parser_source, activity_id)
             label = "PDF" if source.kind is SourceKind.PDF else "Image"
             attachment_note = f"{label} attachment (SHA-256: {source.attachments[0].sha256})" if source.attachments else ""
