@@ -13,18 +13,63 @@ from tests.test_storage import FakeStoreBackend, draft, make_store
 from tests.test_uploads import PNG, UploadHass
 
 
-async def test_simultaneous_large_batches_and_repeated_approval_preserve_every_event(monkeypatch):
+class BlockingStoreBackend(FakeStoreBackend):
+    """Hold the first snapshot in flight until competing transactions start."""
+
+    def __init__(self):
+        super().__init__()
+        self.saving = asyncio.Event()
+        self.release = asyncio.Event()
+        self.entered_saves = 0
+
+    async def async_save(self, data):
+        self.entered_saves += 1
+        if self.entered_saves == 1:
+            self.saving.set()
+            await self.release.wait()
+        await super().async_save(data)
+
+
+@pytest.mark.parametrize("same_source", [False, True], ids=["independent-sources", "first-ingestion-duplicates"])
+async def test_simultaneous_large_batches_and_repeated_approval_preserve_every_event(monkeypatch, same_source):
     """Independent sources survive concurrent commits; repeated clicks write once."""
-    backend = FakeStoreBackend()
+    backend = BlockingStoreBackend()
     store = make_store(monkeypatch, backend)
     batches = [[replace(draft(), title=f"Batch {batch} appointment {event}")
                 for event in range(24)] for batch in range(3)]
-    results = await asyncio.gather(*(
-        store.async_add(source_text=f"Newsletter {batch}", source_id=f"newsletter-{batch}", events=events)
-        for batch, events in enumerate(batches)
-    ))
-    assert len(store.list()) == 3
-    assert sum(len(item.events) for item in store.list()) == 72
+    started = 0
+    all_started = asyncio.Event()
+    original_add = store._async_add_transaction
+
+    async def tracked_add(**kwargs):
+        nonlocal started
+        started += 1
+        if started == 3:
+            all_started.set()
+        return await original_add(**kwargs)
+
+    monkeypatch.setattr(store, "_async_add_transaction", tracked_add)
+    source_indexes = [0, 0, 0] if same_source else [0, 1, 2]
+    tasks = [asyncio.create_task(store.async_add(
+        source_text=f"Newsletter {batch}", source_id=f"newsletter-{batch}", events=batches[batch]
+    )) for batch in source_indexes]
+    try:
+        await asyncio.wait_for(backend.saving.wait(), 5)
+        await asyncio.wait_for(all_started.wait(), 5)
+        # Every transaction has entered while the first durable save is held.
+        # Without serialization the competitors would save stale snapshots.
+        assert backend.entered_saves == 1
+        assert backend.saved == []
+        assert all(not task.done() for task in tasks)
+    finally:
+        backend.release.set()
+        results = await asyncio.gather(*tasks)
+    accepted = [result for result in results if result.pending is not None]
+    expected_batches = 1 if same_source else 3
+    expected_events = expected_batches * 24
+    assert len(accepted) == len(store.list()) == expected_batches
+    assert sum(result.duplicate_source for result in results) == 3 - expected_batches
+    assert sum(len(item.events) for item in store.list()) == expected_events
     # Simultaneous duplicate sources must not create another review batch.
     duplicates = await asyncio.gather(*(
         store.async_add(source_text="Newsletter 0", source_id="newsletter-0", events=batches[0]) for _ in range(4)
@@ -38,16 +83,17 @@ async def test_simultaneous_large_batches_and_repeated_approval_preserve_every_e
 
     approvals = await asyncio.gather(*(
         store.async_approve_event(result.pending.id, event.id, create)
-        for result in results for event in result.pending.events for _ in range(2)
+        for result in accepted for event in result.pending.events for _ in range(2)
     ))
-    assert sum(event is not None for event in approvals) == 72
-    assert len(writes) == len(set(writes)) == 72
+    assert sum(event is not None for event in approvals) == expected_events
+    assert len(writes) == len(set(writes)) == expected_events
     assert store.list() == ()
     backend.load_result = backend.saved[-1]
     restored = make_store(monkeypatch, backend)
     await restored.async_load()
     assert restored.list() == ()
-    for batch, events in enumerate(batches):
+    for batch in sorted(set(source_indexes)):
+        events = batches[batch]
         duplicate = await restored.async_add(source_text=f"Newsletter {batch}", source_id=f"newsletter-{batch}", events=events)
         assert duplicate.pending is None and duplicate.duplicate_source
 
