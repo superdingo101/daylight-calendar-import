@@ -240,7 +240,7 @@ test("activity includes completed items, bounded transitions and useful empty/er
         created_at: "2026-10-01T12:00:00Z", status: "mixed", created_count: 3, rejected_count: 2}]}};
     }
     return {response: {activity: {id: "old", source_title: "School.pdf", status: "mixed",
-      created_count: 3, rejected_count: 2,
+      created_count: 3, rejected_count: 2, manual_source_text: "Private class each Thursday",
       transitions: [{type: "review_ready", at: "2026-10-01T12:00:00Z", event_id: null},
         {type: "calendar_created", at: "2026-10-01T12:10:00Z", event_id: "event"}]}}};
   }};
@@ -255,6 +255,7 @@ test("activity includes completed items, bounded transitions and useful empty/er
   assert.match(panel._content.querySelectorAll("p")[1].textContent, /Calendar created: 3 · Rejected: 2/);
   assert.match(panel._content.querySelectorAll("li")[1].textContent, /Event ID event/);
   assert.equal(globalThis.focusedNode.textContent, "School.pdf");
+  assert.ok(panel._content.querySelectorAll("p").some(row => row.textContent === "Submitted text (first 4,096 characters): Private class each Thursday"));
   panel._refreshButton.click();
   await flush();
   assert.equal(requests.at(-1), "get_activity");

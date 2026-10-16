@@ -9,7 +9,8 @@ from typing import Any
 
 UNSUPPORTED_RECURRENCE_WARNING = (
     "unsupported_recurrence: Repeating schedules require manual calendar entry. "
-    "No events from this source were imported; submit independent one-off events separately."
+    "New drafts from this source are withheld and existing drafts cannot be approved. "
+    "Reject existing drafts and submit independent one-off dates separately, or enter the schedule manually."
 )
 
 class DraftValidationError(ValueError):

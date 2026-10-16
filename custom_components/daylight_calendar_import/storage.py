@@ -798,7 +798,9 @@ class PendingImportStore:
 
     def list_activity(self) -> tuple[dict[str, Any], ...]:
         """Return bounded lifecycle summaries, newest first, without source text."""
-        return tuple(deepcopy(item) for item in reversed(self._activity))
+        return tuple(deepcopy({key: value for key, value in item.items()
+                               if key != "manual_source_text"})
+                     for item in reversed(self._activity))
 
     def get_activity(self, pending_id: str) -> dict[str, Any] | None:
         """Return a durable activity record even after an import leaves review."""
@@ -1273,6 +1275,8 @@ class PendingImportStore:
                        "mixed" if created and rejected else kind),
             "transitions": transitions[-ACTIVITY_TRANSITIONS_PER_IMPORT:],
         }
+        if UNSUPPORTED_RECURRENCE_WARNING in pending.warnings:
+            record["guidance"] = UNSUPPORTED_RECURRENCE_WARNING
         history = list(item for item in self._activity if item["id"] != pending.id) + [record]
         return tuple(history)
 
@@ -1573,6 +1577,14 @@ class PendingImportStore:
                     UNSUPPORTED_RECURRENCE_WARNING
                     if UNSUPPORTED_RECURRENCE_WARNING in warnings else None,
                 )
+                # Only manual text is retained, only for unsupported recurrence,
+                # and only in authorized activity detail under normal retention.
+                if (source_kind == "manual_text"
+                        and UNSUPPORTED_RECURRENCE_WARNING in warnings):
+                    activity = tuple(
+                        {**record, "manual_source_text": source_text[:4096]}
+                        if record["id"] == activity_id else record for record in activity
+                    )
                 if source_fp is not None and (
                     duplicate_events or source_was_claimed
                 ):
@@ -1777,6 +1789,8 @@ class PendingImportStore:
             pending = self._items.get(pending_id)
             if pending is None:
                 return None
+            if UNSUPPORTED_RECURRENCE_WARNING in pending.warnings:
+                raise PendingEventEditError(UNSUPPORTED_RECURRENCE_WARNING)
             if pending.approval_in_flight:
                 raise PendingImportApprovalUncertainError(pending_id)
             # Reject a mixed-resolution batch before its first external write.
@@ -1817,6 +1831,8 @@ class PendingImportStore:
         processor: Callable[[PendingEvent], Awaitable[None]],
     ) -> PendingImport | None:
         """Checkpoint the selected event around its external calendar write."""
+        if UNSUPPORTED_RECURRENCE_WARNING in pending.warnings:
+            raise PendingEventEditError(UNSUPPORTED_RECURRENCE_WARNING)
         if event.routing_unresolved:
             raise PendingEventEditError(
                 "Confirm the destination calendar in the event editor before approval"

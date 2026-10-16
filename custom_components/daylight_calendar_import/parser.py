@@ -99,14 +99,31 @@ EVENTS_STRUCTURE = vol.Schema(
     }
 )
 
-# Conservative independent guard for explicit English recurrence expressions.
-# Generic newsletter headings such as "Weekly newsletter" are not schedules.
+# Bounded, schedule-shaped English backstop for provider false negatives.
+# The required AI flag remains responsible for other wording and attachments.
 _RECURRENCE_PATTERN = re.compile(
-    r"\b(?:rrule\s*:|every\s+(?:(?:other|\d+)\s+)?"
-    r"(?:day|week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
-    r"|(?:repeat(?:s|ing)?|recurr(?:ing|ence))\s+(?:every|daily|weekly|monthly|yearly|annually)\b)",
+    r"\b(?:rrule\s*:|(?:every|each)\s+(?:(?:other|\d+)\s+)?"
+    r"(?:week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
+    r"|(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence)|meets?)\s+"
+    r"(?:every|daily|weekly|monthly|yearly|annually)\b"
+    r"|(?:daily|weekly|monthly|yearly|annual)\s+"
+    r"(?:standup|meeting|class|practice|training|session|appointment)\b"
+    r"|(?:meets?|practice|class|meeting|training|session|runs?|occurs?|repeats?)"
+    r"\s+(?:every|each)\s+day\b)", re.IGNORECASE,
+)
+_NEGATED_RECURRENCE_PATTERN = re.compile(
+    r"\b(?:does\s+not|do\s+not|doesn't|don't|will\s+not|won't|never|not)\s+"
+    r"(?:repeat(?:s|ing)?|recurs?|meet(?:s)?|occur(?:s)?)\s+"
+    r"(?:(?:every|each)\s+(?:(?:other|\d+)\s+)?\w+|daily|weekly|monthly|yearly|annually)\b",
     re.IGNORECASE,
 )
+
+
+def _has_recurring_schedule(source_text: str) -> bool:
+    """Recognize common explicit schedules without treating prose as recurrence."""
+    return _RECURRENCE_PATTERN.search(
+        _NEGATED_RECURRENCE_PATTERN.sub("", source_text)
+    ) is not None
 
 
 class ParseResultError(ValueError):
@@ -173,7 +190,7 @@ def parse_ai_data(data: Any, *, source_text: str = "") -> ParseOutcome:
     recurrence = data.get("unsupported_recurrence", False)
     if not isinstance(recurrence, bool):
         raise ParseResultError("unsupported_recurrence must be a boolean")
-    if recurrence or _RECURRENCE_PATTERN.search(source_text):
+    if recurrence or _has_recurring_schedule(source_text):
         return ParseOutcome([], [UNSUPPORTED_RECURRENCE_WARNING])
 
     drafts: list[EventDraft] = []

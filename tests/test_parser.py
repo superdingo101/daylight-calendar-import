@@ -352,6 +352,8 @@ def test_temporal_assumption_limits_are_inclusive_and_errors_are_stable():
     "Practice every 2 weeks", "Practice repeats daily", "Practice repeats monthly",
     "Practice repeats yearly", "Practice repeats annually", "RRULE:FREQ=WEEKLY",
     "Practice repeats weekly", "Practice recurring every week",
+    "class meets weekly", "class each Thursday", "daily standup", "class recurs weekly",
+    "Practice every day", "Class each day",
 ])
 def test_source_recurrence_cannot_be_collapsed_into_ordinary_drafts(text):
     outcome = parser.parse_ai_data(
@@ -378,6 +380,9 @@ def test_recurrence_contract_rejects_non_boolean_flags(flag):
 @pytest.mark.parametrize("text", [
     "One meeting on Thursday", "Meet October 8 and October 15 at 5pm",
     "At the Weekley Center", "Bring every student's form",
+    "Every day is a gift. Birthday party October 20 at 10am",
+    "The Every Day 5K is October 20", "Class does not repeat weekly",
+    "Class doesn't recur weekly", "Class never repeats every Thursday",
     "Weekly school newsletter: Field trip on October 20 from 10am to 11am",
     "Daily bulletin: Conference October 20 from 10am to 11am",
     "Monthly report: Meeting October 20 from 10am to 11am",

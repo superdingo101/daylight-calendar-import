@@ -3403,3 +3403,26 @@ async def test_recurrence_warning_survives_zero_event_submission_and_restart(mon
     await restarted.async_load()
     assert restarted.get_activity(activity_id)["guidance"] == UNSUPPORTED_RECURRENCE_WARNING
     assert restarted.list() == ()
+
+
+@pytest.mark.parametrize('kind', ['manual_text', 'email', 'image', 'pdf'])
+async def test_recurrence_activity_context_is_private_bounded_and_manual_only(monkeypatch, kind):
+    from custom_components.daylight_calendar_import.models import UNSUPPORTED_RECURRENCE_WARNING
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    text = 'Private class each Thursday ' + 'x' * 5000
+    identifier = await store.async_begin_submission(source_kind=kind, source_title=None,
+                                                    received_at=datetime.now(UTC))
+    await store.async_add(source_text=text, source_kind=kind, events=[], activity_id=identifier,
+                          warnings=[UNSUPPORTED_RECURRENCE_WARNING])
+    backend.load_result = backend.saved[-1]
+    restored = make_store(monkeypatch, backend)
+    await restored.async_load()
+    detail = restored.get_activity(identifier)
+    if kind == 'manual_text':
+        assert detail['manual_source_text'] == text[:4096]
+    else:
+        assert 'manual_source_text' not in detail
+    assert 'manual_source_text' not in restored.list_activity()[0]
+    assert text[:4096] not in str(restored.list_notifications())
