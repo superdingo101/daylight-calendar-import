@@ -3134,3 +3134,15 @@ def test_all_manual_service_schemas_bound_raw_text(schema_name):
     for oversized in (text + "x", " " * 1_000_000 + "x"):
         with pytest.raises(vol.Invalid, match="1,000,000-character limit"):
             schema({"text": oversized, **extra})
+
+
+async def test_setup_preserves_legacy_alias_sets_over_new_submission_limit(monkeypatch):
+    aliases = {f"alias-{index}": "calendar.family" for index in range(101)}
+    configured = entry(options={"calendar_aliases": aliases})
+    store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    hass = FakeHass()
+    assert await async_setup_entry(hass, configured) is True
+    assert store.accepting_services is True
+    assert configured.options["calendar_aliases"] == aliases
+    assert hass.data[DOMAIN][configured.entry_id] is store

@@ -53,6 +53,8 @@ Select at most 15 conflict calendars: the pending event's writable destination
 is always observed in addition, for a maximum scope of 16. Older settings
 with more selected calendars remain readable and can be reduced in Settings.
 
+New or replacement alias sets are limited to 100 entries. Larger legacy sets remain readable and usable; unrelated settings updates preserve them, and clients can replace them with a set of 100 or fewer without editing Home Assistant storage.
+
 Use `calendar_aliases: {}` to clear aliases. When removing a writable calendar
 used by an alias, remove/remap that alias first in a separate settings request.
 

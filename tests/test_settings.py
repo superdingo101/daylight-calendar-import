@@ -1669,3 +1669,50 @@ def test_calendar_alias_count_boundary():
         normalize_calendar_aliases(aliases, ["calendar.family"])
     assert err.value.code == "too_many_aliases"
     assert str(err.value) == "Configure at most 100 calendar aliases."
+
+
+async def test_legacy_alias_count_does_not_block_reads_unrelated_edits_or_recovery():
+    aliases = {f"alias-{index}": "calendar.family" for index in range(101)}
+    configured = entry(options={"calendar_aliases": aliases})
+    hass = hass_for(configured)
+    connection = FakeConnection()
+    # All existing routing destinations remain available after an upgrade.
+    assert settings_snapshot(configured)["calendar_aliases"] == aliases
+    await invoke(settings_api.websocket_update_core_settings, hass, connection, {
+        "id": 201, "entry_id": configured.entry_id,
+        "type": settings_api.WS_UPDATE_CORE_SETTINGS,
+        CONF_AI_TASK_ENTITY: "ai_task.updated",
+    })
+    assert connection.errors == []
+    assert configured.options["calendar_aliases"] == aliases
+    assert configured.options[CONF_AI_TASK_ENTITY] == "ai_task.updated"
+
+    # Existing state is readable for comparison, but resubmitting it is rejected.
+    await invoke(settings_api.websocket_update_calendar_intelligence, hass, connection, {
+        "id": 202, "entry_id": configured.entry_id,
+        "type": settings_api.WS_UPDATE_CALENDAR_INTELLIGENCE,
+        "calendar_aliases": aliases,
+    })
+    assert connection.errors[-1][1] == "too_many_aliases"
+    assert configured.options["calendar_aliases"] == aliases
+
+    reduced = dict(list(aliases.items())[:100])
+    await invoke(settings_api.websocket_update_calendar_intelligence, hass, connection, {
+        "id": 203, "entry_id": configured.entry_id,
+        "type": settings_api.WS_UPDATE_CALENDAR_INTELLIGENCE,
+        "calendar_aliases": reduced,
+    })
+    assert connection.results[-1][0] == 203
+    assert configured.options["calendar_aliases"] == reduced
+    assert hass.config_entries.reloads == [configured.entry_id, configured.entry_id]
+
+
+async def test_alias_count_limit_also_applies_to_direct_option_replacements():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+
+    configured = entry()
+    hass = hass_for(configured)
+    aliases = {f"alias-{index}": "calendar.family" for index in range(101)}
+    with pytest.raises(SettingsValidationError, match="at most 100"):
+        await async_save_option_patch(hass, configured, {"calendar_aliases": aliases})
+    assert hass.config_entries.updates == []

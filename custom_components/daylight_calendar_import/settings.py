@@ -175,13 +175,14 @@ def normalize_core_options(
 
 
 def normalize_calendar_aliases(
-    aliases: Mapping[str, str], allowed_calendars: list[str],
+    aliases: Mapping[str, str], allowed_calendars: list[str], *,
+    enforce_count_limit: bool = True,
 ) -> dict[str, str]:
     """Validate aliases as exact, Unicode-normalized writable-calendar choices."""
     if not isinstance(aliases, Mapping):
         raise SettingsValidationError("invalid_aliases", "Calendar aliases must be a mapping.")
     normalized: dict[str, str] = {}
-    if len(aliases) > MAX_CALENDAR_ALIASES:
+    if enforce_count_limit and len(aliases) > MAX_CALENDAR_ALIASES:
         raise SettingsValidationError(
             "too_many_aliases", "Configure at most 100 calendar aliases."
         )
@@ -217,7 +218,12 @@ def effective_calendar_intelligence(entry: ConfigEntry) -> tuple[dict[str, str],
     """Read v0.6 settings with safe legacy defaults and no implied write permission."""
     default_calendar, allowed = effective_calendar_options(entry)
     return (
-        normalize_calendar_aliases(entry.options.get(CONF_CALENDAR_ALIASES, {}), allowed),
+        # Older versions accepted larger alias sets. Preserve their destinations
+        # during setup and reads; enforce the cap only on replacement submissions.
+        normalize_calendar_aliases(
+            entry.options.get(CONF_CALENDAR_ALIASES, {}), allowed,
+            enforce_count_limit=False,
+        ),
         normalize_conflict_calendars(
             entry.options.get(CONF_CONFLICT_CALENDAR_ENTITIES, [default_calendar])
         ),
@@ -321,7 +327,10 @@ async def async_save_option_patch(
             entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]]),
         ),
     )
-    normalize_calendar_aliases(merged.get(CONF_CALENDAR_ALIASES, {}), allowed)
+    normalize_calendar_aliases(
+        merged.get(CONF_CALENDAR_ALIASES, {}), allowed,
+        enforce_count_limit=CONF_CALENDAR_ALIASES in patch,
+    )
     if default not in allowed:
         raise SettingsValidationError(
             "default_not_allowed", "The default calendar must be included in the allowed calendars."
