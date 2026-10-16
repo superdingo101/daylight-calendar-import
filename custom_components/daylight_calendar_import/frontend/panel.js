@@ -5,6 +5,8 @@ import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, 
 import {ManualSubmission} from "./manual_submission.js";
 import {FileSubmission} from "./upload_submission.js";
 
+const CALENDAR_CHECK_TIMEOUT_MS = 30_000;
+
 const notificationOptions = [
   ["review_ready", "Imports ready for review"],
   ["calendar_created", "Events added to a calendar"],
@@ -527,6 +529,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._detail = null;
     this._calendarCheck = null;
     this._approvalObservation = null;
+    // Transport lifetime is independent of canceled or superseded review UI.
+    this._calendarObservationRequest = null;
     this._returnFocusId = null;
     this._editingId = null;
     this._editError = null;
@@ -1609,7 +1613,7 @@ export class DaylightImportPanel extends HTMLElement {
 
     let next;
     try {
-      const response = await checkEvent(this._hass, pendingId, event);
+      const response = await this.observeCalendarEvent(pendingId, event);
       next = {status: "ready", matches: response.matches,
         observed_calendars: response.observed_calendars};
     } catch (error) {
@@ -1650,6 +1654,31 @@ export class DaylightImportPanel extends HTMLElement {
     this._announcement.replaceChildren(element("span", summary));
   }
 
+  /** Bound reviewer waiting without releasing a still-outstanding transport. */
+  async observeCalendarEvent(pendingId, event) {
+    if (this._calendarObservationRequest) {
+      throw new Error("A previous calendar check is still running. Try again after it finishes.");
+    }
+    const request = checkEvent(this._hass, pendingId, event);
+    this._calendarObservationRequest = request;
+    const settled = () => {
+      if (this._calendarObservationRequest === request) this._calendarObservationRequest = null;
+    };
+    // A UI deadline cannot cancel callWS. Retain the single-flight lock until
+    // the actual request settles, including across cancel, navigation, and retry.
+    void request.then(settled, settled);
+    let timer;
+    try {
+      return await Promise.race([request, new Promise((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(
+          "Calendar check timed out. Review the calendars yourself before approval.")),
+        CALENDAR_CHECK_TIMEOUT_MS);
+      })]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** Observe every selected draft before enabling advisory approval. */
   async observeApproval(events) {
     const observation = {generation: this._generation, detail: this._detail,
@@ -1666,7 +1695,7 @@ export class DaylightImportPanel extends HTMLElement {
     for (const event of events) {
       let result;
       try {
-        const response = await checkEvent(this._hass, this._selectedId, event);
+        const response = await this.observeCalendarEvent(this._selectedId, event);
         result = {status: "ready", matches: response.matches,
           observed_calendars: response.observed_calendars};
       } catch (error) {

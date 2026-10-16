@@ -4649,15 +4649,19 @@ test("inbox refresh invalidates a pending calendar check and allows a fresh chec
     .find(item => item.dataset.calendarCheckEventId === "e1");
   assert.equal(button.attributes["aria-disabled"], undefined);
 
-  const freshCheck = panel.checkCalendarEvent(event);
-  assert.equal(checks.length, 2);
+  await panel.checkCalendarEvent(event);
+  assert.equal(checks.length, 1, "refresh cannot release an outstanding transport");
+  assert.equal(panel._calendarCheck.status, "error");
+  assert.match(panel._calendarCheck.message, /previous calendar check is still running/);
   checks[0]({response: {pending_id: "imp", event_id: "e1",
     matches: [{kind: "conflict", calendar_entity: "calendar.family",
       existing_title: "Stale result"}], observed_calendars: ["calendar.family"]}});
   await original;
-  assert.equal(panel._calendarCheck.status, "loading");
+  assert.equal(panel._calendarCheck.status, "error");
   assert.equal(panel._content.querySelector(".calendar-matches")
     .querySelectorAll("li").length, 0);
+  const freshCheck = panel.checkCalendarEvent(event);
+  assert.equal(checks.length, 2);
   checks[1]({response: {pending_id: "imp", event_id: "e1",
     matches: [], observed_calendars: ["calendar.family"]}});
   await freshCheck;
@@ -5666,4 +5670,97 @@ test("canceling automatic observation discards stale results and stops bulk read
   assert.equal(panel._content.querySelector(".calendar-matches"), null);
   assert.equal(calls.filter(request => request.service === "check_pending_event").length, 1);
   assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 0);
+});
+
+
+test("never-settling approval checks expire without unlocking the outstanding transport", async t => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending"};
+  let release;
+  let checks = 0;
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events: [event]}}};
+    if (request.service === "check_pending_event") {
+      if (++checks === 1) await new Promise(resolve => {release = resolve;});
+      return {response: {pending_id: "one", event_id: "event", matches: [], observed_calendars: []}};
+    }
+    return {response: {pending_id: "one", event_id: "event", approved: true}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  t.mock.timers.enable({apis: ["setTimeout"]});
+  const approve = () => panel._content.querySelectorAll("button").find(button => button.dataset.action === "approve").click();
+  const cancel = () => panel._content.querySelectorAll("button").find(button => button.textContent === "Cancel").click();
+  approve();
+  assert.equal(panel._content.querySelector(".actions button").disabled, true);
+  t.mock.timers.tick(29_999);
+  await flush();
+  assert.equal(panel._content.querySelector(".actions button").disabled, true);
+  t.mock.timers.tick(1);
+  await flush();
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("p").textContent, /timed out/);
+  cancel();
+  approve();
+  await flush();
+  assert.equal(checks, 1, "timing out or canceling the UI cannot multiply backend work");
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("p").textContent, /still running/);
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+  assert.equal(calls.some(request => request.service === "approve_pending_event"), false);
+  release();
+  await flush();
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("p").textContent, /still running/);
+  cancel();
+  approve();
+  await flush();
+  assert.equal(checks, 2, "the actual request settlement permits a fresh observation");
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("p").textContent, /No matches found/);
+  await panel.runDecision(event, "approve");
+  assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 1);
+});
+
+test("canceling slow bulk checks keeps retries and manual reads single-flight", async () => {
+  const panel = new DaylightImportPanel();
+  const first = {id: "first", title: "Practice", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending"};
+  const events = [first, {...first, id: "second"}];
+  let checks = 0;
+  let release;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events}}};
+    if (request.service === "check_pending_event") {
+      if (++checks === 1) await new Promise(resolve => {release = resolve;});
+      return {response: {pending_id: "one", event_id: request.service_data.event_id,
+        matches: [], observed_calendars: []}};
+    }
+    throw Error("Unexpected write");
+  }};
+  await flush();
+  await panel.showImport("one");
+  const approve = () => panel._content.querySelectorAll("button").find(button => button.dataset.batchAction === "approve").click();
+  const cancel = () => panel._content.querySelectorAll("button").find(button => button.textContent === "Cancel bulk review").click();
+  approve();
+  cancel();
+  approve();
+  await flush();
+  assert.equal(checks, 1);
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+  assert.equal(panel._content.querySelectorAll(".calendar-matches").length, 2);
+  for (const result of panel._content.querySelectorAll(".calendar-matches")) {
+    assert.match(result.querySelector("p").textContent, /still running/);
+  }
+  cancel();
+  await panel.checkCalendarEvent(first);
+  assert.equal(checks, 1, "manual checks share the outstanding transport lock");
+  release();
+  await flush();
+  approve();
+  await flush();
+  assert.equal(checks, 3, "a fresh bulk review reads each event after settlement");
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
 });

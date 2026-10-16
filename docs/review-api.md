@@ -162,6 +162,9 @@ To prevent expensive or misleading partial observations, the action rejects
 drafts spanning more than 90 elapsed days, scopes exceeding 16 distinct
 calendars (up to 15 configured conflict calendars plus the selected destination), provider responses containing more than 500 events combined, or provider
 event titles longer than 512 characters.
+Provider reads share one 15-second timeout across the selected calendars;
+expiration cancels the active provider read and returns an explicit incomplete
+observation error.
 These limits raise explicit incomplete-observation errors; matching results
 are never silently truncated. Provider calls use the bounded draft window,
 although providers may themselves allocate an over-limit response before

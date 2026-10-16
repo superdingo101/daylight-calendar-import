@@ -169,7 +169,15 @@ test("automatic calendar observations precede explicit advisory approval", async
   await expect(page.getByRole("button", {name: "Cancel", exact: true})).toBeFocused();
   await expect(page.getByRole("region", {name: "Calendar check results"})).toContainText("Checking selected calendars");
   expect(await page.evaluate(() => window.fixture.calls.filter(call => call.service === "approve_pending_event"))).toEqual([]);
+  await page.getByRole("button", {name: "Cancel", exact: true}).click();
+  await page.getByRole("button", {name: "Approve School picnic", exact: true}).click();
+  await expect(confirm).toBeEnabled();
+  await expect(page.getByRole("region", {name: "Calendar check results"})).toContainText("previous calendar check is still running");
+  expect(await page.evaluate(() => window.fixture.calls.filter(call => call.service === "check_pending_event").length)).toBe(1);
   await page.evaluate(() => window.fixture.releaseObservation());
+  await page.getByRole("button", {name: "Cancel", exact: true}).click();
+  await configure(page, {holdObservation: false});
+  await page.getByRole("button", {name: "Approve School picnic", exact: true}).click();
   await expect(confirm).toBeEnabled();
   await expect(page.getByRole("region", {name: "Calendar check results"})).toContainText("Scheduling conflict: Dentist (calendar.work)");
   await expect(page.getByRole("button", {name: "Cancel", exact: true})).toBeFocused();
@@ -180,7 +188,7 @@ test("automatic calendar observations precede explicit advisory approval", async
   await page.getByRole("button", {name: "Approve School picnic", exact: true}).click();
   await expect(page.getByRole("region", {name: "Calendar check results"})).toContainText("Calendar check incomplete: Calendar unavailable");
   await expect(confirm).toBeEnabled();
-  expect(await page.evaluate(() => window.fixture.calls.filter(call => call.service === "check_pending_event").length)).toBe(2);
+  expect(await page.evaluate(() => window.fixture.calls.filter(call => call.service === "check_pending_event").length)).toBe(3);
   expect(await page.evaluate(() => window.fixture.calls.filter(call => call.service === "approve_pending_event"))).toEqual([]);
   await confirm.click();
   await expect(page.getByText("No imports awaiting review.")).toBeVisible();
