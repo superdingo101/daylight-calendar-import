@@ -87,10 +87,30 @@ async def test_reject_one_approve_one_and_bulk_remaining_survive_reload(hass, wo
     assert runtime.writes.await_count == 2
 
 
-async def test_concurrent_single_and_bulk_approval_write_each_event_once(hass, hass_ws_client, workflow):
+async def test_concurrent_single_and_bulk_approval_write_each_event_once(hass, hass_ws_client, monkeypatch, workflow):
     runtime = workflow
     pending = await submit(runtime, [DRAFT, next_draft("Game")])
-    entered, release = asyncio.Event(), asyncio.Event()
+    entered, release, bulk_waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    approval_lock = runtime.store._lock
+    acquire = approval_lock.acquire
+    process_events = runtime.store.async_process_events
+    bulk_handler_task = None
+
+    async def observe_bulk_handler(*args, **kwargs):
+        nonlocal bulk_handler_task
+        bulk_handler_task = asyncio.current_task()
+        return await process_events(*args, **kwargs)
+
+    async def observe_acquire():
+        if asyncio.current_task() is bulk_handler_task:
+            assert approval_lock.locked()
+            bulk_waiting.set()
+        # With the first writer blocked, this real acquire suspends before
+        # the event waiter can resume; the bulk handler is now queued.
+        return await acquire()
+
+    monkeypatch.setattr(runtime.store, "async_process_events", observe_bulk_handler)
+    monkeypatch.setattr(approval_lock, "acquire", observe_acquire)
 
     async def hold_first_write(_call):
         if not entered.is_set():
@@ -104,7 +124,9 @@ async def test_concurrent_single_and_bulk_approval_write_each_event_once(hass, h
     try:
         await asyncio.wait_for(entered.wait(), 5)
         bulk = asyncio.create_task(call(other, "approve_pending", pending_id=pending["id"]))
-        await asyncio.sleep(0)
+        await asyncio.wait_for(bulk_waiting.wait(), 5)
+        assert not bulk.done()
+        assert not release.is_set()
         assert runtime.writes.await_count == 1
     finally:
         release.set()
