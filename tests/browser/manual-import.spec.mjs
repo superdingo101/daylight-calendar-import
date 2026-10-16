@@ -117,17 +117,25 @@ for (const mode of ["failure", "disconnect", "malformed"]) {
     await expect(form.getByRole("status")).toContainText("1 event is ready for review");
     const requests = await calls(page);
     expect(requests).toHaveLength(2);
+    expect(requests[0].service_data.source_id).toEqual(expect.any(String));
+    expect(requests[0].service_data.source_id.trim()).not.toBe("");
     expect(requests[1].service_data.source_id).toBe(requests[0].service_data.source_id);
   });
 }
 
 test("invalid files stay local and mobile layout keeps controls within viewport", async ({page}) => {
+  const uploadRequests = [];
+  page.on("request", request => {
+    if (new URL(request.url()).pathname === "/api/file_upload") uploadRequests.push(request.url());
+  });
   const form = fileForm(page);
   await form.getByLabel("Image or PDF file").setInputFiles({name: "not-a-poster.png", mimeType: "image/png", buffer: Buffer.from("not an image")});
   await expect(form.getByRole("status")).toContainText("Choose a JPEG, PNG, WebP image or PDF.");
   await form.getByRole("button", {name: "Import file", exact: true}).click();
   await expect(form.getByRole("button", {name: "Import file", exact: true})).toBeEnabled();
   expect(await calls(page)).toEqual([]);
+  expect(await page.evaluate(() => window.fixture.uploads)).toEqual([]);
+  expect(uploadRequests).toEqual([]);
   for (const control of await page.locator("input, textarea, .manual-submission button").all()) {
     const box = await control.boundingBox();
     expect(box.x).toBeGreaterThanOrEqual(0);
