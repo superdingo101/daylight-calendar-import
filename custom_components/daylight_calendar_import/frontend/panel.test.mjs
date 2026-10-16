@@ -227,7 +227,8 @@ test("lost recovery response reconciles a completed import with the inbox", asyn
   assert.equal(panel._selectedId, null);
 });
 
-test("activity includes completed items, bounded transitions and useful empty/error views", async () => {
+for (const retainedFailureTransition of [true, false]) {
+test(`activity includes durable delivery warning with retained transition ${retainedFailureTransition}`, async () => {
   const panel = new DaylightImportPanel();
   const requests = [];
   let fail = false;
@@ -242,9 +243,10 @@ test("activity includes completed items, bounded transitions and useful empty/er
     }
     return {response: {activity: {id: "old", source_title: "School.pdf", status: "mixed",
       created_count: 3, rejected_count: 2,
+      notification_delivery_failed: true,
       transitions: [{type: "review_ready", at: "2026-10-01T12:00:00Z", event_id: null},
         {type: "calendar_created", at: "2026-10-01T12:10:00Z", event_id: "event"},
-        {type: "notification_delivery_failed", at: "2026-10-01T12:11:00Z", event_id: null}]}}};
+        ...(retainedFailureTransition ? [{type: "notification_delivery_failed", at: "2026-10-01T12:11:00Z", event_id: null}] : [])]}}};
   }};
   await flush();
   panel._content.querySelectorAll("button").find(button => button.textContent === "Recent activity").click();
@@ -258,7 +260,11 @@ test("activity includes completed items, bounded transitions and useful empty/er
   await flush();
   assert.match(panel._content.querySelectorAll("p")[1].textContent, /Calendar created: 3 · Rejected: 2/);
   assert.match(panel._content.querySelectorAll("li")[1].textContent, /Event ID event/);
-  assert.match(panel._content.querySelectorAll("li")[2].textContent, /Notification delivery failed; check notification settings/);
+  if (retainedFailureTransition) {
+    assert.match(panel._content.querySelectorAll("li")[2].textContent, /Notification delivery failed; check notification settings/);
+  }
+  assert.ok(panel._content.querySelectorAll("p").some(row =>
+    row.textContent === "Notification delivery failed; check notification settings"));
   assert.equal(globalThis.focusedNode.textContent, "School.pdf");
   panel._refreshButton.click();
   await flush();
@@ -273,6 +279,7 @@ test("activity includes completed items, bounded transitions and useful empty/er
   await flush();
   assert.match(find(panel._content, "p").textContent, /No imports awaiting review/);
 });
+}
 
 test("stale activity detail cannot overwrite a newer list", async () => {
   const panel = new DaylightImportPanel();

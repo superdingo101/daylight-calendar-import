@@ -709,6 +709,7 @@ class PendingImportStore:
             if updated.status == "failed" and expected.status != "failed":
                 previous = self.get_activity(updated.import_id)
                 if previous is not None:
+                    previous["notification_delivery_failed"] = True
                     previous["transitions"].append({
                         "type": "notification_delivery_failed", "at": updated.terminal_at,
                         "event_id": updated.event_id,
@@ -1284,6 +1285,8 @@ class PendingImportStore:
                        "calendar_write_uncertain" if kind == "calendar_write_started" else
                        "mixed" if created and rejected else kind),
             "transitions": transitions[-ACTIVITY_TRANSITIONS_PER_IMPORT:],
+            **({"notification_delivery_failed": True}
+               if previous and previous.get("notification_delivery_failed") else {}),
         }
         history = list(item for item in self._activity if item["id"] != pending.id) + [record]
         return tuple(history)

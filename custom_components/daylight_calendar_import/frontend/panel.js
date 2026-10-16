@@ -2223,6 +2223,9 @@ export class DaylightImportPanel extends HTMLElement {
         content.append(heading, element("p", `Current status: ${activityLabel(item.status)}`),
           element("p", `Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
         if (item.guidance) content.append(element("p", item.guidance));
+        if (item.notification_delivery_failed) {
+          content.append(element("p", activityLabel("notification_delivery_failed"), "warning"));
+        }
         const list = document.createElement("ul");
         for (const transition of item.transitions) {
           const row = element("li", `${activityTime(transition.at, this._hass)} · ${activityLabel(transition.type)}${transition.event_id ? ` · Event ID ${transition.event_id}` : ""}`);

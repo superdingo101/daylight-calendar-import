@@ -594,6 +594,34 @@ async def test_failed_event_notification_preserves_event_identity_and_other_acti
     assert activity[1] == other
 
 
+async def test_delivery_failure_survives_later_lifecycle_transitions_and_restart(monkeypatch):
+    from custom_components.daylight_calendar_import.storage import ACTIVITY_TRANSITIONS_PER_IMPORT
+
+    backend = FakeStoreBackend()
+    store = runtime(monkeypatch, backend)
+    pending = (await store.async_add(source_text="private source", events=[
+        replace(draft(), title=f"Event {index}")
+        for index in range(ACTIVITY_TRANSITIONS_PER_IMPORT + 1)
+    ])).pending
+    request = store.list_notifications()[0]
+    await store.async_update_notification(request, replace(request, status="failed", failure="delivery_failed"))
+    for event in pending.events:
+        assert await store.async_reject_event(pending.id, event.id)
+    activity = store.get_activity(pending.id)
+    assert len(activity["transitions"]) == ACTIVITY_TRANSITIONS_PER_IMPORT
+    assert all(step["type"] != "notification_delivery_failed" for step in activity["transitions"])
+    assert activity["notification_delivery_failed"] is True
+    assert activity["status"] == "event_rejected"
+    assert activity["rejected_count"] == len(pending.events)
+    assert "notify.phone" not in str(activity) and "private source" not in str(activity)
+    backend.load_result = backend.saved[-1]
+    restored = runtime(monkeypatch, backend)
+    await restored.async_load()
+    assert restored.get_activity(pending.id) == activity
+    assert restored.list_activity() == (activity,)
+    assert restored.list_notifications()[0].status == "failed"
+
+
 @pytest.mark.parametrize("status", ["pending", "sent", "cancelled"])
 async def test_nonfailed_delivery_does_not_change_activity(monkeypatch, status):
     store = runtime(monkeypatch)

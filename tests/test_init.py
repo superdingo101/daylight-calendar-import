@@ -365,13 +365,15 @@ async def test_pending_read_actions_return_summaries_details_and_stable_event(mo
     assert hass.services.handlers == {}
 
 
-@pytest.mark.parametrize("delivery_failed", [False, True])
+@pytest.mark.parametrize("delivery_failed", [False, True, "durable"])
 async def test_activity_reads_are_scoped_and_omit_transition_detail_from_list(monkeypatch, delivery_failed):
     hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
     item = pending()
     record = {"id": item.id, "status": "calendar_created",
               "transitions": [{"type": "review_ready"}, {"type": "calendar_created"}]}
-    if delivery_failed:
+    if delivery_failed == "durable":
+        record["notification_delivery_failed"] = True
+    elif delivery_failed:
         record["transitions"].append({"type": "notification_delivery_failed"})
     store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"), list_activity=Mock(return_value=(record,)),
                             get_activity=Mock(side_effect=lambda key: record if key == item.id else None))
