@@ -141,6 +141,7 @@ Open **Daylight imports → Recent activity**. For AI provider timeouts, authent
 
 ## Help and documentation
 
+- [Public beta installation, upgrade and dogfood checklist](docs/public-beta-checklist.md)
 - [Latest releases and updates](https://github.com/superdingo101/daylight-calendar-import/releases)
 - [Report a bug or suggest a feature](https://github.com/superdingo101/daylight-calendar-import/issues)
 - [Manual text, image and PDF imports](docs/manual-import.md)
