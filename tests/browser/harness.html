@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manual import browser acceptance</title>
+<style>body {margin:0; --primary-color:#1976d2; --divider-color:#bbb; --card-background-color:#fff; --primary-text-color:#111}</style>
+<body>
+<daylight-import-panel></daylight-import-panel>
+<script type="module">
+import "/frontend/panel.js";
+// This is an explicit deterministic HA API boundary. Actual HA service,
+// persistence, extraction and no-IMAP registration remain covered in Python.
+const event = {id: "event-1", title: "School picnic", start: "2026-10-20T15:00:00+00:00",
+  end: "2026-10-20T16:00:00+00:00", all_day: false, status: "pending"};
+const pending = {id: "import-1", source_kind: "manual_text", source_title: "Manual source",
+  source_text: "School picnic October 20 at 3pm", created_at: "2026-10-15T12:00:00+00:00",
+  events: [event], event_count: 1, warnings: [], calendar_entity: "calendar.family"};
+window.fixture = {calls: [], imports: [], mode: "success", held: false, release: null,
+  pending, submissions: 0, uploads: []};
+const fixture = window.fixture;
+const panel = document.querySelector("daylight-import-panel");
+panel.narrow = matchMedia("(max-width: 480px)").matches;
+panel.hass = {
+  user: {is_admin: true}, config: {version: "2026.7.4", time_zone: "UTC"},
+  locale: {language: "en", time_format: "24"}, states: {},
+  // Deliberately no IMAP configuration or email service.
+  fetchWithAuth: async (path, options) => {
+    const response = await fetch(path, options);
+    if (options?.method === "POST" && response.ok) {
+      fixture.uploads.push((await response.clone().json()).observed);
+    }
+    return response;
+  },
+  callWS: async call => {
+    fixture.calls.push(structuredClone(call));
+    if (call.service === "list_pending") return {response: {imports: fixture.imports}};
+    if (call.service === "get_pending") return {response: {pending}};
+    if (call.service === "list_activity") return {response: {activity: []}};
+    if (!["submit_text", "submit_image", "submit_pdf"].includes(call.service)) {
+      throw new Error(`Unexpected service: ${call.service}`);
+    }
+    fixture.submissions++;
+    if (fixture.held) await new Promise(resolve => { fixture.release = resolve; });
+    if (fixture.mode === "failure") throw Object.assign(new Error("AI task provider unavailable"), {code: "home_assistant_error"});
+    if (fixture.mode === "disconnect") throw new Error("Connection lost");
+    if (fixture.mode === "malformed") return {response: {pending: {}}};
+    const duplicate = fixture.mode === "duplicate";
+    fixture.imports = duplicate ? [] : [pending];
+    return {response: {pending: duplicate ? null : pending, duplicate,
+      duplicate_source: duplicate, duplicate_events: 0, warnings: [],
+      activity_id: duplicate ? null : pending.id, status: duplicate ? "duplicate" : "pending_review"}};
+  },
+};
+</script>
+</body>
+</html>
