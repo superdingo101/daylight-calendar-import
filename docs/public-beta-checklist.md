@@ -11,17 +11,60 @@ of the public evidence record.
 
 - [ ] Make a full Home Assistant backup before upgrading. Keep the backup private;
   pending drafts, source context, tokens and deduplication history may be sensitive.
-- [ ] Fresh install through the HACS custom repository, restart HA, then add the
-  integration. Select an AI Task entity, default calendar and allowed calendars.
-  Confirm the default is allowed and the sidebar opens the review inbox.
-- [ ] Upgrade an existing installation through HACS using the candidate's release
-  ZIP. Restart HA. Verify version, settings and saved pending/event destinations.
+- [ ] Fresh install the exact candidate using the manual candidate path below,
+  restart HA, then add the integration. Select an AI Task entity, default calendar
+  and allowed calendars. Confirm the sidebar opens the review inbox.
+- [ ] Upgrade a development copy using the same candidate ZIP and manual path.
+  Restart HA. Verify version, settings and saved pending/event destinations.
+- [ ] Separately verify the HACS path once a published release or prerelease with
+  its release ZIP is available. Enable prereleases in HACS if applicable and
+  select that exact version. Record the release tag and matching source SHA;
+  installing the latest older release is not candidate validation.
 - [ ] On a development copy, upgrade representative older configurations/storage.
   Preserve pending work, handled-source/event fingerprints, notification state
   and uncertain calendar-write checkpoints. Do not edit private storage while HA
   is running. Automated fixture migration is evidence for those fixtures only.
 - [ ] Restart HA with pending imports. Confirm queue counts and review contents
   reload without creating calendar events or replaying a new-import automation.
+
+### Installing an unpublished candidate
+
+HACS cannot install an arbitrary local ZIP, a private draft release or an
+unpublished commit. The packaging check builds a ZIP but does not upload it as
+a downloadable Actions artifact. Before a release exists, build from a clean
+checkout of the recorded candidate SHA instead:
+
+```sh
+git clone https://github.com/superdingo101/daylight-calendar-import.git daylight-beta
+cd daylight-beta
+git fetch origin <candidate-branch>
+git checkout --detach <full-candidate-commit-SHA>
+git rev-parse HEAD
+git status --porcelain
+python -c 'import json; print(json.load(open("custom_components/daylight_calendar_import/manifest.json"))["version"])'
+python scripts/build_hacs_release.py --version <printed-version> --output daylight-calendar-import.zip
+python -m zipfile -l daylight-calendar-import.zip
+```
+
+Replace the angle-bracket placeholders with the candidate branch, full SHA and
+printed version. Require an empty `git status` before building. Record the SHA,
+manifest version and ZIP SHA-256 (for example `sha256sum daylight-calendar-import.zip`)
+with the result; the builder verifies the archive against the checked-out files.
+
+Stop the development Home Assistant instance. For an upgrade, move its existing
+`custom_components/daylight_calendar_import` directory to a backup location
+**outside** `custom_components`, then create a fresh directory at that original
+path. Extract the ZIP **into that directory**: its root contains `manifest.json`
+and `__init__.py`, not a wrapping `custom_components` directory. Preserve the
+integration entry and `.storage` files. Start HA and verify the loaded version.
+Use the same archive for the fresh-install and upgrade tests. On a fresh test
+installation, add the integration only after restart.
+
+This establishes manual candidate installation/upgrade evidence, not HACS
+download evidence. After a candidate is available to HACS as a published release
+or prerelease with the asset attached, repeat installation/upgrade through HACS
+and record that result separately. Neither a successful package build nor an
+installation of a different version satisfies that HACS check.
 
 ## Manual imports without email
 
