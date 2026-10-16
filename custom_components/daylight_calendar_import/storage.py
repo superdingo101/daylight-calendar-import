@@ -799,7 +799,7 @@ class PendingImportStore:
     def list_activity(self) -> tuple[dict[str, Any], ...]:
         """Return bounded lifecycle summaries, newest first, without source text."""
         return tuple(deepcopy({key: value for key, value in item.items()
-                               if key != "manual_source_text"})
+                               if key != "manual_source_text"} if isinstance(item, dict) else item)
                      for item in reversed(self._activity))
 
     def get_activity(self, pending_id: str) -> dict[str, Any] | None:
