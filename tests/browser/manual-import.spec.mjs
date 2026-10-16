@@ -155,3 +155,34 @@ test("upload rejection retains selection and does not call extraction", async ({
   await expect(form.getByText("Selected file: media-screenshot.png", {exact: true})).toBeVisible();
   expect(await calls(page)).toEqual([]);
 });
+
+
+test("automatic calendar observations precede explicit advisory approval", async ({page}) => {
+  const form = textForm(page);
+  await form.getByRole("textbox").fill(source);
+  await form.getByRole("button", {name: "Import events", exact: true}).click();
+  await form.getByRole("button", {name: "Review events", exact: true}).click();
+  await configure(page, {holdObservation: true});
+  await page.getByRole("button", {name: "Approve School picnic", exact: true}).click();
+  const confirm = page.getByRole("button", {name: "Confirm approve: School picnic", exact: true});
+  await expect(confirm).toBeDisabled();
+  await expect(page.getByRole("button", {name: "Cancel", exact: true})).toBeFocused();
+  await expect(page.getByRole("region", {name: "Calendar check results"})).toContainText("Checking selected calendars");
+  expect(await page.evaluate(() => window.fixture.calls.filter(call => call.service === "approve_pending_event"))).toEqual([]);
+  await page.evaluate(() => window.fixture.releaseObservation());
+  await expect(confirm).toBeEnabled();
+  await expect(page.getByRole("region", {name: "Calendar check results"})).toContainText("Scheduling conflict: Dentist (calendar.work)");
+  await expect(page.getByRole("button", {name: "Cancel", exact: true})).toBeFocused();
+  // A new approval attempt must get a fresh check; an unavailable calendar
+  // remains advisory only after its incomplete result has been shown.
+  await page.getByRole("button", {name: "Cancel", exact: true}).click();
+  await configure(page, {holdObservation: false, observationError: "Calendar check incomplete: Calendar unavailable"});
+  await page.getByRole("button", {name: "Approve School picnic", exact: true}).click();
+  await expect(page.getByRole("region", {name: "Calendar check results"})).toContainText("Calendar check incomplete: Calendar unavailable");
+  await expect(confirm).toBeEnabled();
+  expect(await page.evaluate(() => window.fixture.calls.filter(call => call.service === "check_pending_event").length)).toBe(2);
+  expect(await page.evaluate(() => window.fixture.calls.filter(call => call.service === "approve_pending_event"))).toEqual([]);
+  await confirm.click();
+  await expect(page.getByText("No imports awaiting review.")).toBeVisible();
+  expect(await page.evaluate(() => window.fixture.calls.filter(call => call.service === "approve_pending_event").length)).toBe(1);
+});
