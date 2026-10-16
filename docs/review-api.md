@@ -180,10 +180,15 @@ rechecks the event after the asynchronous provider reads. If the draft,
 destination, status or identity changed—or it was approved/rejected—while
 observation was in progress, the action fails with a refresh error instead of
 returning matches for the old draft. Calendar access failures are explicit errors, **not** a signal that
-the schedule is empty. The review panel uses these results as an optional, on-demand advisory
-calendar check, not as an approval decision. At **approval time**, the
-single-event and bulk approval actions make a fresh read of *each event's
-destination calendar only* before recording its durable write checkpoint.
+the schedule is empty. The review panel automatically checks the selected draft
+before enabling **Approve** confirmation, and checks each selected draft before
+**Approve all** confirmation. It displays conflicts or an explicit incomplete
+result so the reviewer can decide whether to continue; these observations can
+also emit configured conflict notifications. The optional **Check calendars**
+action remains available independently. These results remain advisory and do
+not approve or write an event. At **approval time**, the single-event and bulk
+approval services make a fresh read of *each event's destination calendar only*
+before recording its durable write checkpoint.
 The approval service may label validation failures before checkpointing with
 `Approval rejected before calendar write:`, but **clients must never rely on
 exception-message text to determine whether writing started**. Provider errors
