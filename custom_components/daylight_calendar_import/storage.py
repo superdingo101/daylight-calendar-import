@@ -24,7 +24,7 @@ from .dedup import (
     event_fingerprint,
     source_fingerprint as build_source_fingerprint,
 )
-from .models import EventDraft, normalize_date_time_assumptions
+from .models import UNSUPPORTED_RECURRENCE_WARNING, EventDraft, normalize_date_time_assumptions
 from .notification_journal import NotificationRecord, notification_record
 from .notification_preferences import NotificationPreferences, DELIVERABLE_NOTIFICATION_CLASSES
 from .source_routing import LEGACY_UNRESOLVED_WARNINGS
@@ -1568,7 +1568,11 @@ class PendingImportStore:
 
             if not accepted_events:
                 status = "duplicate" if duplicate_events else "no_events"
-                activity = self._finish_submission(activity_id, status)
+                activity = self._finish_submission(
+                    activity_id, status,
+                    UNSUPPORTED_RECURRENCE_WARNING
+                    if UNSUPPORTED_RECURRENCE_WARNING in warnings else None,
+                )
                 if source_fp is not None and (
                     duplicate_events or source_was_claimed
                 ):

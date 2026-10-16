@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import re
 from typing import Any
 
 import voluptuous as vol
@@ -12,7 +13,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import selector
 from homeassistant.util import dt as dt_util
 
-from .models import DraftValidationError, EventDraft, normalize_date_time_assumptions
+from .models import (
+    DraftValidationError, EventDraft, UNSUPPORTED_RECURRENCE_WARNING,
+    normalize_date_time_assumptions,
+)
 from .sources import SourceDocument, TextSourceAdapter
 
 TASK_NAME = "Extract calendar event drafts"
@@ -30,6 +34,8 @@ Rules:
 - Resolve explicitly relative dates and local clock times using the reference datetime and Home Assistant time zone below.
 - Do not infer missing event durations, end times, dates or years that are not deterministically supported by the source and reference date.
 - For each returned event, include an assumptions list explaining every contextual date/time resolution (for example a relative day or a local time zone). Use an empty list for fully explicit timestamps.
+- Recurring schedules are unsupported. Set unsupported_recurrence to true if source text or attachments describe any repeating schedule (including RRULE). Return no events for that source; never expand recurrence or silently reduce it to a single occurrence. An explicit list of independent dates is not recurrence.
+- Always return unsupported_recurrence as a boolean, false for sources without a repeating schedule.
 - Return no events when the source does not contain a calendar event.
 
 Reference datetime: {reference_datetime}
@@ -89,7 +95,17 @@ EVENTS_STRUCTURE = vol.Schema(
                 },
             }
         ),
+        vol.Required("unsupported_recurrence"): selector.BooleanSelector(),
     }
+)
+
+# Conservative independent guard for explicit English recurrence expressions.
+# Generic newsletter headings such as "Weekly newsletter" are not schedules.
+_RECURRENCE_PATTERN = re.compile(
+    r"\b(?:rrule\s*:|every\s+(?:(?:other|\d+)\s+)?"
+    r"(?:day|week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
+    r"|(?:repeat(?:s|ing)?|recurr(?:ing|ence))\s+(?:every|daily|weekly|monthly|yearly|annually)\b)",
+    re.IGNORECASE,
 )
 
 
@@ -145,7 +161,7 @@ async def async_parse_source(
     )
 
 
-def parse_ai_data(data: Any) -> ParseOutcome:
+def parse_ai_data(data: Any, *, source_text: str = "") -> ParseOutcome:
     """Retain valid drafts when individual AI output items are malformed."""
     if not isinstance(data, dict):
         raise ParseResultError("AI Task result must be an object")
@@ -153,6 +169,12 @@ def parse_ai_data(data: Any) -> ParseOutcome:
     events = data.get("events")
     if not isinstance(events, list):
         raise ParseResultError("AI Task result must contain an events list")
+
+    recurrence = data.get("unsupported_recurrence", False)
+    if not isinstance(recurrence, bool):
+        raise ParseResultError("unsupported_recurrence must be a boolean")
+    if recurrence or _RECURRENCE_PATTERN.search(source_text):
+        return ParseOutcome([], [UNSUPPORTED_RECURRENCE_WARNING])
 
     drafts: list[EventDraft] = []
     event_assumptions: list[tuple[str, ...]] = []

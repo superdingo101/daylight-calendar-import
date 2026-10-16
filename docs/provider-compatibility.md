@@ -77,3 +77,23 @@ No personal mailbox or household calendar is needed.
 No provider/model combination is certified by this document. Before public-beta
 release, replace the pending entries with actual dates, versions, numeric results
 and known limitations. Do not mark a fixture replay as a live result.
+
+### Unsupported recurrence
+
+AI Task extraction requests an `unsupported_recurrence` boolean for recurrence
+found in either source text or attachments. Recurring schedules are not expanded
+into calendar writes. A true flag produces one `unsupported_recurrence` warning
+in the existing import activity/review result and withholds all candidates from
+that source. Submit independent one-off events separately or create the repeating
+schedule manually in the destination calendar. This conservative whole-source
+policy prevents ambiguous recurring candidates from being written as one-offs;
+it also withholds independent events mixed into a recurring announcement.
+
+An independent text guard recognizes explicit English recurrence expressions
+(including “every Thursday”, “repeats weekly” and `RRULE:`), even if the AI
+omits or incorrectly clears its flag. Generic “Weekly newsletter” headings and
+explicit lists of independent dates remain supported. This is not a universal
+recurrence classifier: other languages, unusual phrasing and recurrence visible
+only in images/PDFs still depend on the provider reporting it. Older recorded
+responses without the flag remain readable; new output requires the boolean.
+Validate a real model against recurring announcements before relying on it.

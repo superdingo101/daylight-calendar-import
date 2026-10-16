@@ -175,7 +175,7 @@ class AITaskParserProvider:
                 classify_provider_failure(err), "AI Task could not parse the source"
             ) from None
         try:
-            return parse_ai_data(result.data)
+            return parse_ai_data(result.data, source_text=text)
         except Exception:
             raise ProviderError(
                 "provider_invalid_response", "AI Task returned an invalid result"

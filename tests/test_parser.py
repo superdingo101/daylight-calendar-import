@@ -345,3 +345,62 @@ def test_temporal_assumption_limits_are_inclusive_and_errors_are_stable():
         with pytest.raises(ValueError) as caught:
             normalize_date_time_assumptions(invalid)
         assert str(caught.value) == "assumptions must be up to eight short strings"
+
+
+@pytest.mark.parametrize("text", [
+    "Practice every Thursday until December", "Practice EVERY OTHER WEEK",
+    "Practice every 2 weeks", "Practice repeats daily", "Practice repeats monthly",
+    "Practice repeats yearly", "Practice repeats annually", "RRULE:FREQ=WEEKLY",
+    "Practice repeats weekly", "Practice recurring every week",
+])
+def test_source_recurrence_cannot_be_collapsed_into_ordinary_drafts(text):
+    outcome = parser.parse_ai_data(
+        {"events": [VALID], "unsupported_recurrence": False}, source_text=text
+    )
+    assert outcome.events == []
+    assert outcome.event_assumptions == []
+    assert outcome.warnings == [parser.UNSUPPORTED_RECURRENCE_WARNING]
+    assert outcome.warnings[0].startswith("unsupported_recurrence:")
+
+
+@pytest.mark.parametrize("events", [[], [VALID], [VALID, {**VALID, "title": "Sibling"}]])
+def test_provider_reported_recurrence_has_one_bounded_warning(events):
+    outcome = parser.parse_ai_data({"events": events, "unsupported_recurrence": True})
+    assert outcome == parser.ParseOutcome([], [parser.UNSUPPORTED_RECURRENCE_WARNING])
+
+
+@pytest.mark.parametrize("flag", [None, 0, 1, "false", "true", [], {}])
+def test_recurrence_contract_rejects_non_boolean_flags(flag):
+    with pytest.raises(parser.ParseResultError, match="^unsupported_recurrence must be a boolean$"):
+        parser.parse_ai_data({"events": [VALID], "unsupported_recurrence": flag})
+
+
+@pytest.mark.parametrize("text", [
+    "One meeting on Thursday", "Meet October 8 and October 15 at 5pm",
+    "At the Weekley Center", "Bring every student's form",
+    "Weekly school newsletter: Field trip on October 20 from 10am to 11am",
+    "Daily bulletin: Conference October 20 from 10am to 11am",
+    "Monthly report: Meeting October 20 from 10am to 11am",
+])
+def test_explicit_independent_dates_remain_supported(text):
+    outcome = parser.parse_ai_data(
+        {"events": [VALID], "unsupported_recurrence": False}, source_text=text
+    )
+    assert len(outcome.events) == 1
+    assert outcome.warnings == []
+
+
+async def test_provider_independently_guards_recurring_source(monkeypatch):
+    generate = AsyncMock(return_value=SimpleNamespace(data={
+        "events": [VALID], "unsupported_recurrence": False,
+    }))
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    outcome = await providers.AITaskParserProvider(object(), "ai_task.test").async_parse(
+        TextSourceAdapter().create("Soccer every Thursday until December"),
+        reference_datetime="2026-10-01T12:00:00Z", time_zone="UTC",
+    )
+    assert outcome == parser.ParseOutcome([], [parser.UNSUPPORTED_RECURRENCE_WARNING])
+    instructions = generate.await_args.kwargs["instructions"]
+    assert "never expand recurrence or silently reduce it to a single occurrence" in instructions
+    assert "source text or attachments" in instructions
+    assert "unsupported_recurrence" in parser.EVENTS_STRUCTURE.schema

@@ -7,6 +7,11 @@ from datetime import date, datetime
 from typing import Any
 
 
+UNSUPPORTED_RECURRENCE_WARNING = (
+    "unsupported_recurrence: Repeating schedules require manual calendar entry. "
+    "No events from this source were imported; submit independent one-off events separately."
+)
+
 class DraftValidationError(ValueError):
     """Raised when an AI-produced event draft is not safe to import."""
 
