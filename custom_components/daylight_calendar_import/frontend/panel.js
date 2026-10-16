@@ -2222,13 +2222,13 @@ export class DaylightImportPanel extends HTMLElement {
         content.append(heading, element("p", `Current status: ${activityLabel(item.status)}`),
           element("p", `Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
         if (item.guidance) content.append(element("p", item.guidance));
-        if (item.manual_source_text) content.append(element("p", `Submitted text (first 4,096 characters): ${item.manual_source_text}`, "source"));
         const list = document.createElement("ul");
         for (const transition of item.transitions) {
           const row = element("li", `${activityTime(transition.at, this._hass)} · ${activityLabel(transition.type)}${transition.event_id ? ` · Event ID ${transition.event_id}` : ""}`);
           list.append(row);
         }
         content.append(list);
+        if (item.manual_source_text) content.append(element("p", `Submitted text (first 4,096 characters): ${item.manual_source_text}`, "source"));
       } else if (this._activity.length === 0) content.append(element("p", "No recent activity.", "status"));
       else {
         const heading = element("h2", "Recent activity");

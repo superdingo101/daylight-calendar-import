@@ -240,7 +240,7 @@ test("activity includes completed items, bounded transitions and useful empty/er
         created_at: "2026-10-01T12:00:00Z", status: "mixed", created_count: 3, rejected_count: 2}]}};
     }
     return {response: {activity: {id: "old", source_title: "School.pdf", status: "mixed",
-      created_count: 3, rejected_count: 2, manual_source_text: "Private class each Thursday",
+      created_count: 3, rejected_count: 2,
       transitions: [{type: "review_ready", at: "2026-10-01T12:00:00Z", event_id: null},
         {type: "calendar_created", at: "2026-10-01T12:10:00Z", event_id: "event"}]}}};
   }};
@@ -255,7 +255,6 @@ test("activity includes completed items, bounded transitions and useful empty/er
   assert.match(panel._content.querySelectorAll("p")[1].textContent, /Calendar created: 3 · Rejected: 2/);
   assert.match(panel._content.querySelectorAll("li")[1].textContent, /Event ID event/);
   assert.equal(globalThis.focusedNode.textContent, "School.pdf");
-  assert.ok(panel._content.querySelectorAll("p").some(row => row.textContent === "Submitted text (first 4,096 characters): Private class each Thursday"));
   panel._refreshButton.click();
   await flush();
   assert.equal(requests.at(-1), "get_activity");
@@ -5556,4 +5555,19 @@ test("both manual forms remain visible on a narrow empty inbox with IMAP explici
   assert.equal(panel._fileSubmission.element.hidden, false);
   assert.equal(panel._manualSubmission.button.textContent, "Import events");
   assert.equal(panel._fileSubmission.button.textContent, "Import file");
+});
+
+
+test("manual recurrence activity detail labels and safely renders the retained excerpt", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => request.service === "list_pending"
+    ? {response: {imports: []}}
+    : {response: {activity: {id: "manual-recurrence", status: "no_events", transitions: [],
+      guidance: "Repeating schedules require manual calendar entry.",
+      manual_source_text: "Private class each Thursday <script>unsafe</script>"}}}};
+  await flush();
+  await panel.showActivity("manual-recurrence");
+  assert.ok(panel._content.querySelectorAll("p").some(row => row.textContent ===
+    "Submitted text (first 4,096 characters): Private class each Thursday <script>unsafe</script>"));
+  assert.equal(panel._content.querySelector("script"), null);
 });
