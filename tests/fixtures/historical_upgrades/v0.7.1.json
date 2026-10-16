@@ -23,7 +23,8 @@
             },
             "status": "write_uncertain",
             "calendar_entity": "calendar.family",
-            "write_attempt": "attempt-before-upgrade"
+            "write_attempt": "attempt-before-upgrade",
+            "routing_unresolved": false
           }
         ]
       }

@@ -70,6 +70,8 @@ async def test_historical_storage_disk_round_trip_preserves_decisions(hass, tmp_
         assert event.id == "historical-event"
         assert event.calendar_entity == "calendar.family"
         assert event.write_attempt == "attempt-before-upgrade"
+    if name == "v0.7.1":
+        assert event.routing_unresolved is False
     processor = AsyncMock()
     with pytest.raises(PendingImportApprovalUncertainError):
         await store.async_approve_event(pending.id, event.id, processor)
@@ -81,6 +83,15 @@ async def test_historical_storage_disk_round_trip_preserves_decisions(hass, tmp_
         assert [record.as_dict() for record in notifications] == original["data"]["notifications"]
     else:
         assert notifications == ()
+
+    # Migration must be durable before any unrelated user action forces a save.
+    migrated = json.loads(await hass.async_add_executor_job(path.read_text))
+    assert migrated["version"] == 2
+    assert migrated["data"]["items"][0]["events"][0]["id"] == event.id
+    immediate_restart = PendingImportStore(hass)
+    await immediate_restart.async_load()
+    assert immediate_restart.get_event(pending.id, event.id) == event
+    assert immediate_restart.list_notifications() == notifications
 
     # An unrelated public mutation must serialize all historical state.
     await store.async_add(source_text="New submission", events=[replace(event.draft, title="New appointment")])
