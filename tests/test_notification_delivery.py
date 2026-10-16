@@ -535,3 +535,70 @@ def test_journal_filters_ineligible_history_without_losing_later_review_requests
     ]
     assert all(request.target == "notify.phone" for request in projected)
     assert all(request.event.type == "review_ready" for request in projected)
+
+
+@pytest.mark.parametrize("failure", ["delivery_failed", "delivery_interrupted"])
+async def test_terminal_failure_activity_is_atomic_bounded_private_and_not_replayed(monkeypatch, failure):
+    from custom_components.daylight_calendar_import.storage import ACTIVITY_TRANSITIONS_PER_IMPORT
+    from custom_components.daylight_calendar_import.notifications import notification_from_transition
+
+    backend = FakeStoreBackend()
+    store = runtime(monkeypatch, backend)
+    pending = (await store.async_add(source_text="private source", events=[draft()])).pending
+    request = store.list_notifications()[0]
+    assert request.import_id == pending.id
+    store._activity[0]["transitions"] *= ACTIVITY_TRANSITIONS_PER_IMPORT
+    before = store.get_activity(pending.id)
+    failed = replace(request, status="failed", failure=failure, attempts=3)
+    backend.save_error = OSError("private disk")
+    with pytest.raises(OSError):
+        await store.async_update_notification(request, failed)
+    assert store.get_activity(pending.id) == before
+    assert store.list_notifications() == (request,)
+    backend.save_error = None
+    assert await store.async_update_notification(request, failed)
+    saved = store.list_notifications()[0]
+    activity = store.get_activity(pending.id)
+    assert activity["status"] == before["status"] == "review_ready"
+    assert activity["created_count"] == activity["rejected_count"] == 0
+    assert len(activity["transitions"]) == ACTIVITY_TRANSITIONS_PER_IMPORT
+    transition = activity["transitions"][-1]
+    assert transition == {"type": "notification_delivery_failed", "at": saved.terminal_at, "event_id": None}
+    assert notification_from_transition(activity, transition) is None
+    assert backend.saved[-1]["activity"] == [activity]
+    assert "notify.phone" not in str(activity) and "private" not in str(activity)
+    assert not await store.async_update_notification(request, failed)
+    assert await store.async_update_notification(saved, saved)
+    assert store.get_activity(pending.id) == activity
+    backend.load_result = backend.saved[-1]
+    restored = runtime(monkeypatch, backend)
+    await restored.async_load()
+    monkeypatch.setattr(delivery, "async_send_ha_notification", AsyncMock())
+    await run(restored)
+    delivery.async_send_ha_notification.assert_not_awaited()
+    assert restored.get_activity(pending.id) == activity
+    assert len(restored.list_notifications()) == 1
+
+
+async def test_failed_event_notification_preserves_event_identity_and_other_activity(monkeypatch):
+    store = runtime(monkeypatch)
+    first = (await store.async_add(source_text="first", events=[draft()])).pending
+    second = (await store.async_add(source_text="second", events=[replace(draft(), title="Second")])).pending
+    other = store.get_activity(second.id)
+    request = replace(record(), import_id=first.id, event_id=first.events[0].id, target="notify.phone")
+    await store.async_enqueue_notification(request)
+    await store.async_update_notification(request, replace(request, status="failed", failure="delivery_failed"))
+    activity = store.list_activity()
+    assert activity[0]["id"] == first.id
+    assert activity[0]["transitions"][-1]["event_id"] == first.events[0].id
+    assert activity[1] == other
+
+
+@pytest.mark.parametrize("status", ["pending", "sent", "cancelled"])
+async def test_nonfailed_delivery_does_not_change_activity(monkeypatch, status):
+    store = runtime(monkeypatch)
+    pending = (await store.async_add(source_text="source", events=[draft()])).pending
+    before = store.get_activity(pending.id)
+    request = store.list_notifications()[0]
+    assert await store.async_update_notification(request, replace(request, status=status, attempts=1))
+    assert store.get_activity(pending.id) == before

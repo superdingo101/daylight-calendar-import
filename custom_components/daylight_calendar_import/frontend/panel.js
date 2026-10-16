@@ -249,6 +249,7 @@ function activityLabel(type) {
     review_ready: "Awaiting review", duplicate: "Duplicate", failed: "Failed",
     event_rejected: "Rejected", calendar_write_started: "Calendar write started",
     calendar_created: "Calendar created",
+    notification_delivery_failed: "Notification delivery failed; check notification settings",
     calendar_write_uncertain: "Calendar write needs confirmation",
     mixed: "Mixed event outcomes"})[type] || type.replaceAll("_", " ");
 }
@@ -2241,6 +2242,9 @@ export class DaylightImportPanel extends HTMLElement {
           open.dataset.activityId = item.id;
           open.addEventListener("click", () => void this.showActivity(item.id));
           row.append(open, element("p", `${activityTime(item.created_at, this._hass)} · ${activityLabel(item.status)} · Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
+          if (item.notification_delivery_failed) {
+            row.append(element("p", activityLabel("notification_delivery_failed"), "warning"));
+          }
           list.append(row);
         }
         content.append(list);

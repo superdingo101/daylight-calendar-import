@@ -237,23 +237,28 @@ test("activity includes completed items, bounded transitions and useful empty/er
     if (request.service === "list_activity") {
       if (fail) throw new Error("Activity unavailable");
       return {response: {activity: [{id: "old", source_title: "School.pdf",
-        created_at: "2026-10-01T12:00:00Z", status: "mixed", created_count: 3, rejected_count: 2}]}};
+        created_at: "2026-10-01T12:00:00Z", status: "mixed", created_count: 3, rejected_count: 2,
+        notification_delivery_failed: true}]}};
     }
     return {response: {activity: {id: "old", source_title: "School.pdf", status: "mixed",
       created_count: 3, rejected_count: 2,
       transitions: [{type: "review_ready", at: "2026-10-01T12:00:00Z", event_id: null},
-        {type: "calendar_created", at: "2026-10-01T12:10:00Z", event_id: "event"}]}}};
+        {type: "calendar_created", at: "2026-10-01T12:10:00Z", event_id: "event"},
+        {type: "notification_delivery_failed", at: "2026-10-01T12:11:00Z", event_id: null}]}}};
   }};
   await flush();
   panel._content.querySelectorAll("button").find(button => button.textContent === "Recent activity").click();
   await flush();
   assert.equal(find(panel._content, "h2").textContent, "Recent activity");
   assert.match(find(find(panel._content, "li"), "p").textContent, /Calendar created: 3 · Rejected: 2/);
+  assert.ok(panel._content.querySelectorAll("p").some(row =>
+    row.textContent === "Notification delivery failed; check notification settings"));
   assert.equal(panel._content.querySelector("button").disabled, false);
   panel._content.querySelectorAll("button").find(button => button.dataset.activityId === "old").click();
   await flush();
   assert.match(panel._content.querySelectorAll("p")[1].textContent, /Calendar created: 3 · Rejected: 2/);
   assert.match(panel._content.querySelectorAll("li")[1].textContent, /Event ID event/);
+  assert.match(panel._content.querySelectorAll("li")[2].textContent, /Notification delivery failed; check notification settings/);
   assert.equal(globalThis.focusedNode.textContent, "School.pdf");
   panel._refreshButton.click();
   await flush();

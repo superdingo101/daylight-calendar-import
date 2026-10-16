@@ -32,7 +32,8 @@ async def test_real_runtime_snapshot_is_aggregate_only_and_read_only(monkeypatch
     store._activity = (
         {"id": "private import", "status": "failed", "failure_code": "provider_timeout",
          "title": "private title", "guidance": "private provider response", "warnings": ["private"],
-         "transitions": [{"type": "received", "at": "private time"}, {"type": "failed"}]},
+         "transitions": [{"type": "received", "at": "private time"}, {"type": "failed"},
+                         {"type": "notification_delivery_failed"}]},
         {"status": "review_ready", "transitions": [{"type": "source_reprocessed"}]},
         {"status": "private lifecycle", "failure_code": "private category", "transitions": "private steps"},
         {"status": ["private"], "failure_code": {"private": "code"},
@@ -66,6 +67,7 @@ async def test_real_runtime_snapshot_is_aggregate_only_and_read_only(monkeypatch
     assert result["activity"]["status"]["unknown"] == 5
     assert result["activity"]["transitions"]["received"] == 1
     assert result["activity"]["transitions"]["failed"] == 1
+    assert result["activity"]["transitions"]["notification_delivery_failed"] == 1
     assert result["activity"]["transitions"]["source_reprocessed"] == 1
     assert result["activity"]["transitions"]["unknown"] == 7
     assert result["provider_failures"]["provider_timeout"] == 1
