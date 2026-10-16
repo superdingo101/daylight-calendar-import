@@ -3121,3 +3121,112 @@ async def test_manual_submission_serializes_source_id_after_authorization(
         if not first.done():
             first.cancel()
         await asyncio.gather(first, return_exceptions=True)
+
+
+@pytest.mark.parametrize("schema_name", ["PARSE_SCHEMA", "SUBMIT_SCHEMA", "SUBMIT_IMAGE_SCHEMA", "SUBMIT_PDF_SCHEMA"])
+def test_all_manual_service_schemas_bound_raw_text(schema_name):
+    from custom_components import daylight_calendar_import as integration
+
+    schema = getattr(integration, schema_name)
+    extra = {"file_id": "a" * 32} if "IMAGE" in schema_name or "PDF" in schema_name else {}
+    text = "🎉" * 1_000_000
+    assert schema({"text": text, **extra})["text"] == text
+    for oversized in (text + "x", " " * 1_000_000 + "x"):
+        with pytest.raises(vol.Invalid, match="1,000,000-character limit"):
+            schema({"text": oversized, **extra})
+
+
+async def test_setup_preserves_legacy_alias_sets_over_new_submission_limit(monkeypatch):
+    aliases = {f"alias-{index}": "calendar.family" for index in range(101)}
+    configured = entry(options={"calendar_aliases": aliases})
+    store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    hass = FakeHass()
+    assert await async_setup_entry(hass, configured) is True
+    assert store.accepting_services is True
+    assert configured.options["calendar_aliases"] == aliases
+    assert hass.data[DOMAIN][configured.entry_id] is store
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+async def test_email_text_limit_precedes_routing_directive_removal(monkeypatch, extra):
+    from custom_components.daylight_calendar_import.const import MAX_SOURCE_TEXT_CHARS
+
+    hass = FakeHass()
+    parser = AsyncMock(return_value=ParseOutcome([], []))
+    store = SimpleNamespace(
+        async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+        async_add=AsyncMock(),
+    )
+    processors = []
+
+    async def capture_runtime(_hass, _entry, _store, process):
+        processors.append(process)
+        return None
+
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _: store)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parser)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_setup_email_runtime", capture_runtime)
+    assert await async_setup_entry(hass, entry())
+    prefix, suffix = "Calendar: ", "\nParty"
+    body = prefix + "x" * (MAX_SOURCE_TEXT_CHARS + extra - len(prefix) - len(suffix)) + suffix
+    source = SourceDocument(
+        id="bounded-email", kind=SourceKind.EMAIL,
+        received_at=datetime(2026, 10, 16, tzinfo=UTC), text=body,
+    )
+    if extra:
+        with pytest.raises(SourceValidationError) as caught:
+            await processors[0](source, "activity")
+        assert caught.value.code == "source_too_large"
+        assert str(MAX_SOURCE_TEXT_CHARS) in str(caught.value).replace(",", "")
+        parser.assert_not_awaited()
+        store.async_add.assert_not_awaited()
+    else:
+        await processors[0](source, "activity")
+        parser.assert_awaited_once()
+        assert parser.await_args.kwargs["source"].text == "Party"
+        store.async_add.assert_awaited_once()
+
+
+async def test_oversized_combined_pdf_is_rejected_before_activity_creation(monkeypatch):
+    from custom_components.daylight_calendar_import.const import MAX_SOURCE_TEXT_CHARS
+
+    supporting = "C" * (MAX_SOURCE_TEXT_CHARS - 10)
+    combined = supporting + "\n\nExtracted"
+    assert len(combined) == MAX_SOURCE_TEXT_CHARS + 1
+    data = SUBMIT_PDF_SCHEMA({ATTR_FILE_ID: "a" * 32, ATTR_TEXT: supporting})
+    source = SourceDocument(
+        id="large-pdf", kind=SourceKind.PDF,
+        received_at=datetime(2026, 10, 16, tzinfo=UTC), text=combined,
+    )
+    cleaned = []
+
+    @asynccontextmanager
+    async def pdf_source(_hass, file_id, context):
+        assert file_id == "a" * 32
+        assert context == supporting
+        try:
+            yield source
+        finally:
+            cleaned.append(True)
+
+    parser = AsyncMock()
+    store = SimpleNamespace(
+        async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+        async_begin_submission=AsyncMock(), async_add=AsyncMock(),
+        is_source_duplicate=Mock(return_value=False),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_pdf_source", pdf_source)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _: store)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parser)
+    hass = FakeHass()
+    assert await async_setup_entry(hass, entry())
+    submit = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_PDF)][0]
+    with pytest.raises(SourceValidationError) as caught:
+        await submit(SimpleNamespace(data=data, context=Context(user_id=None)))
+    assert caught.value.code == "source_too_large"
+    store.async_begin_submission.assert_not_awaited()
+    store.async_add.assert_not_awaited()
+    parser.assert_not_awaited()
+    assert store.active_submissions == set()
+    assert cleaned == [True]

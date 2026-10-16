@@ -63,6 +63,9 @@ export function submissionPreprocessingFailure(error) {
 export function submissionErrorMessage(error, submitted = true) {
   const detail = typeof error?.message === "string" && error.message.trim() ? error.message.trim() : "Could not submit this import.";
   const identifier = `${error?.code || ""} ${error?.translation_key || ""} ${detail}`;
+  if (/1,000,000-character limit/i.test(identifier)) {
+    return `${detail} Reduce the text or split it into separate imports, including any supporting text added to a PDF.`;
+  }
   const preprocessingFailure = submissionPreprocessingFailure(error);
   const pdfFailure = pdfPreprocessingFailure(error);
   if (preprocessingFailure === "permission" || /unauthorized|not_allowed/.test(identifier)) {

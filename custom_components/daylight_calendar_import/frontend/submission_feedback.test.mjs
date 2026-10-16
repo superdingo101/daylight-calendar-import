@@ -216,3 +216,15 @@ test("late navigation failure cannot overwrite feedback cleared for a new draft"
   await navigating;
   assert.equal(status.textContent, "Extracting events for review…");
 });
+
+
+test("text limits give text-specific advice for service and provider rejections", () => {
+  for (const error of [
+    {code: "source_too_large", message: "Source text exceeds the 1,000,000-character limit."},
+    {code: "invalid_format", message: "Source text exceeds the 1,000,000-character limit. Split it into smaller submissions."},
+  ]) {
+    const advice = submissionErrorMessage(error);
+    assert.match(advice, /Reduce the text or split it into separate imports/);
+    assert.doesNotMatch(advice, /10 MiB|outcome is unknown/);
+  }
+});

@@ -118,7 +118,7 @@ async def async_parse_text(
         raise ValueError("text must not be empty")
 
     return await async_parse_source(
-        hass, source=TextSourceAdapter().create(clean_text), ai_task_entity=ai_task_entity
+        hass, source=TextSourceAdapter().create(text), ai_task_entity=ai_task_entity
     )
 
 

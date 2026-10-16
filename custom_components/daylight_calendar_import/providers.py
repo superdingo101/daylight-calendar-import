@@ -10,6 +10,7 @@ from homeassistant.components.ai_task.const import AITaskEntityFeature, DATA_COM
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
+from .const import MAX_SOURCE_TEXT_CHARS, SOURCE_TEXT_LIMIT_MESSAGE
 from .parser import EVENTS_STRUCTURE, PROMPT_TEMPLATE, TASK_NAME, ParseOutcome, parse_ai_data
 from .provider_failures import classify_provider_failure
 from .sources import SourceDocument
@@ -48,6 +49,8 @@ class ParserCapabilities:
 
     def validate(self, source: SourceDocument) -> None:
         """Reject unsupported or invalid inputs before invoking a provider."""
+        if source.text is not None and len(source.text) > MAX_SOURCE_TEXT_CHARS:
+            raise SourceValidationError("source_too_large", SOURCE_TEXT_LIMIT_MESSAGE)
         attachments = source.attachments
         if len(attachments) > self.max_attachments:
             raise SourceValidationError("too_many_attachments", "Too many source attachments")
