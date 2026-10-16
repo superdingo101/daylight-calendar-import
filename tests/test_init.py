@@ -3121,3 +3121,16 @@ async def test_manual_submission_serializes_source_id_after_authorization(
         if not first.done():
             first.cancel()
         await asyncio.gather(first, return_exceptions=True)
+
+
+@pytest.mark.parametrize("schema_name", ["PARSE_SCHEMA", "SUBMIT_SCHEMA", "SUBMIT_IMAGE_SCHEMA", "SUBMIT_PDF_SCHEMA"])
+def test_all_manual_service_schemas_bound_raw_text(schema_name):
+    from custom_components import daylight_calendar_import as integration
+
+    schema = getattr(integration, schema_name)
+    extra = {"file_id": "a" * 32} if "IMAGE" in schema_name or "PDF" in schema_name else {}
+    text = "🎉" * 1_000_000
+    assert schema({"text": text, **extra})["text"] == text
+    for oversized in (text + "x", " " * 1_000_000 + "x"):
+        with pytest.raises(vol.Invalid, match="1,000,000-character limit"):
+            schema({"text": oversized, **extra})

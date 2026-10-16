@@ -51,3 +51,14 @@ def test_source_contract_can_describe_image_pdf_or_combined_text():
         text="Invitation details", attachments=(attachment,),
     ).text == "Invitation details"
     assert SourceKind.EMAIL.value == "email"
+
+
+@pytest.mark.parametrize("text", ["x" * 1_000_000, "🎉" * 1_000_000])
+def test_text_adapter_accepts_exact_character_limit(text):
+    assert TextSourceAdapter().create(text).text == text
+
+
+@pytest.mark.parametrize("text", ["x" * 1_000_001, " " * 1_000_000 + "x"])
+def test_text_adapter_rejects_over_limit_before_trimming(text):
+    with pytest.raises(ValueError, match="1,000,000-character limit"):
+        TextSourceAdapter().create(text)

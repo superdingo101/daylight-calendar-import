@@ -1657,3 +1657,15 @@ async def test_invalid_sender_allowlist_exposes_stable_validation_code_and_messa
         )
     assert caught.value.code == "invalid_sender_allowlist"
     assert str(caught.value) == "Enter valid, complete sender email addresses."
+
+
+def test_calendar_alias_count_boundary():
+    from custom_components.daylight_calendar_import.settings import normalize_calendar_aliases
+
+    aliases = {f"alias-{index}": "calendar.family" for index in range(100)}
+    assert normalize_calendar_aliases(aliases, ["calendar.family"]) == aliases
+    aliases["one-too-many"] = "calendar.family"
+    with pytest.raises(SettingsValidationError) as err:
+        normalize_calendar_aliases(aliases, ["calendar.family"])
+    assert err.value.code == "too_many_aliases"
+    assert str(err.value) == "Configure at most 100 calendar aliases."

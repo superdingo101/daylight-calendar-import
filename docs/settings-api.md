@@ -105,6 +105,7 @@ Validation failures use stable WebSocket error codes:
 - `invalid_calendar`
 - `entry_not_found`
 - `invalid_settings`
+- `too_many_aliases` (more than 100 configured aliases)
 - `invalid_aliases`
 - `invalid_alias`
 - `duplicate_alias`

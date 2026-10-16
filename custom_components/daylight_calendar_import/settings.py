@@ -26,6 +26,7 @@ from .const import (
     CONF_EMAIL_VERIFY_SSL,
     CONF_EMAIL_SENDER_ALLOWLIST,
     DOMAIN,
+    MAX_CALENDAR_ALIASES,
 )
 from .direct_imap import (
     DirectImapAuthenticationError,
@@ -180,6 +181,10 @@ def normalize_calendar_aliases(
     if not isinstance(aliases, Mapping):
         raise SettingsValidationError("invalid_aliases", "Calendar aliases must be a mapping.")
     normalized: dict[str, str] = {}
+    if len(aliases) > MAX_CALENDAR_ALIASES:
+        raise SettingsValidationError(
+            "too_many_aliases", "Configure at most 100 calendar aliases."
+        )
     for alias, target in aliases.items():
         if not isinstance(alias, str) or "\n" in alias or "\r" in alias:
             raise SettingsValidationError("invalid_alias", "Calendar alias is invalid.")

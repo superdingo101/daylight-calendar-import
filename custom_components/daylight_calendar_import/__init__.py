@@ -26,6 +26,8 @@ from .const import (
     ATTR_PENDING_ID,
     ATTR_SOURCE_ID,
     ATTR_TEXT,
+    MAX_SOURCE_TEXT_CHARS,
+    SOURCE_TEXT_LIMIT_MESSAGE,
     CONF_AI_TASK_ENTITY,
     CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
@@ -134,11 +136,14 @@ def _unregister_entry_services(hass: HomeAssistant) -> None:
 
 
 
-PARSE_SCHEMA = vol.Schema({vol.Required(ATTR_TEXT): cv.string})
+BOUNDED_TEXT = vol.All(
+    cv.string, vol.Length(max=MAX_SOURCE_TEXT_CHARS, msg=SOURCE_TEXT_LIMIT_MESSAGE),
+)
+PARSE_SCHEMA = vol.Schema({vol.Required(ATTR_TEXT): BOUNDED_TEXT})
 SUBMIT_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_TEXT): vol.All(
-            cv.string, lambda value: value.strip(), vol.Length(min=1),
+            BOUNDED_TEXT, lambda value: value.strip(), vol.Length(min=1),
         ),
         vol.Optional(ATTR_SOURCE_ID): vol.All(
             cv.string,
@@ -156,7 +161,7 @@ RESET_DEDUPLICATION_SCHEMA = vol.Schema(vol.Any(
 SUBMIT_IMAGE_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_FILE_ID): vol.All(cv.string, vol.Match(r"^[0-9a-f]{32}$")),
-        vol.Optional(ATTR_TEXT, default=""): cv.string,
+        vol.Optional(ATTR_TEXT, default=""): BOUNDED_TEXT,
         vol.Optional(ATTR_SOURCE_ID): vol.All(
             cv.string, lambda value: value.strip(), vol.Length(min=1, max=2048)
         ),
