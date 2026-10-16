@@ -2587,7 +2587,9 @@ async def test_check_pending_event_uses_read_only_observer_and_configured_scope(
     hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
     hass.config = SimpleNamespace(time_zone="America/Los_Angeles")
     observer = AsyncMock(return_value=(CalendarMatch(
-        "exact_duplicate", "calendar.family", "Practice"
+        "exact_duplicate", "calendar.family", "Practice",
+        "2026-10-08T17:00:00-07:00", "2026-10-08T18:00:00-07:00", False,
+        "2026-10-08T17:00:00-07:00", "2026-10-08T18:00:00-07:00"
     ),))
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore", lambda _: store
@@ -2605,7 +2607,10 @@ async def test_check_pending_event_uses_read_only_observer_and_configured_scope(
     assert response["observed_calendars"] == ["calendar.family", "calendar.school"]
     assert response["matches"] == [
         {"kind": "exact_duplicate", "calendar_entity": "calendar.family",
-         "existing_title": "Practice"}
+         "existing_title": "Practice",
+         "existing_start": "2026-10-08T17:00:00-07:00", "existing_end": "2026-10-08T18:00:00-07:00",
+         "existing_all_day": False,
+         "overlap_start": "2026-10-08T17:00:00-07:00", "overlap_end": "2026-10-08T18:00:00-07:00"}
     ]
     store.async_record_conflict.assert_awaited_once_with(item.id, item.events[0], ["calendar.family", "calendar.school"])
     observer.assert_awaited_once()
@@ -2786,6 +2791,8 @@ async def test_approval_writer_rechecks_destination_before_calendar_write(monkey
         return_value=(CalendarMatch(
             "exact_duplicate" if outcome == "exact" else "conflict",
             "calendar.family", "Practice",
+            "2026-10-08T17:00:00-07:00", "2026-10-08T18:00:00-07:00", False,
+            "2026-10-08T17:00:00-07:00", "2026-10-08T18:00:00-07:00",
         ),) if outcome in ("exact", "other") else (),
     )
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_classify_conflicts", observer)
@@ -2972,7 +2979,11 @@ async def test_check_pending_event_conflict_notification_boundary(monkeypatch, c
         recorder.side_effect = record_and_change
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _: store)
     kind = outcome if outcome in ("exact_duplicate", "possible_duplicate", "conflict", "unknown") else "conflict"
-    matches = () if outcome == "clear" else (CalendarMatch(kind, "calendar.family", "Private calendar title"),)
+    matches = () if outcome == "clear" else (CalendarMatch(
+        kind, "calendar.family", "Private calendar title",
+        "2026-10-08", "2026-10-09", True,
+        "2026-10-08T00:00:00-07:00", "2026-10-09T00:00:00-07:00",
+    ),)
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_classify_conflicts", AsyncMock(return_value=matches))
     hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(allowed=True)))
     assert await async_setup_entry(hass, entry())
@@ -2984,7 +2995,10 @@ async def test_check_pending_event_conflict_notification_boundary(monkeypatch, c
     else:
         response = await handler(call)
         assert response["matches"] == [{"kind": match.kind, "calendar_entity": match.calendar_entity,
-                                        "existing_title": match.existing_title} for match in matches]
+                                        "existing_title": match.existing_title,
+                                        "existing_start": match.existing_start, "existing_end": match.existing_end,
+                                        "existing_all_day": match.existing_all_day,
+                                        "overlap_start": match.overlap_start, "overlap_end": match.overlap_end} for match in matches]
     if outcome in ("clear", "unknown"):
         recorder.assert_not_awaited()
     else:

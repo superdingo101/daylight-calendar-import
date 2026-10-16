@@ -98,10 +98,17 @@ async def test_multicalendar_matches_and_exact_duplicate_approval_guard(workflow
     assert checked["success"], checked
     result = checked["result"]["response"]
     assert result["observed_calendars"] == ["calendar.family", "calendar.work", "calendar.school"]
+    interval = {"existing_start": "2026-11-12T17:00:00-08:00",
+                "existing_end": "2026-11-12T18:00:00-08:00", "existing_all_day": False,
+                "overlap_start": "2026-11-12T17:00:00-08:00",
+                "overlap_end": "2026-11-12T18:00:00-08:00"}
     assert result["matches"] == [
-        {"kind": "exact_duplicate", "calendar_entity": "calendar.family", "existing_title": " Practice "},
-        {"kind": "possible_duplicate", "calendar_entity": "calendar.work", "existing_title": "Practice"},
-        {"kind": "conflict", "calendar_entity": "calendar.school", "existing_title": "Meeting"},
+        {**interval, "kind": "exact_duplicate", "calendar_entity": "calendar.family",
+         "existing_title": " Practice "},
+        {**interval, "kind": "possible_duplicate", "calendar_entity": "calendar.work",
+         "existing_title": "Practice", "existing_end": "2026-11-12T18:30:00-08:00"},
+        {**interval, "kind": "conflict", "calendar_entity": "calendar.school",
+         "existing_title": "Meeting"},
     ]
     runtime.writes.assert_not_awaited()
     refused = await call(runtime.client, "approve_pending_event", **ids)
