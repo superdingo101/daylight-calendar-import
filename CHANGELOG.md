@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.0 (unreleased)
+
+- Prepare the public-beta validation milestone over the existing text/image/PDF and optional Direct IMAP workflows. Calendar creation continues to require review and approval.
+- Add focused installation, historical migration, settings/permissions, desktop/mobile browser, routing/conflict, review/recovery, IMAP, AI Task adapter, privacy, and large-input/concurrency regression coverage (PRs #153–#163, merged).
+- Document reproducible installation/upgrade and public-beta dogfood checks in `docs/public-beta-checklist.md`, alongside provider/media limitations and required release evidence.
+- Live model extraction quality and real-installation dogfood remain separate release requirements; recorded provider responses do not certify an AI model.
+
+### Upgrade from 0.8.0
+
+Back up Home Assistant, update through HACS and restart. Preserve the configured AI Task entity, allowed/default calendars and private pending-import storage. Inspect unresolved calendar writes in the destination calendar before recording their outcome; do not resend sources or remove/re-add the integration as an upgrade method.
+
+The beta-validation PRs are merged; release preparation still requires recorded manual/provider checks, final candidate validation and a clean release proof. See `docs/releases/v0.9.0.md`.
+
 ## 0.8.0
 
 - Submit pasted event details, images, and PDFs directly from the Daylight Imports view, including an empty inbox, without configuring IMAP.
