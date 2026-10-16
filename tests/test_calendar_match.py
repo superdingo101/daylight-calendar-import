@@ -164,7 +164,19 @@ def test_extreme_utc_context_falls_back_when_local_offset_overflows():
     result = classify_calendar_event(event, existing("Future", event.start, event.end),
                                      local_zone=timezone(timedelta(hours=14)))
     assert result.kind == "exact_duplicate"
-    assert result.existing_start == "9999-12-31T23:00:00+14:00"
+    assert result.existing_start == "9999-12-31T09:00:00+00:00"
     assert result.existing_end == "9999-12-31T11:00:00+00:00"
+    assert result.overlap_start == result.existing_start
+    assert result.overlap_end == result.existing_end
+
+
+def test_early_utc_range_falls_back_as_a_pair_when_local_start_underflows():
+    from datetime import timedelta, timezone
+
+    event = draft("Early", "0001-01-01T01:00:00Z", "0001-01-01T15:00:00Z")
+    result = classify_calendar_event(event, existing("Early", event.start, event.end),
+                                     local_zone=timezone(timedelta(hours=-12)))
+    assert result.existing_start == "0001-01-01T01:00:00+00:00"
+    assert result.existing_end == "0001-01-01T15:00:00+00:00"
     assert result.overlap_start == result.existing_start
     assert result.overlap_end == result.existing_end

@@ -36,12 +36,12 @@ def _range(
         raise ValueError("Calendar event end must be after start")
     return start_utc, end_utc
 
-def _display_instant(value: datetime, local_zone: tzinfo) -> str:
-    """Prefer HA-local offsets without losing representable UTC year boundaries."""
+def _display_range(start: datetime, end: datetime, local_zone: tzinfo) -> tuple[str, str]:
+    """Keep an interval in one zone even at representable UTC year boundaries."""
     try:
-        return value.astimezone(local_zone).isoformat()
+        return start.astimezone(local_zone).isoformat(), end.astimezone(local_zone).isoformat()
     except OverflowError:
-        return value.isoformat()
+        return start.isoformat(), end.isoformat()
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,11 +91,14 @@ def classify_calendar_event(
         kind = "possible_duplicate"
     else:
         kind = "conflict"
+    displayed_start, displayed_end = (
+        (existing.start, existing.end) if existing.all_day
+        else _display_range(existing_start, existing_end, local_zone)
+    )
+    overlap_start, overlap_end = _display_range(
+        max(candidate_start, existing_start), min(candidate_end, existing_end), local_zone
+    )
     return CalendarMatch(
         kind, existing.calendar_entity, existing.title,
-        existing.start if existing.all_day else _display_instant(existing_start, local_zone),
-        existing.end if existing.all_day else _display_instant(existing_end, local_zone),
-        existing.all_day,
-        _display_instant(max(candidate_start, existing_start), local_zone),
-        _display_instant(min(candidate_end, existing_end), local_zone),
+        displayed_start, displayed_end, existing.all_day, overlap_start, overlap_end,
     )

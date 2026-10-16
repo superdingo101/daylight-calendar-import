@@ -4471,6 +4471,16 @@ test("conflict intervals show all-day dates and HA-preferred timed overlap conte
     "Existing event: Nov 1, 2026 · 1 AM (PDT) – 2 AM (PST)",
     "Overlaps: Nov 1, 2026 · 1:30 AM (PDT) – 1:45 AM (PST)",
   ]);
+  panel._hass.locale.time_format = "24";
+  panel._hass.config.time_zone = "Pacific/Kiritimati";
+  panel.renderCalendarCheckDetails(section, {status: "ready", matches: [{...match,
+    existing_start: "9999-12-31T09:00:00+00:00", existing_end: "9999-12-31T11:00:00+00:00",
+    existing_all_day: false,
+    overlap_start: "9999-12-31T09:00:00+00:00", overlap_end: "9999-12-31T11:00:00+00:00"}]});
+  assert.deepEqual(section.querySelector("li").querySelectorAll("p").map(node => node.textContent), [
+    "Existing event: Dec 31, 9999 · 09:00–11:00 (UTC)",
+    "Overlaps: Dec 31, 9999 · 09:00–11:00 (UTC)",
+  ]);
 });
 
 test("on-demand calendar check renders classified matches without changing review state", async () => {
