@@ -353,7 +353,7 @@ def test_temporal_assumption_limits_are_inclusive_and_errors_are_stable():
     "Practice repeats yearly", "Practice repeats annually", "RRULE:FREQ=WEEKLY",
     "Practice repeats weekly", "Practice recurring every week",
     "class meets weekly", "class each Thursday", "daily standup", "class recurs weekly",
-    "Practice every day", "Class each day",
+    "Practice every day", "Class each day", "Every day at 7am", "Every day until December",
 ])
 def test_source_recurrence_cannot_be_collapsed_into_ordinary_drafts(text):
     outcome = parser.parse_ai_data(

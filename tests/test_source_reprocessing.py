@@ -271,3 +271,25 @@ async def test_service_recurring_reprocess_cannot_approve_old_oneoff(monkeypatch
         with pytest.raises(ServiceValidationError, match='unsupported_recurrence'):
             await handler(SimpleNamespace(data={'pending_id': item.id, 'event_id': item.events[0].id},
                                           context=SimpleNamespace(user_id='user')))
+
+
+async def test_real_manual_zero_draft_activity_context_requires_detail_permission(monkeypatch):
+    from custom_components.daylight_calendar_import.models import UNSUPPORTED_RECURRENCE_WARNING
+
+    store, _ = await setup_service(monkeypatch)
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions(True)))
+    store.async_load = AsyncMock()
+    await async_setup_entry(hass, entry())
+    monkeypatch.setattr('custom_components.daylight_calendar_import._async_parse_source',
+                        AsyncMock(return_value=ParseOutcome([], [UNSUPPORTED_RECURRENCE_WARNING])))
+    text = 'Class each Thursday until December'
+    submit = hass.services.handlers[(DOMAIN, 'submit_text')][0]
+    result = await submit(SimpleNamespace(data={'text': text}, context=Context(user_id='user')))
+    identifier = result['activity_id']
+    listing = hass.services.handlers[(DOMAIN, 'list_activity')][0]
+    detail = hass.services.handlers[(DOMAIN, 'get_activity')][0]
+    call = SimpleNamespace(data={'pending_id': identifier}, context=Context(user_id='user'))
+    assert text not in str(await listing(call))
+    assert (await detail(call))['activity']['manual_source_text'] == text
+    with pytest.raises(Unauthorized):
+        await detail(SimpleNamespace(data={'pending_id': identifier}, context=Context()))

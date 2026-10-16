@@ -106,6 +106,7 @@ _RECURRENCE_PATTERN = re.compile(
     r"(?:week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
     r"|(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence)|meets?)\s+"
     r"(?:every|daily|weekly|monthly|yearly|annually)\b"
+    r"|(?:every|each)\s+day\s+(?:at|until|through|from)\b"
     r"|(?:daily|weekly|monthly|yearly|annual)\s+"
     r"(?:standup|meeting|class|practice|training|session|appointment)\b"
     r"|(?:meets?|practice|class|meeting|training|session|runs?|occurs?|repeats?)"
