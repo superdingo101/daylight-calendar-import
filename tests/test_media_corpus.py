@@ -1,6 +1,7 @@
 """Real synthetic media exercise ingestion; recorded responses do not test OCR."""
 
 import asyncio
+import json
 from contextlib import contextmanager
 from datetime import datetime
 from hashlib import sha256
@@ -154,7 +155,13 @@ async def test_media_ingestion_reaches_recorded_parser_and_cleans_up(case, monke
         assert [list(notes) for notes in outcome.event_assumptions] == case["expected"]["event_assumptions"]
         generate.assert_awaited_once()
         request = generate.await_args.kwargs
-        assert case["source_text"] in request["instructions"]
+        evidence = case["source_text"].strip()
+        if source.title and source.title.strip():
+            evidence = f"Source title: {source.title.strip()}\n\nSource body:\n{evidence}"
+        assert request["instructions"] == parser.PROMPT_TEMPLATE.format(
+            text=json.dumps(evidence, ensure_ascii=False), reference_datetime=case["reference_datetime"],
+            time_zone=case["time_zone"],
+        )
         if attachment:
             assert request["attachments"] == [{
                 "media_content_id": source.attachments[0].content_ref,

@@ -5,6 +5,7 @@ not a claim about an external model's extraction accuracy.
 """
 
 from copy import deepcopy
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -65,7 +66,7 @@ async def test_meeting_details_survive_parse_review_restart_and_approval(
     assert "meeting IDs, passcodes and dial-in numbers/instructions" in instructions
     assert "Copy these details exactly" in instructions
     assert "do not invent missing credentials or links" in instructions
-    assert details in instructions
+    assert details in json.loads(instructions.split("Untrusted source evidence (", 1)[1].split(":\n", 1)[1])
 
     saved = None
 

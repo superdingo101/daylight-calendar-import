@@ -210,7 +210,7 @@ async def test_mixed_pdf_keeps_text_and_attachment_in_one_ai_task_request(monkey
     assert outcome.events[0].title == "Soccer Practice"
     assert outcome.warnings == []
     kwargs = generate.await_args.kwargs
-    assert "Cover note\n\nExtracted dates" in kwargs["instructions"]
+    assert '"Cover note\\n\\nExtracted dates"' in kwargs["instructions"]
     assert kwargs["attachments"] == [{"media_content_id": attachment.content_ref,
                                        "media_content_type": "application/pdf"}]
 
@@ -365,6 +365,13 @@ def test_temporal_assumption_limits_are_inclusive_and_errors_are_stable():
     "Not weekly or monthly. Class each Thursday at 8",
     "Neither weekly nor monthly; practice every Thursday at 8",
     "Not a weekly meeting and practice every Thursday at 8",
+    "The class is not weekly and meets monthly",
+    "The class is not weekly, meets monthly",
+    "The class is not weekly or recurs monthly",
+    "Not weekly and not monthly, but meets daily",
+    "Practice every morning at 8 through December",
+    "Each afternoon from 3pm until December", "Every evening at 7pm",
+    "Practice each night", "Every night until December",
 ])
 def test_source_recurrence_cannot_be_collapsed_into_ordinary_drafts(text):
     outcome = parser.parse_ai_data(
@@ -404,6 +411,15 @@ def test_recurrence_contract_rejects_non_boolean_flags(flag):
     "No weekly or monthly staff meeting; meet October 20",
     "Does not repeat weekly or monthly; meet October 20",
     "Not weekly and not monthly; meet October 20",
+    "This isn't a weekly meeting; the meeting is October 20",
+    "These aren't monthly classes; the class is October 20",
+    "This wasn’t a weekly meeting; the meeting is October 20",
+    "They weren’t weekly meetings; the meeting is October 20",
+    "The class doesn’t recur weekly; meet October 20",
+    "Does not repeat weekly and does not meet monthly; meet October 20",
+    "Neither repeats weekly nor meets monthly; meet October 20",
+    "Every morning is a gift. Party on October 20",
+    "The Every Evening Gala is on October 20",
     "Not every Thursday; the class only meets October 20",
     "Candidates meet each other Thursday, October 20 from 10am to 11am",
     "Candidates meet each other day on October 20",

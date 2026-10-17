@@ -1,5 +1,7 @@
 """Source titles remain event evidence through the live provider boundary."""
 
+import json
+
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -62,7 +64,7 @@ async def test_normalized_email_subject_reaches_prompt_and_recurrence_guard(prov
     assert outcome.events == []
     assert outcome.warnings == [UNSUPPORTED_RECURRENCE_WARNING]
     assert generate.await_args.kwargs["instructions"] == PROMPT_TEMPLATE.format(
-        text=f"Source title: Weekly staff meeting\n\nSource body:\n{BODY}",
+        text=json.dumps(f"Source title: Weekly staff meeting\n\nSource body:\n{BODY}", ensure_ascii=False),
         reference_datetime=REFERENCE, time_zone="UTC",
     )
 
@@ -128,7 +130,7 @@ async def test_untitled_source_keeps_existing_body_prompt(provider, title):
     assert len(outcome.events) == 1
     assert outcome.warnings == []
     assert generate.await_args.kwargs["instructions"] == PROMPT_TEMPLATE.format(
-        text=BODY, reference_datetime=REFERENCE, time_zone="UTC",
+        text=json.dumps(BODY, ensure_ascii=False), reference_datetime=REFERENCE, time_zone="UTC",
     )
 
 
