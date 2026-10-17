@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Protocol
 
 from homeassistant.components import ai_task
@@ -163,7 +164,7 @@ class AITaskParserProvider:
                 task_name=TASK_NAME,
                 entity_id=self._entity_id,
                 instructions=PROMPT_TEMPLATE.format(
-                    text=text,
+                    text=json.dumps(text, ensure_ascii=False),
                     reference_datetime=reference_datetime,
                     time_zone=time_zone,
                 ),

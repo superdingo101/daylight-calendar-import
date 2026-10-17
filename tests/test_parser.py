@@ -210,7 +210,7 @@ async def test_mixed_pdf_keeps_text_and_attachment_in_one_ai_task_request(monkey
     assert outcome.events[0].title == "Soccer Practice"
     assert outcome.warnings == []
     kwargs = generate.await_args.kwargs
-    assert "Cover note\n\nExtracted dates" in kwargs["instructions"]
+    assert '"Cover note\\n\\nExtracted dates"' in kwargs["instructions"]
     assert kwargs["attachments"] == [{"media_content_id": attachment.content_ref,
                                        "media_content_type": "application/pdf"}]
 
