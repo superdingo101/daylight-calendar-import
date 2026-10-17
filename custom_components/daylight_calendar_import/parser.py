@@ -101,6 +101,10 @@ EVENTS_STRUCTURE = vol.Schema(
 
 # Bounded, schedule-shaped English backstop for provider false negatives.
 # The required AI flag remains responsible for other wording and attachments.
+_SCHEDULE_KIND = (
+    r"(?:(?:staff|team)\s+)?"
+    r"(?:standup|meeting|class|practice|training|session|appointment)"
+)
 _RECURRENCE_PATTERN = re.compile(
     r"\b(?:rrule\s*:|(?:every\s+(?:(?:other|\d+)\s+)?|each\s+(?:\d+\s+)?)"
     r"(?:weekday|week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
@@ -110,14 +114,22 @@ _RECURRENCE_PATTERN = re.compile(
     r"|(?:every\s+(?:other|\d+)|each\s+\d+)\s+days?\b"
     r"|(?:every|each)\s+day\s+(?:at|until|through|from)\b"
     r"|(?:daily|weekly|monthly|yearly|annual)\s+"
-    r"(?:standup|meeting|class|practice|training|session|appointment)\b"
+    rf"{_SCHEDULE_KIND}\b"
     r"|(?:meets?|practice|class|meeting|training|session|runs?|occurs?|repeats?)"
     r"\s+(?:every|each)\s+day\b)", re.IGNORECASE,
 )
-_NEGATED_RECURRENCE_PATTERN = re.compile(
-    r"\b(?:does\s+not|do\s+not|doesn't|don't|will\s+not|won't|never|not|no)\s+"
+# A negation may coordinate several frequencies or schedule phrases. Stop at
+# sentence boundaries and semicolons so later affirmative schedules remain evidence.
+_NEGATED_SCHEDULE_TERM = (
     r"(?:an?\s+)?(?:(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence)|meet(?:s)?|occur(?:s)?)\s+)?"
-    r"(?:(?:every|each)\s+(?:(?:other|\d+)\s+)?\w+|daily|weekly|monthly|yearly|annual(?:ly)?)\b",
+    r"(?:(?:every|each)\s+(?:(?:other|\d+)\s+)?\w+|daily|weekly|monthly|yearly|annual(?:ly)?)\b"
+    rf"(?:\s+{_SCHEDULE_KIND}\b)?"
+)
+_NEGATED_RECURRENCE_PATTERN = re.compile(
+    r"\b(?:does\s+not|do\s+not|doesn't|don't|will\s+not|won't|never|not|no|neither)\s+"
+    rf"{_NEGATED_SCHEDULE_TERM}"
+    rf"(?:(?:\s*,\s*(?:(?:and|or|nor)\s+)?|\s+(?:and|or|nor)\s+)"
+    rf"(?:(?:not|no)\s+)?{_NEGATED_SCHEDULE_TERM})*",
     re.IGNORECASE,
 )
 

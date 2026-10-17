@@ -81,7 +81,9 @@ and known limitations. Do not mark a fixture replay as a live result.
 ### Unsupported recurrence
 
 AI Task extraction requests an `unsupported_recurrence` boolean for recurrence
-found in either source text or attachments. Recurring schedules are not expanded
+found in the source title (including email subjects), body or attachments.
+Nonempty titles and bodies are supplied together as source evidence to both the
+provider and independent text guard. Recurring schedules are not expanded
 into calendar writes. A true flag produces one `unsupported_recurrence` warning
 in the existing import activity/review result and withholds all candidates from
 that source. Submit independent one-off events separately or create the repeating

@@ -361,6 +361,10 @@ def test_temporal_assumption_limits_are_inclusive_and_errors_are_stable():
     "Not a weekly class. Practice every Thursday at 8",
     "Candidates meet each other. Practice each Thursday at 8",
     "Practice each 2 weeks", "Practice each 3 days",
+    "Weekly staff meeting", "Weekly team meeting",
+    "Not weekly or monthly. Class each Thursday at 8",
+    "Neither weekly nor monthly; practice every Thursday at 8",
+    "Not a weekly meeting and practice every Thursday at 8",
 ])
 def test_source_recurrence_cannot_be_collapsed_into_ordinary_drafts(text):
     outcome = parser.parse_ai_data(
@@ -391,6 +395,15 @@ def test_recurrence_contract_rejects_non_boolean_flags(flag):
     "Not a daily standup; a single standup on October 20",
     "No monthly meeting; instead meet October 20",
     "This is not an annual meeting; only meet October 20",
+    "This is not a weekly or monthly meeting; the one-off meeting is October 20",
+    "This is neither a weekly nor a monthly meeting; meet October 20",
+    "Neither weekly nor monthly; the meeting is October 20",
+    "Not a weekly class or a monthly session; meet October 20",
+    "Not weekly, monthly or annual; meet October 20",
+    "Not a weekly class, a monthly session, or an annual meeting; meet October 20",
+    "No weekly or monthly staff meeting; meet October 20",
+    "Does not repeat weekly or monthly; meet October 20",
+    "Not weekly and not monthly; meet October 20",
     "Not every Thursday; the class only meets October 20",
     "Candidates meet each other Thursday, October 20 from 10am to 11am",
     "Candidates meet each other day on October 20",

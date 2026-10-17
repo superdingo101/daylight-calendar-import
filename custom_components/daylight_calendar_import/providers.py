@@ -152,6 +152,11 @@ class AITaskParserProvider:
                 "Configured AI Task is temporarily unavailable",
             )
         text = (source.text or "").strip()
+        title = (source.title or "").strip()
+        if title:
+            # Keep both fields in the source-data slot, never in prompt rules.
+            # The same evidence must reach the independent recurrence guard.
+            text = f"Source title: {title}\n\nSource body:\n{text}"
         attachments = [
             {"media_content_id": item.content_ref, "media_content_type": item.media_type}
             for item in source.attachments
