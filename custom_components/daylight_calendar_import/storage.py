@@ -1360,8 +1360,14 @@ class PendingImportStore:
     ) -> tuple[PendingImport, int, int]:
         """Append novel drafts only if the entire original review is unchanged."""
         async with self._lock:
-            if self._items.get(original.id) is not original:
-                raise PendingEventEditError("Import changed during reprocessing; refresh before retrying")
+            current = self._items.get(original.id)
+            if current is not original:
+                if current is None or UNSUPPORTED_RECURRENCE_WARNING not in warnings:
+                    raise PendingEventEditError("Import changed during reprocessing; refresh before retrying")
+                # Review edits and partial rejection do not change this import's
+                # retained source. Preserve that work, append no stale candidates,
+                # and keep the source-level safety warning authoritative.
+                original, candidates = current, ()
             known = set(self._seen_event_fingerprints) | self._active_event_fingerprints()
             accepted = []
             duplicates = 0
@@ -1831,6 +1837,8 @@ class PendingImportStore:
         processor: Callable[[PendingEvent], Awaitable[None]],
     ) -> PendingImport | None:
         """Checkpoint the selected event around its external calendar write."""
+        if pending.id in self._reprocessing:
+            raise PendingEventEditError("Source reprocessing is in progress; wait before approving")
         if UNSUPPORTED_RECURRENCE_WARNING in pending.warnings:
             raise PendingEventEditError(UNSUPPORTED_RECURRENCE_WARNING)
         if event.routing_unresolved:

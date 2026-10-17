@@ -293,3 +293,122 @@ async def test_real_manual_zero_draft_activity_context_requires_detail_permissio
     assert (await detail(call))['activity']['manual_source_text'] == text
     with pytest.raises(Unauthorized):
         await detail(SimpleNamespace(data={'pending_id': identifier}, context=Context()))
+
+
+@pytest.mark.parametrize("bulk", [False, True])
+@pytest.mark.parametrize("outcome", ["recurrence", "normal", "failure", "cancel"])
+async def test_approval_waits_for_inflight_reprocess_without_write_checkpoint(monkeypatch, bulk, outcome):
+    from custom_components.daylight_calendar_import.models import UNSUPPORTED_RECURRENCE_WARNING
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = (await store.async_add(
+        source_text="Class each Thursday", events=[draft(), replace(draft(), title="Sibling")],
+        calendar_entity="calendar.family",
+    )).pending
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def parse(_original):
+        entered.set()
+        await finish.wait()
+        if outcome == "failure":
+            raise RuntimeError("provider failed")
+        return (), ((UNSUPPORTED_RECURRENCE_WARNING,) if outcome == "recurrence" else ())
+
+    processor = AsyncMock()
+    processor.async_preflight = AsyncMock()
+
+    async def approve():
+        if bulk:
+            return await store.async_process_events(item.id, processor)
+        return await store.async_approve_event(item.id, item.events[0].id, processor)
+
+    parsing = asyncio.create_task(store.async_reprocess(item.id, parse))
+    try:
+        await entered.wait()
+        saved = len(backend.saved)
+        with pytest.raises(PendingEventEditError) as caught:
+            await approve()
+        assert str(caught.value) == "Source reprocessing is in progress; wait before approving"
+        processor.assert_not_awaited()
+        processor.async_preflight.assert_not_awaited()
+        assert len(backend.saved) == saved
+        assert store.get(item.id) is item
+        assert all(event.status == "pending" and event.write_attempt is None for event in item.events)
+
+        if outcome == "cancel":
+            parsing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await parsing
+        else:
+            finish.set()
+            if outcome == "failure":
+                with pytest.raises(RuntimeError, match="provider failed"):
+                    await parsing
+            else:
+                await parsing
+        assert item.id not in store._reprocessing
+        if outcome == "recurrence":
+            with pytest.raises(PendingEventEditError, match="unsupported_recurrence"):
+                await approve()
+            assert UNSUPPORTED_RECURRENCE_WARNING in store.get(item.id).warnings
+            processor.assert_not_awaited()
+            processor.async_preflight.assert_not_awaited()
+        else:
+            await approve()
+            assert processor.await_count == (2 if bulk else 1)
+            assert processor.async_preflight.await_count == processor.await_count
+    finally:
+        if not parsing.done():
+            parsing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await parsing
+
+
+@pytest.mark.parametrize("change", ["edit", "reject", "remove"])
+async def test_recurring_reprocess_preserves_warning_across_concurrent_review_changes(monkeypatch, change):
+    from custom_components.daylight_calendar_import.models import UNSUPPORTED_RECURRENCE_WARNING
+
+    store = make_store(monkeypatch, FakeStoreBackend())
+    item = (await store.async_add(source_text="Class each Thursday", events=[
+        draft(), replace(draft(), title="Sibling"),
+    ], calendar_entity="calendar.family")).pending
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def parse(_original):
+        entered.set()
+        await finish.wait()
+        return candidates(replace(draft(), title="Stale new draft"))[0], (UNSUPPORTED_RECURRENCE_WARNING,)
+
+    parsing = asyncio.create_task(store.async_reprocess(item.id, parse))
+    try:
+        await entered.wait()
+        if change == "edit":
+            await store.async_edit_event(item.id, item.events[0].id, replace(draft(), title="Manual edit"))
+        elif change == "reject":
+            await store.async_reject_event(item.id, item.events[0].id)
+        else:
+            await store.async_remove(item.id)
+        current = store.get(item.id)
+        finish.set()
+        if change == "remove":
+            with pytest.raises(PendingEventEditError, match="changed during"):
+                await parsing
+            assert store.get(item.id) is None
+        else:
+            updated, added, duplicates = await parsing
+            assert updated.events == current.events
+            assert (added, duplicates) == (0, 0)
+            assert UNSUPPORTED_RECURRENCE_WARNING in updated.warnings
+            writer = AsyncMock()
+            with pytest.raises(PendingEventEditError, match="unsupported_recurrence"):
+                await store.async_approve_event(item.id, updated.events[0].id, writer)
+            with pytest.raises(PendingEventEditError, match="unsupported_recurrence"):
+                await store.async_process_events(item.id, writer)
+            writer.assert_not_awaited()
+        assert item.id not in store._reprocessing
+    finally:
+        if not parsing.done():
+            parsing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await parsing
