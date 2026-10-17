@@ -175,6 +175,8 @@ class AITaskParserProvider:
                 classify_provider_failure(err), "AI Task could not parse the source"
             ) from None
         try:
+            if not isinstance(result.data.get("unsupported_recurrence"), bool):
+                raise ValueError("AI Task result must declare unsupported_recurrence")
             return parse_ai_data(result.data, source_text=text)
         except Exception:
             raise ProviderError(

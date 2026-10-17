@@ -61,7 +61,7 @@ def test_parse_ai_data_all_invalid_produces_no_drafts_with_warnings():
 
 
 async def test_async_parse_text(monkeypatch):
-    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [VALID]}))
+    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [VALID], "unsupported_recurrence": False}))
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     monkeypatch.setattr(
         parser.dt_util,
@@ -171,7 +171,7 @@ async def test_image_capability_detected_before_ai_task_invocation(monkeypatch):
     image = SourceAttachment("a", "image/png", 25, "media-source://media_source/local/image.png")
     seed = TextSourceAdapter().create("seed")
     source = SourceDocument(seed.id, SourceKind.IMAGE, seed.received_at, attachments=(image,))
-    generate = AsyncMock(return_value=SimpleNamespace(data={"events": []}))
+    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [], "unsupported_recurrence": False}))
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     component = SimpleNamespace(get_entity=lambda _id: SimpleNamespace(supported_features=0))
     hass = SimpleNamespace(data={providers.DATA_COMPONENT: component})
@@ -199,7 +199,7 @@ async def test_mixed_pdf_keeps_text_and_attachment_in_one_ai_task_request(monkey
     attachment = SourceAttachment("pdf", "application/pdf", 512, "media-source://media_source/local/schedule.pdf", sha256="digest")
     source = SourceDocument(seed.id, SourceKind.PDF, seed.received_at,
                             text="Cover note\n\nExtracted dates", attachments=(attachment,))
-    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [VALID]}))
+    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [VALID], "unsupported_recurrence": False}))
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     component = SimpleNamespace(get_entity=lambda _id: SimpleNamespace(
         supported_features=providers.AITaskEntityFeature.SUPPORT_ATTACHMENTS))
@@ -269,7 +269,7 @@ async def test_provider_maps_ai_task_failure_to_stable_category(monkeypatch):
 async def test_async_parse_text_preserves_ai_task_and_timezone_contract(monkeypatch):
     from unittest.mock import Mock
 
-    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [VALID]}))
+    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [VALID], "unsupported_recurrence": False}))
     local_tz = ZoneInfo("America/Los_Angeles")
     get_time_zone = Mock(return_value=local_tz)
     now = Mock(
@@ -358,6 +358,9 @@ def test_temporal_assumption_limits_are_inclusive_and_errors_are_stable():
     "Practice every other weekday", "Practice every 2 weekdays at 8",
     "Meet every 3 days at 8", "Meet every other day at 8",
     "Meet every Thursday at 8", "Meet every day at 8", "Meet monthly at 8",
+    "Not a weekly class. Practice every Thursday at 8",
+    "Candidates meet each other. Practice each Thursday at 8",
+    "Practice each 2 weeks", "Practice each 3 days",
 ])
 def test_source_recurrence_cannot_be_collapsed_into_ordinary_drafts(text):
     outcome = parser.parse_ai_data(
@@ -383,6 +386,15 @@ def test_recurrence_contract_rejects_non_boolean_flags(flag):
 
 @pytest.mark.parametrize("text", [
     "One meeting on Thursday", "Meet October 8 and October 15 at 5pm",
+    "This is not a weekly class; the one-off class is October 20",
+    "The class is not recurring weekly; meet October 20 at 8am",
+    "Not a daily standup; a single standup on October 20",
+    "No monthly meeting; instead meet October 20",
+    "This is not an annual meeting; only meet October 20",
+    "Not every Thursday; the class only meets October 20",
+    "Candidates meet each other Thursday, October 20 from 10am to 11am",
+    "Candidates meet each other day on October 20",
+    "Candidates meet each other Monday, October 20 at 10am",
     "Meet every student on October 20 from 10am to 11am",
     "Meets every participant on October 20 at 10am",
     "Meet every applicant on October 20 at 10am",

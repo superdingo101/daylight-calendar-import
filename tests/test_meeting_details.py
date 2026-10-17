@@ -47,7 +47,7 @@ async def test_meeting_details_survive_parse_review_restart_and_approval(
         "location": "Conference room A", "description": details,
         "confidence": 0.99, "assumptions": [],
     }
-    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [raw]}))
+    generate = AsyncMock(return_value=SimpleNamespace(data={"unsupported_recurrence": False, "events": [raw]}))
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     calendar_call = AsyncMock()
     hass = SimpleNamespace(

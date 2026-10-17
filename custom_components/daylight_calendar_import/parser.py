@@ -102,12 +102,12 @@ EVENTS_STRUCTURE = vol.Schema(
 # Bounded, schedule-shaped English backstop for provider false negatives.
 # The required AI flag remains responsible for other wording and attachments.
 _RECURRENCE_PATTERN = re.compile(
-    r"\b(?:rrule\s*:|(?:every|each)\s+(?:(?:other|\d+)\s+)?"
+    r"\b(?:rrule\s*:|(?:every\s+(?:(?:other|\d+)\s+)?|each\s+(?:\d+\s+)?)"
     r"(?:weekday|week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
     r"|(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence))\s+"
     r"(?:every|daily|weekly|monthly|yearly|annually)\b"
     r"|meets?\s+(?:daily|weekly|monthly|yearly|annually)\b"
-    r"|(?:every|each)\s+(?:other|\d+)\s+days?\b"
+    r"|(?:every\s+(?:other|\d+)|each\s+\d+)\s+days?\b"
     r"|(?:every|each)\s+day\s+(?:at|until|through|from)\b"
     r"|(?:daily|weekly|monthly|yearly|annual)\s+"
     r"(?:standup|meeting|class|practice|training|session|appointment)\b"
@@ -115,9 +115,9 @@ _RECURRENCE_PATTERN = re.compile(
     r"\s+(?:every|each)\s+day\b)", re.IGNORECASE,
 )
 _NEGATED_RECURRENCE_PATTERN = re.compile(
-    r"\b(?:does\s+not|do\s+not|doesn't|don't|will\s+not|won't|never|not)\s+"
-    r"(?:repeat(?:s|ing)?|recurs?|meet(?:s)?|occur(?:s)?)\s+"
-    r"(?:(?:every|each)\s+(?:(?:other|\d+)\s+)?\w+|daily|weekly|monthly|yearly|annually)\b",
+    r"\b(?:does\s+not|do\s+not|doesn't|don't|will\s+not|won't|never|not|no)\s+"
+    r"(?:an?\s+)?(?:(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence)|meet(?:s)?|occur(?:s)?)\s+)?"
+    r"(?:(?:every|each)\s+(?:(?:other|\d+)\s+)?\w+|daily|weekly|monthly|yearly|annual(?:ly)?)\b",
     re.IGNORECASE,
 )
 

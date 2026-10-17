@@ -79,7 +79,7 @@ async def test_corpus_through_real_home_assistant_ai_task(hass, tmp_path, path):
 async def test_text_only_entity_rejects_media_without_calling_provider(hass):
     assert await async_setup_component(hass, "homeassistant", {})
     assert await async_setup_component(hass, "ai_task", {})
-    entity = DevelopmentTask({"events": []})
+    entity = DevelopmentTask({"unsupported_recurrence": False, "events": []})
     entity._attr_supported_features = AITaskEntityFeature.GENERATE_DATA
     await hass.data[DATA_COMPONENT].async_add_entities([entity])
     provider = AITaskParserProvider(hass, entity.entity_id)

@@ -37,7 +37,7 @@ async def test_long_description_parse_edit_restart_and_calendar_result(
     }
     # Description normalization is explicit: surrounding whitespace only.
     assert EventDraft.from_mapping(raw).description == LONG_DESCRIPTION
-    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [raw]}))
+    generate = AsyncMock(return_value=SimpleNamespace(data={"unsupported_recurrence": False, "events": [raw]}))
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     calendar_call = AsyncMock()
     hass = SimpleNamespace(

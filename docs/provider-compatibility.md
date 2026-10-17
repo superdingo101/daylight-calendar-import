@@ -91,9 +91,11 @@ it also withholds independent events mixed into a recurring announcement.
 
 An independent text guard recognizes explicit English recurrence expressions
 (including “every Thursday”, “repeats weekly” and `RRULE:`), even if the AI
-omits or incorrectly clears its flag. Generic “Weekly newsletter” headings and
+incorrectly clears its flag. Generic “Weekly newsletter” headings and
 explicit lists of independent dates remain supported. This is not a universal
 recurrence classifier: other languages, unusual phrasing and recurrence visible
 only in images/PDFs still depend on the provider reporting it. Older recorded
-responses without the flag remain readable; new output requires the boolean.
+responses without the flag remain readable through the offline parsing helper.
+The live provider boundary rejects missing or non-boolean flags as
+`provider_invalid_response`, including attachment-only responses.
 Validate a real model against recurring announcements before relying on it.
