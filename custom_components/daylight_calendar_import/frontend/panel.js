@@ -2228,6 +2228,7 @@ export class DaylightImportPanel extends HTMLElement {
           list.append(row);
         }
         content.append(list);
+        if (item.manual_source_text) content.append(element("p", `Submitted text (first 4,096 characters): ${item.manual_source_text}`, "source"));
       } else if (this._activity.length === 0) content.append(element("p", "No recent activity.", "status"));
       else {
         const heading = element("h2", "Recent activity");

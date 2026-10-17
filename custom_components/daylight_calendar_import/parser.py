@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import re
 from typing import Any
 
 import voluptuous as vol
@@ -12,7 +13,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import selector
 from homeassistant.util import dt as dt_util
 
-from .models import DraftValidationError, EventDraft, normalize_date_time_assumptions
+from .models import (
+    DraftValidationError, EventDraft, UNSUPPORTED_RECURRENCE_WARNING,
+    normalize_date_time_assumptions,
+)
 from .sources import SourceDocument, TextSourceAdapter
 
 TASK_NAME = "Extract calendar event drafts"
@@ -36,6 +40,8 @@ Rules:
 - Resolve explicitly relative dates and local clock times using the reference datetime and Home Assistant time zone below.
 - Do not infer missing event durations, end times, dates or years that are not deterministically supported by the source and reference date.
 - For each returned event, include an assumptions list explaining every contextual date/time resolution (for example a relative day or a local time zone). Use an empty list for fully explicit timestamps.
+- Recurring schedules are unsupported. Set unsupported_recurrence to true if source text or attachments describe any repeating schedule (including RRULE). Return no events for that source; never expand recurrence or silently reduce it to a single occurrence. An explicit list of independent dates is not recurrence.
+- Always return unsupported_recurrence as a boolean, false for sources without a repeating schedule.
 - Return no events when the source does not contain a calendar event.
 
 Reference datetime: {reference_datetime}
@@ -95,8 +101,57 @@ EVENTS_STRUCTURE = vol.Schema(
                 },
             }
         ),
+        vol.Required("unsupported_recurrence"): selector.BooleanSelector(),
     }
 )
+
+# Bounded, schedule-shaped English backstop for provider false negatives.
+# The required AI flag remains responsible for other wording and attachments.
+_SCHEDULE_KIND = (
+    r"(?:(?:staff|team)\s+)?"
+    r"(?:standup|meeting|class|practice|training|session|appointment)"
+)
+_RECURRENCE_PATTERN = re.compile(
+    r"\b(?:rrule\s*:|(?:every\s+(?:(?:other|\d+)\s+)?|each\s+(?:\d+\s+)?)"
+    r"(?:weekday|week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
+    r"|(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence))\s+"
+    r"(?:every|daily|weekly|monthly|yearly|annually)\b"
+    r"|meets?\s+(?:daily|weekly|monthly|yearly|annually)\b"
+    r"|(?:every\s+(?:other|\d+)|each\s+\d+)\s+days?\b"
+    r"|(?:every|each)\s+(?:day|morning|afternoon|evening|night)\s+(?:at|until|through|from)\b"
+    r"|(?:daily|weekly|monthly|yearly|annual)\s+"
+    rf"{_SCHEDULE_KIND}\b"
+    r"|(?:meets?|practice|class|meeting|training|session|runs?|occurs?|repeats?)"
+    r"\s+(?:every|each)\s+(?:day|morning|afternoon|evening|night)\b)", re.IGNORECASE,
+)
+# A negation may coordinate several frequencies or schedule phrases. Stop at
+# sentence boundaries and semicolons so later affirmative schedules remain evidence.
+_SCHEDULE_NEGATOR = (
+    r"(?:does\s+not|do\s+not|will\s+not|doesn't|don't|won't|isn't|aren't|wasn't|weren't"
+    r"|can't|couldn't|wouldn't|shouldn't|never|not|no|neither)"
+)
+_SCHEDULE_VERB = r"(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence)|meet(?:s)?|occur(?:s)?)\s+"
+_NEGATED_SCHEDULE_TERM = (
+    r"(?:an?\s+)?"
+    r"(?:(?:every|each)\s+(?:(?:other|\d+)\s+)?\w+|daily|weekly|monthly|yearly|annual(?:ly)?)\b"
+    rf"(?:\s+{_SCHEDULE_KIND}\b)?"
+)
+_NEGATED_RECURRENCE_PATTERN = re.compile(
+    rf"\b{_SCHEDULE_NEGATOR}\s+(?:an?\s+)?(?:{_SCHEDULE_VERB})?{_NEGATED_SCHEDULE_TERM}"
+    # Only 'nor' or an explicit repeated negation may scope another verb.
+    # 'not weekly and meets monthly' must retain its affirmative clause.
+    rf"(?:\s+nor\s+(?:an?\s+)?(?:{_SCHEDULE_VERB})?{_NEGATED_SCHEDULE_TERM}"
+    rf"|(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or)\s+)"
+    rf"(?:{_SCHEDULE_NEGATOR}\s+(?:an?\s+)?(?:{_SCHEDULE_VERB})?)?{_NEGATED_SCHEDULE_TERM})*",
+    re.IGNORECASE,
+)
+
+
+def _has_recurring_schedule(source_text: str) -> bool:
+    """Recognize common explicit schedules without treating prose as recurrence."""
+    return _RECURRENCE_PATTERN.search(
+        _NEGATED_RECURRENCE_PATTERN.sub("", source_text.replace("’", "'"))
+    ) is not None
 
 
 class ParseResultError(ValueError):
@@ -151,7 +206,7 @@ async def async_parse_source(
     )
 
 
-def parse_ai_data(data: Any) -> ParseOutcome:
+def parse_ai_data(data: Any, *, source_text: str = "") -> ParseOutcome:
     """Retain valid drafts when individual AI output items are malformed."""
     if not isinstance(data, dict):
         raise ParseResultError("AI Task result must be an object")
@@ -159,6 +214,12 @@ def parse_ai_data(data: Any) -> ParseOutcome:
     events = data.get("events")
     if not isinstance(events, list):
         raise ParseResultError("AI Task result must contain an events list")
+
+    recurrence = data.get("unsupported_recurrence", False)
+    if not isinstance(recurrence, bool):
+        raise ParseResultError("unsupported_recurrence must be a boolean")
+    if recurrence or _has_recurring_schedule(source_text):
+        return ParseOutcome([], [UNSUPPORTED_RECURRENCE_WARNING])
 
     drafts: list[EventDraft] = []
     event_assumptions: list[tuple[str, ...]] = []

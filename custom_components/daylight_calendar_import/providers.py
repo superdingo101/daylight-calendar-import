@@ -153,6 +153,11 @@ class AITaskParserProvider:
                 "Configured AI Task is temporarily unavailable",
             )
         text = (source.text or "").strip()
+        title = (source.title or "").strip()
+        if title:
+            # Keep both fields in the source-data slot, never in prompt rules.
+            # The same evidence must reach the independent recurrence guard.
+            text = f"Source title: {title}\n\nSource body:\n{text}"
         attachments = [
             {"media_content_id": item.content_ref, "media_content_type": item.media_type}
             for item in source.attachments
@@ -176,7 +181,9 @@ class AITaskParserProvider:
                 classify_provider_failure(err), "AI Task could not parse the source"
             ) from None
         try:
-            return parse_ai_data(result.data)
+            if not isinstance(result.data.get("unsupported_recurrence"), bool):
+                raise ValueError("AI Task result must declare unsupported_recurrence")
+            return parse_ai_data(result.data, source_text=text)
         except Exception:
             raise ProviderError(
                 "provider_invalid_response", "AI Task returned an invalid result"

@@ -36,3 +36,15 @@ data:
   pending_id: "the-pending-import-id"
 response_variable: reprocessed
 ```
+
+Approval of that import is refused while reprocessing is in flight, before any
+calendar preflight or durable write checkpoint. Retry after processing completes.
+Provider failure or cancellation releases this temporary block; a confirmed
+unsupported-recurrence warning remains a durable approval block requiring manual
+handling.
+
+If an unsupported-recurrence result arrives after an event edit or partial
+rejection, the existing review changes are preserved and no stale candidates are
+appended. The source-level warning is still saved and blocks approval of the
+remaining drafts. Ordinary stale reprocessing results continue to require a
+refresh and retry.
