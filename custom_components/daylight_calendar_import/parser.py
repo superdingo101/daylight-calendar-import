@@ -103,9 +103,11 @@ EVENTS_STRUCTURE = vol.Schema(
 # The required AI flag remains responsible for other wording and attachments.
 _RECURRENCE_PATTERN = re.compile(
     r"\b(?:rrule\s*:|(?:every|each)\s+(?:(?:other|\d+)\s+)?"
-    r"(?:week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
-    r"|(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence)|meets?)\s+"
+    r"(?:weekday|week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
+    r"|(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence))\s+"
     r"(?:every|daily|weekly|monthly|yearly|annually)\b"
+    r"|meets?\s+(?:daily|weekly|monthly|yearly|annually)\b"
+    r"|(?:every|each)\s+(?:other|\d+)\s+days?\b"
     r"|(?:every|each)\s+day\s+(?:at|until|through|from)\b"
     r"|(?:daily|weekly|monthly|yearly|annual)\s+"
     r"(?:standup|meeting|class|practice|training|session|appointment)\b"
