@@ -118,7 +118,7 @@ School concert on November 12, 2026 at 7:00 PM
 
 Daylight uses that alias to suggest the destination calendar for the extracted events. You can still change individual events during review. An unknown or conflicting calendar hint must be explicitly resolved before approval.
 
-You can also select **Check calendars** on a draft to look for exact duplicates, possible duplicates, and scheduling overlaps. These results are advisory and may become outdated. Daylight makes a fresh **exact-duplicate check against the destination calendar** before writing an approved event; it does not automatically block all overlapping events.
+Selecting **Approve** or **Approve all** automatically checks the destination and your configured conflict calendars before enabling confirmation. Review each result, including any incomplete-check warning, then explicitly confirm approval. You can also select **Check calendars** on a draft to look for exact duplicates, possible duplicates, and scheduling overlaps. These results are advisory and may become outdated. Daylight makes a fresh **exact-duplicate check against the destination calendar** before writing an approved event; it does not automatically block all overlapping events.
 
 See the [v0.6 feature guide](docs/v0.6.md) for calendar routing, permissions, and queue sensors.
 

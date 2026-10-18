@@ -89,8 +89,9 @@ and source retry/deduplication rules remain authoritative and unchanged.
 
 ### Conflict observations
 
-The `conflict_detected` opt-in uses the existing on-demand, permission-checked
-calendar check. Exact duplicates, possible duplicates and scheduling overlaps
+The `conflict_detected` opt-in uses the permission-checked calendar observation,
+triggered automatically before approval confirmation in the review panel or
+manually with **Check calendars**. Exact duplicates, possible duplicates and scheduling overlaps
 are actionable review results. Empty or failed observations and obsolete drafts
 produce no request. This adds no calendar polling and changes no calendar writes,
 approval rules or pending lifecycle status. Approval preflight keeps its existing

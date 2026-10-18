@@ -1,5 +1,7 @@
 """Read-only HA calendar observation and pure matching integration."""
 
+import asyncio
+
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call
@@ -1348,3 +1350,52 @@ async def test_conflict_read_does_not_default_to_trusted_internal():
             local_zone=ZONE, context=None,
         )
     fake.providers["calendar.work"].async_get_events.assert_not_awaited()
+
+
+async def test_hung_provider_is_cancelled_at_observation_deadline(monkeypatch):
+    """A mandatory advisory check cannot wait forever or leave provider work alive."""
+    from custom_components.daylight_calendar_import import calendar_observation
+
+    monkeypatch.setattr(calendar_observation, "MAX_OBSERVATION_SECONDS", 0.01)
+    fake = hass({"calendar.family": [], "calendar.work": []})
+    cancelled = asyncio.Event()
+
+    async def never_settles(*args):
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    fake.providers["calendar.family"].async_get_events.side_effect = never_settles
+    with pytest.raises(CalendarObservationError, match="Calendar observation timed out"):
+        await async_observe_candidates(
+            fake, draft(), observed_calendars=["calendar.family", "calendar.work"],
+            local_zone=ZONE, context=READ_CONTEXT,
+        )
+    assert cancelled.is_set()
+    fake.providers["calendar.work"].async_get_events.assert_not_awaited()
+
+
+async def test_provider_timeouts_share_one_fifteen_second_observation_budget(monkeypatch):
+    """Selecting more calendars cannot multiply the maximum waiting budget."""
+    from custom_components.daylight_calendar_import import calendar_observation
+
+    assert calendar_observation.MAX_OBSERVATION_SECONDS == 15
+    timeout_at = asyncio.timeout_at
+    deadlines = []
+
+    def record_deadline(deadline):
+        deadlines.append(deadline)
+        return timeout_at(deadline)
+
+    monkeypatch.setattr(asyncio, "timeout_at", record_deadline)
+    fake = hass({"calendar.family": [], "calendar.work": []})
+    before = asyncio.get_running_loop().time()
+    assert await async_observe_candidates(
+        fake, draft(), observed_calendars=["calendar.family", "calendar.work"],
+        local_zone=ZONE, context=READ_CONTEXT,
+    ) == ()
+    after = asyncio.get_running_loop().time()
+    assert len(deadlines) == 2
+    assert deadlines[0] == deadlines[1]
+    assert before + 15 <= deadlines[0] <= after + 15
