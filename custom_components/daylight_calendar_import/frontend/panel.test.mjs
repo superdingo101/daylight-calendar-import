@@ -5794,6 +5794,31 @@ test("navigation superseding a slow automatic review does not reopen the intake 
   assert.deepEqual(calls, ["list_pending", "submit_text", "list_pending", "get_pending", "list_activity"]);
 });
 
+test("failed automatic review restores focus to retained manual success feedback", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "submit_text") return {response: {
+      pending: {id: "pending-focus", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }};
+    if (request.service === "get_pending") throw new Error("Detail unavailable");
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  const manual = panel._manualSubmission;
+  manual.text.value = "School play Friday";
+  await manual.form.submit({preventDefault() {}});
+  assert.equal(panel._view, "new");
+  assert.equal(panel._selectedId, null);
+  assert.equal(manual.element.hidden, false);
+  assert.equal(globalThis.focusedNode, manual.status);
+  assert.match(manual.status.textContent, /ready for review/);
+  assert.match(manual.status.textContent, /Refresh the review inbox/);
+  assert.equal(manual.feedback.actions.children[0].textContent, "Review events");
+});
+
 test("Review events recovery leaves the intake view when inbox refresh failed", async () => {
   const panel = new DaylightImportPanel();
   let submitted = false;
