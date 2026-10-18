@@ -1576,8 +1576,19 @@ export class DaylightImportPanel extends HTMLElement {
           possible_duplicate: "Possible duplicate", conflict: "Scheduling conflict"};
         const list = document.createElement("ul");
         for (const match of result.matches) {
-          list.append(element("li",
-            `${labels[match.kind]}: ${match.existing_title} (${match.calendar_entity})`));
+          const item = element("li",
+            `${labels[match.kind]}: ${match.existing_title} (${match.calendar_entity})`);
+          if (match.existing_start && match.existing_end && match.overlap_start && match.overlap_end) {
+            const locale = this._hass?.locale;
+            const zone = this._hass?.config?.time_zone;
+            const existing = formatEventRange({start: match.existing_start,
+              end: match.existing_end, all_day: match.existing_all_day}, locale, zone);
+            const overlap = formatEventRange({start: match.overlap_start,
+              end: match.overlap_end, all_day: false}, locale, zone);
+            item.append(element("p", `Existing event: ${existing}${match.existing_all_day ? " (all day)" : ""}`));
+            item.append(element("p", `Overlaps: ${overlap}`));
+          }
+          list.append(item);
         }
         section.append(list);
       }

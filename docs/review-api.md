@@ -155,8 +155,20 @@ new permissions.
 
 A successful response contains `observed_calendars` and a `matches` list
 of bounded entries with `kind` (`exact_duplicate`, `possible_duplicate`, or
-`conflict`), `calendar_entity` and `existing_title`. The response does not
-include event descriptions, attendees, or meeting credentials.
+`conflict`), `calendar_entity`, `existing_title`, and these interval fields:
+
+| Field | Value |
+| --- | --- |
+| `existing_start`, `existing_end` | ISO dates for all-day events, otherwise offset-aware ISO datetimes for the existing event interval. |
+| `existing_all_day` | Boolean identifying an all-day existing event; its end date is exclusive. |
+| `overlap_start`, `overlap_end` | Offset-aware ISO datetimes for the intersection of the draft and existing intervals. |
+
+Timed intervals use the configured Home Assistant timezone. If either endpoint
+cannot be represented in that timezone at Python's supported year boundaries,
+both endpoints of that interval use UTC instead. The panel respects the Home
+Assistant 12/24-hour preference and labels displayed timezone offsets.
+The response does not include event descriptions, locations, attendees, or
+meeting credentials.
 
 To prevent expensive or misleading partial observations, the action rejects
 drafts spanning more than 90 elapsed days, scopes exceeding 16 distinct

@@ -4447,6 +4447,42 @@ test("routing settings reject an oversized conflict scope before saving", async 
   assert.equal(requests.some(request => request.type.includes("/update")), false);
 });
 
+test("conflict intervals show all-day dates and HA-preferred timed overlap context", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {locale: {language: "en-US", time_format: "24"},
+    config: {time_zone: "America/Los_Angeles"}};
+  const section = document.createElement("section");
+  const match = {kind: "conflict", existing_title: "<private title>",
+    calendar_entity: "calendar.family", existing_start: "2026-11-01",
+    existing_end: "2026-11-03", existing_all_day: true,
+    overlap_start: "2026-11-01T01:30:00-07:00", overlap_end: "2026-11-01T01:45:00-08:00"};
+  panel.renderCalendarCheckDetails(section, {status: "ready", matches: [match]});
+  const item = section.querySelector("li");
+  assert.equal(item.textContent, "Scheduling conflict: <private title> (calendar.family)");
+  assert.deepEqual(item.querySelectorAll("p").map(node => node.textContent), [
+    "Existing event: 2026-11-01 – 2026-11-02 (all day)",
+    "Overlaps: Nov 1, 2026 · 01:30 (PDT) – 01:45 (PST)",
+  ]);
+  panel._hass.locale.time_format = "12";
+  panel.renderCalendarCheckDetails(section, {status: "ready", matches: [{...match,
+    existing_start: "2026-11-01T01:00:00-07:00", existing_end: "2026-11-01T02:00:00-08:00",
+    existing_all_day: false}]});
+  assert.deepEqual(section.querySelector("li").querySelectorAll("p").map(node => node.textContent), [
+    "Existing event: Nov 1, 2026 · 1 AM (PDT) – 2 AM (PST)",
+    "Overlaps: Nov 1, 2026 · 1:30 AM (PDT) – 1:45 AM (PST)",
+  ]);
+  panel._hass.locale.time_format = "24";
+  panel._hass.config.time_zone = "Pacific/Kiritimati";
+  panel.renderCalendarCheckDetails(section, {status: "ready", matches: [{...match,
+    existing_start: "9999-12-31T09:00:00+00:00", existing_end: "9999-12-31T11:00:00+00:00",
+    existing_all_day: false,
+    overlap_start: "9999-12-31T09:00:00+00:00", overlap_end: "9999-12-31T11:00:00+00:00"}]});
+  assert.deepEqual(section.querySelector("li").querySelectorAll("p").map(node => node.textContent), [
+    "Existing event: Dec 31, 9999 · 09:00–11:00 (UTC)",
+    "Overlaps: Dec 31, 9999 · 09:00–11:00 (UTC)",
+  ]);
+});
+
 test("on-demand calendar check renders classified matches without changing review state", async () => {
   const event = {id: "event-1", title: "School", start: "2026-10-12",
     end: "2026-10-13", all_day: true, status: "pending", calendar_entity: "calendar.family"};

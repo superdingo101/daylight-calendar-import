@@ -126,3 +126,57 @@ def test_end_to_start_adjacency_is_not_a_conflict():
             end="2026-10-09T00:00:00+00:00",
         ),
     ) is None
+
+
+def test_match_interval_context_is_clipped_and_normalized_to_local_zone():
+    """Only the allowed interval fields leave calendar observation."""
+    from dataclasses import asdict
+
+    result = classify(draft(), existing("Dinner", "2026-10-08T23:30:00Z",
+                                       "2026-10-09T00:30:00Z"))
+    assert asdict(result) == {
+        "kind": "conflict", "calendar_entity": "calendar.observed",
+        "existing_title": "Dinner", "existing_start": "2026-10-08T16:30:00-07:00",
+        "existing_end": "2026-10-08T17:30:00-07:00", "existing_all_day": False,
+        "overlap_start": "2026-10-08T17:00:00-07:00",
+        "overlap_end": "2026-10-08T17:30:00-07:00",
+    }
+    contained = classify(draft(), existing("Dinner", "2026-10-09T00:15:00Z",
+                                          "2026-10-09T00:45:00Z"))
+    assert contained.overlap_start == "2026-10-08T17:15:00-07:00"
+    assert contained.overlap_end == "2026-10-08T17:45:00-07:00"
+
+
+def test_all_day_context_keeps_exclusive_dates_and_dst_overlap():
+    result = classify(draft("Fair", "2026-11-01", "2026-11-03", True),
+                      existing("Holiday", "2026-11-01", "2026-11-02", True))
+    assert result.existing_start == "2026-11-01"
+    assert result.existing_end == "2026-11-02"
+    assert result.existing_all_day is True
+    assert result.overlap_start == "2026-11-01T00:00:00-07:00"
+    assert result.overlap_end == "2026-11-02T00:00:00-08:00"
+
+
+def test_extreme_utc_context_falls_back_when_local_offset_overflows():
+    from datetime import timedelta, timezone
+
+    event = draft("Future", "9999-12-31T09:00:00Z", "9999-12-31T11:00:00Z")
+    result = classify_calendar_event(event, existing("Future", event.start, event.end),
+                                     local_zone=timezone(timedelta(hours=14)))
+    assert result.kind == "exact_duplicate"
+    assert result.existing_start == "9999-12-31T09:00:00+00:00"
+    assert result.existing_end == "9999-12-31T11:00:00+00:00"
+    assert result.overlap_start == result.existing_start
+    assert result.overlap_end == result.existing_end
+
+
+def test_early_utc_range_falls_back_as_a_pair_when_local_start_underflows():
+    from datetime import timedelta, timezone
+
+    event = draft("Early", "0001-01-01T01:00:00Z", "0001-01-01T15:00:00Z")
+    result = classify_calendar_event(event, existing("Early", event.start, event.end),
+                                     local_zone=timezone(timedelta(hours=-12)))
+    assert result.existing_start == "0001-01-01T01:00:00+00:00"
+    assert result.existing_end == "0001-01-01T15:00:00+00:00"
+    assert result.overlap_start == result.existing_start
+    assert result.overlap_end == result.existing_end
