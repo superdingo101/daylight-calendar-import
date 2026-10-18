@@ -653,6 +653,8 @@ export class DaylightImportPanel extends HTMLElement {
       await this.showImport(response.pending.id);
       if (this._status !== "ready") {
         this._view = "new";
+        this._selectedId = null;
+        this._detail = null;
         this.render();
         throw new Error("Could not open the new import for review.");
       }
