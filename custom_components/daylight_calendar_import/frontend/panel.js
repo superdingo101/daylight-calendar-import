@@ -624,14 +624,14 @@ export class DaylightImportPanel extends HTMLElement {
       onReview: id => this.openSubmissionReview(id),
       onActivity: id => this.showActivity(id),
       onSubmitted: response => this._afterSubmission(response),
-      onSettled: () => this.render(),
+      onSettled: () => this._syncNewImportButton(),
     });
     this._fileSubmission = new FileSubmission({
       getHass: () => this._hass,
       onReview: id => this.openSubmissionReview(id),
       onActivity: id => this.showActivity(id),
       onSubmitted: response => this._afterSubmission(response),
-      onSettled: () => this.render(),
+      onSettled: () => this._syncNewImportButton(),
     });
     this._manualSubmission.element.hidden = true;
     this._fileSubmission.element.hidden = true;
@@ -2315,13 +2315,19 @@ export class DaylightImportPanel extends HTMLElement {
     return form;
   }
 
+  _syncNewImportButton() {
+    // Update only this control after an intake request settles. Rerendering
+    // the detail here would discard its focused heading.
+    this._newImportButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
+      Boolean(this._editingId || this._decision || this._batchAction || this._resolution) ||
+      Boolean(this._manualSubmission.busy || this._fileSubmission.busy);
+  }
+
   render() {
     this._manualSubmission.element.hidden = this._view !== "new" || this._newImportMode !== "text" || Boolean(this._selectedId);
     this._fileSubmission.element.hidden = this._view !== "new" || this._newImportMode !== "file" || Boolean(this._selectedId);
     this._refreshButton.hidden = this._view === "new";
-    this._newImportButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
-      Boolean(this._editingId || this._decision || this._batchAction || this._resolution) ||
-      Boolean(this._manualSubmission.busy || this._fileSubmission.busy);
+    this._syncNewImportButton();
     this._navigation.hidden = this._view === "new";
     this._refreshButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
