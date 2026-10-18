@@ -3377,3 +3377,52 @@ async def test_valid_bounded_assumptions_survive_storage_restart(monkeypatch):
     event = store.get(item.id).events[0]
     assert event.date_time_assumptions == ("Normalized local time",)
     assert event.as_service_dict()["date_time_assumptions"] == ["Normalized local time"]
+
+
+async def test_recurrence_warning_survives_zero_event_submission_and_restart(monkeypatch):
+    from custom_components.daylight_calendar_import.models import UNSUPPORTED_RECURRENCE_WARNING
+
+    backend = FakeStoreBackend()
+    monkeypatch.setattr(storage_module, "_PendingStore", lambda *args, **kwargs: backend)
+    store = PendingImportStore(object())
+    activity_id = await store.async_begin_submission(
+        source_kind="manual_text", source_title="Practice schedule",
+        received_at=datetime(2026, 10, 8, tzinfo=UTC),
+    )
+    result = await store.async_add(
+        source_text="Practice every Thursday until December", events=[],
+        activity_id=activity_id, warnings=[UNSUPPORTED_RECURRENCE_WARNING],
+    )
+    assert result.pending is None
+    activity = store.get_activity(activity_id)
+    assert activity["status"] == "no_events"
+    assert activity["source_title"] == "Practice schedule"
+    assert activity["guidance"] == UNSUPPORTED_RECURRENCE_WARNING
+    backend.load_result = backend.saved[-1]
+    restarted = PendingImportStore(object())
+    await restarted.async_load()
+    assert restarted.get_activity(activity_id)["guidance"] == UNSUPPORTED_RECURRENCE_WARNING
+    assert restarted.list() == ()
+
+
+@pytest.mark.parametrize('kind', ['manual_text', 'email', 'image', 'pdf'])
+async def test_recurrence_activity_context_is_private_bounded_and_manual_only(monkeypatch, kind):
+    from custom_components.daylight_calendar_import.models import UNSUPPORTED_RECURRENCE_WARNING
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    text = 'Private class each Thursday ' + 'x' * 5000
+    identifier = await store.async_begin_submission(source_kind=kind, source_title=None,
+                                                    received_at=datetime.now(UTC))
+    await store.async_add(source_text=text, source_kind=kind, events=[], activity_id=identifier,
+                          warnings=[UNSUPPORTED_RECURRENCE_WARNING])
+    backend.load_result = backend.saved[-1]
+    restored = make_store(monkeypatch, backend)
+    await restored.async_load()
+    detail = restored.get_activity(identifier)
+    if kind == 'manual_text':
+        assert detail['manual_source_text'] == text[:4096]
+    else:
+        assert 'manual_source_text' not in detail
+    assert 'manual_source_text' not in restored.list_activity()[0]
+    assert text[:4096] not in str(restored.list_notifications())

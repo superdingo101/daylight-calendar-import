@@ -38,8 +38,11 @@ activity timestamps do not authorize age deletion; the completed-summary count
 limit still applies.
 
 Activity summaries can include source subject/title, an event title, status,
-counts and transition coordinates. They exclude source bodies and attachment
-bytes. Pending review can retain sensitive source context and parsed drafts
+counts and transition coordinates. They exclude email bodies and attachment bytes. For manual text that
+produces no drafts because recurrence is unsupported, authorized activity detail
+retains the first 4,096 characters of the submitted text to identify the schedule
+for manual handling. This private context follows the completed-summary limits
+above and is excluded from activity lists, diagnostics and notifications. Pending review can retain sensitive source context and parsed drafts
 until the user resolves the import. Notification identities, target entity IDs,
 retry state, fixed failure codes and digests remain private and follow the limits
 above. This policy changes no external provider or mailbox retention, performs

@@ -67,6 +67,7 @@ def plan_source_routing(
     parser_source = replace(
         source,
         text=extracted.body if source.text is not None else None,
+        title=None if extracted.subject_consumed else source.title,
     )
     return SourceRoutingPlan(
         parser_source, destination, warnings,

@@ -202,6 +202,20 @@ test("confirmed recovery that cannot reload reports its saved outcome", async ()
   assert.equal(globalThis.focusedNode, panel._refreshButton);
 });
 
+test("manual recurrence activity detail labels and safely renders the retained excerpt", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => request.service === "list_pending"
+    ? {response: {imports: []}}
+    : {response: {activity: {id: "manual-recurrence", status: "no_events", transitions: [],
+      guidance: "Repeating schedules require manual calendar entry.",
+      manual_source_text: "Private class each Thursday <script>unsafe</script>"}}}};
+  await flush();
+  await panel.showActivity("manual-recurrence");
+  assert.ok(panel._content.querySelectorAll("p").some(row => row.textContent ===
+    "Submitted text (first 4,096 characters): Private class each Thursday <script>unsafe</script>"));
+  assert.equal(panel._content.querySelector("script"), null);
+});
+
 test("lost recovery response reconciles a completed import with the inbox", async () => {
   const panel = new DaylightImportPanel();
   const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",

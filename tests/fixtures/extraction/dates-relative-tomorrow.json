@@ -4,6 +4,7 @@
   "reference_datetime": "2026-10-14T12:00:00-07:00",
   "time_zone": "America/Los_Angeles",
   "provider_response": {
+    "unsupported_recurrence": false,
     "events": [
       {
         "title": "Choir rehearsal",

@@ -104,6 +104,57 @@ async def test_invalid_top_level_response_has_safe_category(monkeypatch):
     assert str(caught.value) == "AI Task returned an invalid result"
 
 
+@pytest.mark.parametrize("attachment_only", [False, True], ids=["text", "attachment-only"])
+@pytest.mark.parametrize("response_fields", [
+    {}, {"unsupported_recurrence": None}, {"unsupported_recurrence": 0},
+    {"unsupported_recurrence": 1}, {"unsupported_recurrence": "false"},
+])
+async def test_live_response_requires_explicit_recurrence_boolean(
+    monkeypatch, attachment_only, response_fields,
+):
+    from dataclasses import replace
+    from custom_components.daylight_calendar_import.sources import SourceAttachment
+    from tests.test_parser import VALID
+
+    source = TextSourceAdapter().create("A one-time event")
+    if attachment_only:
+        source = replace(source, text=None, attachments=(SourceAttachment(
+            id="image", media_type="image/png", size_bytes=1,
+            content_ref="media-source://test/image.png", filename="image.png",
+        ),))
+    provider = providers.AITaskParserProvider(object(), "ai_task.test")
+    monkeypatch.setattr(provider, "_entity", lambda: SimpleNamespace(
+        available=True, supported_features=providers.AITaskEntityFeature.SUPPORT_ATTACHMENTS,
+    ))
+    generate = AsyncMock(return_value=SimpleNamespace(data={
+        "events": [VALID], **response_fields,
+    }))
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+
+    with pytest.raises(providers.ProviderError) as caught:
+        await provider.async_parse(source, reference_datetime="now", time_zone="UTC")
+    assert caught.value.code == "provider_invalid_response"
+    assert str(caught.value) == "AI Task returned an invalid result"
+    generate.assert_awaited_once()
+
+
+@pytest.mark.parametrize("recurrence", [False, True])
+async def test_live_response_honors_explicit_recurrence_boolean(monkeypatch, recurrence):
+    from custom_components.daylight_calendar_import.parser import UNSUPPORTED_RECURRENCE_WARNING
+    from tests.test_parser import VALID
+
+    generate = AsyncMock(return_value=SimpleNamespace(data={
+        "events": [VALID], "unsupported_recurrence": recurrence,
+    }))
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    outcome = await providers.AITaskParserProvider(object(), "ai_task.test").async_parse(
+        TextSourceAdapter().create("A one-time event"),
+        reference_datetime="now", time_zone="UTC",
+    )
+    assert len(outcome.events) == (0 if recurrence else 1)
+    assert outcome.warnings == ([UNSUPPORTED_RECURRENCE_WARNING] if recurrence else [])
+
+
 async def test_provider_cancellation_still_propagates(monkeypatch):
     monkeypatch.setattr(providers.ai_task, "async_generate_data", AsyncMock(side_effect=asyncio.CancelledError))
     with pytest.raises(asyncio.CancelledError):
@@ -358,7 +409,7 @@ async def test_actual_submission_has_coherent_untrusted_provider_boundaries(monk
             raise HomeAssistantError("private entity resolution data")
         return Entity()
 
-    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [{**VALID, "confidence": 10 ** 1000}]}))
+    generate = AsyncMock(return_value=SimpleNamespace(data={"unsupported_recurrence": False, "events": [{**VALID, "confidence": 10 ** 1000}]}))
     if phase == "cause":
         generate.side_effect = ThrowingCauseError("private original provider error")
     elif phase == "invalid_cause":
