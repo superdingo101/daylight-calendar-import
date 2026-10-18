@@ -2298,8 +2298,8 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   render() {
-    this._manualSubmission.element.hidden = this._view !== "new" || this._newImportMode !== "text";
-    this._fileSubmission.element.hidden = this._view !== "new" || this._newImportMode !== "file";
+    this._manualSubmission.element.hidden = this._view !== "new" || this._newImportMode !== "text" || Boolean(this._selectedId);
+    this._fileSubmission.element.hidden = this._view !== "new" || this._newImportMode !== "file" || Boolean(this._selectedId);
     this._refreshButton.hidden = this._view === "new";
     this._newImportButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution) ||
