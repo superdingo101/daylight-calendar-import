@@ -8,6 +8,10 @@ const fileForm = page => page.getByRole("region", {name: "Import an image or PDF
 const configure = (page, values) => page.evaluate(values => Object.assign(window.fixture, values), values);
 const calls = page => page.evaluate(() => window.fixture.calls.filter(call => call.service.startsWith("submit_")));
 const source = "School picnic October 20, 2026, 3–4pm";
+const openImport = async (page, method) => {
+  await page.getByRole("button", {name: "+ New import", exact: true}).click();
+  await page.getByRole("button", {name: method === "text" ? "Paste event details" : "Upload image or PDF", exact: false}).click();
+};
 
 const pageErrors = new WeakMap();
 test.beforeEach(async ({page}) => {
@@ -16,20 +20,42 @@ test.beforeEach(async ({page}) => {
   page.on("pageerror", error => errors.push(error.message));
   await page.goto("/");
   await expect(page.getByText("No imports awaiting review.")).toBeVisible();
-  await expect(textForm(page).getByText("Email setup is optional.", {exact: false})).toBeVisible();
+  await expect(page.getByRole("heading", {name: "Daylight Imports"})).toBeVisible();
+  await expect(page.getByRole("button", {name: "+ New import"})).toBeVisible();
+  await expect(page.getByRole("button", {name: "Refresh"})).toBeVisible();
+  await expect(textForm(page)).toBeHidden();
+  await expect(fileForm(page)).toBeHidden();
 });
 test.afterEach(async ({page}) => {
   expect(pageErrors.get(page)).toEqual([]);
 });
 
+test("header import action is available from activity, and Back restores the previous view", async ({page}) => {
+  await page.getByRole("navigation", {name: "Daylight views"}).getByRole("button", {name: "Recent activity"}).click();
+  await expect(page.getByText("No recent activity.", {exact: true})).toBeVisible();
+  await openImport(page, "text");
+  await expect(page.getByRole("heading", {name: "New import"})).toBeVisible();
+  await expect(page.getByRole("navigation", {name: "Daylight views"})).toBeHidden();
+  await page.getByRole("button", {name: "Back", exact: false}).click();
+  await expect(page.getByText("No recent activity.", {exact: true})).toBeVisible();
+  await expect(page.getByRole("button", {name: "+ New import"})).toBeVisible();
+  await expect(page.getByRole("button", {name: "Refresh"})).toBeVisible();
+});
+
 test("empty paste/file validation and keyboard submission, loading, and review navigation", async ({page}) => {
+  await openImport(page, "text");
   const text = textForm(page);
   const file = fileForm(page);
+  await expect(text.getByText("Email setup is optional.", {exact: false})).toBeVisible();
   await text.getByRole("button", {name: "Import events", exact: true}).click();
   await expect(text.getByRole("textbox", {name: "Event details"})).toBeFocused();
   await expect(text.getByRole("status")).toContainText("Paste event details before importing.");
+  await page.getByRole("button", {name: "Choose another method"}).click();
+  await page.getByRole("button", {name: "Upload image or PDF"}).click();
   await file.getByRole("button", {name: "Import file", exact: true}).click();
   await expect(file.getByLabel("Image or PDF file")).toBeFocused();
+  await page.getByRole("button", {name: "Choose another method"}).click();
+  await page.getByRole("button", {name: "Paste event details", exact: false}).click();
   expect(await calls(page)).toEqual([]);
 
   await configure(page, {held: true});
@@ -44,11 +70,9 @@ test("empty paste/file validation and keyboard submission, loading, and review n
   await expect(text.getByRole("status")).toContainText("Extracting events for review");
   await expect.poll(() => calls(page).then(result => result.length)).toBe(1);
   await page.evaluate(() => window.fixture.release());
-  await expect(text.getByRole("status")).toContainText("1 event is ready for review");
-  await expect(input).toHaveValue(source);
+  await expect(page.getByRole("heading", {name: "School picnic", exact: true})).toBeVisible();
   const requests = await calls(page);
   expect(requests[0]).toMatchObject({service: "submit_text", service_data: {text: source}, return_response: true});
-  await text.getByRole("button", {name: "Review events", exact: true}).click();
   await expect(page.getByRole("heading", {name: "School picnic", exact: true})).toBeVisible();
   await expect(page.getByRole("heading", {name: "Manual source", exact: true})).toBeFocused();
   await expect(text).toBeHidden();
@@ -59,6 +83,7 @@ for (const [filename, service, mimeType] of [
   ["media-multipage-text.pdf", "submit_pdf", "application/pdf"],
 ]) {
   test(`native file input uploads ${filename} and opens review`, async ({page}) => {
+    await openImport(page, "file");
     const form = fileForm(page);
     await configure(page, {held: true});
     const upload = page.waitForRequest(request => request.url().endsWith("/api/file_upload") && request.method() === "POST");
@@ -80,27 +105,27 @@ for (const [filename, service, mimeType] of [
     await expect.poll(() => calls(page).then(result => result.length)).toBe(1);
     expect((await calls(page))[0]).toMatchObject({service, service_data: {file_id: "a".repeat(32), text: "Family calendar"}});
     await page.evaluate(() => window.fixture.release());
-    await expect(form.getByRole("status")).toContainText("1 event is ready for review");
-    await expect(form.getByLabel("Image or PDF file")).toBeEnabled();
-    await form.getByRole("button", {name: "Review events", exact: true}).click();
+    await expect(page.getByRole("heading", {name: "School picnic", exact: true})).toBeVisible();
     await expect(page.getByRole("heading", {name: "School picnic", exact: true})).toBeVisible();
   });
 }
 
 test("duplicate sources keep the draft and do not offer nonexistent review", async ({page}) => {
   await configure(page, {mode: "duplicate"});
+  await openImport(page, "text");
   const form = textForm(page);
   await form.getByRole("textbox").fill(source);
   await form.getByRole("button", {name: "Import events", exact: true}).click();
   await expect(form.getByRole("status")).toContainText("This source was already submitted");
   await expect(form.getByRole("textbox")).toHaveValue(source);
   await expect(form.getByRole("button", {name: "Review events", exact: true})).toHaveCount(0);
-  await expect(page.getByText("No imports awaiting review.")).toBeVisible();
+  await expect(page.getByRole("heading", {name: "New import"})).toBeVisible();
 });
 
 for (const mode of ["failure", "disconnect", "malformed"]) {
   test(`${mode} preserves the draft, offers activity, and safely retries`, async ({page}) => {
     await configure(page, {mode});
+    await openImport(page, "text");
     const form = textForm(page);
     await form.getByRole("textbox").fill(source);
     await form.getByRole("button", {name: "Import events", exact: true}).click();
@@ -111,10 +136,11 @@ for (const mode of ["failure", "disconnect", "malformed"]) {
     await expect(page.getByText("No recent activity.", {exact: true})).toBeVisible();
     await expect(page.getByRole("navigation", {name: "Daylight views"}).getByRole("button", {name: "Recent activity", exact: true})).toBeDisabled();
     await page.getByRole("navigation", {name: "Daylight views"}).getByRole("button", {name: "Review inbox", exact: true}).click();
+    await openImport(page, "text");
     await expect(form.getByRole("textbox")).toHaveValue(source);
     await configure(page, {mode: "success"});
     await form.getByRole("button", {name: "Import events", exact: true}).click();
-    await expect(form.getByRole("status")).toContainText("1 event is ready for review");
+    await expect(page.getByRole("heading", {name: "School picnic", exact: true})).toBeVisible();
     const requests = await calls(page);
     expect(requests).toHaveLength(2);
     expect(requests[0].service_data.source_id).toEqual(expect.any(String));
@@ -124,6 +150,7 @@ for (const mode of ["failure", "disconnect", "malformed"]) {
 }
 
 test("invalid files stay local and mobile layout keeps controls within viewport", async ({page}) => {
+  await openImport(page, "file");
   const uploadRequests = [];
   page.on("request", request => {
     if (new URL(request.url()).pathname === "/api/file_upload") uploadRequests.push(request.url());
@@ -136,7 +163,7 @@ test("invalid files stay local and mobile layout keeps controls within viewport"
   expect(await calls(page)).toEqual([]);
   expect(await page.evaluate(() => window.fixture.uploads)).toEqual([]);
   expect(uploadRequests).toEqual([]);
-  for (const control of await page.locator("input, textarea, .manual-submission button").all()) {
+  for (const control of await page.locator("input:visible, textarea:visible, .manual-submission button:visible, .toolbar-new:visible").all()) {
     const box = await control.boundingBox();
     expect(box.x).toBeGreaterThanOrEqual(0);
     expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize().width);
@@ -145,6 +172,7 @@ test("invalid files stay local and mobile layout keeps controls within viewport"
 });
 
 test("upload rejection retains selection and does not call extraction", async ({page}) => {
+  await openImport(page, "file");
   await page.route("**/api/file_upload", route => route.fulfill({status: 413, body: "Too large"}));
   const form = fileForm(page);
   const selected = form.getByLabel("Image or PDF file");
@@ -158,10 +186,11 @@ test("upload rejection retains selection and does not call extraction", async ({
 
 
 test("automatic calendar observations precede explicit advisory approval", async ({page}) => {
+  await openImport(page, "text");
   const form = textForm(page);
   await form.getByRole("textbox").fill(source);
   await form.getByRole("button", {name: "Import events", exact: true}).click();
-  await form.getByRole("button", {name: "Review events", exact: true}).click();
+  await expect(page.getByRole("heading", {name: "School picnic", exact: true})).toBeVisible();
   await configure(page, {holdObservation: true});
   await page.getByRole("button", {name: "Approve School picnic", exact: true}).click();
   const confirm = page.getByRole("button", {name: "Confirm approve: School picnic", exact: true});
