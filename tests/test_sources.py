@@ -51,3 +51,21 @@ def test_source_contract_can_describe_image_pdf_or_combined_text():
         text="Invitation details", attachments=(attachment,),
     ).text == "Invitation details"
     assert SourceKind.EMAIL.value == "email"
+
+
+@pytest.mark.parametrize("text", ["x" * 1_000_000, "🎉" * 1_000_000])
+def test_text_adapter_accepts_exact_character_limit(text):
+    assert TextSourceAdapter().create(text).text == text
+
+
+@pytest.mark.parametrize("text", ["x" * 1_000_001, " " * 1_000_000 + "x"])
+def test_text_adapter_rejects_over_limit_before_trimming(text):
+    with pytest.raises(ValueError, match="1,000,000-character limit"):
+        TextSourceAdapter().create(text)
+
+
+async def test_direct_text_parser_counts_original_whitespace_before_normalizing():
+    from custom_components.daylight_calendar_import.parser import async_parse_text
+
+    with pytest.raises(ValueError, match="1,000,000-character limit"):
+        await async_parse_text(None, text=" " * 1_000_000 + "x", ai_task_entity="ai_task.test")

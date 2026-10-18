@@ -40,3 +40,8 @@ CONF_CALENDAR_ALIASES = "calendar_aliases"
 CONF_CONFLICT_CALENDAR_ENTITIES = "conflict_calendar_entities"
 CONF_NOTIFICATION_PREFERENCES = "notification_preferences"
 CONF_EMAIL_SENDER_ALLOWLIST = "email_sender_allowlist"
+
+# Count Unicode code points before normalization; never silently truncate sources.
+MAX_SOURCE_TEXT_CHARS = 1_000_000
+MAX_CALENDAR_ALIASES = 100
+SOURCE_TEXT_LIMIT_MESSAGE = "Source text exceeds the 1,000,000-character limit. Split it into smaller submissions."
