@@ -7,7 +7,7 @@ You can use Daylight Calendar Import without configuring an email account. Insta
 1. Paste the announcement into **Event details**. Include explicit dates, start/end times and locations when available. A single submission can contain multiple events.
 2. Optionally start the text with a configured routing hint, such as `Calendar: Kids`.
 3. Select **Import events** and wait for the result.
-4. Select **Review events** when drafts are ready. Verify every draft, resolve any routing warning, choose its destination calendar, then approve or reject it.
+4. When drafts are ready, Daylight opens the review automatically. Verify every draft, resolve any routing warning, choose its destination calendar, then approve or reject it.
 
 Submission only saves drafts. Approving a draft is the step that writes to your calendar.
 
