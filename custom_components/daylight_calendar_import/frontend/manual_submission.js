@@ -36,7 +36,7 @@ const node = (tag, text = "") => {
 
 /** Keep one form alive so inbox refreshes and view changes preserve its draft. */
 export class ManualSubmission {
-  constructor({getHass, onSubmitted = () => {}, onReview, onActivity}) {
+  constructor({getHass, onSubmitted = () => {}, onSettled = () => {}, onReview, onActivity}) {
     this.element = node("section");
     this.element.className = "manual-submission";
     this.element.setAttribute("aria-label", "Import pasted event details");
@@ -94,6 +94,7 @@ export class ManualSubmission {
         this.button.disabled = false;
         this.text.disabled = false;
         this.button.textContent = "Import events";
+        onSettled();
       }
     });
   }
