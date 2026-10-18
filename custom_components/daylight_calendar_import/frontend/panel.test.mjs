@@ -348,7 +348,7 @@ test("detail errors and absent inbox items retain useful keyboard focus", async 
   fail = true;
   panel.showInbox();
   await flush();
-  assert.equal(globalThis.focusedNode.textContent, "Refresh");
+  assert.equal(globalThis.focusedNode.attributes["aria-label"], "Refresh");
 });
 
 test("a superseded refresh cannot replace newer data or a newer error", async () => {
@@ -1155,7 +1155,7 @@ test("view navigation exposes the current page and remains keyboard reachable", 
   find(panel._content, "nav").querySelectorAll("button")[0].click();
   await flush();
   assert.equal(find(panel._content, "nav").querySelectorAll("button")[0].attributes["aria-current"], "page");
-  assert.equal(globalThis.focusedNode.textContent, "Refresh");
+  assert.equal(globalThis.focusedNode.attributes["aria-label"], "Refresh");
 });
 
 test("primary navigation stays above status and content in every view", async () => {
@@ -5696,6 +5696,7 @@ test("New import is accessible from inbox, activity and settings without an extr
   panel._settings = {entry_id: "entry"};
   panel._settingsTab = "email";
   panel.render();
+  panel.showSettings = async tab => { panel._view = "settings"; panel._settingsTab = tab; };
   panel.showNewImport();
   await panel.leaveNewImport();
   assert.equal(panel._view, "settings");
@@ -5717,7 +5718,7 @@ test("successful new text import opens review directly without any calendar writ
   panel.showNewImport();
   panel.selectImportMethod("text");
   const reviews = [];
-  panel.showImport = async id => { reviews.push(id); panel._status = "ready"; };
+  panel.showImport = async id => { reviews.push(id); panel._status = "ready"; panel.render(); };
   panel._manualSubmission.text.value = "School picnic tomorrow";
   await panel._manualSubmission.form.submit({preventDefault() {}});
   assert.deepEqual(reviews, ["review-123"]);
