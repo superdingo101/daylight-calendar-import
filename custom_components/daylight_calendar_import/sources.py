@@ -8,6 +8,8 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
+from .const import MAX_SOURCE_TEXT_CHARS, SOURCE_TEXT_LIMIT_MESSAGE
+
 
 class SourceKind(StrEnum):
     """Origin of a document before parsing."""
@@ -49,6 +51,8 @@ class TextSourceAdapter:
 
     def create(self, text: str, *, source_id: str | None = None) -> SourceDocument:
         """Make a text document without persisting its raw upstream ID."""
+        if len(text) > MAX_SOURCE_TEXT_CHARS:
+            raise ValueError(SOURCE_TEXT_LIMIT_MESSAGE)
         clean_text = text.strip()
         if not clean_text:
             raise ValueError("text must not be empty")

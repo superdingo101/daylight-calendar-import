@@ -36,6 +36,14 @@ def _range(
         raise ValueError("Calendar event end must be after start")
     return start_utc, end_utc
 
+def _display_range(start: datetime, end: datetime, local_zone: tzinfo) -> tuple[str, str]:
+    """Keep an interval in one zone even at representable UTC year boundaries."""
+    try:
+        return start.astimezone(local_zone).isoformat(), end.astimezone(local_zone).isoformat()
+    except OverflowError:
+        return start.isoformat(), end.isoformat()
+
+
 @dataclass(frozen=True, slots=True)
 class CalendarCandidate:
     """Minimum bounded information needed from an existing calendar event."""
@@ -54,6 +62,11 @@ class CalendarMatch:
     kind: str
     calendar_entity: str
     existing_title: str
+    existing_start: str
+    existing_end: str
+    existing_all_day: bool
+    overlap_start: str
+    overlap_end: str
 
 
 def classify_calendar_event(
@@ -78,4 +91,14 @@ def classify_calendar_event(
         kind = "possible_duplicate"
     else:
         kind = "conflict"
-    return CalendarMatch(kind, existing.calendar_entity, existing.title)
+    displayed_start, displayed_end = (
+        (existing.start, existing.end) if existing.all_day
+        else _display_range(existing_start, existing_end, local_zone)
+    )
+    overlap_start, overlap_end = _display_range(
+        max(candidate_start, existing_start), min(candidate_end, existing_end), local_zone
+    )
+    return CalendarMatch(
+        kind, existing.calendar_entity, existing.title,
+        displayed_start, displayed_end, existing.all_day, overlap_start, overlap_end,
+    )

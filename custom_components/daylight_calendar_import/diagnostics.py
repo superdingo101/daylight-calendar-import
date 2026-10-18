@@ -20,6 +20,7 @@ _TRANSITION_TYPES = (
     "received", "discovered", "processing", "failed", "duplicate", "no_events",
     "review_ready", "calendar_write_started", "calendar_write_uncertain",
     "calendar_create_failed", "calendar_created", "event_rejected", "source_reprocessed",
+    "notification_delivery_failed",
 )
 _EVENT_STATUSES = ("pending", "write_uncertain")
 _NOTIFICATION_STATUSES = ("pending", "sent", "failed", "cancelled")

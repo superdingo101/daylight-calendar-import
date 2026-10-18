@@ -95,3 +95,21 @@ async def test_text_only_entity_rejects_media_without_calling_provider(hass):
             await provider.async_parse(source, reference_datetime="2026-10-15T12:00:00+00:00", time_zone="UTC")
         assert caught.value.code == ("unsupported_media" if media_type == "application/octet-stream" else "unsupported_capability")
     assert entity.tasks == []
+
+
+@pytest.mark.parametrize("kind", list(SourceKind))
+async def test_oversized_source_rejected_before_ai_generation(hass, kind):
+    from custom_components.daylight_calendar_import.providers import ParserCapabilities
+
+    capabilities = ParserCapabilities(text=True, images=True, pdfs=True, max_attachments=4, max_total_bytes=10 * 1024 * 1024)
+    # Whitespace also counts; providers must not strip an oversized payload first.
+    source = SourceDocument(id="large", received_at=datetime.now(UTC), kind=kind, text=" " * 999_999 + "x")
+    capabilities.validate(source)
+    source = SourceDocument(id="large", received_at=source.received_at, kind=kind, text="🎉" * 1_000_000)
+    capabilities.validate(source)
+    source = SourceDocument(id="large", received_at=source.received_at, kind=kind, text=source.text + "x")
+    provider = AITaskParserProvider(hass, "ai_task.unavailable")
+    with pytest.raises(SourceValidationError) as err:
+        await provider.async_parse(source, reference_datetime="2026-10-16T12:00:00+00:00", time_zone="UTC")
+    assert err.value.code == "source_too_large"
+    assert str(err.value) == "Source text exceeds the 1,000,000-character limit. Split it into smaller submissions."

@@ -17,6 +17,8 @@ Submission only saves drafts. Approving a draft is the step that writes to your 
 2. Optionally add supporting text, including a calendar routing hint. Avoid repeating information that conflicts with the file.
 3. Select **Import file** and wait for the result. Review and approve the extracted drafts as above.
 
+Text input is limited to 1,000,000 Unicode characters per submission, including whitespace. The same bound applies to optional supporting text and to the complete source sent to AI (for a text PDF, extracted text plus supporting text). Oversized sources are rejected with an instruction to split them into smaller submissions; text is never silently truncated.
+
 The maximum file size is 10 MiB. PDFs may have up to 30 pages. The file's contents must match a supported format; renaming an unsupported file does not convert it. Images and scanned PDFs require an AI Task entity that supports attachments. PDFs with a usable text layer can be processed by a text-only AI Task entity. If a PDF needs visual interpretation, Daylight requires attachment support rather than silently ignoring the image content.
 
 ## Understand the result

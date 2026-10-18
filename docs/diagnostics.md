@@ -6,7 +6,8 @@ operational aggregates and declared parser capabilities:
 
 - Loaded and service-admission booleans.
 - Pending import/event counts and pending/uncertain event-status counts.
-- Retained lifecycle record counts, status counts and transition-type counts.
+- Retained lifecycle record counts, status counts and transition-type counts,
+  including terminal `notification_delivery_failed` transitions.
 - Retained classified provider-failure counts.
 - Notification journal counts by delivery status.
 - Whether an AI Task is configured, its declared text/image/PDF capabilities,

@@ -36,6 +36,17 @@ panel.hass = {
     if (call.service === "list_pending") return {response: {imports: fixture.imports}};
     if (call.service === "get_pending") return {response: {pending}};
     if (call.service === "list_activity") return {response: {activity: []}};
+    if (call.service === "check_pending_event") {
+      if (fixture.holdObservation) await new Promise(resolve => {fixture.releaseObservation = resolve;});
+      if (fixture.observationError) throw new Error(fixture.observationError);
+      return {response: {pending_id: pending.id, event_id: call.service_data.event_id,
+        observed_calendars: ["calendar.family", "calendar.work"],
+        matches: [{kind: "conflict", calendar_entity: "calendar.work", existing_title: "Dentist"}]}};
+    }
+    if (call.service === "approve_pending_event") {
+      fixture.imports = [];
+      return {response: {pending_id: pending.id, event_id: call.service_data.event_id, approved: true}};
+    }
     if (!["submit_text", "submit_image", "submit_pdf"].includes(call.service)) {
       throw new Error(`Unexpected service: ${call.service}`);
     }

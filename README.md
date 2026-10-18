@@ -79,7 +79,7 @@ The simplest way to get started is with some copied text — no email setup need
 3. Select **Import events**. Keep the page open while processing. A successful submission saves drafts **for review**; it does not create calendar events.
 4. Select **Review events**, inspect the dates, times and destination calendar, then **Approve** to create the event — or **Reject** to discard it.
 
-To import a flyer or document instead, use **Upload an image or PDF** on the same page. Choose a PNG, JPEG, WebP image or PDF, optionally add supporting text (such as `Calendar: Kids`), and select **Import file**. Files may be up to **10 MiB**; PDFs may contain up to **30 pages**. Images and scanned PDFs require an AI Task provider with attachment support; PDFs with a usable text layer can work with a text-only provider.
+To import a flyer or document instead, use **Upload an image or PDF** on the same page. Choose a PNG, JPEG, WebP image or PDF, optionally add supporting text (such as `Calendar: Kids`), and select **Import file**. Text is limited to **1,000,000 characters** per submission (including extracted PDF text and supporting text together). Files may be up to **10 MiB**; PDFs may contain up to **30 pages**. Images and scanned PDFs require an AI Task provider with attachment support; PDFs with a usable text layer can work with a text-only provider.
 
 The result explains whether drafts are ready, the source was already processed, or no events were found. On failure, your text/file selection stays available and the form shows the error. **Recent activity** shows provider or processing failures recorded after submission begins. Browser validation and upload failures, such as an unsupported or oversized file or an upload permission/network error, may have no activity record. Fix the reported problem before retrying. If your connection drops or the result is uncertain, check the review inbox and recent activity first; the submission might have completed. See the [manual import guide](docs/manual-import.md) for permissions, provider requirements and recovery.
 
@@ -118,7 +118,7 @@ School concert on November 12, 2026 at 7:00 PM
 
 Daylight uses that alias to suggest the destination calendar for the extracted events. You can still change individual events during review. An unknown or conflicting calendar hint must be explicitly resolved before approval.
 
-You can also select **Check calendars** on a draft to look for exact duplicates, possible duplicates, and scheduling overlaps. These results are advisory and may become outdated. Daylight makes a fresh **exact-duplicate check against the destination calendar** before writing an approved event; it does not automatically block all overlapping events.
+Selecting **Approve** or **Approve all** automatically checks the destination and your configured conflict calendars before enabling confirmation. Review each result, including any incomplete-check warning, then explicitly confirm approval. You can also select **Check calendars** on a draft to look for exact duplicates, possible duplicates, and scheduling overlaps. These results are advisory and may become outdated. Daylight makes a fresh **exact-duplicate check against the destination calendar** before writing an approved event; it does not automatically block all overlapping events.
 
 See the [v0.6 feature guide](docs/v0.6.md) for calendar routing, permissions, and queue sensors.
 
@@ -137,7 +137,7 @@ No. The normal email and submission workflow saves drafts for your approval. The
 Edit or reject it in **Review inbox**. If a calendar write has an uncertain outcome, inspect your actual calendar before choosing a recovery action; Daylight will not blindly retry it.
 
 **Where do I see errors or imports that didn't create events?**  
-Open **Daylight imports → Recent activity**. For AI provider timeouts, authentication problems, and similar errors, see the [provider troubleshooting guide](docs/provider-errors.md).
+Open **Daylight imports → Recent activity**. If a configured notification exhausts its delivery retries, the activity shows **Notification delivery failed; check notification settings**. Verify the selected notify entity in **Settings → Notifications**. The import or calendar outcome is preserved. For AI provider timeouts, authentication problems, and similar errors, see the [provider troubleshooting guide](docs/provider-errors.md).
 
 ## Help and documentation
 

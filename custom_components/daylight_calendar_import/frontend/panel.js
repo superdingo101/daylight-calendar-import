@@ -5,6 +5,8 @@ import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, 
 import {ManualSubmission} from "./manual_submission.js";
 import {FileSubmission} from "./upload_submission.js";
 
+const CALENDAR_CHECK_TIMEOUT_MS = 30_000;
+
 const notificationOptions = [
   ["review_ready", "Imports ready for review"],
   ["calendar_created", "Events added to a calendar"],
@@ -249,6 +251,7 @@ function activityLabel(type) {
     review_ready: "Awaiting review", duplicate: "Duplicate", failed: "Failed",
     event_rejected: "Rejected", calendar_write_started: "Calendar write started",
     calendar_created: "Calendar created",
+    notification_delivery_failed: "Notification delivery failed; check notification settings",
     calendar_write_uncertain: "Calendar write needs confirmation",
     mixed: "Mixed event outcomes"})[type] || type.replaceAll("_", " ");
 }
@@ -526,6 +529,9 @@ export class DaylightImportPanel extends HTMLElement {
     this._selectedId = null;
     this._detail = null;
     this._calendarCheck = null;
+    this._approvalObservation = null;
+    // Transport lifetime is independent of canceled or superseded review UI.
+    this._calendarObservationRequest = null;
     this._returnFocusId = null;
     this._editingId = null;
     this._editError = null;
@@ -642,6 +648,7 @@ export class DaylightImportPanel extends HTMLElement {
     // Clear loading before bumping generation so a discarded response cannot
     // leave the Check calendars control permanently aria-disabled.
     this._calendarCheck = null;
+    this._approvalObservation = null;
     const generation = ++this._generation;
     this._status = "loading";
     this.render();
@@ -676,6 +683,7 @@ export class DaylightImportPanel extends HTMLElement {
     const generation = ++this._generation;
     this._view = "activity";
     this._calendarCheck = null;
+    this._approvalObservation = null;
     this._activityId = id;
     this._activityDetail = null;
     this._status = "loading";
@@ -701,6 +709,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._selectedId = null;
     this._detail = null;
     this._calendarCheck = null;
+    this._approvalObservation = null;
     this._activityId = null;
     this._activityDetail = null;
     const refresh = this.refresh();
@@ -717,6 +726,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._selectedId = null;
     this._detail = null;
     this._calendarCheck = null;
+    this._approvalObservation = null;
     this._activityId = null;
     this._activityDetail = null;
     this._settingsError = null;
@@ -1567,7 +1577,8 @@ export class DaylightImportPanel extends HTMLElement {
     } else if (result.status === "error") {
       const error = element("p", `Calendar check incomplete: ${result.message}`, "error");
       error.setAttribute("role", "alert");
-      section.append(error);
+      section.append(error, element("p",
+        "Review the calendars yourself before choosing whether to approve this event."));
     } else if (result.status === "ready") {
       if (!result.matches.length) {
         section.append(element("p", "No matches found in the observed calendars."));
@@ -1576,8 +1587,19 @@ export class DaylightImportPanel extends HTMLElement {
           possible_duplicate: "Possible duplicate", conflict: "Scheduling conflict"};
         const list = document.createElement("ul");
         for (const match of result.matches) {
-          list.append(element("li",
-            `${labels[match.kind]}: ${match.existing_title} (${match.calendar_entity})`));
+          const item = element("li",
+            `${labels[match.kind]}: ${match.existing_title} (${match.calendar_entity})`);
+          if (match.existing_start && match.existing_end && match.overlap_start && match.overlap_end) {
+            const locale = this._hass?.locale;
+            const zone = this._hass?.config?.time_zone;
+            const existing = formatEventRange({start: match.existing_start,
+              end: match.existing_end, all_day: match.existing_all_day}, locale, zone);
+            const overlap = formatEventRange({start: match.overlap_start,
+              end: match.overlap_end, all_day: false}, locale, zone);
+            item.append(element("p", `Existing event: ${existing}${match.existing_all_day ? " (all day)" : ""}`));
+            item.append(element("p", `Overlaps: ${overlap}`));
+          }
+          list.append(item);
         }
         section.append(list);
       }
@@ -1603,7 +1625,7 @@ export class DaylightImportPanel extends HTMLElement {
 
     let next;
     try {
-      const response = await checkEvent(this._hass, pendingId, event);
+      const response = await this.observeCalendarEvent(pendingId, event);
       next = {status: "ready", matches: response.matches,
         observed_calendars: response.observed_calendars};
     } catch (error) {
@@ -1644,6 +1666,66 @@ export class DaylightImportPanel extends HTMLElement {
     this._announcement.replaceChildren(element("span", summary));
   }
 
+  /** Bound reviewer waiting without releasing a still-outstanding transport. */
+  async observeCalendarEvent(pendingId, event) {
+    if (this._calendarObservationRequest) {
+      throw new Error("A previous calendar check is still running. Try again after it finishes.");
+    }
+    const request = checkEvent(this._hass, pendingId, event);
+    this._calendarObservationRequest = request;
+    const settled = () => {
+      if (this._calendarObservationRequest === request) this._calendarObservationRequest = null;
+    };
+    // A UI deadline cannot cancel callWS. Retain the single-flight lock until
+    // the actual request settles, including across cancel, navigation, and retry.
+    void request.then(settled, settled);
+    let timer;
+    try {
+      return await Promise.race([request, new Promise((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(
+          "Calendar check timed out. Review the calendars yourself before approval.")),
+        CALENDAR_CHECK_TIMEOUT_MS);
+      })]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Observe every selected draft before enabling advisory approval. */
+  async observeApproval(events) {
+    const observation = {generation: this._generation, detail: this._detail,
+      decision: this._decision, batchAction: this._batchAction,
+      results: new Map(), loading: true};
+    this._approvalObservation = observation;
+    const current = () => this._approvalObservation === observation &&
+      observation.generation === this._generation && observation.detail === this._detail &&
+      observation.decision === this._decision && observation.batchAction === this._batchAction;
+    for (const event of events) observation.results.set(event, {status: "loading"});
+    this.render();
+    // Each existing backend observation has bounded calendars, provider timeouts,
+    // and reviewer permissions. Serial reads avoid multiplying provider load.
+    for (const event of events) {
+      let result;
+      try {
+        const response = await this.observeCalendarEvent(this._selectedId, event);
+        result = {status: "ready", matches: response.matches,
+          observed_calendars: response.observed_calendars};
+      } catch (error) {
+        result = {status: "error", message: typeof error?.message === "string" ?
+          error.message.replace(/^Calendar check incomplete: /, "") : "Calendar check failed"};
+      }
+      if (!current()) return;
+      observation.results.set(event, result);
+    }
+    observation.loading = false;
+    const focusedLabel = this.shadowRoot.activeElement?.textContent;
+    this.render();
+    Array.from(this._content.querySelectorAll("button")).find(
+      button => button.textContent === focusedLabel)?.focus();
+    this._announcement.replaceChildren(element("span",
+      "Calendar checks finished. Review advisory results before confirming approval."));
+  }
+
   focusCalendarCheck(eventId) {
     Array.from(this._content.querySelectorAll("button")).find(
       button => button.dataset.calendarCheckEventId === eventId)?.focus();
@@ -1656,6 +1738,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._selectedId = id;
     this._detail = null;
     this._calendarCheck = null;
+    this._approvalObservation = null;
     this._editingId = null;
     this._editError = null;
     this._decision = null;
@@ -1688,6 +1771,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._batchContext = null;
     this._returnFocusId = this._selectedId;
     this._calendarCheck = null;
+    this._approvalObservation = null;
     ++this._generation;
     this._selectedId = null;
     this._detail = null;
@@ -1695,7 +1779,8 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async runBatch(action) {
-    if (this._saving || this._batchAction !== action) return;
+    if (this._saving || this._batchAction !== action ||
+        (action === "approve" && this._approvalObservation?.loading)) return;
     const pendingId = this._selectedId;
     const events = this._detail.events.filter(event => event.status === "pending");
     this._batchContext = {pendingId, action, title: this._detail.source_title || "Import"};
@@ -1739,7 +1824,8 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async runDecision(event, action) {
-    if (this._saving || this._decision?.id !== event.id || this._decision.action !== action) return;
+    if (this._saving || this._decision?.id !== event.id || this._decision.action !== action ||
+        (action === "approve" && this._approvalObservation?.loading)) return;
     const pendingId = this._selectedId;
     const generation = this._generation;
     this._saving = true;
@@ -2222,6 +2308,9 @@ export class DaylightImportPanel extends HTMLElement {
         content.append(heading, element("p", `Current status: ${activityLabel(item.status)}`),
           element("p", `Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
         if (item.guidance) content.append(element("p", item.guidance));
+        if (item.notification_delivery_failed) {
+          content.append(element("p", activityLabel("notification_delivery_failed"), "warning"));
+        }
         const list = document.createElement("ul");
         for (const transition of item.transitions) {
           const row = element("li", `${activityTime(transition.at, this._hass)} · ${activityLabel(transition.type)}${transition.event_id ? ` · Event ID ${transition.event_id}` : ""}`);
@@ -2242,6 +2331,9 @@ export class DaylightImportPanel extends HTMLElement {
           open.dataset.activityId = item.id;
           open.addEventListener("click", () => void this.showActivity(item.id));
           row.append(open, element("p", `${activityTime(item.created_at, this._hass)} · ${activityLabel(item.status)} · Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
+          if (item.notification_delivery_failed) {
+            row.append(element("p", activityLabel("notification_delivery_failed"), "warning"));
+          }
           list.append(row);
         }
         content.append(list);
@@ -2329,12 +2421,14 @@ export class DaylightImportPanel extends HTMLElement {
           bulk.append(element("p", `${this._batchAction === "approve" ? "Approve" : "Reject"} all ${ready.length} pending events? Each result will be shown separately.`));
           const confirm = element("button", `Confirm ${this._batchAction} all`);
           confirm.type = "button";
+          confirm.disabled = this._batchAction === "approve" && this._approvalObservation?.loading === true;
           confirm.addEventListener("click", () => void this.runBatch(this._batchAction));
           const cancel = element("button", "Cancel bulk review");
           cancel.type = "button";
           cancel.addEventListener("click", () => { if (this._saving) return;
             const action = this._batchAction;
             this._batchAction = null;
+            this._approvalObservation = null;
             this.render();
             Array.from(this._content.querySelectorAll("button"))
               .find(button => button.dataset.batchAction === action)?.focus();
@@ -2356,8 +2450,11 @@ export class DaylightImportPanel extends HTMLElement {
               this._decisionError = null;
               this._calendarCheck = null;
               this._batchAction = action;
-              this.render();
-              this._content.querySelector(".actions button")?.focus();
+              this._approvalObservation = null;
+              if (action === "approve") void this.observeApproval(ready);
+              else this.render();
+              Array.from(this._content.querySelectorAll(".actions button"))
+                .find(button => !button.disabled)?.focus();
             });
             bulk.append(button);
           }
@@ -2391,11 +2488,15 @@ export class DaylightImportPanel extends HTMLElement {
           description.setAttribute("aria-label", "Event description");
           card.append(description);
         }
-        if (this._calendarCheck?.event === event) {
+        const approvalResult = this._approvalObservation?.detail === detail &&
+          this._approvalObservation.decision === this._decision &&
+          this._approvalObservation.batchAction === this._batchAction ?
+          this._approvalObservation.results.get(event) : null;
+        if (this._calendarCheck?.event === event || approvalResult) {
           const section = element("section", "", "calendar-matches");
           section.setAttribute("role", "region");
           section.setAttribute("aria-label", "Calendar check results");
-          this.renderCalendarCheckDetails(section, this._calendarCheck);
+          this.renderCalendarCheckDetails(section, approvalResult || this._calendarCheck);
           card.append(section);
         }
         if (event.status === "write_uncertain") {
@@ -2461,8 +2562,11 @@ export class DaylightImportPanel extends HTMLElement {
               this._calendarCheck = null;
               this._decision = {id: event.id, action};
               this._decisionError = null;
-              this.render();
-              this._content.querySelector(".actions button")?.focus();
+              this._approvalObservation = null;
+              if (action === "approve") void this.observeApproval([event]);
+              else this.render();
+              Array.from(this._content.querySelectorAll(".actions button"))
+                .find(button => !button.disabled)?.focus();
             });
             card.append(button);
           }
@@ -2471,12 +2575,14 @@ export class DaylightImportPanel extends HTMLElement {
           const actions = element("div", "", "actions");
           const confirm = element("button", `Confirm ${action}: ${event.title}`);
           confirm.type = "button";
+          confirm.disabled = action === "approve" && this._approvalObservation?.loading === true;
           confirm.addEventListener("click", () => void this.runDecision(event, action));
           const cancel = element("button", "Cancel");
           cancel.type = "button";
           cancel.addEventListener("click", () => {
             if (this._saving) return;
             this._decision = null;
+            this._approvalObservation = null;
             this._decisionError = null;
             this.render();
             (Array.from(this._content.querySelectorAll("button"))

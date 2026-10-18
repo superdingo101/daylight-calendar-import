@@ -5,6 +5,8 @@ pending-import storage envelope. This allows lifecycle producers to commit a
 notification identity and the corresponding outcome in one Home Assistant
 Store save. Journal entries are independent of pending review decisions and
 bounded activity history; deleting a reviewed import does not delete its request.
+Terminal delivery failures also retain a generic activity warning outside the
+bounded transition history, so later event decisions cannot erase the warning.
 
 Records contain import ID, event ID, transition type and timestamp, plus the
 notify entity ID, delivery status, attempt count, next retry timestamp and a
@@ -89,8 +91,9 @@ and source retry/deduplication rules remain authoritative and unchanged.
 
 ### Conflict observations
 
-The `conflict_detected` opt-in uses the existing on-demand, permission-checked
-calendar check. Exact duplicates, possible duplicates and scheduling overlaps
+The `conflict_detected` opt-in uses the permission-checked calendar observation,
+triggered automatically before approval confirmation in the review panel or
+manually with **Check calendars**. Exact duplicates, possible duplicates and scheduling overlaps
 are actionable review results. Empty or failed observations and obsolete drafts
 produce no request. This adds no calendar polling and changes no calendar writes,
 approval rules or pending lifecycle status. Approval preflight keeps its existing

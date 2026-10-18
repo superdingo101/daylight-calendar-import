@@ -155,13 +155,28 @@ new permissions.
 
 A successful response contains `observed_calendars` and a `matches` list
 of bounded entries with `kind` (`exact_duplicate`, `possible_duplicate`, or
-`conflict`), `calendar_entity` and `existing_title`. The response does not
-include event descriptions, attendees, or meeting credentials.
+`conflict`), `calendar_entity`, `existing_title`, and these interval fields:
+
+| Field | Value |
+| --- | --- |
+| `existing_start`, `existing_end` | ISO dates for all-day events, otherwise offset-aware ISO datetimes for the existing event interval. |
+| `existing_all_day` | Boolean identifying an all-day existing event; its end date is exclusive. |
+| `overlap_start`, `overlap_end` | Offset-aware ISO datetimes for the intersection of the draft and existing intervals. |
+
+Timed intervals use the configured Home Assistant timezone. If either endpoint
+cannot be represented in that timezone at Python's supported year boundaries,
+both endpoints of that interval use UTC instead. The panel respects the Home
+Assistant 12/24-hour preference and labels displayed timezone offsets.
+The response does not include event descriptions, locations, attendees, or
+meeting credentials.
 
 To prevent expensive or misleading partial observations, the action rejects
 drafts spanning more than 90 elapsed days, scopes exceeding 16 distinct
 calendars (up to 15 configured conflict calendars plus the selected destination), provider responses containing more than 500 events combined, or provider
 event titles longer than 512 characters.
+Provider reads share one 15-second timeout across the selected calendars;
+expiration cancels the active provider read and returns an explicit incomplete
+observation error.
 These limits raise explicit incomplete-observation errors; matching results
 are never silently truncated. Provider calls use the bounded draft window,
 although providers may themselves allocate an over-limit response before
@@ -177,10 +192,15 @@ rechecks the event after the asynchronous provider reads. If the draft,
 destination, status or identity changed—or it was approved/rejected—while
 observation was in progress, the action fails with a refresh error instead of
 returning matches for the old draft. Calendar access failures are explicit errors, **not** a signal that
-the schedule is empty. The review panel uses these results as an optional, on-demand advisory
-calendar check, not as an approval decision. At **approval time**, the
-single-event and bulk approval actions make a fresh read of *each event's
-destination calendar only* before recording its durable write checkpoint.
+the schedule is empty. The review panel automatically checks the selected draft
+before enabling **Approve** confirmation, and checks each selected draft before
+**Approve all** confirmation. It displays conflicts or an explicit incomplete
+result so the reviewer can decide whether to continue; these observations can
+also emit configured conflict notifications. The optional **Check calendars**
+action remains available independently. These results remain advisory and do
+not approve or write an event. At **approval time**, the single-event and bulk
+approval services make a fresh read of *each event's destination calendar only*
+before recording its durable write checkpoint.
 The approval service may label validation failures before checkpointing with
 `Approval rejected before calendar write:`, but **clients must never rely on
 exception-message text to determine whether writing started**. Provider errors
