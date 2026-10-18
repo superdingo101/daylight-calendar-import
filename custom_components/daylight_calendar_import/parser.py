@@ -111,13 +111,21 @@ _SCHEDULE_KIND = (
     r"(?:(?:staff|team)\s+)?"
     r"(?:standup|meeting|class|practice|training|session|appointment)"
 )
+_RECURRENCE_INTERVAL = (
+    r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
+    r"|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen"
+    r"|(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)"
+    r"(?:[-\s]+(?:one|two|three|four|five|six|seven|eight|nine))?"
+    r"|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth)"
+)
+_SCHEDULE_VERB = r"(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence)|meets?|occurs?|runs?)\s+"
 _RECURRENCE_PATTERN = re.compile(
-    r"\b(?:rrule\s*:|(?:every\s+(?:(?:other|\d+)\s+)?|each\s+(?:\d+\s+)?)"
+    rf"\b(?:rrule\s*:|(?:every\s+(?:(?:other|{_RECURRENCE_INTERVAL})\s+)?|each\s+(?:{_RECURRENCE_INTERVAL}\s+)?)"
     r"(?:weekday|week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
     r"|(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence))\s+"
     r"(?:every|daily|weekly|monthly|yearly|annually)\b"
-    r"|meets?\s+(?:daily|weekly|monthly|yearly|annually)\b"
-    r"|(?:every\s+(?:other|\d+)|each\s+\d+)\s+days?\b"
+    rf"|{_SCHEDULE_VERB}(?:daily|weekly|monthly|yearly|annually)\b"
+    rf"|(?:every\s+(?:other|{_RECURRENCE_INTERVAL})|each\s+{_RECURRENCE_INTERVAL})\s+days?\b"
     r"|(?:every|each)\s+(?:day|morning|afternoon|evening|night)\s+(?:at|until|through|from)\b"
     r"|(?:daily|weekly|monthly|yearly|annual)\s+"
     rf"{_SCHEDULE_KIND}\b"
@@ -127,13 +135,12 @@ _RECURRENCE_PATTERN = re.compile(
 # A negation may coordinate several frequencies or schedule phrases. Stop at
 # sentence boundaries and semicolons so later affirmative schedules remain evidence.
 _SCHEDULE_NEGATOR = (
-    r"(?:does\s+not|do\s+not|will\s+not|doesn't|don't|won't|isn't|aren't|wasn't|weren't"
+    r"(?:does\s+not|do\s+not|did\s+not|will\s+not|doesn't|don't|didn't|won't|isn't|aren't|wasn't|weren't"
     r"|can't|couldn't|wouldn't|shouldn't|never|not|no|neither)"
 )
-_SCHEDULE_VERB = r"(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence)|meet(?:s)?|occur(?:s)?)\s+"
 _NEGATED_SCHEDULE_TERM = (
     r"(?:an?\s+)?"
-    r"(?:(?:every|each)\s+(?:(?:other|\d+)\s+)?\w+|daily|weekly|monthly|yearly|annual(?:ly)?)\b"
+    rf"(?:rrule\s*:|(?:(?:every|each)\s+(?:(?:other|{_RECURRENCE_INTERVAL})\s+)?\w+|daily|weekly|monthly|yearly|annual(?:ly)?)\b)"
     rf"(?:\s+{_SCHEDULE_KIND}\b)?"
 )
 _NEGATED_RECURRENCE_PATTERN = re.compile(

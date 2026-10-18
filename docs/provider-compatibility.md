@@ -83,7 +83,10 @@ and known limitations. Do not mark a fixture replay as a live result.
 AI Task extraction requests an `unsupported_recurrence` boolean for recurrence
 found in the source title (including email subjects), body or attachments.
 Nonempty titles and bodies are supplied together as source evidence to both the
-provider and independent text guard. Recurring schedules are not expanded
+provider and independent text guard. An email subject consumed entirely as a
+calendar routing directive is removed from this evidence, just like routing
+directives in the body; ordinary subjects remain event evidence.
+Recurring schedules are not expanded
 into calendar writes. A true flag produces one `unsupported_recurrence` warning
 in the existing import activity/review result and withholds all candidates from
 that source. Submit independent one-off events separately or create the repeating

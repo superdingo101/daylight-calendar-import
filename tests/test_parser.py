@@ -349,6 +349,14 @@ def test_temporal_assumption_limits_are_inclusive_and_errors_are_stable():
 
 @pytest.mark.parametrize("text", [
     "Practice every Thursday until December", "Practice EVERY OTHER WEEK",
+    "Practice every two weeks until December", "Class each three weeks",
+    "Practice every twelve months", "Practice every one year", "Training every four days",
+    "Practice every thirteen weeks", "Practice every twenty one weeks",
+    "Training every thirty-six days", "Class every second Monday",
+    "Practice occurs weekly through December", "Training runs daily",
+    "The class occurs monthly", "Training runs yearly", "The class occurs annually",
+    "No RRULE: Practice every Thursday until December",
+    "This didn't repeat weekly before, but now occurs monthly",
     "Practice every 2 weeks", "Practice repeats daily", "Practice repeats monthly",
     "Practice repeats yearly", "Practice repeats annually", "RRULE:FREQ=WEEKLY",
     "Practice repeats weekly", "Practice recurring every week",
@@ -397,6 +405,16 @@ def test_recurrence_contract_rejects_non_boolean_flags(flag):
 
 @pytest.mark.parametrize("text", [
     "One meeting on Thursday", "Meet October 8 and October 15 at 5pm",
+    "This meeting didn’t repeat weekly; it occurred only once on October 20",
+    "This meeting didn't recur monthly; meet October 20",
+    "This meeting did not repeat weekly; meet October 20",
+    "No RRULE: this meeting occurs only on October 20",
+    "Not an RRULE: this meeting occurs only on October 20",
+    "This isn't an RRULE: meet October 20",
+    "Not every two weeks or monthly; meet October 20",
+    "Not every twenty one weeks or monthly; meet October 20",
+    "Not every second Monday; meet October 20",
+    "Training doesn't run daily; meet October 20",
     "This is not a weekly class; the one-off class is October 20",
     "The class is not recurring weekly; meet October 20 at 8am",
     "Not a daily standup; a single standup on October 20",
