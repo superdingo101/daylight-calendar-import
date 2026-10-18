@@ -349,6 +349,10 @@ def test_temporal_assumption_limits_are_inclusive_and_errors_are_stable():
 
 @pytest.mark.parametrize("text", [
     "Practice every Thursday until December", "Practice EVERY OTHER WEEK",
+    "Soccer practice weekly through December", "Training daily", "Meeting monthly",
+    "Staff meeting weekly", "Appointment yearly", "Class annually",
+    "This is no longer weekly, but practice monthly",
+    "Recurring every day", "Repeating each morning", "Session every evening",
     "Practice every two weeks until December", "Class each three weeks",
     "Practice every twelve months", "Practice every one year", "Training every four days",
     "Practice every thirteen weeks", "Practice every twenty one weeks",
@@ -405,6 +409,13 @@ def test_recurrence_contract_rejects_non_boolean_flags(flag):
 
 @pytest.mark.parametrize("text", [
     "One meeting on Thursday", "Meet October 8 and October 15 at 5pm",
+    "At the October 20 workshop, repeat every exercise twice",
+    "At the October 20 workshop, repeats every instruction twice",
+    "This is no longer a weekly practice; final practice October 20",
+    "No longer repeats weekly; final practice October 20",
+    "No longer practice weekly; final practice October 20",
+    "No more weekly classes; the final class is October 20",
+    "Not a practice weekly or a meeting monthly; meet October 20",
     "This meeting didn’t repeat weekly; it occurred only once on October 20",
     "This meeting didn't recur monthly; meet October 20",
     "This meeting did not repeat weekly; meet October 20",

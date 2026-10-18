@@ -122,34 +122,34 @@ _SCHEDULE_VERB = r"(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence)|meets?|occurs?
 _RECURRENCE_PATTERN = re.compile(
     rf"\b(?:rrule\s*:|(?:every\s+(?:(?:other|{_RECURRENCE_INTERVAL})\s+)?|each\s+(?:{_RECURRENCE_INTERVAL}\s+)?)"
     r"(?:weekday|week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
-    r"|(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence))\s+"
-    r"(?:every|daily|weekly|monthly|yearly|annually)\b"
     rf"|{_SCHEDULE_VERB}(?:daily|weekly|monthly|yearly|annually)\b"
     rf"|(?:every\s+(?:other|{_RECURRENCE_INTERVAL})|each\s+{_RECURRENCE_INTERVAL})\s+days?\b"
     r"|(?:every|each)\s+(?:day|morning|afternoon|evening|night)\s+(?:at|until|through|from)\b"
     r"|(?:daily|weekly|monthly|yearly|annual)\s+"
     rf"{_SCHEDULE_KIND}\b"
-    r"|(?:meets?|practice|class|meeting|training|session|runs?|occurs?|repeats?)"
-    r"\s+(?:every|each)\s+(?:day|morning|afternoon|evening|night)\b)", re.IGNORECASE,
+    rf"|{_SCHEDULE_KIND}\s+(?:daily|weekly|monthly|yearly|annually)\b"
+    rf"|(?:{_SCHEDULE_VERB}|{_SCHEDULE_KIND}\s+)"
+    r"(?:every|each)\s+(?:day|morning|afternoon|evening|night)\b)", re.IGNORECASE,
 )
 # A negation may coordinate several frequencies or schedule phrases. Stop at
 # sentence boundaries and semicolons so later affirmative schedules remain evidence.
 _SCHEDULE_NEGATOR = (
     r"(?:does\s+not|do\s+not|did\s+not|will\s+not|doesn't|don't|didn't|won't|isn't|aren't|wasn't|weren't"
-    r"|can't|couldn't|wouldn't|shouldn't|never|not|no|neither)"
+    r"|can't|couldn't|wouldn't|shouldn't|never|not|no(?:\s+(?:longer|more))?|neither)"
 )
 _NEGATED_SCHEDULE_TERM = (
-    r"(?:an?\s+)?"
     rf"(?:rrule\s*:|(?:(?:every|each)\s+(?:(?:other|{_RECURRENCE_INTERVAL})\s+)?\w+|daily|weekly|monthly|yearly|annual(?:ly)?)\b)"
     rf"(?:\s+{_SCHEDULE_KIND}\b)?"
 )
+_NEGATED_SCHEDULE_PHRASE = rf"(?:an?\s+)?(?:{_SCHEDULE_KIND}\s+)?{_NEGATED_SCHEDULE_TERM}"
 _NEGATED_RECURRENCE_PATTERN = re.compile(
-    rf"\b{_SCHEDULE_NEGATOR}\s+(?:an?\s+)?(?:{_SCHEDULE_VERB})?{_NEGATED_SCHEDULE_TERM}"
+    rf"\b{_SCHEDULE_NEGATOR}\s+(?:an?\s+)?(?:{_SCHEDULE_VERB})?{_NEGATED_SCHEDULE_PHRASE}"
     # Only 'nor' or an explicit repeated negation may scope another verb.
     # 'not weekly and meets monthly' must retain its affirmative clause.
-    rf"(?:\s+nor\s+(?:an?\s+)?(?:{_SCHEDULE_VERB})?{_NEGATED_SCHEDULE_TERM}"
+    rf"(?:\s+nor\s+(?:an?\s+)?(?:{_SCHEDULE_VERB})?{_NEGATED_SCHEDULE_PHRASE}"
     rf"|(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or)\s+)"
-    rf"(?:{_SCHEDULE_NEGATOR}\s+(?:an?\s+)?(?:{_SCHEDULE_VERB})?)?{_NEGATED_SCHEDULE_TERM})*",
+    rf"(?:{_SCHEDULE_NEGATOR}\s+(?:an?\s+)?(?:{_SCHEDULE_VERB})?{_NEGATED_SCHEDULE_PHRASE}"
+    rf"|an?\s+(?:{_SCHEDULE_KIND}\s+)?{_NEGATED_SCHEDULE_TERM}|{_NEGATED_SCHEDULE_TERM}))*",
     re.IGNORECASE,
 )
 
