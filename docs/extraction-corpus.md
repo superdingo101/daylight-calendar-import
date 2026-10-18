@@ -88,3 +88,24 @@ not a claim that recorded replay proves a live model follows them. Independent
 fixture tests check event completeness, one-hour elapsed DST spans, exclusive
 all-day ends, and contextual disclosures. CI checks the real parser boundary's
 handling of these recorded provider outputs without calling a model.
+
+## Untrusted source evidence
+
+The production prompt marks source text, supporting context and all image/PDF
+attachments as untrusted evidence. Source text is serialized as one JSON string
+after the trusted rules and temporal context; source quotes, newlines and fake
+delimiters cannot structurally end that string. This framing is guidance for a
+model, not an enforcement boundary or a guarantee of injection resistance.
+Attendee instructions remain description data (for example, “Bring a notebook”).
+
+The `adversarial-*` fixtures include fake system messages, delimiter and trusted
+context spoofing, demands to reveal secrets, execute tools, change the response
+schema, route/approve/delete events, and hostile supporting text accompanying
+image and scanned-PDF evidence. Expected outputs retain only supported event
+facts and attendee instructions; a hostile source without events yields none.
+These cases also run through the real HA AI Task transport using recorded output.
+CI independently checks the trusted framing and round-trips the JSON evidence,
+but recorded responses do not prove a live model ignores hostile instructions.
+The optional reference-provider evaluation above includes these fixtures; no
+live-provider evaluation was performed for this change. Mandatory review and
+output validation continue to provide the existing downstream controls.

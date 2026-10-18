@@ -154,7 +154,7 @@ async def test_media_ingestion_reaches_recorded_parser_and_cleans_up(case, monke
         assert [list(notes) for notes in outcome.event_assumptions] == case["expected"]["event_assumptions"]
         generate.assert_awaited_once()
         request = generate.await_args.kwargs
-        assert case["source_text"] in request["instructions"]
+        assert json.dumps(case["source_text"].strip(), ensure_ascii=False) in request["instructions"]
         if attachment:
             assert request["attachments"] == [{
                 "media_content_id": source.attachments[0].content_ref,

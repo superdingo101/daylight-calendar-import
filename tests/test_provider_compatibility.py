@@ -67,7 +67,7 @@ async def test_corpus_through_real_home_assistant_ai_task(hass, tmp_path, path):
     assert len(entity.tasks) == 1
     task = entity.tasks[0]
     assert task.name == TASK_NAME
-    assert task.instructions == PROMPT_TEMPLATE.format(text=text.strip(), reference_datetime=case["reference_datetime"], time_zone=case["time_zone"])
+    assert task.instructions == PROMPT_TEMPLATE.format(text=json.dumps(text.strip(), ensure_ascii=False), reference_datetime=case["reference_datetime"], time_zone=case["time_zone"])
     assert len(task.attachments or []) == len(attachments)
     for resolved, original in zip(task.attachments or [], attachments):
         assert resolved.mime_type == original.media_type
