@@ -621,15 +621,17 @@ export class DaylightImportPanel extends HTMLElement {
     this._announcement.setAttribute("aria-live", "polite");
     this._manualSubmission = new ManualSubmission({
       getHass: () => this._hass,
-      onReview: id => this.showImport(id),
+      onReview: id => this.openSubmissionReview(id),
       onActivity: id => this.showActivity(id),
       onSubmitted: response => this._afterSubmission(response),
+      onSettled: () => this.render(),
     });
     this._fileSubmission = new FileSubmission({
       getHass: () => this._hass,
-      onReview: id => this.showImport(id),
+      onReview: id => this.openSubmissionReview(id),
       onActivity: id => this.showActivity(id),
       onSubmitted: response => this._afterSubmission(response),
+      onSettled: () => this.render(),
     });
     this._manualSubmission.element.hidden = true;
     this._fileSubmission.element.hidden = true;
@@ -650,7 +652,11 @@ export class DaylightImportPanel extends HTMLElement {
     // Successful submissions open review directly; calendar creation still requires approval.
     if (startedInNewImport && this._view === "new" && response.pending) {
       this._view = "inbox";
+      const reviewGeneration = this._generation + 1;
       await this.showImport(response.pending.id);
+      // A newer navigation or refresh owns the view; never overwrite it.
+      if (this._generation !== reviewGeneration || this._view !== "inbox" ||
+          this._selectedId !== response.pending.id) return;
       if (this._status !== "ready") {
         this._view = "new";
         this._selectedId = null;
@@ -659,6 +665,11 @@ export class DaylightImportPanel extends HTMLElement {
         throw new Error("Could not open the new import for review.");
       }
     }
+  }
+
+  openSubmissionReview(id) {
+    if (this._view === "new") this._view = "inbox";
+    return this.showImport(id);
   }
 
   showNewImport() {
@@ -692,7 +703,12 @@ export class DaylightImportPanel extends HTMLElement {
     const origin = this._newImportOrigin || {view: "inbox"};
     this._newImportOrigin = null;
     if (origin.view === "settings") await this.showSettings(origin.settingsTab);
-    else if (origin.view === "activity") await this.showActivity(origin.activityId);
+    else if (origin.view === "activity") {
+      const loading = this.showActivity(origin.activityId);
+      // Back is removed by the loading render; keep keyboard focus in the panel.
+      this._refreshButton.focus();
+      await loading;
+    }
     else if (origin.selectedId) {
       this._view = "inbox";
       await this.showImport(origin.selectedId);
