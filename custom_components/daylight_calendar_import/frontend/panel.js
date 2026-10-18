@@ -662,6 +662,11 @@ export class DaylightImportPanel extends HTMLElement {
         this._selectedId = null;
         this._detail = null;
         this.render();
+        // showImport focused a Back button which was removed by this fallback.
+        // Restore focus to the retained success feedback for an explicit retry.
+        (this._newImportMode === "text" ? this._manualSubmission.status :
+          this._newImportMode === "file" ? this._fileSubmission.status :
+            this._content.querySelector("h2"))?.focus();
         throw new Error("Could not open the new import for review.");
       }
     }
