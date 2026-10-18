@@ -137,7 +137,7 @@ No. The normal email and submission workflow saves drafts for your approval. The
 Edit or reject it in **Review inbox**. If a calendar write has an uncertain outcome, inspect your actual calendar before choosing a recovery action; Daylight will not blindly retry it.
 
 **Where do I see errors or imports that didn't create events?**  
-Open **Daylight imports → Recent activity**. For AI provider timeouts, authentication problems, and similar errors, see the [provider troubleshooting guide](docs/provider-errors.md).
+Open **Daylight imports → Recent activity**. If a configured notification exhausts its delivery retries, the activity shows **Notification delivery failed; check notification settings**. Verify the selected notify entity in **Settings → Notifications**. The import or calendar outcome is preserved. For AI provider timeouts, authentication problems, and similar errors, see the [provider troubleshooting guide](docs/provider-errors.md).
 
 ## Help and documentation
 

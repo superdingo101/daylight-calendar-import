@@ -5,6 +5,8 @@ pending-import storage envelope. This allows lifecycle producers to commit a
 notification identity and the corresponding outcome in one Home Assistant
 Store save. Journal entries are independent of pending review decisions and
 bounded activity history; deleting a reviewed import does not delete its request.
+Terminal delivery failures also retain a generic activity warning outside the
+bounded transition history, so later event decisions cannot erase the warning.
 
 Records contain import ID, event ID, transition type and timestamp, plus the
 notify entity ID, delivery status, attempt count, next retry timestamp and a

@@ -721,7 +721,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_list_activity(call: ServiceCall) -> ServiceResponse:
         await check_read_permission(call)
         return {"activity": [
-            {key: value for key, value in record.items() if key != "transitions"}
+            {**{key: value for key, value in record.items() if key != "transitions"},
+             **({"notification_delivery_failed": True} if any(
+                 step.get("type") == "notification_delivery_failed"
+                 for step in record.get("transitions", ())
+             ) else {})}
             for record in pending_store.list_activity()
         ]}
 
