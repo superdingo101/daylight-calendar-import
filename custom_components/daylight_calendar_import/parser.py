@@ -109,7 +109,7 @@ EVENTS_STRUCTURE = vol.Schema(
 # The required AI flag remains responsible for other wording and attachments.
 _SCHEDULE_KIND = (
     r"(?:(?:staff|team)\s+)?"
-    r"(?:standup|meeting|class|practice|training|session|appointment)"
+    r"(?:standups?|meetings?|classes|class|practices?|trainings?|sessions?|appointments?)"
 )
 _RECURRENCE_INTERVAL = (
     r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
@@ -118,7 +118,7 @@ _RECURRENCE_INTERVAL = (
     r"(?:[-\s]+(?:one|two|three|four|five|six|seven|eight|nine))?"
     r"|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth)"
 )
-_SCHEDULE_VERB = r"(?:repeat(?:s|ing)?|recurs?|recurr(?:ing|ence)|meets?|occurs?|runs?)\s+"
+_SCHEDULE_VERB = r"(?:repeat(?:s|ing)?|recur(?:s|ring)?|recurrence|meet(?:s|ing)?|occur(?:s|ring)?|run(?:s|ning)?)\s+"
 _RECURRENCE_PATTERN = re.compile(
     rf"\b(?:rrule\s*:|(?:every\s+(?:(?:other|{_RECURRENCE_INTERVAL})\s+)?|each\s+(?:{_RECURRENCE_INTERVAL}\s+)?)"
     r"(?:weekday|week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
