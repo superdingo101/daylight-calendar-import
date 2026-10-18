@@ -77,7 +77,7 @@ The simplest way to get started is with some copied text — no email setup need
    ```
 
 3. Select **Import events**. Keep the page open while processing. A successful submission saves drafts **for review**; it does not create calendar events.
-4. Select **Review events**, inspect the dates, times and destination calendar, then **Approve** to create the event — or **Reject** to discard it.
+4. After extraction succeeds, Daylight opens the new review automatically. Inspect the dates, times and destination calendar, then **Approve** to create the event — or **Reject** to discard it.
 
 To import a flyer or document instead, select **New import → Upload image or PDF**. Choose a PNG, JPEG, WebP image or PDF, optionally add supporting text (such as `Calendar: Kids`), and select **Import file**. Text is limited to **1,000,000 characters** per submission (including extracted PDF text and supporting text together). Files may be up to **10 MiB**; PDFs may contain up to **30 pages**. Images and scanned PDFs require an AI Task provider with attachment support; PDFs with a usable text layer can work with a text-only provider.
 
