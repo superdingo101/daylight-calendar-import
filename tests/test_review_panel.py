@@ -29,7 +29,7 @@ async def test_panel_static_files_register_once_and_panel_can_reopen(monkeypatch
         "frontend_url_path": review_panel.PANEL_PATH,
         "webcomponent_name": "daylight-import-panel",
         "module_url": f"{review_panel.PANEL_ASSETS_URL}/panel.js",
-        "sidebar_title": "Daylight imports",
+        "sidebar_title": "Daylight Imports",
         "sidebar_icon": "mdi:calendar-import",
     }
     review_panel.async_remove_review_panel(hass)
