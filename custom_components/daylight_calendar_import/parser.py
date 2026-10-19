@@ -34,7 +34,7 @@ Rules:
 - If an event lacks enough information to produce both start and end, omit it.
 - For timed events, return ISO 8601 datetimes with explicit UTC offsets calculated for the event date, not the reference date; daylight saving time may differ.
 - Set uses_reference_time_zone to true ONLY when the source supplies local clock times without an explicit time zone or UTC offset. When true, the start/end ISO datetime clock components MUST be the source's *local wall dates and times* in the Home Assistant zone, with corresponding UTC offsets. Never convert these local clock components to UTC or another zone before returning them. Set the flag false for explicit source zones/offsets and all-day events. Preserve explicit source zones even if different from Home Assistant's.
-- At the fall daylight-saving transition, a local time between 1:00 AM and 1:59 AM may happen twice. Use the best-supported offset and disclose the first/second occurrence uncertainty for human review; do not omit an otherwise valid draft solely for this repeated hour.
+- At the fall daylight-saving transition, a local clock hour may happen twice (1:00-1:59 AM in many US regions, 2:00-2:59 AM in some others). Use the best-supported offset and disclose the first/second occurrence uncertainty for human review; do not omit an otherwise valid draft solely for this repeated hour.
 - For all-day events, return ISO 8601 dates; end is exclusive, matching calendar semantics.
 - Preserve useful source details in description when appropriate.
 - Preserve complete meeting join details in description: Zoom, Google Meet and Microsoft Teams URLs (including query parameters), meeting IDs, passcodes and dial-in numbers/instructions. Copy these details exactly when present; do not invent missing credentials or links. Keep an explicitly supplied location as well.
@@ -222,7 +222,7 @@ async def async_parse_source(
 
 
 _FALL_BACK_REVIEW_NOTE = (
-    "DST fall-back repeats 1:00-1:59 AM; confirm first or second occurrence before approval."
+    "DST fall-back repeats this local hour; confirm first or second occurrence before approval."
 )
 
 
@@ -322,7 +322,7 @@ def parse_ai_data(
             ):
                 warnings.append(
                     f"event {index}: corrected inferred UTC offset for {time_zone} "
-                    "on the event date; verify during review"
+                    "on the event date"
                 )
             if ambiguous:
                 # Review metadata is saved with the event and shown in the inbox.
