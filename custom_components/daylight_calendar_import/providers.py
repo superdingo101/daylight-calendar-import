@@ -186,7 +186,7 @@ class AITaskParserProvider:
         try:
             if not isinstance(result.data.get("unsupported_recurrence"), bool):
                 raise ValueError("AI Task result must declare unsupported_recurrence")
-            return parse_ai_data(result.data, source_text=text)
+            return parse_ai_data(result.data, source_text=text, time_zone=time_zone)
         except Exception:
             raise ProviderError(
                 "provider_invalid_response", "AI Task returned an invalid result"
