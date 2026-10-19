@@ -195,8 +195,11 @@ installation IDs. Resume that authorized connection and explicitly show that the
 previous connection was retained; never apply the failed candidate's binding or
 replay a journal under another namespace. If a credential is `overlap`, it can
 continue ordinary authorized operations until its effective expiry but cannot
-perform lifecycle changes; recover the current credential through owner sign-in
-before renewal/disconnect. Do not strand authorized ordinary work while doing so.
+perform bearer lifecycle changes. Owner sign-in can authorize a fresh pairing
+to obtain a new current credential through HA's verifier-bound exchange; it
+never retrieves an existing secret or gives a token to the browser. Owner
+disconnect remains available without a working installation credential. Do not
+strand authorized ordinary work while restoring current access.
 Only if neither saved credential establishes an authorized matching connection
 must HA stop hosted work and require fresh pairing/repair. On transient network
 or server failures retain both secure bundles, back off, and keep confirmation
