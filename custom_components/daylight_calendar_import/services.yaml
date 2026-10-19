@@ -39,6 +39,11 @@ submit_text:
       required: false
       selector:
         text:
+    reimport_duplicates:
+      name: Re-import duplicates for review
+      description: Explicitly queue existing events again for manual review. Use a fresh source ID. Calendar duplicate checks still apply at approval.
+      selector:
+        boolean:
 
 submit_image:
   name: Submit image for review
@@ -62,6 +67,11 @@ submit_image:
       description: Optional stable upstream identifier for deduplication.
       selector:
         text:
+    reimport_duplicates:
+      name: Re-import duplicates for review
+      description: Explicitly queue existing events again for manual review. Use a fresh source ID. Calendar duplicate checks still apply at approval.
+      selector:
+        boolean:
 
 submit_pdf:
   name: Submit PDF for review
@@ -85,6 +95,11 @@ submit_pdf:
       description: Optional stable upstream identifier for deduplication.
       selector:
         text:
+    reimport_duplicates:
+      name: Re-import duplicates for review
+      description: Explicitly queue existing events again for manual review. Use a fresh source ID. Calendar duplicate checks still apply at approval.
+      selector:
+        boolean:
 
 approve_pending:
   name: Approve pending import
