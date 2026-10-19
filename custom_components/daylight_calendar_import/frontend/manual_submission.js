@@ -39,6 +39,8 @@ const node = (tag, text = "") => {
 export class ManualSubmission {
   constructor({getHass, onSubmitted = () => {}, onSettled = () => {}, onReview, onActivity}) {
     this.getHass = getHass;
+    this.onSubmitted = onSubmitted;
+    this.onSettled = onSettled;
     this.element = node("section");
     this.element.className = "manual-submission";
     this.element.setAttribute("aria-label", "Import pasted event details");
@@ -94,7 +96,7 @@ export class ManualSubmission {
         this.feedback.result(response);
         // Keep inbox loading failures separate from successful extraction feedback.
         try {
-          await onSubmitted(response);
+          await this.onSubmitted(response);
         } catch {
           this.status.textContent += " Refresh the review inbox to see the latest imports.";
         }
@@ -106,7 +108,7 @@ export class ManualSubmission {
         this.button.disabled = false;
         this.text.disabled = false;
         this.button.textContent = "Import events";
-        onSettled();
+        this.onSettled();
       }
   }
 }
