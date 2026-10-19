@@ -412,3 +412,42 @@ test("file descriptions and keyboard processing feedback survive error recovery 
   assert.equal(form.file.disabled, false);
   assert.match(form.status.textContent, /Connection lost/);
 });
+
+
+test("duplicate flyer can be re-imported into review without bypassing normal retries", async () => {
+  for (const selected of [image(), pdf()]) {
+    const duplicate = {...empty, duplicate: true, duplicate_events: 1};
+    const {form, hass, services} = setup(duplicate);
+    let n = 0;
+    hass.callWS = async request => {
+      services.push(request);
+      return {response: ++n === 1 ? duplicate : pending};
+    };
+    form.file.files = [selected];
+    await form.form.submit(event);
+    assert.equal(form.feedback.actions.children[0].textContent, "Re-import for review");
+    assert.equal(services[0].service_data.reimport_duplicates, undefined);
+    const initial = services[0].service_data.source_id;
+    await form.feedback.actions.children[0].click();
+    assert.equal(services.length, 2);
+    assert.equal(services[1].service_data.reimport_duplicates, true);
+    assert.notEqual(services[1].service_data.source_id, initial);
+    assert.equal(services[1].service_data.text, "");
+    assert.equal(form.file.files[0], selected);
+    assert.match(form.status.textContent, /ready for review/);
+    assert.equal(form.feedback.actions.children.length, 0);
+  }
+});
+
+
+test("a source-only duplicate offers a fresh, opt-in upload attempt", async () => {
+  const duplicate = {...empty, duplicate: true, duplicate_source: true};
+  const {form, services} = setup(duplicate);
+  form.file.files = [pdf()];
+  await form.form.submit(event);
+  assert.equal(form.feedback.actions.children[0].textContent, "Re-import for review");
+  await form.feedback.actions.children[0].click();
+  assert.equal(services.length, 2);
+  assert.notEqual(services[0].service_data.source_id, services[1].service_data.source_id);
+  assert.equal(services[1].service_data.reimport_duplicates, true);
+});
