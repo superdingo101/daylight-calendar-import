@@ -259,3 +259,40 @@ test("focus detection uses the active control inside the shadow root rather than
   focusSubmissionStatus(form, status);
   assert.equal(status.focused, false);
 });
+
+
+test("duplicate review action retries text with explicit bypass and fresh source identity", async () => {
+  const calls = [];
+  const duplicate = {...empty, duplicate: true, duplicate_events: 1};
+  const form = new ManualSubmission({getHass: () => ({callWS: async request => {
+    calls.push(request.service_data);
+    return {response: calls.length === 1 ? duplicate : pending};
+  }})});
+  form.text.value = "Trunk or Treat, October 25, 3–5 PM";
+  await form.form.submit(event);
+  assert.deepEqual(form.feedback.actions.children.map(child => child.textContent), ["Re-import for review"]);
+  const initial = calls[0].source_id;
+  assert.equal(calls[0].reimport_duplicates, undefined);
+  await form.feedback.actions.children[0].click();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].reimport_duplicates, true);
+  assert.notEqual(calls[1].source_id, initial);
+  assert.equal(calls[1].text, calls[0].text);
+  assert.match(form.status.textContent, /ready for review/);
+  assert.equal(form.feedback.actions.children.length, 0);
+});
+
+
+test("source-duplicate text response also offers a deliberate re-import attempt", async () => {
+  const requests = [];
+  const form = new ManualSubmission({getHass: () => ({callWS: async request => {
+    requests.push(request);
+    return {response: {...empty, duplicate: true, duplicate_source: true}};
+  }})});
+  form.text.value = "Dinner Friday 6 PM";
+  await form.form.submit(event);
+  assert.equal(form.feedback.actions.children[0].textContent, "Re-import for review");
+  await form.feedback.actions.children[0].click();
+  assert.equal(requests[1].service_data.reimport_duplicates, true);
+  assert.notEqual(requests[1].service_data.source_id, requests[0].service_data.source_id);
+});
