@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/account-disconnect-request.schema.json",
+  "title": "Daylight v1 owner disconnect request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "expected_installation_id"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "expected_installation_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{16,128}(?![\\s\\S])"
+    }
+  }
+}

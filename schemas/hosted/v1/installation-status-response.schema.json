@@ -27,10 +27,7 @@
       "pattern": "^[A-Za-z0-9_-]{16,128}(?![\\s\\S])"
     },
     "account_status": {
-      "enum": [
-        "active",
-        "suspended"
-      ]
+      "const": "active"
     },
     "capabilities": {
       "type": "object",

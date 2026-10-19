@@ -70,6 +70,14 @@ class _ReferenceLifecycle:
         self.candidates[secret] = _Candidate(installation, previous, now + 600, now + 90 * 86400)
 
     def stage_rotation(self, secret, *, now):
+        if any(
+            candidate.old_expiry is not None
+            and candidate.installation == self.installation
+            and not candidate.consumed
+            and now < candidate.expires_at
+            for candidate in self.candidates.values()
+        ):
+            raise ValueError("rotation pending")
         self.candidates[secret] = _Candidate(
             self.installation, self.credential, now + 600, now + 90 * 86400,
             old_expiry=self.expiry
@@ -84,6 +92,8 @@ class _ReferenceLifecycle:
         current = self.credential if candidate.old_expiry is not None else self.installation
         if candidate.previous != current:
             raise ValueError("replacement conflict")
+        if candidate.old_expiry is None and candidate.installation == self.installation:
+            raise ValueError("replacement requires a new installation identity")
         if candidate.old_expiry is not None and now >= candidate.old_expiry:
             raise ValueError("issuer expired")
         if candidate.old_expiry is not None:
@@ -219,6 +229,7 @@ def test_reference_confirmation_never_extends_issued_token_deadline():
 
 VALID_ACCOUNT_FIXTURES = (
     ("account-enroll-request", "account-enroll-request"),
+    ("account-disconnect-request", "account-disconnect-request"),
     ("account-status", "account-status"),
     ("installation-status-response", "account-installation-status"),
     ("installation-disconnect-response", "account-installation-disconnect"),
@@ -241,6 +252,8 @@ INVALID_ACCOUNT_FIXTURES = (
     ("pairing-approval-request", "pairing-connect-selects-identity"),
     ("account-enroll-request", "account-selected-owner"),
     ("account-status", "account-leaked-token"),
+    ("account-disconnect-request", "account-disconnect-client-selector"),
+    ("installation-status-response", "account-installation-suspended"),
     ("credential-issued-response", "credential-short-token"),
     ("credential-issued-response", "credential-invalid-timestamp"),
 )
@@ -329,3 +342,44 @@ def test_lifecycle_valid_fixtures_cover_every_new_schema(account_registry):
         if name.startswith(("account-", "pairing-", "credential-", "installation-"))
     }
     assert lifecycle == {f"{schema}.schema.json" for schema, _ in VALID_ACCOUNT_FIXTURES}
+
+
+def test_reference_pairing_replacement_requires_a_fresh_installation_identity():
+    model = _connected()
+    model.stage_pairing("replacement", "installation-a", now=10, previous="installation-a")
+    with pytest.raises(ValueError, match="new installation identity"):
+        model.confirm("replacement", now=11)
+    assert model.credential == "original"
+    assert model.installation == "installation-a"
+    assert not model.authenticated("replacement", now=11)
+
+
+def test_reference_rotation_allows_only_one_unconfirmed_candidate():
+    model = _connected()
+    model.stage_rotation("first", now=10)
+    with pytest.raises(ValueError, match="rotation pending"):
+        model.stage_rotation("second", now=11)
+    assert "second" not in model.candidates
+    assert model.authenticated("original", now=11)
+
+
+def test_reference_rotation_confirmation_releases_candidate_slot():
+    model = _connected()
+    model.stage_rotation("first", now=10)
+    model.confirm("first", now=11)
+    model.stage_rotation("second", now=12)
+    assert model.candidates["first"].consumed
+    assert not model.candidates["second"].consumed
+    assert model.candidates["second"].previous == "first"
+    assert model.authenticated("first", now=12)
+
+
+def test_reference_rotation_expiry_releases_candidate_slot():
+    model = _connected()
+    model.stage_rotation("lost", now=10)
+    with pytest.raises(ValueError, match="rotation pending"):
+        model.stage_rotation("too-soon", now=609)
+    model.stage_rotation("fresh", now=610)
+    with pytest.raises(ValueError, match="expired"):
+        model.confirm("lost", now=610)
+    assert model.confirm("fresh", now=611) == "installation-a"

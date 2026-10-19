@@ -19,7 +19,7 @@ MUST carry `Cache-Control: no-store`. Do not redirect authenticated requests.
 Human endpoints below require an authenticated, verified household owner
 session. Session validation, audience/origin checks, CSRF protection for
 cookie-authenticated mutations, and recent re-authentication (at most ten
-minutes old) for approval/replacement are server requirements. A human session
+minutes old) for approval/replacement and owner disconnect are server requirements. A human session
 MUST NOT authorize parse/delivery routes. Installation bearer tokens MUST NOT
 authorize human account routes. Browser code and browser storage never receive
 installation tokens or HA's pairing verifier. A browser approval code alone
@@ -52,6 +52,7 @@ with a cryptographically secure random generator.
 | `POST /v1/account/enroll` | Verified human session | `account-enroll-request` | 200 `account-status` |
 | `GET /v1/account` | Verified human session | No body | 200 `account-status` |
 | `POST /v1/account/pairings/approve` | Recently authenticated owner | `pairing-approval-request` | 200 `pairing-approval-response` |
+| `POST /v1/account/installation/disconnect` | Recently authenticated owner | `account-disconnect-request` | 200 `installation-disconnect-response` |
 
 Schema names in tables omit `.schema.json`. Enrollment is idempotent for the
 same owner: concurrent/repeated requests produce the same household. Alpha is
@@ -180,8 +181,12 @@ activate replacement against a nonempty delivery ledger until these remapping
 and isolation guarantees are implemented/tested (C04 with C07/P02 integration).
 
 After a lost confirmation response, HA uses its saved candidate on GET
-installation status. If active, activation succeeded; if 401, safely retry
-confirmation with that candidate. Confirming the same still-current active token is
+installation status. If active, activation succeeded. A still-staged candidate
+may receive either
+401 or 403 from this active-bearer-only status route. On either response, HA
+may retry confirmation once using the saved candidate. A further 401/403
+requires human access repair; never interpret it as successful activation or
+retry indefinitely. Confirming the same still-current active token is
 idempotent and returns its original activation result, even after the candidate
 confirmation deadline. A revoked/expired token never regains authority through
 confirmation. The original token expiry is not extended by confirmation or
@@ -216,10 +221,27 @@ verification state for overlap/idempotent confirmation; never plaintext tokens.
 Disconnect atomically revokes all active/staged/overlap credentials and disables
 the installation's future API access. It does not delete local imports, review
 state or calendar events; it does not cancel a subscription or delete an
-account. The operation has an idempotent effect: a repeat using the now-revoked
-token receives 401, and HA treats that after an ambiguous disconnect as already
-disconnected. Invalid tokens cannot disconnect any resource. The owner can
-inspect account status and recover through a newly approved pairing. The
+account. The operation has an idempotent effect, but a repeat using a now-revoked
+token receives 401. After a lost response, **401/403 does not prove server
+disconnection**: the token may instead have expired, been superseded, or lost
+permission before the first request committed. HA stops local hosted work and
+shows remote disconnection as unconfirmed until the owner reconciles it. Invalid
+tokens cannot disconnect any resource.
+
+The owner signs in, reads GET account status, and uses the owner disconnect
+endpoint with the explicitly selected `expected_installation_id`. That endpoint
+authenticates ownership before lookup and transactionally revokes all credentials
+only if this ID is the current active installation. A retry for the same owned,
+already-disconnected ID returns the same 200 disconnected result without touching
+any other installation. If another installation has since become active, return
+409 `installation_changed`; require fresh explicit owner consent before selecting
+that new identity. Unknown/non-owned IDs return uniform 404. A successful owner
+disconnect or an authenticated account status with no active installation
+confirms no active remote connection; a changed active ID requires explicit
+reconciliation, not automatic revocation. HA records local disconnection
+separately from remote confirmation. Reconnect always reads owner account status
+and chooses connect versus replace from actual server state, never from a local
+disconnected flag. The owner can recover through a newly approved pairing. The
 account retains its forwarding address; disconnected deliveries remain bounded
 by their original expiry, and resuming them uses replacement reconciliation,
 never renewal of their lifetime. `active_installation_id` becomes null; a fresh
@@ -235,10 +257,15 @@ address automatically. Revoking an account invalidates all of its candidates,
 credentials and pairing authorizations. Local/BYO parsing and Direct IMAP remain
 usable throughout outages, disconnect and suspended hosted access.
 
-`installation-status-response` contains account/installation IDs, account status,
-capabilities, token expiry, nullable forwarding address and trusted HTTPS
+`installation-status-response` contains account/installation IDs, account status
+(always `active`), capabilities, token expiry, nullable forwarding address
+and trusted HTTPS
 `account_url` on the configured account origin (no query/fragment/credentials).
-It contains no source bodies, human session, provider IDs, invitation details,
+An otherwise valid bearer for a suspended account receives 403 `forbidden`
+before any installation status is returned; the human owner uses GET account
+status to distinguish suspension and repair access. Invalid/expired/revoked
+bearers receive 401. It contains no source bodies, human session, provider IDs,
+invitation details,
 token value or private configuration. The address is nullable until provisioned;
 HA must not invent one. No status response can extend credential expiry.
 
