@@ -493,3 +493,123 @@ async def test_provider_independently_guards_recurring_source(monkeypatch):
     assert "never expand recurrence or silently reduce it to a single occurrence" in instructions
     assert "source text or attachments" in instructions
     assert "unsupported_recurrence" in parser.EVENTS_STRUCTURE.schema
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected_start", "expected_end"),
+    [
+        ("2026-11-03T18:00:00-07:00", "2026-11-03T19:30:00-07:00",
+         "2026-11-03T18:00:00-08:00", "2026-11-03T19:30:00-08:00"),
+        ("2026-03-10T18:00:00-08:00", "2026-03-10T19:30:00-08:00",
+         "2026-03-10T18:00:00-07:00", "2026-03-10T19:30:00-07:00"),
+        ("2026-10-25T15:00:00-07:00", "2026-10-25T17:00:00-07:00",
+         "2026-10-25T15:00:00-07:00", "2026-10-25T17:00:00-07:00"),
+        ("2026-11-01T00:30:00-07:00", "2026-11-01T02:30:00-07:00",
+         "2026-11-01T00:30:00-07:00", "2026-11-01T02:30:00-08:00"),
+    ],
+)
+def test_inferred_offsets_follow_event_date_dst(start, end, expected_start, expected_end):
+    outcome = parser.parse_ai_data(
+        {"events": [{**VALID, "start": start, "end": end,
+                     "uses_reference_time_zone": True,
+                     "assumptions": ["The event uses the Home Assistant time zone"]}]},
+        time_zone="America/Los_Angeles",
+    )
+    assert len(outcome.events) == 1
+    assert (outcome.events[0].start, outcome.events[0].end) == (expected_start, expected_end)
+    assert outcome.event_assumptions == [("The event uses the Home Assistant time zone",)]
+    assert len(outcome.warnings) == int((start, end) != (expected_start, expected_end))
+    if outcome.warnings:
+        assert "corrected inferred UTC offset" in outcome.warnings[0]
+
+
+@pytest.mark.parametrize("original_offset", ["-07:00", "-08:00"])
+def test_inferred_ambiguous_fall_back_keeps_valid_original_offset(original_offset):
+    event = {**VALID, "start": f"2026-11-01T01:15:00{original_offset}",
+             "end": f"2026-11-01T01:45:00{original_offset}",
+             "uses_reference_time_zone": True}
+    result = parser.parse_ai_data({"events": [event]}, time_zone="America/Los_Angeles")
+    assert len(result.events) == 1
+    assert result.events[0].start == event["start"]
+    assert result.events[0].end == event["end"]
+    assert result.warnings == []
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected_message"),
+    [
+        ("2026-03-08T02:30:00-08:00", "2026-03-08T03:30:00-07:00", "does not exist"),
+        ("2026-03-08T01:30:00-08:00", "2026-03-08T02:30:00-08:00", "does not exist"),
+        ("2026-11-01T01:30:00-06:00", "2026-11-01T02:30:00-08:00", "ambiguous local time"),
+        ("9999-12-31T23:00:00-08:00", "9999-12-31T23:30:00-08:00", "does not exist"),
+        ("2026-11-03T19:00:00-07:00", "2026-11-03T18:00:00-07:00", "end must be after start"),
+    ],
+)
+def test_inferred_invalid_local_times_do_not_create_pending_drafts(start, end, expected_message):
+    result = parser.parse_ai_data(
+        {"events": [{**VALID, "start": start, "end": end,
+                     "uses_reference_time_zone": True}]},
+        time_zone="America/Los_Angeles",
+    )
+    assert result.events == []
+    assert expected_message in result.warnings[0]
+
+
+def test_explicit_source_timezone_is_not_rewritten_and_all_day_is_unchanged():
+    winter = {**VALID, "start": "2026-11-03T18:00:00-07:00",
+              "end": "2026-11-03T19:00:00-07:00"}
+    all_day = {**VALID, "start": "2026-11-03", "end": "2026-11-04", "all_day": True,
+               "uses_reference_time_zone": True}
+    result = parser.parse_ai_data(
+        {"events": [{**winter, "uses_reference_time_zone": False},
+                    winter, all_day]},
+        time_zone="America/Los_Angeles",
+    )
+    assert [event.start for event in result.events] == [
+        "2026-11-03T18:00:00-07:00", "2026-11-03T18:00:00-07:00", "2026-11-03",
+    ]
+    assert result.warnings == []
+
+
+@pytest.mark.parametrize("bad_marker", [None, 0, 1, "true", [], {}])
+def test_inferred_zone_marker_must_be_boolean(bad_marker):
+    result = parser.parse_ai_data(
+        {"events": [{**VALID, "uses_reference_time_zone": bad_marker}]},
+        time_zone="America/Los_Angeles",
+    )
+    assert result.events == []
+    assert result.warnings == ["event 0 is invalid: uses_reference_time_zone must be a boolean"]
+
+
+@pytest.mark.parametrize("zone", [None, "Unknown/Zone"])
+def test_inferred_zone_cannot_be_validated_without_configured_zone(zone):
+    result = parser.parse_ai_data(
+        {"events": [{**VALID, "uses_reference_time_zone": True}]},
+        time_zone=zone,
+    )
+    assert result.events == []
+    assert result.warnings == ["event 0 is invalid: Home Assistant time zone is unavailable"]
+
+
+async def test_provider_normalizes_inferred_offset_before_returning_draft(monkeypatch):
+    source = TextSourceAdapter().create("School event November 3, 2026, 6-7:30 PM")
+    image_event = {**VALID, "start": "2026-11-03T18:00:00-07:00",
+                   "end": "2026-11-03T19:30:00-07:00",
+                   "uses_reference_time_zone": True}
+    generate = AsyncMock(return_value=SimpleNamespace(
+        data={"events": [image_event], "unsupported_recurrence": False},
+    ))
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    provider = providers.AITaskParserProvider(object(), "ai_task.test")
+    outcome = await provider.async_parse(
+        source, reference_datetime="2026-10-19T14:00:00-07:00",
+        time_zone="America/Los_Angeles",
+    )
+    assert outcome.events[0].start == "2026-11-03T18:00:00-08:00"
+    assert outcome.events[0].end == "2026-11-03T19:30:00-08:00"
+    assert "corrected inferred UTC offset" in outcome.warnings[0]
+    fields = generate.await_args.kwargs["structure"].schema["events"].config["fields"]
+    assert fields["uses_reference_time_zone"]["required"] is True
+    instructions = generate.await_args.kwargs["instructions"]
+    assert "Set uses_reference_time_zone to true" in instructions
+    assert "Preserve explicit source zones" in instructions
