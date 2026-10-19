@@ -532,8 +532,8 @@ def test_inferred_ambiguous_fall_back_keeps_valid_original_offset(original_offse
     assert len(result.events) == 1
     assert result.events[0].start == event["start"]
     assert result.events[0].end == event["end"]
-    assert "DST fall-back repeats 1:00-1:59 AM" in result.warnings[0]
-    assert any("DST fall-back repeats 1:00-1:59 AM" in note
+    assert "DST fall-back repeats this local hour" in result.warnings[0]
+    assert any("DST fall-back repeats this local hour" in note
                for note in result.event_assumptions[0])
 
 
@@ -599,6 +599,20 @@ def test_inferred_local_clock_rejects_untrusted_timestamp_representation(value, 
     )
     assert result.events == []
     assert message in result.warnings[0]
+
+
+@pytest.mark.parametrize("offset", ["+02:00", "+01:00"])
+def test_european_fall_back_hour_is_flagged_for_human_review(offset):
+    result = parser.parse_ai_data(
+        {"events": [{**VALID, "start": f"2026-10-25T02:15:00{offset}",
+                     "end": f"2026-10-25T02:45:00{offset}",
+                     "uses_reference_time_zone": True}]},
+        time_zone="Europe/Berlin",
+    )
+    assert len(result.events) == 1
+    assert result.events[0].start == f"2026-10-25T02:15:00{offset}"
+    assert any("DST fall-back repeats this local hour" in note
+               for note in result.event_assumptions[0])
 
 
 def test_repeated_hour_disclosure_does_not_exceed_assumptions_limit():
