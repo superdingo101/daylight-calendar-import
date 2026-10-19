@@ -472,7 +472,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                    if outcome.event_assumptions else {}),
                 source_id=source.upstream_source_id,
                 calendar_entity=route.calendar_entity,
-                reimport_duplicates=call.data["reimport_duplicates"],
+                reimport_duplicates=call.data.get("reimport_duplicates", False),
                 warnings=[*outcome.warnings, *route.warnings],
                 routing_unresolved=route.requires_confirmation,
                 activity_id=activity_id,
@@ -521,7 +521,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             source = replace(image, text=call.data.get(ATTR_TEXT, "").strip() or None,
                              upstream_source_id=call.data.get(ATTR_SOURCE_ID))
             return await submit_attachment_source(
-                source, reimport_duplicates=call.data["reimport_duplicates"],
+                source, reimport_duplicates=call.data.get("reimport_duplicates", False),
             )
 
     async def handle_submit_pdf(call: ServiceCall) -> ServiceResponse:
@@ -529,7 +529,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async with async_pdf_source(hass, call.data[ATTR_FILE_ID], call.data.get(ATTR_TEXT, "")) as pdf:
             return await submit_attachment_source(
                 replace(pdf, upstream_source_id=call.data.get(ATTR_SOURCE_ID)),
-                reimport_duplicates=call.data["reimport_duplicates"],
+                reimport_duplicates=call.data.get("reimport_duplicates", False),
             )
 
     class CalendarApprovalWriter:
