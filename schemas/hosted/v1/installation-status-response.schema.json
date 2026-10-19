@@ -12,7 +12,8 @@
     "capabilities",
     "credential_expires_at",
     "forwarding_address",
-    "account_url"
+    "account_url",
+    "credential_status"
   ],
   "properties": {
     "schema_version": {
@@ -70,6 +71,12 @@
       "format": "uri",
       "maxLength": 2048,
       "pattern": "^https://[^/?#@\\s]+(?:/[^?#\\s]*)?(?![\\s\\S])"
+    },
+    "credential_status": {
+      "enum": [
+        "current",
+        "overlap"
+      ]
     }
   }
 }

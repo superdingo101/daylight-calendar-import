@@ -53,6 +53,7 @@ class _Candidate:
     token_expires_at: int
     old_expiry: int | None = None
     consumed: bool = False
+    invalidated: bool = False
 
 
 @dataclass
@@ -64,6 +65,7 @@ class _ReferenceLifecycle:
     expiry: int = 0
     candidates: dict[str, _Candidate] = field(default_factory=dict)
     overlap: dict[str, int] = field(default_factory=dict)
+    owned_installations: set[str] = field(default_factory=set)
     forwarding_address: str = "household@example.test"
 
     def stage_pairing(self, secret, installation, *, now, previous=None):
@@ -87,12 +89,14 @@ class _ReferenceLifecycle:
         if secret == self.credential and now < self.expiry:
             return self.installation
         candidate = self.candidates[secret]
+        if candidate.invalidated:
+            raise ValueError("candidate revoked")
         if candidate.consumed or now >= candidate.expires_at:
             raise ValueError("candidate expired or consumed")
         current = self.credential if candidate.old_expiry is not None else self.installation
         if candidate.previous != current:
             raise ValueError("replacement conflict")
-        if candidate.old_expiry is None and candidate.installation == self.installation:
+        if candidate.old_expiry is None and candidate.installation in self.owned_installations:
             raise ValueError("replacement requires a new installation identity")
         if candidate.old_expiry is not None and now >= candidate.old_expiry:
             raise ValueError("issuer expired")
@@ -101,6 +105,7 @@ class _ReferenceLifecycle:
         else:
             self.overlap.clear()
         self.installation = candidate.installation
+        self.owned_installations.add(candidate.installation)
         self.credential = secret
         self.expiry = candidate.token_expires_at
         candidate.consumed = True
@@ -110,6 +115,46 @@ class _ReferenceLifecycle:
         return (secret == self.credential and now < self.expiry) or (
             secret in self.overlap and now < self.overlap[secret]
         )
+
+
+    def owner_disconnect(self, expected):
+        """Reference boundary assumes a verified owner of this household."""
+        if expected not in self.owned_installations:
+            raise ValueError("not_found")
+        if self.installation is None:
+            return expected, "disconnected"
+        if self.installation != expected:
+            raise ValueError("installation_changed")
+        # Serialize against confirmation and invalidate pending authorizations,
+        # including replacement candidates bound to the disconnected identity.
+        for candidate in self.candidates.values():
+            candidate.invalidated = True
+        self.installation = None
+        self.credential = None
+        self.expiry = 0
+        self.overlap.clear()
+        return expected, "disconnected"
+
+    def installation_status(self, secret, *, now):
+        if not self.authenticated(secret, now=now):
+            raise ValueError("unauthenticated")
+        return self.installation, "current" if secret == self.credential else "overlap"
+
+    def recover_candidate(self, candidate, retained, bound_installation, *, now):
+        """Recover authority without treating an expired candidate as success."""
+        if self.authenticated(candidate, now=now):
+            return self.installation_status(candidate, now=now)
+        try:
+            self.confirm(candidate, now=now)
+        except (KeyError, ValueError):
+            pass
+        if self.authenticated(candidate, now=now):
+            return self.installation_status(candidate, now=now)
+        if self.authenticated(retained, now=now):
+            status = self.installation_status(retained, now=now)
+            if status[0] == bound_installation:
+                return status
+        raise ValueError("human repair required")
 
 
 def _connected():
@@ -383,3 +428,128 @@ def test_reference_rotation_expiry_releases_candidate_slot():
     with pytest.raises(ValueError, match="expired"):
         model.confirm("lost", now=610)
     assert model.confirm("fresh", now=611) == "installation-a"
+
+
+def test_reference_owner_disconnect_is_idempotent_and_revokes_all_credential_classes():
+    model = _connected()
+    model.stage_rotation("rotated", now=10)
+    model.confirm("rotated", now=11)
+    model.stage_rotation("pending-rotation", now=12)
+    model.stage_pairing("pending-replacement", "installation-b", now=12,
+                        previous="installation-a")
+    assert model.authenticated("original", now=13)
+    assert model.owner_disconnect("installation-a") == ("installation-a", "disconnected")
+    assert model.owner_disconnect("installation-a") == ("installation-a", "disconnected")
+    assert model.installation is None
+    for secret in ("original", "rotated", "pending-rotation", "pending-replacement"):
+        assert not model.authenticated(secret, now=14)
+        with pytest.raises(ValueError, match="revoked"):
+            model.confirm(secret, now=14)
+    assert model.owned_installations == {"installation-a"}
+
+
+def test_reference_owner_disconnect_stale_identity_cannot_revoke_replacement():
+    model = _connected()
+    model.stage_pairing("replacement", "installation-b", now=10, previous="installation-a")
+    model.confirm("replacement", now=11)
+    assert model.owned_installations == {"installation-a", "installation-b"}
+    with pytest.raises(ValueError, match="installation_changed"):
+        model.owner_disconnect("installation-a")
+    assert model.installation == "installation-b"
+    assert model.authenticated("replacement", now=12)
+    assert model.owner_disconnect("installation-b") == ("installation-b", "disconnected")
+    # A known historical ID may be retried once no successor is active.
+    assert model.owner_disconnect("installation-a") == ("installation-a", "disconnected")
+
+
+@pytest.mark.parametrize("connected", (True, False))
+def test_reference_owner_disconnect_unknown_identity_is_uniform_and_preserves_state(connected):
+    model = _connected()
+    if not connected:
+        model.owner_disconnect("installation-a")
+    before = model.installation, model.credential, set(model.owned_installations)
+    with pytest.raises(ValueError, match="^not_found$"):
+        model.owner_disconnect("another-households-installation")
+    assert (model.installation, model.credential, model.owned_installations) == before
+    assert model.authenticated("original", now=12) is connected
+
+
+def test_reference_disconnect_then_connect_cannot_reuse_historical_identity():
+    model = _connected()
+    model.owner_disconnect("installation-a")
+    model.stage_pairing("reused", "installation-a", now=10)
+    with pytest.raises(ValueError, match="new installation identity"):
+        model.confirm("reused", now=11)
+    assert model.installation is None
+    model.stage_pairing("fresh", "installation-b", now=12)
+    assert model.confirm("fresh", now=13) == "installation-b"
+    with pytest.raises(ValueError, match="installation_changed"):
+        model.owner_disconnect("installation-a")
+    assert model.authenticated("fresh", now=14)
+
+
+def test_reference_replacement_cannot_reuse_any_historical_identity():
+    model = _connected()
+    model.stage_pairing("second", "installation-b", now=10, previous="installation-a")
+    model.confirm("second", now=11)
+    model.stage_pairing("reused", "installation-a", now=12, previous="installation-b")
+    with pytest.raises(ValueError, match="new installation identity"):
+        model.confirm("reused", now=13)
+    assert model.authenticated("second", now=13)
+
+
+@pytest.mark.parametrize("rotation", (True, False))
+def test_reference_failed_candidate_recovers_retained_current_credential(rotation):
+    model = _connected()
+    if rotation:
+        model.stage_rotation("expired-candidate", now=10)
+    else:
+        model.stage_pairing("expired-candidate", "installation-b", now=10,
+                            previous="installation-a")
+    assert model.recover_candidate(
+        "expired-candidate", "original", "installation-a", now=610
+    ) == ("installation-a", "current")
+    assert model.authenticated("original", now=610)
+    assert not model.authenticated("expired-candidate", now=610)
+
+
+def test_reference_retained_overlap_is_distinguished_from_current_authority():
+    model = _connected()
+    model.stage_rotation("rotated", now=10)
+    model.confirm("rotated", now=11)
+    assert model.recover_candidate(
+        "unknown-candidate", "original", "installation-a", now=12
+    ) == ("installation-a", "overlap")
+    with pytest.raises(ValueError, match="human repair"):
+        model.recover_candidate("unknown-candidate", "original", "installation-a", now=611)
+
+
+def test_reference_recovery_rejects_unbound_or_unusable_retained_credential():
+    model = _connected()
+    with pytest.raises(ValueError, match="human repair"):
+        model.recover_candidate("unknown-candidate", "original", "installation-b", now=10)
+    model.owner_disconnect("installation-a")
+    with pytest.raises(ValueError, match="human repair"):
+        model.recover_candidate("unknown-candidate", "original", "installation-a", now=11)
+
+
+@pytest.mark.parametrize("status", ("current", "overlap"))
+def test_installation_status_reports_credential_class(status, account_registry):
+    data = _read(FIXTURE_DIR / "valid" / "account-installation-status.json")
+    data["credential_status"] = status
+    _validate("installation-status-response.schema.json", data, account_registry)
+
+
+@pytest.mark.parametrize("status", (None, "staged", "revoked", True))
+def test_installation_status_rejects_unknown_credential_class(status, account_registry):
+    data = _read(FIXTURE_DIR / "valid" / "account-installation-status.json")
+    data["credential_status"] = status
+    with pytest.raises(ValidationError):
+        _validate("installation-status-response.schema.json", data, account_registry)
+
+
+def test_installation_status_requires_credential_class(account_registry):
+    data = _read(FIXTURE_DIR / "valid" / "account-installation-status.json")
+    del data["credential_status"]
+    with pytest.raises(ValidationError):
+        _validate("installation-status-response.schema.json", data, account_registry)

@@ -10,5 +10,6 @@
   },
   "credential_expires_at": "2027-01-17T12:00:00Z",
   "forwarding_address": null,
-  "account_url": "https://accounts.example.test/account"
+  "account_url": "https://accounts.example.test/account",
+  "credential_status": "current"
 }

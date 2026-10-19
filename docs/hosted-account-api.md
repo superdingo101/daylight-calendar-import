@@ -181,18 +181,33 @@ activate replacement against a nonempty delivery ledger until these remapping
 and isolation guarantees are implemented/tested (C04 with C07/P02 integration).
 
 After a lost confirmation response, HA uses its saved candidate on GET
-installation status. If active, activation succeeded. A still-staged candidate
-may receive either
-401 or 403 from this active-bearer-only status route. On either response, HA
-may retry confirmation once using the saved candidate. A further 401/403
-requires human access repair; never interpret it as successful activation or
-retry indefinitely. Confirming the same still-current active token is
-idempotent and returns its original activation result, even after the candidate
-confirmation deadline. A revoked/expired token never regains authority through
-confirmation. The original token expiry is not extended by confirmation or
-retry. Do not discard the previous credential merely because a request timed
-out; reconcile the status first. No rollback automatically reactivates revoked
-credentials.
+installation status. An active result establishes that the candidate activated;
+`credential_status: "current"` identifies a credential eligible for lifecycle
+operations, subject to fresh authorization. A still-staged
+candidate may receive either 401 or 403 from this active-bearer-only status route.
+On either response, HA may retry confirmation once using the saved candidate.
+If that still fails with 401/403, check the retained previous credential on GET
+installation status before requiring human repair. A candidate may have expired
+without activating while the previous connection remains fully usable.
+
+An active previous credential must match its previously bound account and
+installation IDs. Resume that authorized connection and explicitly show that the
+previous connection was retained; never apply the failed candidate's binding or
+replay a journal under another namespace. If a credential is `overlap`, it can
+continue ordinary authorized operations until its effective expiry but cannot
+perform lifecycle changes; recover the current credential through owner sign-in
+before renewal/disconnect. Do not strand authorized ordinary work while doing so.
+Only if neither saved credential establishes an authorized matching connection
+must HA stop hosted work and require fresh pairing/repair. On transient network
+or server failures retain both secure bundles, back off, and keep confirmation
+uncertain; do not declare either disconnected or activated from an error alone.
+
+Confirming the same still-current active token is idempotent and returns its
+original activation result, even after the candidate confirmation deadline.
+A revoked/expired token never regains authority through confirmation. The
+original token expiry is not extended by confirmation or retry. Never discard
+the previous credential merely because a request timed out. No rollback
+automatically reactivates revoked credentials.
 
 ## Rotation, expiry, disconnect and recovery
 
@@ -209,9 +224,11 @@ always follows the server clock.
 Confirmation proves the replacement token works before retiring the issuing
 token. The old token remains valid for an overlap of at most 600 seconds,
 bounded by its original expiry; the new token's 90-day maximum starts at its
-issuance. During overlap the old token may complete existing work, but MUST NOT
-issue another rotation or disconnect/confirm so a stale client cannot revoke
-the new credential. Only the current credential may perform lifecycle changes.
+issuance. During overlap the old token may continue ordinary authorized
+parse/delivery operations, but MUST NOT issue another rotation or
+disconnect/confirm so a stale client cannot revoke the new credential. Among
+installation credentials, only the current one may issue rotations or
+bearer-authorized disconnects; staged candidates may confirm themselves as above.
 At confirmation lock time recheck that the issuing token remains current and
 unexpired, the installation is still active, and the candidate is unexpired.
 A disconnected/replaced installation or expired/revoked issuer cannot activate
@@ -258,16 +275,17 @@ credentials and pairing authorizations. Local/BYO parsing and Direct IMAP remain
 usable throughout outages, disconnect and suspended hosted access.
 
 `installation-status-response` contains account/installation IDs, account status
-(always `active`), capabilities, token expiry, nullable forwarding address
-and trusted HTTPS
-`account_url` on the configured account origin (no query/fragment/credentials).
+(always `active`), capabilities, `credential_status` (`current` or `overlap`),
+token expiry, nullable forwarding address and trusted HTTPS `account_url` on the configured account origin (no query/fragment/credentials).
 An otherwise valid bearer for a suspended account receives 403 `forbidden`
 before any installation status is returned; the human owner uses GET account
 status to distinguish suspension and repair access. Invalid/expired/revoked
 bearers receive 401. It contains no source bodies, human session, provider IDs,
-invitation details,
-token value or private configuration. The address is nullable until provisioned;
-HA must not invent one. No status response can extend credential expiry.
+invitation details, token value or private configuration. The address is nullable until provisioned;
+HA must not invent one. `credential_expires_at` is the presenting token's
+effective authorization deadline, bounded by its original expiry and any
+overlap deadline. Status is a snapshot, never a grant of lifecycle authority
+or an extension of credential expiry.
 
 ## Lifecycle errors and conformance
 
