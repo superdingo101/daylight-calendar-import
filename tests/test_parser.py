@@ -532,7 +532,9 @@ def test_inferred_ambiguous_fall_back_keeps_valid_original_offset(original_offse
     assert len(result.events) == 1
     assert result.events[0].start == event["start"]
     assert result.events[0].end == event["end"]
-    assert result.warnings == []
+    assert "DST fall-back repeats 1:00-1:59 AM" in result.warnings[0]
+    assert any("DST fall-back repeats 1:00-1:59 AM" in note
+               for note in result.event_assumptions[0])
 
 
 @pytest.mark.parametrize(
@@ -540,7 +542,6 @@ def test_inferred_ambiguous_fall_back_keeps_valid_original_offset(original_offse
     [
         ("2026-03-08T02:30:00-08:00", "2026-03-08T04:30:00-07:00", "does not exist"),
         ("2026-03-08T01:30:00-08:00", "2026-03-08T02:30:00-08:00", "does not exist"),
-        ("2026-11-01T01:30:00-06:00", "2026-11-01T02:30:00-08:00", "ambiguous local time"),
         ("9999-12-31T23:00:00-08:00", "9999-12-31T23:30:00-08:00", "does not exist"),
         ("2026-11-03T19:00:00-07:00", "2026-11-03T18:00:00-07:00", "end must be after start"),
     ],
@@ -553,6 +554,73 @@ def test_inferred_invalid_local_times_do_not_create_pending_drafts(start, end, e
     )
     assert result.events == []
     assert expected_message in result.warnings[0]
+
+
+def test_ambiguous_fall_back_with_wrong_offset_uses_first_fold_with_review_warning():
+    result = parser.parse_ai_data(
+        {"events": [{**VALID, "start": "2026-11-01T01:30:00-06:00",
+                     "end": "2026-11-01T02:30:00-08:00",
+                     "uses_reference_time_zone": True}]},
+        time_zone="America/Los_Angeles",
+    )
+    assert len(result.events) == 1
+    assert result.events[0].start == "2026-11-01T01:30:00-07:00"
+    assert any("DST fall-back" in note for note in result.event_assumptions[0])
+    assert any("corrected inferred UTC offset" in warning for warning in result.warnings)
+
+
+def test_final_range_validation_follows_local_offset_repair():
+    # Before correction, the end appears 30 minutes before the start in UTC.
+    result = parser.parse_ai_data(
+        {"events": [{**VALID, "start": "2026-11-01T01:30:00-08:00",
+                     "end": "2026-11-01T02:00:00-07:00",
+                     "uses_reference_time_zone": True}]},
+        time_zone="America/Los_Angeles",
+    )
+    assert len(result.events) == 1
+    assert result.events[0].end == "2026-11-01T02:00:00-08:00"
+    assert any("DST fall-back" in note for note in result.event_assumptions[0])
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("2026-11-03T18:00:00Z", "UTC-formatted inferred local time"),
+        ("2026-11-03T18:00:00+09:00", "unrelated UTC offset"),
+        ("2026-11-03T18:00:00", "timezone offsets"),
+        ("bad-time", "valid ISO values"),
+        (None, "valid ISO values"),
+    ],
+)
+def test_inferred_local_clock_rejects_untrusted_timestamp_representation(value, message):
+    result = parser.parse_ai_data(
+        {"events": [{**VALID, "start": value, "uses_reference_time_zone": True}]},
+        time_zone="America/Los_Angeles",
+    )
+    assert result.events == []
+    assert message in result.warnings[0]
+
+
+def test_repeated_hour_disclosure_does_not_exceed_assumptions_limit():
+    repeated = {**VALID, "start": "2026-11-01T01:15:00-07:00",
+                "end": "2026-11-01T01:45:00-07:00",
+                "uses_reference_time_zone": True,
+                "assumptions": ["Existing assumption"] * 8}
+    result = parser.parse_ai_data({"events": [repeated]}, time_zone="America/Los_Angeles")
+    assert len(result.events) == 1
+    assert result.event_assumptions[0] == ("Existing assumption",) * 8
+    assert "DST fall-back" in result.warnings[0]
+
+
+def test_repeated_hour_disclosure_is_not_duplicated():
+    note = parser._FALL_BACK_REVIEW_NOTE
+    repeated = {**VALID, "start": "2026-11-01T01:15:00-07:00",
+                "end": "2026-11-01T01:45:00-07:00",
+                "uses_reference_time_zone": True,
+                "assumptions": [note]}
+    result = parser.parse_ai_data({"events": [repeated]}, time_zone="America/Los_Angeles")
+    assert len(result.events) == 1
+    assert result.event_assumptions == [(note,)]
 
 
 def test_explicit_source_timezone_is_not_rewritten_and_all_day_is_unchanged():
