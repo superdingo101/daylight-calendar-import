@@ -12,6 +12,8 @@
 | `duplicate_events` | Number of event drafts skipped as duplicates. |
 | `warnings` | Extraction and routing warnings, including warnings requiring calendar confirmation. |
 
+Manual submissions may explicitly set `reimport_duplicates: true` (default `false`) to queue previously seen **event drafts** for human review again. The image/PDF and pasted-text interfaces offer **Re-import for review** when no new events remain after deduplication. This deliberately sends a fresh source ID; repeated submissions using an already-handled `source_id` still return `duplicate_source` for idempotency, even with the flag. Duplicates *within the same submitted batch* are still filtered. Historical fingerprints and review decisions remain intact, and approval-time exact calendar duplicate checks are **not** bypassed. This override is only available on manual submissions, not IMAP polling.
+
 Text must contain non-whitespace content. Optional attachment context may be empty. Existing source-ID and Home Assistant upload-ID validation remain in force. AI Task control permission is checked before source deduplication or upload access; the normal pending-review read and calendar-write permissions apply separately.
 
 Overlapping requests with the same source ID are rejected after authorization and before parsing or upload access. The rejected retry creates no new activity record and leaves the original request processing. Wait and check pending imports and activity before explicitly retrying; a different source ID may be processed independently.
