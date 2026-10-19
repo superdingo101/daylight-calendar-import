@@ -1781,7 +1781,7 @@ async def test_text_services_normalize_before_parser_and_storage(monkeypatch):
     assert [call.kwargs["source"].text for call in parse.await_args_list] == ["hello", "hello"]
     assert store.async_add.await_args.kwargs["source_text"] == "hello"
     assert store.async_add.await_args.kwargs["source_id"] == "source-1"
-    assert store.async_add.await_args.kwargs["reimport_duplicates"] is False
+    assert "reimport_duplicates" not in store.async_add.await_args.kwargs
     await hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0](
         SimpleNamespace(data={ATTR_TEXT: "hello", ATTR_SOURCE_ID: "fresh-source",
                               "reimport_duplicates": True}, context=context)
@@ -1834,7 +1834,7 @@ async def test_submit_image_routes_attachment_and_text_into_review(monkeypatch):
     assert store.async_add.await_args.kwargs["source_id"] == "upstream"
     assert store.async_add.await_args.kwargs["events"] == [draft()]
     assert store.async_add.await_args.kwargs["calendar_entity"] == "calendar.family"
-    assert store.async_add.await_args.kwargs["reimport_duplicates"] is False
+    assert "reimport_duplicates" not in store.async_add.await_args.kwargs
     assert result["pending"] is not None
     assert result["status"] == "pending_review"
     assert result["activity_id"] == "activity-id"
@@ -1918,7 +1918,7 @@ async def test_submit_pdf_text_layer_uses_review_pipeline(monkeypatch):
     assert store.async_add.await_args.kwargs["source_kind"] == "pdf"
     assert store.async_add.await_args.kwargs["warnings"] == []
     assert store.async_add.await_args.kwargs["source_id"] == "pdf-upstream"
-    assert store.async_add.await_args.kwargs["reimport_duplicates"] is False
+    assert "reimport_duplicates" not in store.async_add.await_args.kwargs
     assert response["pending"] is not None
 
 
