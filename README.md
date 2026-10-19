@@ -21,9 +21,9 @@ The integration runs in your own Home Assistant installation. **No Daylight Clou
 
 ## How it works
 
-1. **Send in event information.** Paste event details or upload an image/PDF in **Daylight imports → Review inbox**, or connect a dedicated email mailbox.
+1. **Send in event information.** Select **New import** in **Daylight Imports** to paste event details or upload an image/PDF, or connect a dedicated email mailbox.
 2. **Let AI identify the events.** A single email or newsletter can contain several events.
-3. **Review the results.** Open **Daylight imports → Review inbox** to check dates, correct details, choose calendars, and inspect possible conflicts.
+3. **Review the results.** Open **Daylight Imports → Review inbox** to check dates, correct details, choose calendars, and inspect possible conflicts.
 4. **Approve the events you want.** Daylight adds approved events to your selected Home Assistant calendars; rejected drafts are not added.
 
 You stay in control: emails do **not** automatically create calendar events just because they arrive.
@@ -59,7 +59,7 @@ Daylight Calendar Import is currently added as a **HACS custom repository**, not
 6. Go to **Settings → Devices & services → Add integration** and select **Daylight Calendar Import**.
 7. Select your AI Task entity, a **default calendar**, and the **allowed calendars** to which Daylight may write. Make sure the default calendar is also in the allowed list.
 
-Once configured, open **Daylight imports** in your Home Assistant sidebar. Its **Review inbox**, **Recent activity**, and **Settings** screens are where you'll manage imports.
+Once configured, open **Daylight Imports** in your Home Assistant sidebar. Its **Review inbox**, **Recent activity**, and **Settings** screens are where you'll manage imports.
 
 **Prefer manual installation?** Copy the `custom_components/daylight_calendar_import` directory into your Home Assistant `custom_components` folder, restart Home Assistant, and then add the integration under **Settings → Devices & services**.
 
@@ -67,7 +67,7 @@ Once configured, open **Daylight imports** in your Home Assistant sidebar. Its *
 
 The simplest way to get started is with some copied text — no email setup needed.
 
-1. Open **Daylight imports → Review inbox** from the Home Assistant sidebar. Both import forms are available even when the inbox is empty and email is disabled.
+1. Open **Daylight Imports** from the Home Assistant sidebar and select **New import**. Choose **Paste event details**. The new-import action is available from the Review inbox, Recent activity, and Settings, even with an empty inbox or email disabled.
 2. In **Paste event details**, paste an announcement with a date and start/end times. You can include several events:
 
    ```text
@@ -77,9 +77,9 @@ The simplest way to get started is with some copied text — no email setup need
    ```
 
 3. Select **Import events**. Keep the page open while processing. A successful submission saves drafts **for review**; it does not create calendar events.
-4. Select **Review events**, inspect the dates, times and destination calendar, then **Approve** to create the event — or **Reject** to discard it.
+4. After extraction succeeds, Daylight opens the new review automatically. Inspect the dates, times and destination calendar, then **Approve** to create the event — or **Reject** to discard it.
 
-To import a flyer or document instead, use **Upload an image or PDF** on the same page. Choose a PNG, JPEG, WebP image or PDF, optionally add supporting text (such as `Calendar: Kids`), and select **Import file**. Text is limited to **1,000,000 characters** per submission (including extracted PDF text and supporting text together). Files may be up to **10 MiB**; PDFs may contain up to **30 pages**. Images and scanned PDFs require an AI Task provider with attachment support; PDFs with a usable text layer can work with a text-only provider.
+To import a flyer or document instead, select **New import → Upload image or PDF**. Choose a PNG, JPEG, WebP image or PDF, optionally add supporting text (such as `Calendar: Kids`), and select **Import file**. Text is limited to **1,000,000 characters** per submission (including extracted PDF text and supporting text together). Files may be up to **10 MiB**; PDFs may contain up to **30 pages**. Images and scanned PDFs require an AI Task provider with attachment support; PDFs with a usable text layer can work with a text-only provider.
 
 The result explains whether drafts are ready, the source was already processed, or no events were found. On failure, your text/file selection stays available and the form shows the error. **Recent activity** shows provider or processing failures recorded after submission begins. Browser validation and upload failures, such as an unsupported or oversized file or an upload permission/network error, may have no activity record. Fix the reported problem before retrying. If your connection drops or the result is uncertain, check the review inbox and recent activity first; the submission might have completed. See the [manual import guide](docs/manual-import.md) for permissions, provider requirements and recovery.
 
@@ -93,7 +93,7 @@ Meeting links, IDs, passcodes, dial-in instructions, and lengthy event instructi
 
 For hands-off collection of announcements, Daylight can check a mailbox directly using IMAP. **We strongly recommend a dedicated mailbox or folder used only for calendar imports.**
 
-1. In **Daylight imports → Settings → Email**, enable **Direct IMAP**.
+1. In **Daylight Imports → Settings → Email**, enable **Direct IMAP**.
 2. Enter your IMAP server, port, username, password or app password, and mailbox/folder. The connection uses encrypted IMAP (typically port `993`).
 3. Optionally add an **allowed senders** list, with one full email address per line.
 4. Send or forward an event announcement to the mailbox.
@@ -107,7 +107,7 @@ The email connector supports one IMAP mailbox per integration configuration, wit
 
 ## Use different calendars
 
-Under **Daylight imports → Settings**, configure your default calendar, allowed writable calendars, and optional calendar aliases. For example, create an alias `Kids` for your children's calendar.
+Under **Daylight Imports → Settings**, configure your default calendar, allowed writable calendars, and optional calendar aliases. For example, create an alias `Kids` for your children's calendar.
 
 Then start an email body or a manual text submission with:
 
@@ -137,7 +137,7 @@ No. The normal email and submission workflow saves drafts for your approval. The
 Edit or reject it in **Review inbox**. If a calendar write has an uncertain outcome, inspect your actual calendar before choosing a recovery action; Daylight will not blindly retry it.
 
 **Where do I see errors or imports that didn't create events?**  
-Open **Daylight imports → Recent activity**. If a configured notification exhausts its delivery retries, the activity shows **Notification delivery failed; check notification settings**. Verify the selected notify entity in **Settings → Notifications**. The import or calendar outcome is preserved. For AI provider timeouts, authentication problems, and similar errors, see the [provider troubleshooting guide](docs/provider-errors.md).
+Open **Daylight Imports → Recent activity**. If a configured notification exhausts its delivery retries, the activity shows **Notification delivery failed; check notification settings**. Verify the selected notify entity in **Settings → Notifications**. The import or calendar outcome is preserved. For AI provider timeouts, authentication problems, and similar errors, see the [provider troubleshooting guide](docs/provider-errors.md).
 
 ## Help and documentation
 

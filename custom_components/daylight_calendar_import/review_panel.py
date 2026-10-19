@@ -28,7 +28,7 @@ async def async_register_review_panel(hass: HomeAssistant) -> None:
         hass, frontend_url_path=PANEL_PATH,
         webcomponent_name="daylight-import-panel",
         module_url=f"{PANEL_ASSETS_URL}/panel.js",
-        sidebar_title="Daylight imports",
+        sidebar_title="Daylight Imports",
         sidebar_icon="mdi:calendar-import",
     )
 

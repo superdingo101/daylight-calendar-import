@@ -1,13 +1,13 @@
 # Import events without email
 
-You can use Daylight Calendar Import without configuring an email account. Install the integration, choose a working Home Assistant AI Task entity, and configure a default writable calendar included in the allowed calendars. Open **Daylight imports → Review inbox**. The **Paste event details** and **Upload an image or PDF** forms remain visible with an empty inbox and with Direct IMAP disabled, including on mobile.
+You can use Daylight Calendar Import without configuring an email account. Install the integration, choose a working Home Assistant AI Task entity, and configure a default writable calendar included in the allowed calendars. Open **Daylight Imports** and select **New import** in the header from any page. Choose **Paste event details** or **Upload image or PDF**. Both methods work without Direct IMAP, including on mobile. Pending items are reviewed separately in **Review inbox**.
 
 ## Paste an announcement
 
 1. Paste the announcement into **Event details**. Include explicit dates, start/end times and locations when available. A single submission can contain multiple events.
 2. Optionally start the text with a configured routing hint, such as `Calendar: Kids`.
 3. Select **Import events** and wait for the result.
-4. Select **Review events** when drafts are ready. Verify every draft, resolve any routing warning, choose its destination calendar, then approve or reject it.
+4. When drafts are ready, Daylight opens the review automatically. Verify every draft, resolve any routing warning, choose its destination calendar, then approve or reject it.
 
 Submission only saves drafts. Approving a draft is the step that writes to your calendar.
 

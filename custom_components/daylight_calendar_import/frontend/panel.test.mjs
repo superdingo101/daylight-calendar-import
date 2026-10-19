@@ -69,8 +69,12 @@ test("mobile toolbar exposes Home Assistant sidebar navigation", async () => {
   const header = find(panel.shadowRoot, "header");
   const menu = panel._menuButton;
   assert.equal(header.className, "topbar");
-  assert.equal(find(header, "h1").textContent, "Daylight imports");
+  assert.equal(find(header, "h1").textContent, "Daylight Imports");
   assert.equal(panel._refreshButton.className, "toolbar-refresh");
+  assert.equal(panel._refreshButton.attributes["aria-label"], "Refresh");
+  assert.equal(find(panel._refreshButton, "svg").attributes["aria-hidden"], "true");
+  assert.equal(panel._refreshButton.textContent, "");
+  assert.equal(panel._newImportButton.textContent, "+ New import");
   assert.equal(menu.tag, "button");
   assert.equal(menu.hidden, false);
   assert.equal(menu.attributes["aria-label"], "Open sidebar");
@@ -344,7 +348,7 @@ test("detail errors and absent inbox items retain useful keyboard focus", async 
   fail = true;
   panel.showInbox();
   await flush();
-  assert.equal(globalThis.focusedNode.textContent, "Refresh");
+  assert.equal(globalThis.focusedNode.attributes["aria-label"], "Refresh");
 });
 
 test("a superseded refresh cannot replace newer data or a newer error", async () => {
@@ -1151,7 +1155,7 @@ test("view navigation exposes the current page and remains keyboard reachable", 
   find(panel._content, "nav").querySelectorAll("button")[0].click();
   await flush();
   assert.equal(find(panel._content, "nav").querySelectorAll("button")[0].attributes["aria-current"], "page");
-  assert.equal(globalThis.focusedNode.textContent, "Refresh");
+  assert.equal(globalThis.focusedNode.attributes["aria-label"], "Refresh");
 });
 
 test("primary navigation stays above status and content in every view", async () => {
@@ -5314,6 +5318,8 @@ test("manual paste remains available without email and preserves its DOM across 
   const panel = new DaylightImportPanel();
   panel.hass = {callWS: async () => ({response: {imports: []}})};
   await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
   const manual = panel._manualSubmission;
   assert.equal(manual.element.hidden, false);
   manual.text.value = "Calendar: Family\nDinner tomorrow 6pm";
@@ -5323,7 +5329,7 @@ test("manual paste remains available without email and preserves its DOM across 
   panel._view = "activity";
   panel.render();
   assert.equal(manual.element.hidden, true);
-  panel._view = "inbox";
+  panel._view = "new";
   panel._selectedId = "pending-1";
   panel.render();
   assert.equal(manual.element.hidden, true);
@@ -5344,10 +5350,12 @@ test("manual paste refreshes pending summaries without approving any events", as
     }} : {response: {imports: []}};
   }};
   await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
   panel._manualSubmission.text.value = "Dinner tomorrow 6pm";
   await panel._manualSubmission.form.submit({preventDefault() {}});
   await flush();
-  assert.deepEqual(calls, ["list_pending", "submit_text", "list_pending"]);
+  assert.deepEqual(calls, ["list_pending", "submit_text", "list_pending", "get_pending"]);
   assert.match(panel._manualSubmission.status.textContent, /ready for review/);
   assert.equal(panel._manualSubmission.element.hidden, false);
 });
@@ -5356,6 +5364,8 @@ test("file intake works without email and preserves native input through rerende
   const panel = new DaylightImportPanel();
   panel.hass = {callWS: async () => ({response: {imports: []}})};
   await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("file");
   const upload = panel._fileSubmission;
   assert.equal(upload.element.hidden, false);
   const file = new File(["%PDF-1.4"], "events.pdf", {type: "application/pdf"});
@@ -5369,7 +5379,7 @@ test("file intake works without email and preserves native input through rerende
   panel._view = "activity";
   panel.render();
   assert.equal(upload.element.hidden, true);
-  panel._view = "inbox";
+  panel._view = "new";
   panel._selectedId = "pending-1";
   panel.render();
   assert.equal(upload.element.hidden, true);
@@ -5393,10 +5403,12 @@ test("panel file intake refreshes reviews without writing any calendar events", 
     },
   };
   await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("file");
   panel._fileSubmission.file.files = [new File(["%PDF-1.4"], "events.pdf")];
   await panel._fileSubmission.form.submit({preventDefault() {}});
   await flush();
-  assert.deepEqual(calls, ["list_pending", "submit_pdf", "list_pending"]);
+  assert.deepEqual(calls, ["list_pending", "submit_pdf", "list_pending", "get_pending"]);
   assert.match(panel._fileSubmission.status.textContent, /ready for review/);
 });
 
@@ -5432,10 +5444,17 @@ test("manual paste stays busy while reconciling the inbox", async () => {
       return {response: {pending: {id: "pending-1", events: [{}]}, duplicate: false,
         duplicate_source: false, duplicate_events: 0, warnings: []}};
     }
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "pending-1", source_title: "Dinner", source_kind: "manual_text", events: [
+        {id: "e1", title: "Dinner", status: "pending", start: "2026-10-01", end: "2026-10-02", all_day: true},
+      ],
+    }}};
     if (submitted) return new Promise(resolve => { completeRefresh = resolve; });
     return {response: {imports: []}};
   }};
   await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
   const manual = panel._manualSubmission;
   manual.text.value = "Dinner tomorrow 6pm";
   const submit = manual.form.submit({preventDefault() {}});
@@ -5468,6 +5487,8 @@ test("manual paste preserves stored success when inbox reconciliation fails", as
     return {response: {imports: []}};
   }};
   await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
   const manual = panel._manualSubmission;
   manual.text.value = "Dinner tomorrow 6pm";
   await manual.form.submit({preventDefault() {}});
@@ -5492,6 +5513,8 @@ test("superseded manual paste reconciliation does not report an inbox failure", 
     return {response: {imports: []}};
   }};
   await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
   const manual = panel._manualSubmission;
   manual.text.value = "Dinner tomorrow 6pm";
   const submit = manual.form.submit({preventDefault() {}});
@@ -5517,6 +5540,8 @@ test("panel file intake waits for refresh and retains acknowledged success when 
     }} : {response: {imports: []}},
   };
   await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("file");
   let finish;
   panel.refresh = () => new Promise(resolve => { finish = resolve; });
   panel._fileSubmission.file.files = [new File(["%PDF-1.4"], "events.pdf")];
@@ -5551,6 +5576,8 @@ test("manual text retry reconciles a previously stored import after losing its r
       return {response: {imports: []}};
     }};
     await flush();
+    panel.showNewImport();
+    panel.selectImportMethod("text");
     const manual = panel._manualSubmission;
     manual.text.value = "Dinner tomorrow 6pm";
     await manual.form.submit({preventDefault() {}});
@@ -5599,6 +5626,8 @@ test("file retry reconciles a stored review after a lost response returns duplic
     },
   };
   await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("file");
   const upload = panel._fileSubmission;
   upload.file.files = [new File(["%PDF-1.4"], "events.pdf")];
   await upload.form.submit({preventDefault() {}});
@@ -5617,20 +5646,229 @@ test("file retry reconciles a stored review after a lost response returns duplic
 });
 
 
-test("both manual forms remain visible on a narrow empty inbox with IMAP explicitly disabled", async () => {
+test("mobile inbox keeps manual import behind the primary action even with IMAP disabled", async () => {
   const panel = new DaylightImportPanel();
   panel.narrow = true;
   panel._settings = {email: {enabled: false}};
   panel.hass = {callWS: async () => ({response: {imports: []}})};
   await flush();
+  assert.equal(panel._manualSubmission.element.hidden, true);
+  assert.equal(panel._fileSubmission.element.hidden, true);
+  assert.equal(panel._newImportButton.disabled, false);
+  panel._newImportButton.click();
+  assert.equal(panel._view, "new");
+  assert.equal(panel._navigation.hidden, true);
+  assert.equal(panel._refreshButton.hidden, true);
+  assert.equal(panel._content.querySelectorAll(".import-choice").length, 2);
+  panel.selectImportMethod("text");
   assert.equal(panel._manualSubmission.element.hidden, false);
+  assert.equal(panel._fileSubmission.element.hidden, true);
+  panel.selectImportMethod("file");
+  assert.equal(panel._manualSubmission.element.hidden, true);
   assert.equal(panel._fileSubmission.element.hidden, false);
   assert.equal(panel._manualSubmission.button.textContent, "Import events");
   assert.equal(panel._fileSubmission.button.textContent, "Import file");
 });
 
 
-// Approval remains a separate, explicit action after the automatic observation.
+test("New import is accessible from inbox, activity and settings without an extra tab", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, callWS: async request =>
+    request.service === "list_pending" ? {response: {imports: []}} :
+      {response: {activities: []}}};
+  await flush();
+  panel.showNewImport();
+  assert.equal(panel._view, "new");
+  assert.equal(panel._navigation.hidden, true);
+  assert.equal(panel._newImportButton.disabled, true);
+  await panel.leaveNewImport();
+  assert.equal(panel._view, "inbox");
+  assert.equal(panel._navigation.hidden, false);
+
+  panel._view = "activity";
+  panel._activityId = null;
+  panel.render();
+  panel.showNewImport();
+  await panel.leaveNewImport();
+  assert.equal(panel._view, "activity");
+
+  panel._view = "settings";
+  panel._settings = {entry_id: "entry"};
+  panel._settingsTab = "email";
+  panel.render();
+  panel.showSettings = async tab => { panel._view = "settings"; panel._settingsTab = tab; };
+  panel.showNewImport();
+  await panel.leaveNewImport();
+  assert.equal(panel._view, "settings");
+  assert.equal(panel._settingsTab, "email");
+});
+
+test("successful new text import opens review directly without any calendar write", async () => {
+  const panel = new DaylightImportPanel();
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request.service);
+    if (request.service === "submit_text") return {response: {
+      pending: {id: "review-123", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }};
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  const reviews = [];
+  panel.showImport = async id => { reviews.push(id); panel._status = "ready"; panel.render(); };
+  panel._manualSubmission.text.value = "School picnic tomorrow";
+  await panel._manualSubmission.form.submit({preventDefault() {}});
+  assert.deepEqual(reviews, ["review-123"]);
+  assert.deepEqual(calls, ["list_pending", "submit_text", "list_pending"]);
+  assert.equal(panel._view, "inbox");
+  assert.equal(panel._manualSubmission.element.hidden, true);
+  assert.equal(panel._manualSubmission.text.value, "School picnic tomorrow");
+});
+
+test("successful submission re-enables the global New import action after handoff", async () => {
+  const panel = new DaylightImportPanel();
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request.service);
+    if (request.service === "submit_text") return {response: {
+      pending: {id: "new-review", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }};
+    if (request.service === "get_pending") return {response: {
+      pending: {id: "new-review", events: [], source_title: "Picnic", source_kind: "manual_text"},
+    }};
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  panel._manualSubmission.text.value = "Picnic tomorrow at noon";
+  await panel._manualSubmission.form.submit({preventDefault() {}});
+  assert.equal(panel._view, "inbox");
+  assert.equal(panel._selectedId, "new-review");
+  assert.equal(panel._status, "ready");
+  assert.equal(panel._newImportButton.disabled, false);
+  assert.equal(panel._manualSubmission.busy, false);
+  panel._newImportButton.click();
+  assert.equal(panel._view, "new");
+  assert.deepEqual(calls, ["list_pending", "submit_text", "list_pending", "get_pending"]);
+});
+
+test("navigation superseding a slow automatic review does not reopen the intake screen", async () => {
+  const panel = new DaylightImportPanel();
+  let resolveDetail;
+  let resolveAfterSubmit;
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request.service);
+    if (request.service === "submit_text") return {response: {
+      pending: {id: "review-one", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }};
+    if (request.service === "get_pending") return new Promise(resolve => {resolveDetail = resolve;});
+    if (request.service === "list_activity") return new Promise(resolve => {resolveAfterSubmit = resolve;});
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  panel._manualSubmission.text.value = "Soccer at noon";
+  const submitting = panel._manualSubmission.form.submit({preventDefault() {}});
+  await flush();
+  assert.equal(panel._selectedId, "review-one");
+  const activity = panel.showActivity();
+  await flush();
+  assert.equal(panel._view, "activity");
+  resolveDetail({response: {pending: {
+    id: "review-one", events: [], source_title: "Soccer", source_kind: "manual_text",
+  }}});
+  resolveAfterSubmit({response: {activity: []}});
+  await Promise.all([submitting, activity]);
+  assert.equal(panel._view, "activity");
+  assert.equal(panel._status, "ready");
+  assert.equal(panel._newImportButton.disabled, false);
+  assert.equal(panel._manualSubmission.status.textContent.includes("Could not open"), false);
+  assert.deepEqual(calls, ["list_pending", "submit_text", "list_pending", "get_pending", "list_activity"]);
+});
+
+test("failed automatic review restores focus to retained manual success feedback", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "submit_text") return {response: {
+      pending: {id: "pending-focus", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }};
+    if (request.service === "get_pending") throw new Error("Detail unavailable");
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  const manual = panel._manualSubmission;
+  manual.text.value = "School play Friday";
+  await manual.form.submit({preventDefault() {}});
+  assert.equal(panel._view, "new");
+  assert.equal(panel._selectedId, null);
+  assert.equal(manual.element.hidden, false);
+  assert.equal(globalThis.focusedNode, manual.status);
+  assert.match(manual.status.textContent, /ready for review/);
+  assert.match(manual.status.textContent, /Refresh the review inbox/);
+  assert.equal(manual.feedback.actions.children[0].textContent, "Review events");
+});
+
+test("Review events recovery leaves the intake view when inbox refresh failed", async () => {
+  const panel = new DaylightImportPanel();
+  let submitted = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "submit_text") {
+      submitted = true;
+      return {response: {
+        pending: {id: "review-recovered", events: [{}]}, duplicate: false,
+        duplicate_source: false, duplicate_events: 0, warnings: [],
+      }};
+    }
+    if (request.service === "get_pending") return {response: {
+      pending: {id: "review-recovered", events: [], source_title: "Dinner", source_kind: "manual_text"},
+    }};
+    if (submitted) throw new Error("Inbox unavailable");
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  panel._manualSubmission.text.value = "Dinner";
+  await panel._manualSubmission.form.submit({preventDefault() {}});
+  assert.equal(panel._view, "new");
+  assert.match(panel._manualSubmission.status.textContent, /ready for review/);
+  await panel._manualSubmission.feedback.actions.children[0].click();
+  assert.equal(panel._view, "inbox");
+  assert.equal(panel._selectedId, "review-recovered");
+  assert.equal(panel._status, "ready");
+});
+
+test("Back from New import retains keyboard focus while activity loads", async () => {
+  const panel = new DaylightImportPanel();
+  let resolveActivity;
+  panel.hass = {callWS: async request => request.service === "list_activity" ?
+    new Promise(resolve => {resolveActivity = resolve;}) : {response: {imports: []}}};
+  await flush();
+  panel._view = "activity";
+  panel.render();
+  panel.showNewImport();
+  const back = panel._content.querySelector(".import-back");
+  back.focus();
+  const returning = panel.leaveNewImport();
+  assert.equal(panel._view, "activity");
+  assert.equal(globalThis.focusedNode, panel._refreshButton);
+  resolveActivity({response: {activity: []}});
+  await returning;
+  assert.equal(panel._view, "activity");
+  assert.equal(panel._status, "ready");
+});
+
 test("approval observes independently configured calendars before enabling confirmation", async () => {
   const panel = new DaylightImportPanel();
   const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",

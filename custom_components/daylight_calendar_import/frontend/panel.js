@@ -67,6 +67,20 @@ const css = `
   button:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 2px; }
   .topbar button { background: transparent; color: inherit; border-color: currentColor; }
   .topbar button:focus-visible { outline-color: currentColor; }
+  .topbar .toolbar-new {
+    flex: 0 0 auto; background: var(--primary-color);
+    color: var(--text-primary-color, #fff); border-color: var(--primary-color);
+    white-space: nowrap;
+  }
+  .topbar .toolbar-refresh {
+    flex: 0 0 44px; width: 44px; padding: 10px; border: 0;
+    background: transparent; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .topbar .toolbar-refresh svg {
+    width: 22px; height: 22px; fill: none; stroke: currentColor;
+    stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  }
+  .topbar .toolbar-refresh[hidden] { display: none; }
   .topbar .menu-button {
     flex: 0 0 auto;
     width: 44px;
@@ -104,6 +118,12 @@ const css = `
     .manual-submission .submission-actions { display: grid; }
   }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  nav[aria-label="Daylight views"][hidden] { display: none; }
+  .import-choices { display: grid; gap: 12px; margin: 16px 0; }
+  .import-choice { width: 100%; text-align: left; padding: 16px; }
+  .import-choice strong { display: block; margin-bottom: 6px; }
+  .import-choice span { display: block; color: var(--secondary-text-color); }
+  .import-back { margin-bottom: 16px; }
   nav[aria-label="Daylight views"] {
     display: flex;
     flex-wrap: nowrap;
@@ -173,9 +193,12 @@ const css = `
   .settings-help { color: var(--secondary-text-color); }
   @media (max-width: 480px) {
     .topbar {
+      gap: 8px;
       padding-right: max(8px, var(--daylight-safe-right));
       padding-left: max(8px, var(--daylight-safe-left));
     }
+    .topbar h1 { font-size: 18px; }
+    .topbar .toolbar-new { padding: 10px; }
     main {
       padding: 12px;
       padding-right: max(12px, var(--daylight-safe-right));
@@ -543,6 +566,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._batchResults = [];
     this._batchContext = null;
     this._view = "inbox";
+    this._newImportMode = null;
+    this._newImportOrigin = null;
     this._activity = [];
     this._activityId = null;
     this._activityDetail = null;
@@ -563,10 +588,24 @@ export class DaylightImportPanel extends HTMLElement {
     menu.addEventListener("click", () => {
       this.dispatchEvent(new Event("hass-toggle-menu", {bubbles: true, composed: true}));
     });
-    header.append(menu, element("h1", "Daylight imports"));
-    const refresh = element("button", "Refresh", "toolbar-refresh");
+    header.append(menu, element("h1", "Daylight Imports"));
+    const newImport = element("button", "+ New import", "toolbar-new");
+    newImport.type = "button";
+    newImport.addEventListener("click", () => this.showNewImport());
+    this._newImportButton = newImport;
+    header.append(newImport);
+    const refresh = element("button", "", "toolbar-refresh");
     this._refreshButton = refresh;
     refresh.type = "button";
+    refresh.setAttribute("aria-label", "Refresh");
+    refresh.title = "Refresh";
+    const refreshIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    refreshIcon.setAttribute("viewBox", "0 0 24 24");
+    refreshIcon.setAttribute("aria-hidden", "true");
+    const refreshPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    refreshPath.setAttribute("d", "M20 11a8 8 0 0 0-14.5-4.5L3 9m0-6v6h6M4 13a8 8 0 0 0 14.5 4.5L21 15m0 6v-6h-6");
+    refreshIcon.append(refreshPath);
+    refresh.append(refreshIcon);
     refresh.addEventListener("click", () => {
       if (!this._saving && !this._settingsSaving && !this._editingId &&
           !this._batchAction && !this._resolution) void (
@@ -582,25 +621,17 @@ export class DaylightImportPanel extends HTMLElement {
     this._announcement.setAttribute("aria-live", "polite");
     this._manualSubmission = new ManualSubmission({
       getHass: () => this._hass,
-      onReview: id => this.showImport(id),
+      onReview: id => this.openSubmissionReview(id),
       onActivity: id => this.showActivity(id),
-      onSubmitted: async response => {
-        if ((response.pending || response.duplicate_source) && this._view === "inbox" && !this._selectedId &&
-            await this.refresh() === false) {
-          throw new Error("Could not refresh the review inbox.");
-        }
-      },
+      onSubmitted: response => this._afterSubmission(response),
+      onSettled: () => this._syncNewImportButton(),
     });
     this._fileSubmission = new FileSubmission({
       getHass: () => this._hass,
-      onReview: id => this.showImport(id),
+      onReview: id => this.openSubmissionReview(id),
       onActivity: id => this.showActivity(id),
-      onSubmitted: async response => {
-        if ((response.pending || response.duplicate_source) && this._view === "inbox" && !this._selectedId &&
-            await this.refresh() === false) {
-          throw new Error("Could not refresh the review inbox.");
-        }
-      },
+      onSubmitted: response => this._afterSubmission(response),
+      onSettled: () => this._syncNewImportButton(),
     });
     this._manualSubmission.element.hidden = true;
     this._fileSubmission.element.hidden = true;
@@ -611,6 +642,82 @@ export class DaylightImportPanel extends HTMLElement {
     const main = document.createElement("main");
     main.append(this._content, this._manualSubmission.element, this._fileSubmission.element);
     this.shadowRoot.append(style, header, main);
+  }
+
+  async _afterSubmission(response) {
+    if ((!response.pending && !response.duplicate_source) ||
+        (this._view !== "new" && (this._view !== "inbox" || this._selectedId))) return;
+    const startedInNewImport = this._view === "new";
+    if (await this.refresh() === false) throw new Error("Could not refresh the review inbox.");
+    // Successful submissions open review directly; calendar creation still requires approval.
+    if (startedInNewImport && this._view === "new" && response.pending) {
+      this._view = "inbox";
+      const reviewGeneration = this._generation + 1;
+      await this.showImport(response.pending.id);
+      // A newer navigation or refresh owns the view; never overwrite it.
+      if (this._generation !== reviewGeneration || this._view !== "inbox" ||
+          this._selectedId !== response.pending.id) return;
+      if (this._status !== "ready") {
+        this._view = "new";
+        this._selectedId = null;
+        this._detail = null;
+        this.render();
+        // showImport focused a Back button which was removed by this fallback.
+        // Restore focus to the retained success feedback for an explicit retry.
+        (this._newImportMode === "text" ? this._manualSubmission.status :
+          this._newImportMode === "file" ? this._fileSubmission.status :
+            this._content.querySelector("h2"))?.focus();
+        throw new Error("Could not open the new import for review.");
+      }
+    }
+  }
+
+  openSubmissionReview(id) {
+    if (this._view === "new") this._view = "inbox";
+    return this.showImport(id);
+  }
+
+  showNewImport() {
+    if (this._view === "new" || this._saving || this._settingsSaving ||
+        this._editingId || this._decision || this._batchAction || this._resolution ||
+        this._manualSubmission.busy || this._fileSubmission.busy) return;
+    this._clearEmailDraftPassword();
+    this._newImportOrigin = {
+      view: this._view, selectedId: this._selectedId, activityId: this._activityId,
+      settingsTab: this._settingsTab,
+    };
+    ++this._generation;
+    this._view = "new";
+    this._newImportMode = null;
+    this._selectedId = null;
+    this.render();
+    this._content.querySelector("h2")?.focus();
+  }
+
+  selectImportMethod(mode) {
+    if (this._view !== "new" || !["text", "file", null].includes(mode) ||
+        this._manualSubmission.busy || this._fileSubmission.busy) return;
+    this._newImportMode = mode;
+    this.render();
+    (mode === "text" ? this._manualSubmission.text :
+      mode === "file" ? this._fileSubmission.file : this._content.querySelector("h2"))?.focus();
+  }
+
+  async leaveNewImport() {
+    if (this._view !== "new" || this._manualSubmission.busy || this._fileSubmission.busy) return;
+    const origin = this._newImportOrigin || {view: "inbox"};
+    this._newImportOrigin = null;
+    if (origin.view === "settings") await this.showSettings(origin.settingsTab);
+    else if (origin.view === "activity") {
+      const loading = this.showActivity(origin.activityId);
+      // Back is removed by the loading render; keep keyboard focus in the panel.
+      this._refreshButton.focus();
+      await loading;
+    }
+    else if (origin.selectedId) {
+      this._view = "inbox";
+      await this.showImport(origin.selectedId);
+    } else await this.showReview();
   }
 
   set narrow(value) {
@@ -2213,10 +2320,21 @@ export class DaylightImportPanel extends HTMLElement {
     return form;
   }
 
+  _syncNewImportButton() {
+    // Update only this control after an intake request settles. Rerendering
+    // the detail here would discard its focused heading.
+    this._newImportButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
+      Boolean(this._editingId || this._decision || this._batchAction || this._resolution) ||
+      Boolean(this._manualSubmission.busy || this._fileSubmission.busy);
+  }
+
   render() {
-    this._manualSubmission.element.hidden = this._view !== "inbox" || Boolean(this._selectedId);
-    this._fileSubmission.element.hidden = this._manualSubmission.element.hidden;
-    this._refreshButton.disabled = this._saving || this._settingsSaving ||
+    this._manualSubmission.element.hidden = this._view !== "new" || this._newImportMode !== "text" || Boolean(this._selectedId);
+    this._fileSubmission.element.hidden = this._view !== "new" || this._newImportMode !== "file" || Boolean(this._selectedId);
+    this._refreshButton.hidden = this._view === "new";
+    this._syncNewImportButton();
+    this._navigation.hidden = this._view === "new";
+    this._refreshButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     const content = document.createDocumentFragment();
     const navigation = this._navigation;
@@ -2241,6 +2359,37 @@ export class DaylightImportPanel extends HTMLElement {
       if (this._view === "settings") settings.setAttribute("aria-current", "page");
       settings.addEventListener("click", () => void this.showSettings());
       navigation.append(settings);
+    }
+    if (this._view === "new") {
+      const heading = element("h2", "New import");
+      heading.tabIndex = -1;
+      const back = element("button", "← Back", "import-back");
+      back.type = "button";
+      back.addEventListener("click", () => void this.leaveNewImport());
+      content.append(back, heading);
+      if (this._newImportMode === null) {
+        content.append(element("p", "Choose how to provide event information."));
+        const choices = element("div", "", "import-choices");
+        for (const [mode, title, description] of [
+          ["text", "Paste event details", "Paste announcements, schedules, or event text."],
+          ["file", "Upload image or PDF", "Add a flyer, screenshot, or PDF document."],
+        ]) {
+          const choose = element("button", "", "import-choice");
+          choose.type = "button";
+          choose.append(element("strong", title), element("span", description));
+          choose.addEventListener("click", () => this.selectImportMethod(mode));
+          choices.append(choose);
+        }
+        content.append(choices);
+      } else {
+        const change = element("button", "← Choose another method", "import-back");
+        change.type = "button";
+        change.addEventListener("click", () => this.selectImportMethod(null));
+        content.append(change);
+      }
+      this._viewContent.replaceChildren(content);
+      this._announcement.replaceChildren();
+      return;
     }
     if (this._view === "settings") {
       if (this._status === "loading") {
