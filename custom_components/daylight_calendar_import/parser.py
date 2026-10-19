@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import re
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -33,7 +33,8 @@ Rules:
 - Do not invent dates, times, locations, titles, or durations.
 - If an event lacks enough information to produce both start and end, omit it.
 - For timed events, return ISO 8601 datetimes with explicit UTC offsets calculated for the event date, not the reference date; daylight saving time may differ.
-- Set uses_reference_time_zone to true when the source supplies local clock times without an explicit time zone or UTC offset. Set it to false for explicit source time zones/offsets and all-day events. Preserve explicit source zones even if different from Home Assistant's.
+- Set uses_reference_time_zone to true ONLY when the source supplies local clock times without an explicit time zone or UTC offset. When true, the start/end ISO datetime clock components MUST be the source's *local wall dates and times* in the Home Assistant zone, with corresponding UTC offsets. Never convert these local clock components to UTC or another zone before returning them. Set the flag false for explicit source zones/offsets and all-day events. Preserve explicit source zones even if different from Home Assistant's.
+- At the fall daylight-saving transition, a local time between 1:00 AM and 1:59 AM may happen twice. Use the best-supported offset and disclose the first/second occurrence uncertainty for human review; do not omit an otherwise valid draft solely for this repeated hour.
 - For all-day events, return ISO 8601 dates; end is exclusive, matching calendar semantics.
 - Preserve useful source details in description when appropriate.
 - Preserve complete meeting join details in description: Zoom, Google Meet and Microsoft Teams URLs (including query parameters), meeting IDs, passcodes and dial-in numbers/instructions. Copy these details exactly when present; do not invent missing credentials or links. Keep an explicitly supplied location as well.
@@ -220,9 +221,22 @@ async def async_parse_source(
     )
 
 
-def _reference_zone_endpoint(value: str, zone: ZoneInfo) -> str:
-    """Preserve inferred wall time using the offset in effect on the event date."""
-    instant = datetime.fromisoformat(value)
+_FALL_BACK_REVIEW_NOTE = (
+    "DST fall-back repeats 1:00-1:59 AM; confirm first or second occurrence before approval."
+)
+
+
+def _reference_zone_endpoint(value: object, zone: ZoneInfo) -> tuple[str, bool]:
+    """Correct local wall time without interpreting a UTC instant as local time."""
+    if not isinstance(value, str):
+        raise DraftValidationError("start/end must be valid ISO values")
+    try:
+        instant = datetime.fromisoformat(value)
+    except ValueError as err:
+        raise DraftValidationError("start/end must be valid ISO values") from err
+    if instant.utcoffset() is None:
+        raise DraftValidationError("timed events must include timezone offsets")
+
     wall = instant.replace(tzinfo=None)
     candidates = {}
     for fold in (0, 1):
@@ -236,26 +250,32 @@ def _reference_zone_endpoint(value: str, zone: ZoneInfo) -> str:
 
     if not candidates:
         raise DraftValidationError("local time does not exist in the Home Assistant time zone")
-    if len(candidates) > 1:
-        chosen = candidates.get(instant.utcoffset())
-        if chosen is None:
-            raise DraftValidationError("ambiguous local time requires review of its UTC offset")
-    else:
-        chosen = next(iter(candidates.values()))
-    return value if chosen.utcoffset() == instant.utcoffset() else chosen.isoformat()
+    ambiguous = len(candidates) > 1
+    # A repeated fall-back hour can safely reach the *manual* review inbox.
+    # Preserve the provider's valid fold if possible; otherwise use the first.
+    chosen = candidates.get(instant.utcoffset(), next(iter(candidates.values())))
+    if chosen.utcoffset() != instant.utcoffset():
+        # A local clock time mislabelled with last season's offset is repairable.
+        # A UTC instant or unrelated timezone offset is not safe to reinterpret.
+        if instant.utcoffset() == timedelta(0) and chosen.utcoffset() != timedelta(0):
+            raise DraftValidationError("UTC-formatted inferred local time cannot be safely reinterpreted")
+        if abs(chosen.utcoffset() - instant.utcoffset()) > timedelta(hours=2):
+            raise DraftValidationError("inferred local time has an unrelated UTC offset")
+    return (value if chosen.utcoffset() == instant.utcoffset() else chosen.isoformat(),
+            ambiguous)
 
 
-def _correct_inferred_zone(draft: EventDraft, zone_name: str) -> EventDraft:
-    """Normalize only clock times declared to use the configured local zone."""
+def _correct_inferred_zone(
+    raw: dict[str, Any], zone_name: str,
+) -> tuple[dict[str, Any], bool]:
+    """Validate each local wall endpoint before final start/end range validation."""
     try:
         zone = ZoneInfo(zone_name)
     except (ZoneInfoNotFoundError, ValueError) as err:
         raise DraftValidationError("Home Assistant time zone is unavailable") from err
-    return EventDraft.from_mapping({
-        **draft.as_dict(),
-        "start": _reference_zone_endpoint(draft.start, zone),
-        "end": _reference_zone_endpoint(draft.end, zone),
-    })
+    start, start_ambiguous = _reference_zone_endpoint(raw.get("start"), zone)
+    end, end_ambiguous = _reference_zone_endpoint(raw.get("end"), zone)
+    return {**raw, "start": start, "end": end}, start_ambiguous or end_ambiguous
 
 
 def parse_ai_data(
@@ -283,7 +303,6 @@ def parse_ai_data(
             warnings.append(f"event {index} must be an object")
             continue
         try:
-            draft = EventDraft.from_mapping(raw)
             try:
                 assumptions = normalize_date_time_assumptions(raw.get("assumptions", []))
             except ValueError as err:
@@ -291,16 +310,26 @@ def parse_ai_data(
             inferred = raw.get("uses_reference_time_zone", False)
             if type(inferred) is not bool:
                 raise DraftValidationError("uses_reference_time_zone must be a boolean")
-            if inferred and not draft.all_day:
+            corrected_raw = raw
+            ambiguous = False
+            if inferred and raw.get("all_day") is False:
                 if time_zone is None:
                     raise DraftValidationError("Home Assistant time zone is unavailable")
-                corrected = _correct_inferred_zone(draft, time_zone)
-                if corrected != draft:
-                    warnings.append(
-                        f"event {index}: corrected inferred UTC offset for {time_zone} "
-                        "on the event date; verify during review"
-                    )
-                draft = corrected
+                corrected_raw, ambiguous = _correct_inferred_zone(raw, time_zone)
+            draft = EventDraft.from_mapping(corrected_raw)
+            if corrected_raw is not raw and (
+                corrected_raw["start"] != raw["start"] or corrected_raw["end"] != raw["end"]
+            ):
+                warnings.append(
+                    f"event {index}: corrected inferred UTC offset for {time_zone} "
+                    "on the event date; verify during review"
+                )
+            if ambiguous:
+                # Review metadata is saved with the event and shown in the inbox.
+                # Until auto-approval exists, users explicitly approve every draft.
+                warnings.append(f"event {index}: {_FALL_BACK_REVIEW_NOTE}")
+                if _FALL_BACK_REVIEW_NOTE not in assumptions and len(assumptions) < 8:
+                    assumptions = (*assumptions, _FALL_BACK_REVIEW_NOTE)
             drafts.append(draft)
             event_assumptions.append(assumptions)
         except DraftValidationError as err:
