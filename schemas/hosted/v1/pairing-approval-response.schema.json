@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/pairing-approval-response.schema.json",
+  "title": "Daylight v1 pairing approval response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pairing_id",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "pairing_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{16,128}(?![\\s\\S])"
+    },
+    "status": {
+      "const": "approved"
+    }
+  }
+}

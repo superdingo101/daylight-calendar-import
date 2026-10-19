@@ -242,3 +242,11 @@ Cloud #12 remains internal only. Its expired-source upsert must allocate fresh i
 Public reference examples validate schema and protocol consistency, not absent production persistence/server behavior. The future journal suite belongs in its implementation PR, not fabricated saved/recovered dictionaries here. Before activation require real text-only end-to-end tests for lost claim/ACK responses, restart after commit, review completion before retry and eventual re-lease, never ACKing an unpersisted outcome; then binary integrity/size/privacy tests. Near-expiry/offline or prolonged parser outages can exceed retention; v1 does not guarantee import beyond seven days. Exactly-once, claim replay, cursors, raw local inbox and lease renewal are explicitly deferred.
 
 **No hosted endpoint, HA runtime adapter or private Cloud service is implemented or activated by this PR. BYO/IMAP remains independent.**
+
+## H2: Account connection and credential lifecycle
+
+The [public account and installation lifecycle v1](hosted-account-api.md)
+defines owner enrollment, single-use pairing, candidate confirmation, rotation,
+disconnect, recovery and high-level status. Human sessions and installation
+bearers remain separate. Its additive schemas do not change parser or H3
+payloads. Publication does not activate Cloud endpoints or an HA runtime client.

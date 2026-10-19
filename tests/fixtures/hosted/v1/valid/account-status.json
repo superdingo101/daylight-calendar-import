@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "account_id": "account_ABCDEFGHIJKLMNOP",
+  "status": "active",
+  "active_installation_id": "installation_ABCDEFGHIJKL",
+  "capabilities": {
+    "managed_ai": true,
+    "email_intake": false,
+    "source_delivery": false
+  }
+}
