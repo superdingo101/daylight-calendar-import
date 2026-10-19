@@ -150,6 +150,7 @@ SUBMIT_SCHEMA = vol.Schema(
             lambda value: value.strip(),
             vol.Length(min=1, max=2048),
         ),
+        vol.Optional("reimport_duplicates", default=False): bool,
     }
 )
 RESET_DEDUPLICATION_SCHEMA = vol.Schema(vol.Any(
@@ -165,6 +166,7 @@ SUBMIT_IMAGE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_SOURCE_ID): vol.All(
             cv.string, lambda value: value.strip(), vol.Length(min=1, max=2048)
         ),
+        vol.Optional("reimport_duplicates", default=False): bool,
     }
 )
 SUBMIT_PDF_SCHEMA = SUBMIT_IMAGE_SCHEMA
@@ -470,6 +472,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                    if outcome.event_assumptions else {}),
                 source_id=source.upstream_source_id,
                 calendar_entity=route.calendar_entity,
+                reimport_duplicates=call.data["reimport_duplicates"],
                 warnings=[*outcome.warnings, *route.warnings],
                 routing_unresolved=route.requires_confirmation,
                 activity_id=activity_id,
@@ -478,7 +481,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             pending_store.active_submissions.discard(task)
         return _submission_response(result, [*outcome.warnings, *route.warnings], activity_id)
 
-    async def submit_attachment_source(source: SourceDocument) -> ServiceResponse:
+    async def submit_attachment_source(
+        source: SourceDocument, *, reimport_duplicates: bool = False,
+    ) -> ServiceResponse:
         """Send a normalized upload through parsing and pending review."""
         if source.upstream_source_id is not None and pending_store.is_source_duplicate(source.upstream_source_id):
             return _submission_response(PendingImportAddResult(None, True, 0), [], None)
@@ -499,6 +504,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                    if outcome.event_assumptions else {}),
                 source_id=source.upstream_source_id,
                 calendar_entity=route.calendar_entity,
+                reimport_duplicates=reimport_duplicates,
                 source_kind=source.kind.value,
                 source_title=source.title,
                 warnings=[*outcome.warnings, *route.warnings],
@@ -514,13 +520,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async with async_image_source(hass, call.data[ATTR_FILE_ID]) as image:
             source = replace(image, text=call.data.get(ATTR_TEXT, "").strip() or None,
                              upstream_source_id=call.data.get(ATTR_SOURCE_ID))
-            return await submit_attachment_source(source)
+            return await submit_attachment_source(
+                source, reimport_duplicates=call.data["reimport_duplicates"],
+            )
 
     async def handle_submit_pdf(call: ServiceCall) -> ServiceResponse:
         """Queue event drafts from a text PDF or attachment-capable parser."""
         async with async_pdf_source(hass, call.data[ATTR_FILE_ID], call.data.get(ATTR_TEXT, "")) as pdf:
             return await submit_attachment_source(
-                replace(pdf, upstream_source_id=call.data.get(ATTR_SOURCE_ID))
+                replace(pdf, upstream_source_id=call.data.get(ATTR_SOURCE_ID)),
+                reimport_duplicates=call.data["reimport_duplicates"],
             )
 
     class CalendarApprovalWriter:
