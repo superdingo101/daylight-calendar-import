@@ -472,7 +472,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                    if outcome.event_assumptions else {}),
                 source_id=source.upstream_source_id,
                 calendar_entity=route.calendar_entity,
-                reimport_duplicates=call.data.get("reimport_duplicates", False),
+                **({"reimport_duplicates": True}
+                   if call.data.get("reimport_duplicates", False) else {}),
                 warnings=[*outcome.warnings, *route.warnings],
                 routing_unresolved=route.requires_confirmation,
                 activity_id=activity_id,
@@ -504,7 +505,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                    if outcome.event_assumptions else {}),
                 source_id=source.upstream_source_id,
                 calendar_entity=route.calendar_entity,
-                reimport_duplicates=reimport_duplicates,
+                **({"reimport_duplicates": True} if reimport_duplicates else {}),
                 source_kind=source.kind.value,
                 source_title=source.title,
                 warnings=[*outcome.warnings, *route.warnings],
