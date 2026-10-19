@@ -4,13 +4,14 @@ import {SubmissionAttempt, SubmissionFeedback} from "./submission_feedback.js";
 export {submissionMessage} from "./submission_feedback.js";
 
 /** Manual text intake uses the same durable review service as email imports. */
-export async function submitText(hass, text, {sourceId} = {}) {
+export async function submitText(hass, text, {sourceId, reimportDuplicates = false} = {}) {
   if (!text.trim()) throw new Error("Paste event details before importing.");
   if (sourceId !== undefined && (typeof sourceId !== "string" || !sourceId.trim())) {
     throw new Error("The import source ID is invalid.");
   }
   const serviceData = {text};
   if (sourceId !== undefined) serviceData.source_id = sourceId;
+  if (reimportDuplicates) serviceData.reimport_duplicates = true;
   const result = await hass.callWS({
     type: "call_service", domain: "daylight_calendar_import", service: "submit_text",
     service_data: serviceData, return_response: true,
@@ -37,6 +38,7 @@ const node = (tag, text = "") => {
 /** Keep one form alive so inbox refreshes and view changes preserve its draft. */
 export class ManualSubmission {
   constructor({getHass, onSubmitted = () => {}, onSettled = () => {}, onReview, onActivity}) {
+    this.getHass = getHass;
     this.element = node("section");
     this.element.className = "manual-submission";
     this.element.setAttribute("aria-label", "Import pasted event details");
@@ -56,7 +58,9 @@ export class ManualSubmission {
     this.status = node("p");
     configureSubmissionStatus(this.status);
     this.attempt = new SubmissionAttempt();
-    this.feedback = new SubmissionFeedback(this.status, {onReview, onActivity});
+    this.feedback = new SubmissionFeedback(this.status, {
+      onReview, onActivity, onReimport: () => this.submit(true),
+    });
     this.form.append(label, this.button, this.status, this.feedback.actions);
     this.text.addEventListener("input", () => {
       if (!this.busy) { this.attempt.reset(); this.feedback.clear(); }
@@ -64,6 +68,11 @@ export class ManualSubmission {
     this.element.append(this.form);
     this.form.addEventListener("submit", async event => {
       event.preventDefault();
+      await this.submit();
+    });
+  }
+
+  async submit(reimportDuplicates = false) {
       if (this.busy) return;
       if (!this.text.value?.trim()) {
         this.feedback.processing("Paste event details before importing.");
@@ -71,6 +80,7 @@ export class ManualSubmission {
         return;
       }
       this.busy = true;
+      if (reimportDuplicates) this.attempt.reset();
       this.feedback.processing("Extracting events for review…");
       focusSubmissionStatus(this.form, this.status);
       this.button.setAttribute("aria-busy", "true");
@@ -78,7 +88,9 @@ export class ManualSubmission {
       this.text.disabled = true;
       this.button.textContent = "Processing…";
       try {
-        const response = await submitText(getHass(), this.text.value, {sourceId: this.attempt.forDraft(this.text.value)});
+        const response = await submitText(this.getHass(), this.text.value, {
+          sourceId: this.attempt.forDraft(this.text.value), reimportDuplicates,
+        });
         this.feedback.result(response);
         // Keep inbox loading failures separate from successful extraction feedback.
         try {
@@ -96,6 +108,5 @@ export class ManualSubmission {
         this.button.textContent = "Import events";
         onSettled();
       }
-    });
   }
 }
