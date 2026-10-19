@@ -92,7 +92,7 @@ async def manual_runtime(hass, monkeypatch, tmp_path):
     # HA defaults to one process-global /tmp upload path. Isolate real HTTP
     # uploads so concurrent test environments cannot remove each other's files.
     monkeypatch.setattr("homeassistant.components.file_upload.TEMP_DIR_NAME", str(tmp_path / "ha-uploads"))
-    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [DRAFT]}))
+    generate = AsyncMock(return_value=SimpleNamespace(data={"unsupported_recurrence": False, "events": [DRAFT]}))
     monkeypatch.setattr("homeassistant.components.ai_task.async_generate_data", generate)
     entity = SimpleNamespace(supported_features=AITaskEntityFeature.SUPPORT_ATTACHMENTS, available=True)
     monkeypatch.setattr(
@@ -244,12 +244,12 @@ async def test_text_only_provider_accepts_text_but_rejects_visual_upload(
 async def test_no_events_and_event_duplicate_results_never_write_calendar(hass, hass_ws_client, manual_runtime):
     runtime = manual_runtime
     client = await hass_ws_client(hass)
-    runtime.generate.return_value = SimpleNamespace(data={"events": []})
+    runtime.generate.return_value = SimpleNamespace(data={"unsupported_recurrence": False, "events": []})
     empty = await _response(client, await _request(source_id="no-events"))
     assert empty["status"] == "no_events"
     assert empty["pending"] is None
     assert runtime.store.list() == ()
-    runtime.generate.return_value = SimpleNamespace(data={"events": [DRAFT]})
+    runtime.generate.return_value = SimpleNamespace(data={"unsupported_recurrence": False, "events": [DRAFT]})
     first = await _response(client, await _request(source_id="first-source"))
     assert first["status"] == "pending_review"
     repeated = await _response(client, await _request(source_id="another-source"))

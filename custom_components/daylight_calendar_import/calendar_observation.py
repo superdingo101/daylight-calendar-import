@@ -6,6 +6,8 @@ upon. A missing/failed provider response is not equivalent to an empty agenda.
 
 from __future__ import annotations
 
+import asyncio
+
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from collections.abc import Sequence
 from typing import Any
@@ -23,6 +25,7 @@ class CalendarObservationError(ValueError):
     """Calendar responses cannot be trusted to prove no overlap."""
 
 
+MAX_OBSERVATION_SECONDS = 15
 MAX_OBSERVATION_WINDOW = timedelta(days=90)
 MAX_OBSERVATION_EVENTS = 500
 MAX_OBSERVATION_CALENDARS = 16
@@ -180,12 +183,18 @@ async def async_observe_candidates(
             raise CalendarObservationError("Calendar observation is incomplete")
 
     candidates: list[CalendarCandidate] = []
+    # Share one deadline across the complete scope, rather than allowing each
+    # selected provider a fresh timeout budget. Cancellation reaches providers.
+    deadline = asyncio.get_running_loop().time() + MAX_OBSERVATION_SECONDS
     for entity_id, provider in providers:
         # A later provider might have become unavailable while earlier reads
         # awaited; a provider can also become unavailable during its own read.
         ensure_available(entity_id, provider)
         try:
-            response = await provider.async_get_events(hass, start, end)
+            async with asyncio.timeout_at(deadline):
+                response = await provider.async_get_events(hass, start, end)
+        except TimeoutError as exc:
+            raise CalendarObservationError("Calendar observation timed out") from exc
         except Exception as exc:
             # Provider errors are not proof of an empty schedule. Do not
             # surface provider-specific messages in the user-facing response.

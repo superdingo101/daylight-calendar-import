@@ -5,6 +5,8 @@ import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, 
 import {ManualSubmission} from "./manual_submission.js";
 import {FileSubmission} from "./upload_submission.js";
 
+const CALENDAR_CHECK_TIMEOUT_MS = 30_000;
+
 const notificationOptions = [
   ["review_ready", "Imports ready for review"],
   ["calendar_created", "Events added to a calendar"],
@@ -65,6 +67,20 @@ const css = `
   button:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 2px; }
   .topbar button { background: transparent; color: inherit; border-color: currentColor; }
   .topbar button:focus-visible { outline-color: currentColor; }
+  .topbar .toolbar-new {
+    flex: 0 0 auto; background: var(--primary-color);
+    color: var(--text-primary-color, #fff); border-color: var(--primary-color);
+    white-space: nowrap;
+  }
+  .topbar .toolbar-refresh {
+    flex: 0 0 44px; width: 44px; padding: 10px; border: 0;
+    background: transparent; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .topbar .toolbar-refresh svg {
+    width: 22px; height: 22px; fill: none; stroke: currentColor;
+    stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  }
+  .topbar .toolbar-refresh[hidden] { display: none; }
   .topbar .menu-button {
     flex: 0 0 auto;
     width: 44px;
@@ -102,6 +118,12 @@ const css = `
     .manual-submission .submission-actions { display: grid; }
   }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  nav[aria-label="Daylight views"][hidden] { display: none; }
+  .import-choices { display: grid; gap: 12px; margin: 16px 0; }
+  .import-choice { width: 100%; text-align: left; padding: 16px; }
+  .import-choice strong { display: block; margin-bottom: 6px; }
+  .import-choice span { display: block; color: var(--secondary-text-color); }
+  .import-back { margin-bottom: 16px; }
   nav[aria-label="Daylight views"] {
     display: flex;
     flex-wrap: nowrap;
@@ -171,9 +193,12 @@ const css = `
   .settings-help { color: var(--secondary-text-color); }
   @media (max-width: 480px) {
     .topbar {
+      gap: 8px;
       padding-right: max(8px, var(--daylight-safe-right));
       padding-left: max(8px, var(--daylight-safe-left));
     }
+    .topbar h1 { font-size: 18px; }
+    .topbar .toolbar-new { padding: 10px; }
     main {
       padding: 12px;
       padding-right: max(12px, var(--daylight-safe-right));
@@ -249,6 +274,7 @@ function activityLabel(type) {
     review_ready: "Awaiting review", duplicate: "Duplicate", failed: "Failed",
     event_rejected: "Rejected", calendar_write_started: "Calendar write started",
     calendar_created: "Calendar created",
+    notification_delivery_failed: "Notification delivery failed; check notification settings",
     calendar_write_uncertain: "Calendar write needs confirmation",
     mixed: "Mixed event outcomes"})[type] || type.replaceAll("_", " ");
 }
@@ -526,6 +552,9 @@ export class DaylightImportPanel extends HTMLElement {
     this._selectedId = null;
     this._detail = null;
     this._calendarCheck = null;
+    this._approvalObservation = null;
+    // Transport lifetime is independent of canceled or superseded review UI.
+    this._calendarObservationRequest = null;
     this._returnFocusId = null;
     this._editingId = null;
     this._editError = null;
@@ -537,6 +566,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._batchResults = [];
     this._batchContext = null;
     this._view = "inbox";
+    this._newImportMode = null;
+    this._newImportOrigin = null;
     this._activity = [];
     this._activityId = null;
     this._activityDetail = null;
@@ -557,10 +588,24 @@ export class DaylightImportPanel extends HTMLElement {
     menu.addEventListener("click", () => {
       this.dispatchEvent(new Event("hass-toggle-menu", {bubbles: true, composed: true}));
     });
-    header.append(menu, element("h1", "Daylight imports"));
-    const refresh = element("button", "Refresh", "toolbar-refresh");
+    header.append(menu, element("h1", "Daylight Imports"));
+    const newImport = element("button", "+ New import", "toolbar-new");
+    newImport.type = "button";
+    newImport.addEventListener("click", () => this.showNewImport());
+    this._newImportButton = newImport;
+    header.append(newImport);
+    const refresh = element("button", "", "toolbar-refresh");
     this._refreshButton = refresh;
     refresh.type = "button";
+    refresh.setAttribute("aria-label", "Refresh");
+    refresh.title = "Refresh";
+    const refreshIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    refreshIcon.setAttribute("viewBox", "0 0 24 24");
+    refreshIcon.setAttribute("aria-hidden", "true");
+    const refreshPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    refreshPath.setAttribute("d", "M20 11a8 8 0 0 0-14.5-4.5L3 9m0-6v6h6M4 13a8 8 0 0 0 14.5 4.5L21 15m0 6v-6h-6");
+    refreshIcon.append(refreshPath);
+    refresh.append(refreshIcon);
     refresh.addEventListener("click", () => {
       if (!this._saving && !this._settingsSaving && !this._editingId &&
           !this._batchAction && !this._resolution) void (
@@ -576,25 +621,17 @@ export class DaylightImportPanel extends HTMLElement {
     this._announcement.setAttribute("aria-live", "polite");
     this._manualSubmission = new ManualSubmission({
       getHass: () => this._hass,
-      onReview: id => this.showImport(id),
+      onReview: id => this.openSubmissionReview(id),
       onActivity: id => this.showActivity(id),
-      onSubmitted: async response => {
-        if ((response.pending || response.duplicate_source) && this._view === "inbox" && !this._selectedId &&
-            await this.refresh() === false) {
-          throw new Error("Could not refresh the review inbox.");
-        }
-      },
+      onSubmitted: response => this._afterSubmission(response),
+      onSettled: () => this._syncNewImportButton(),
     });
     this._fileSubmission = new FileSubmission({
       getHass: () => this._hass,
-      onReview: id => this.showImport(id),
+      onReview: id => this.openSubmissionReview(id),
       onActivity: id => this.showActivity(id),
-      onSubmitted: async response => {
-        if ((response.pending || response.duplicate_source) && this._view === "inbox" && !this._selectedId &&
-            await this.refresh() === false) {
-          throw new Error("Could not refresh the review inbox.");
-        }
-      },
+      onSubmitted: response => this._afterSubmission(response),
+      onSettled: () => this._syncNewImportButton(),
     });
     this._manualSubmission.element.hidden = true;
     this._fileSubmission.element.hidden = true;
@@ -605,6 +642,82 @@ export class DaylightImportPanel extends HTMLElement {
     const main = document.createElement("main");
     main.append(this._content, this._manualSubmission.element, this._fileSubmission.element);
     this.shadowRoot.append(style, header, main);
+  }
+
+  async _afterSubmission(response) {
+    if ((!response.pending && !response.duplicate_source) ||
+        (this._view !== "new" && (this._view !== "inbox" || this._selectedId))) return;
+    const startedInNewImport = this._view === "new";
+    if (await this.refresh() === false) throw new Error("Could not refresh the review inbox.");
+    // Successful submissions open review directly; calendar creation still requires approval.
+    if (startedInNewImport && this._view === "new" && response.pending) {
+      this._view = "inbox";
+      const reviewGeneration = this._generation + 1;
+      await this.showImport(response.pending.id);
+      // A newer navigation or refresh owns the view; never overwrite it.
+      if (this._generation !== reviewGeneration || this._view !== "inbox" ||
+          this._selectedId !== response.pending.id) return;
+      if (this._status !== "ready") {
+        this._view = "new";
+        this._selectedId = null;
+        this._detail = null;
+        this.render();
+        // showImport focused a Back button which was removed by this fallback.
+        // Restore focus to the retained success feedback for an explicit retry.
+        (this._newImportMode === "text" ? this._manualSubmission.status :
+          this._newImportMode === "file" ? this._fileSubmission.status :
+            this._content.querySelector("h2"))?.focus();
+        throw new Error("Could not open the new import for review.");
+      }
+    }
+  }
+
+  openSubmissionReview(id) {
+    if (this._view === "new") this._view = "inbox";
+    return this.showImport(id);
+  }
+
+  showNewImport() {
+    if (this._view === "new" || this._saving || this._settingsSaving ||
+        this._editingId || this._decision || this._batchAction || this._resolution ||
+        this._manualSubmission.busy || this._fileSubmission.busy) return;
+    this._clearEmailDraftPassword();
+    this._newImportOrigin = {
+      view: this._view, selectedId: this._selectedId, activityId: this._activityId,
+      settingsTab: this._settingsTab,
+    };
+    ++this._generation;
+    this._view = "new";
+    this._newImportMode = null;
+    this._selectedId = null;
+    this.render();
+    this._content.querySelector("h2")?.focus();
+  }
+
+  selectImportMethod(mode) {
+    if (this._view !== "new" || !["text", "file", null].includes(mode) ||
+        this._manualSubmission.busy || this._fileSubmission.busy) return;
+    this._newImportMode = mode;
+    this.render();
+    (mode === "text" ? this._manualSubmission.text :
+      mode === "file" ? this._fileSubmission.file : this._content.querySelector("h2"))?.focus();
+  }
+
+  async leaveNewImport() {
+    if (this._view !== "new" || this._manualSubmission.busy || this._fileSubmission.busy) return;
+    const origin = this._newImportOrigin || {view: "inbox"};
+    this._newImportOrigin = null;
+    if (origin.view === "settings") await this.showSettings(origin.settingsTab);
+    else if (origin.view === "activity") {
+      const loading = this.showActivity(origin.activityId);
+      // Back is removed by the loading render; keep keyboard focus in the panel.
+      this._refreshButton.focus();
+      await loading;
+    }
+    else if (origin.selectedId) {
+      this._view = "inbox";
+      await this.showImport(origin.selectedId);
+    } else await this.showReview();
   }
 
   set narrow(value) {
@@ -642,6 +755,7 @@ export class DaylightImportPanel extends HTMLElement {
     // Clear loading before bumping generation so a discarded response cannot
     // leave the Check calendars control permanently aria-disabled.
     this._calendarCheck = null;
+    this._approvalObservation = null;
     const generation = ++this._generation;
     this._status = "loading";
     this.render();
@@ -676,6 +790,7 @@ export class DaylightImportPanel extends HTMLElement {
     const generation = ++this._generation;
     this._view = "activity";
     this._calendarCheck = null;
+    this._approvalObservation = null;
     this._activityId = id;
     this._activityDetail = null;
     this._status = "loading";
@@ -701,6 +816,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._selectedId = null;
     this._detail = null;
     this._calendarCheck = null;
+    this._approvalObservation = null;
     this._activityId = null;
     this._activityDetail = null;
     const refresh = this.refresh();
@@ -717,6 +833,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._selectedId = null;
     this._detail = null;
     this._calendarCheck = null;
+    this._approvalObservation = null;
     this._activityId = null;
     this._activityDetail = null;
     this._settingsError = null;
@@ -1567,7 +1684,8 @@ export class DaylightImportPanel extends HTMLElement {
     } else if (result.status === "error") {
       const error = element("p", `Calendar check incomplete: ${result.message}`, "error");
       error.setAttribute("role", "alert");
-      section.append(error);
+      section.append(error, element("p",
+        "Review the calendars yourself before choosing whether to approve this event."));
     } else if (result.status === "ready") {
       if (!result.matches.length) {
         section.append(element("p", "No matches found in the observed calendars."));
@@ -1576,8 +1694,19 @@ export class DaylightImportPanel extends HTMLElement {
           possible_duplicate: "Possible duplicate", conflict: "Scheduling conflict"};
         const list = document.createElement("ul");
         for (const match of result.matches) {
-          list.append(element("li",
-            `${labels[match.kind]}: ${match.existing_title} (${match.calendar_entity})`));
+          const item = element("li",
+            `${labels[match.kind]}: ${match.existing_title} (${match.calendar_entity})`);
+          if (match.existing_start && match.existing_end && match.overlap_start && match.overlap_end) {
+            const locale = this._hass?.locale;
+            const zone = this._hass?.config?.time_zone;
+            const existing = formatEventRange({start: match.existing_start,
+              end: match.existing_end, all_day: match.existing_all_day}, locale, zone);
+            const overlap = formatEventRange({start: match.overlap_start,
+              end: match.overlap_end, all_day: false}, locale, zone);
+            item.append(element("p", `Existing event: ${existing}${match.existing_all_day ? " (all day)" : ""}`));
+            item.append(element("p", `Overlaps: ${overlap}`));
+          }
+          list.append(item);
         }
         section.append(list);
       }
@@ -1603,7 +1732,7 @@ export class DaylightImportPanel extends HTMLElement {
 
     let next;
     try {
-      const response = await checkEvent(this._hass, pendingId, event);
+      const response = await this.observeCalendarEvent(pendingId, event);
       next = {status: "ready", matches: response.matches,
         observed_calendars: response.observed_calendars};
     } catch (error) {
@@ -1644,6 +1773,66 @@ export class DaylightImportPanel extends HTMLElement {
     this._announcement.replaceChildren(element("span", summary));
   }
 
+  /** Bound reviewer waiting without releasing a still-outstanding transport. */
+  async observeCalendarEvent(pendingId, event) {
+    if (this._calendarObservationRequest) {
+      throw new Error("A previous calendar check is still running. Try again after it finishes.");
+    }
+    const request = checkEvent(this._hass, pendingId, event);
+    this._calendarObservationRequest = request;
+    const settled = () => {
+      if (this._calendarObservationRequest === request) this._calendarObservationRequest = null;
+    };
+    // A UI deadline cannot cancel callWS. Retain the single-flight lock until
+    // the actual request settles, including across cancel, navigation, and retry.
+    void request.then(settled, settled);
+    let timer;
+    try {
+      return await Promise.race([request, new Promise((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(
+          "Calendar check timed out. Review the calendars yourself before approval.")),
+        CALENDAR_CHECK_TIMEOUT_MS);
+      })]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Observe every selected draft before enabling advisory approval. */
+  async observeApproval(events) {
+    const observation = {generation: this._generation, detail: this._detail,
+      decision: this._decision, batchAction: this._batchAction,
+      results: new Map(), loading: true};
+    this._approvalObservation = observation;
+    const current = () => this._approvalObservation === observation &&
+      observation.generation === this._generation && observation.detail === this._detail &&
+      observation.decision === this._decision && observation.batchAction === this._batchAction;
+    for (const event of events) observation.results.set(event, {status: "loading"});
+    this.render();
+    // Each existing backend observation has bounded calendars, provider timeouts,
+    // and reviewer permissions. Serial reads avoid multiplying provider load.
+    for (const event of events) {
+      let result;
+      try {
+        const response = await this.observeCalendarEvent(this._selectedId, event);
+        result = {status: "ready", matches: response.matches,
+          observed_calendars: response.observed_calendars};
+      } catch (error) {
+        result = {status: "error", message: typeof error?.message === "string" ?
+          error.message.replace(/^Calendar check incomplete: /, "") : "Calendar check failed"};
+      }
+      if (!current()) return;
+      observation.results.set(event, result);
+    }
+    observation.loading = false;
+    const focusedLabel = this.shadowRoot.activeElement?.textContent;
+    this.render();
+    Array.from(this._content.querySelectorAll("button")).find(
+      button => button.textContent === focusedLabel)?.focus();
+    this._announcement.replaceChildren(element("span",
+      "Calendar checks finished. Review advisory results before confirming approval."));
+  }
+
   focusCalendarCheck(eventId) {
     Array.from(this._content.querySelectorAll("button")).find(
       button => button.dataset.calendarCheckEventId === eventId)?.focus();
@@ -1656,6 +1845,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._selectedId = id;
     this._detail = null;
     this._calendarCheck = null;
+    this._approvalObservation = null;
     this._editingId = null;
     this._editError = null;
     this._decision = null;
@@ -1688,6 +1878,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._batchContext = null;
     this._returnFocusId = this._selectedId;
     this._calendarCheck = null;
+    this._approvalObservation = null;
     ++this._generation;
     this._selectedId = null;
     this._detail = null;
@@ -1695,7 +1886,8 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async runBatch(action) {
-    if (this._saving || this._batchAction !== action) return;
+    if (this._saving || this._batchAction !== action ||
+        (action === "approve" && this._approvalObservation?.loading)) return;
     const pendingId = this._selectedId;
     const events = this._detail.events.filter(event => event.status === "pending");
     this._batchContext = {pendingId, action, title: this._detail.source_title || "Import"};
@@ -1739,7 +1931,8 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async runDecision(event, action) {
-    if (this._saving || this._decision?.id !== event.id || this._decision.action !== action) return;
+    if (this._saving || this._decision?.id !== event.id || this._decision.action !== action ||
+        (action === "approve" && this._approvalObservation?.loading)) return;
     const pendingId = this._selectedId;
     const generation = this._generation;
     this._saving = true;
@@ -2127,10 +2320,21 @@ export class DaylightImportPanel extends HTMLElement {
     return form;
   }
 
+  _syncNewImportButton() {
+    // Update only this control after an intake request settles. Rerendering
+    // the detail here would discard its focused heading.
+    this._newImportButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
+      Boolean(this._editingId || this._decision || this._batchAction || this._resolution) ||
+      Boolean(this._manualSubmission.busy || this._fileSubmission.busy);
+  }
+
   render() {
-    this._manualSubmission.element.hidden = this._view !== "inbox" || Boolean(this._selectedId);
-    this._fileSubmission.element.hidden = this._manualSubmission.element.hidden;
-    this._refreshButton.disabled = this._saving || this._settingsSaving ||
+    this._manualSubmission.element.hidden = this._view !== "new" || this._newImportMode !== "text" || Boolean(this._selectedId);
+    this._fileSubmission.element.hidden = this._view !== "new" || this._newImportMode !== "file" || Boolean(this._selectedId);
+    this._refreshButton.hidden = this._view === "new";
+    this._syncNewImportButton();
+    this._navigation.hidden = this._view === "new";
+    this._refreshButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     const content = document.createDocumentFragment();
     const navigation = this._navigation;
@@ -2155,6 +2359,37 @@ export class DaylightImportPanel extends HTMLElement {
       if (this._view === "settings") settings.setAttribute("aria-current", "page");
       settings.addEventListener("click", () => void this.showSettings());
       navigation.append(settings);
+    }
+    if (this._view === "new") {
+      const heading = element("h2", "New import");
+      heading.tabIndex = -1;
+      const back = element("button", "← Back", "import-back");
+      back.type = "button";
+      back.addEventListener("click", () => void this.leaveNewImport());
+      content.append(back, heading);
+      if (this._newImportMode === null) {
+        content.append(element("p", "Choose how to provide event information."));
+        const choices = element("div", "", "import-choices");
+        for (const [mode, title, description] of [
+          ["text", "Paste event details", "Paste announcements, schedules, or event text."],
+          ["file", "Upload image or PDF", "Add a flyer, screenshot, or PDF document."],
+        ]) {
+          const choose = element("button", "", "import-choice");
+          choose.type = "button";
+          choose.append(element("strong", title), element("span", description));
+          choose.addEventListener("click", () => this.selectImportMethod(mode));
+          choices.append(choose);
+        }
+        content.append(choices);
+      } else {
+        const change = element("button", "← Choose another method", "import-back");
+        change.type = "button";
+        change.addEventListener("click", () => this.selectImportMethod(null));
+        content.append(change);
+      }
+      this._viewContent.replaceChildren(content);
+      this._announcement.replaceChildren();
+      return;
     }
     if (this._view === "settings") {
       if (this._status === "loading") {
@@ -2222,12 +2457,16 @@ export class DaylightImportPanel extends HTMLElement {
         content.append(heading, element("p", `Current status: ${activityLabel(item.status)}`),
           element("p", `Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
         if (item.guidance) content.append(element("p", item.guidance));
+        if (item.notification_delivery_failed) {
+          content.append(element("p", activityLabel("notification_delivery_failed"), "warning"));
+        }
         const list = document.createElement("ul");
         for (const transition of item.transitions) {
           const row = element("li", `${activityTime(transition.at, this._hass)} · ${activityLabel(transition.type)}${transition.event_id ? ` · Event ID ${transition.event_id}` : ""}`);
           list.append(row);
         }
         content.append(list);
+        if (item.manual_source_text) content.append(element("p", `Submitted text (first 4,096 characters): ${item.manual_source_text}`, "source"));
       } else if (this._activity.length === 0) content.append(element("p", "No recent activity.", "status"));
       else {
         const heading = element("h2", "Recent activity");
@@ -2241,6 +2480,9 @@ export class DaylightImportPanel extends HTMLElement {
           open.dataset.activityId = item.id;
           open.addEventListener("click", () => void this.showActivity(item.id));
           row.append(open, element("p", `${activityTime(item.created_at, this._hass)} · ${activityLabel(item.status)} · Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
+          if (item.notification_delivery_failed) {
+            row.append(element("p", activityLabel("notification_delivery_failed"), "warning"));
+          }
           list.append(row);
         }
         content.append(list);
@@ -2328,12 +2570,14 @@ export class DaylightImportPanel extends HTMLElement {
           bulk.append(element("p", `${this._batchAction === "approve" ? "Approve" : "Reject"} all ${ready.length} pending events? Each result will be shown separately.`));
           const confirm = element("button", `Confirm ${this._batchAction} all`);
           confirm.type = "button";
+          confirm.disabled = this._batchAction === "approve" && this._approvalObservation?.loading === true;
           confirm.addEventListener("click", () => void this.runBatch(this._batchAction));
           const cancel = element("button", "Cancel bulk review");
           cancel.type = "button";
           cancel.addEventListener("click", () => { if (this._saving) return;
             const action = this._batchAction;
             this._batchAction = null;
+            this._approvalObservation = null;
             this.render();
             Array.from(this._content.querySelectorAll("button"))
               .find(button => button.dataset.batchAction === action)?.focus();
@@ -2355,8 +2599,11 @@ export class DaylightImportPanel extends HTMLElement {
               this._decisionError = null;
               this._calendarCheck = null;
               this._batchAction = action;
-              this.render();
-              this._content.querySelector(".actions button")?.focus();
+              this._approvalObservation = null;
+              if (action === "approve") void this.observeApproval(ready);
+              else this.render();
+              Array.from(this._content.querySelectorAll(".actions button"))
+                .find(button => !button.disabled)?.focus();
             });
             bulk.append(button);
           }
@@ -2390,11 +2637,15 @@ export class DaylightImportPanel extends HTMLElement {
           description.setAttribute("aria-label", "Event description");
           card.append(description);
         }
-        if (this._calendarCheck?.event === event) {
+        const approvalResult = this._approvalObservation?.detail === detail &&
+          this._approvalObservation.decision === this._decision &&
+          this._approvalObservation.batchAction === this._batchAction ?
+          this._approvalObservation.results.get(event) : null;
+        if (this._calendarCheck?.event === event || approvalResult) {
           const section = element("section", "", "calendar-matches");
           section.setAttribute("role", "region");
           section.setAttribute("aria-label", "Calendar check results");
-          this.renderCalendarCheckDetails(section, this._calendarCheck);
+          this.renderCalendarCheckDetails(section, approvalResult || this._calendarCheck);
           card.append(section);
         }
         if (event.status === "write_uncertain") {
@@ -2460,8 +2711,11 @@ export class DaylightImportPanel extends HTMLElement {
               this._calendarCheck = null;
               this._decision = {id: event.id, action};
               this._decisionError = null;
-              this.render();
-              this._content.querySelector(".actions button")?.focus();
+              this._approvalObservation = null;
+              if (action === "approve") void this.observeApproval([event]);
+              else this.render();
+              Array.from(this._content.querySelectorAll(".actions button"))
+                .find(button => !button.disabled)?.focus();
             });
             card.append(button);
           }
@@ -2470,12 +2724,14 @@ export class DaylightImportPanel extends HTMLElement {
           const actions = element("div", "", "actions");
           const confirm = element("button", `Confirm ${action}: ${event.title}`);
           confirm.type = "button";
+          confirm.disabled = action === "approve" && this._approvalObservation?.loading === true;
           confirm.addEventListener("click", () => void this.runDecision(event, action));
           const cancel = element("button", "Cancel");
           cancel.type = "button";
           cancel.addEventListener("click", () => {
             if (this._saving) return;
             this._decision = null;
+            this._approvalObservation = null;
             this._decisionError = null;
             this.render();
             (Array.from(this._content.querySelectorAll("button"))

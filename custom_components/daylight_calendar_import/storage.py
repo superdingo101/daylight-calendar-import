@@ -24,7 +24,7 @@ from .dedup import (
     event_fingerprint,
     source_fingerprint as build_source_fingerprint,
 )
-from .models import EventDraft, normalize_date_time_assumptions
+from .models import UNSUPPORTED_RECURRENCE_WARNING, EventDraft, normalize_date_time_assumptions
 from .notification_journal import NotificationRecord, notification_record
 from .notification_preferences import NotificationPreferences, DELIVERABLE_NOTIFICATION_CLASSES
 from .source_routing import LEGACY_UNRESOLVED_WARNINGS
@@ -705,7 +705,20 @@ class PendingImportStore:
                     if expected.status != "pending" and expected.terminal_at is not None
                     else datetime.now(UTC).isoformat()))
             journal = tuple(updated if record == expected else record for record in self._notifications)
-            await self._async_save(self._items, notifications=journal)
+            activity = self._activity
+            if updated.status == "failed" and expected.status != "failed":
+                previous = self.get_activity(updated.import_id)
+                if previous is not None:
+                    previous["notification_delivery_failed"] = True
+                    previous["transitions"].append({
+                        "type": "notification_delivery_failed", "at": updated.terminal_at,
+                        "event_id": updated.event_id,
+                    })
+                    previous["transitions"] = previous["transitions"][-ACTIVITY_TRANSITIONS_PER_IMPORT:]
+                    # Preserve the source/calendar outcome. Delivery failure is
+                    # advisory and commits atomically with the notification state.
+                    activity = tuple(item for item in activity if item["id"] != updated.import_id) + (previous,)
+            await self._async_save(self._items, notifications=journal, activity=activity)
             # Log inside the uncancelled transaction: caller cancellation can
             # follow this durable commit before a delivery wrapper resumes.
             if updated.status == "failed" and expected.status != "failed":
@@ -798,7 +811,9 @@ class PendingImportStore:
 
     def list_activity(self) -> tuple[dict[str, Any], ...]:
         """Return bounded lifecycle summaries, newest first, without source text."""
-        return tuple(deepcopy(item) for item in reversed(self._activity))
+        return tuple(deepcopy({key: value for key, value in item.items()
+                               if key != "manual_source_text"} if isinstance(item, dict) else item)
+                     for item in reversed(self._activity))
 
     def get_activity(self, pending_id: str) -> dict[str, Any] | None:
         """Return a durable activity record even after an import leaves review."""
@@ -1272,7 +1287,11 @@ class PendingImportStore:
                        "calendar_write_uncertain" if kind == "calendar_write_started" else
                        "mixed" if created and rejected else kind),
             "transitions": transitions[-ACTIVITY_TRANSITIONS_PER_IMPORT:],
+            **({"notification_delivery_failed": True}
+               if previous and previous.get("notification_delivery_failed") else {}),
         }
+        if UNSUPPORTED_RECURRENCE_WARNING in pending.warnings:
+            record["guidance"] = UNSUPPORTED_RECURRENCE_WARNING
         history = list(item for item in self._activity if item["id"] != pending.id) + [record]
         return tuple(history)
 
@@ -1356,8 +1375,14 @@ class PendingImportStore:
     ) -> tuple[PendingImport, int, int]:
         """Append novel drafts only if the entire original review is unchanged."""
         async with self._lock:
-            if self._items.get(original.id) is not original:
-                raise PendingEventEditError("Import changed during reprocessing; refresh before retrying")
+            current = self._items.get(original.id)
+            if current is not original:
+                if current is None or UNSUPPORTED_RECURRENCE_WARNING not in warnings:
+                    raise PendingEventEditError("Import changed during reprocessing; refresh before retrying")
+                # Review edits and partial rejection do not change this import's
+                # retained source. Preserve that work, append no stale candidates,
+                # and keep the source-level safety warning authoritative.
+                original, candidates = current, ()
             known = set(self._seen_event_fingerprints) | self._active_event_fingerprints()
             accepted = []
             duplicates = 0
@@ -1568,7 +1593,19 @@ class PendingImportStore:
 
             if not accepted_events:
                 status = "duplicate" if duplicate_events else "no_events"
-                activity = self._finish_submission(activity_id, status)
+                activity = self._finish_submission(
+                    activity_id, status,
+                    UNSUPPORTED_RECURRENCE_WARNING
+                    if UNSUPPORTED_RECURRENCE_WARNING in warnings else None,
+                )
+                # Only manual text is retained, only for unsupported recurrence,
+                # and only in authorized activity detail under normal retention.
+                if (source_kind == "manual_text"
+                        and UNSUPPORTED_RECURRENCE_WARNING in warnings):
+                    activity = tuple(
+                        {**record, "manual_source_text": source_text[:4096]}
+                        if record["id"] == activity_id else record for record in activity
+                    )
                 if source_fp is not None and (
                     duplicate_events or source_was_claimed
                 ):
@@ -1773,6 +1810,8 @@ class PendingImportStore:
             pending = self._items.get(pending_id)
             if pending is None:
                 return None
+            if UNSUPPORTED_RECURRENCE_WARNING in pending.warnings:
+                raise PendingEventEditError(UNSUPPORTED_RECURRENCE_WARNING)
             if pending.approval_in_flight:
                 raise PendingImportApprovalUncertainError(pending_id)
             # Reject a mixed-resolution batch before its first external write.
@@ -1813,6 +1852,10 @@ class PendingImportStore:
         processor: Callable[[PendingEvent], Awaitable[None]],
     ) -> PendingImport | None:
         """Checkpoint the selected event around its external calendar write."""
+        if pending.id in self._reprocessing:
+            raise PendingEventEditError("Source reprocessing is in progress; wait before approving")
+        if UNSUPPORTED_RECURRENCE_WARNING in pending.warnings:
+            raise PendingEventEditError(UNSUPPORTED_RECURRENCE_WARNING)
         if event.routing_unresolved:
             raise PendingEventEditError(
                 "Confirm the destination calendar in the event editor before approval"

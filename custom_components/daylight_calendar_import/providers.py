@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Protocol
 
 from homeassistant.components import ai_task
@@ -10,6 +11,7 @@ from homeassistant.components.ai_task.const import AITaskEntityFeature, DATA_COM
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
+from .const import MAX_SOURCE_TEXT_CHARS, SOURCE_TEXT_LIMIT_MESSAGE
 from .parser import EVENTS_STRUCTURE, PROMPT_TEMPLATE, TASK_NAME, ParseOutcome, parse_ai_data
 from .provider_failures import classify_provider_failure
 from .sources import SourceDocument
@@ -48,6 +50,8 @@ class ParserCapabilities:
 
     def validate(self, source: SourceDocument) -> None:
         """Reject unsupported or invalid inputs before invoking a provider."""
+        if source.text is not None and len(source.text) > MAX_SOURCE_TEXT_CHARS:
+            raise SourceValidationError("source_too_large", SOURCE_TEXT_LIMIT_MESSAGE)
         attachments = source.attachments
         if len(attachments) > self.max_attachments:
             raise SourceValidationError("too_many_attachments", "Too many source attachments")
@@ -152,6 +156,11 @@ class AITaskParserProvider:
                 "Configured AI Task is temporarily unavailable",
             )
         text = (source.text or "").strip()
+        title = (source.title or "").strip()
+        if title:
+            # Keep both fields in the source-data slot, never in prompt rules.
+            # The same evidence must reach the independent recurrence guard.
+            text = f"Source title: {title}\n\nSource body:\n{text}"
         attachments = [
             {"media_content_id": item.content_ref, "media_content_type": item.media_type}
             for item in source.attachments
@@ -163,7 +172,7 @@ class AITaskParserProvider:
                 task_name=TASK_NAME,
                 entity_id=self._entity_id,
                 instructions=PROMPT_TEMPLATE.format(
-                    text=text,
+                    text=json.dumps(text, ensure_ascii=False),
                     reference_datetime=reference_datetime,
                     time_zone=time_zone,
                 ),
@@ -175,7 +184,9 @@ class AITaskParserProvider:
                 classify_provider_failure(err), "AI Task could not parse the source"
             ) from None
         try:
-            return parse_ai_data(result.data)
+            if not isinstance(result.data.get("unsupported_recurrence"), bool):
+                raise ValueError("AI Task result must declare unsupported_recurrence")
+            return parse_ai_data(result.data, source_text=text)
         except Exception:
             raise ProviderError(
                 "provider_invalid_response", "AI Task returned an invalid result"

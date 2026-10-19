@@ -1,6 +1,7 @@
 """No silent truncation of substantive descriptions, including recovery paths."""
 
 from copy import deepcopy
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -37,7 +38,7 @@ async def test_long_description_parse_edit_restart_and_calendar_result(
     }
     # Description normalization is explicit: surrounding whitespace only.
     assert EventDraft.from_mapping(raw).description == LONG_DESCRIPTION
-    generate = AsyncMock(return_value=SimpleNamespace(data={"events": [raw]}))
+    generate = AsyncMock(return_value=SimpleNamespace(data={"unsupported_recurrence": False, "events": [raw]}))
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     calendar_call = AsyncMock()
     hass = SimpleNamespace(
@@ -52,7 +53,7 @@ async def test_long_description_parse_edit_restart_and_calendar_result(
     assert outcome.warnings == []
     assert outcome.events[0].description == LONG_DESCRIPTION
     instructions = generate.await_args.kwargs["instructions"]
-    assert LONG_DESCRIPTION in instructions
+    assert LONG_DESCRIPTION in json.loads(instructions.split("Untrusted source evidence (", 1)[1].split(":\n", 1)[1])
     assert "Do not summarize or silently truncate" in instructions
     assert "preserve paragraph breaks, lists and Unicode text" in instructions
 

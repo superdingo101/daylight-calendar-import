@@ -37,10 +37,11 @@ class CalendarRouteResolution:
 
 @dataclass(frozen=True, slots=True)
 class RoutingExtraction:
-    """Keep a clean parser evidence body and an auditable routing decision."""
+    """Keep clean evidence and identify a subject consumed as routing control."""
 
     body: str
     result: CalendarRouteResolution
+    subject_consumed: bool = False
 
 
 def extract_calendar_route(
@@ -49,10 +50,12 @@ def extract_calendar_route(
 ) -> RoutingExtraction:
     """Resolve only explicit bounded directives; never guess a calendar."""
     hints: list[str] = []
+    subject_consumed = False
     if subject is not None:
         match = _DIRECTIVE.fullmatch(subject.strip())
         if match:
             hints.append(match.group(1))
+            subject_consumed = True
     kept: list[str] = []
     quoted_history = False
     for index, line in enumerate((body or "").splitlines(keepends=True)):
@@ -68,15 +71,23 @@ def extract_calendar_route(
             kept.append(line)
     clean_body = "".join(kept)
     if not hints:
-        return RoutingExtraction(clean_body, CalendarRouteResolution("none"))
+        return RoutingExtraction(clean_body, CalendarRouteResolution("none"), subject_consumed)
     normalized = [normalize_alias(value) for value in hints]
     raw_hint = hints[0][:MAX_HINT_LENGTH]
     if len(set(normalized)) > 1:
-        return RoutingExtraction(clean_body, CalendarRouteResolution("conflicting", raw_hint=raw_hint))
+        return RoutingExtraction(
+            clean_body, CalendarRouteResolution("conflicting", raw_hint=raw_hint), subject_consumed,
+        )
     alias = normalized[0]
     if not alias or len(alias) > MAX_HINT_LENGTH:
-        return RoutingExtraction(clean_body, CalendarRouteResolution("unresolved", raw_hint=raw_hint))
+        return RoutingExtraction(
+            clean_body, CalendarRouteResolution("unresolved", raw_hint=raw_hint), subject_consumed,
+        )
     target = aliases.get(alias)
     if target is None or target not in allowed_calendars:
-        return RoutingExtraction(clean_body, CalendarRouteResolution("unresolved", raw_hint=raw_hint))
-    return RoutingExtraction(clean_body, CalendarRouteResolution("resolved", target, raw_hint))
+        return RoutingExtraction(
+            clean_body, CalendarRouteResolution("unresolved", raw_hint=raw_hint), subject_consumed,
+        )
+    return RoutingExtraction(
+        clean_body, CalendarRouteResolution("resolved", target, raw_hint), subject_consumed,
+    )

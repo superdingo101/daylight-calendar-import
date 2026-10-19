@@ -1,13 +1,13 @@
 # Import events without email
 
-You can use Daylight Calendar Import without configuring an email account. Install the integration, choose a working Home Assistant AI Task entity, and configure a default writable calendar included in the allowed calendars. Open **Daylight imports → Review inbox**. The **Paste event details** and **Upload an image or PDF** forms remain visible with an empty inbox and with Direct IMAP disabled, including on mobile.
+You can use Daylight Calendar Import without configuring an email account. Install the integration, choose a working Home Assistant AI Task entity, and configure a default writable calendar included in the allowed calendars. Open **Daylight Imports** and select **New import** in the header from any page. Choose **Paste event details** or **Upload image or PDF**. Both methods work without Direct IMAP, including on mobile. Pending items are reviewed separately in **Review inbox**.
 
 ## Paste an announcement
 
 1. Paste the announcement into **Event details**. Include explicit dates, start/end times and locations when available. A single submission can contain multiple events.
 2. Optionally start the text with a configured routing hint, such as `Calendar: Kids`.
 3. Select **Import events** and wait for the result.
-4. Select **Review events** when drafts are ready. Verify every draft, resolve any routing warning, choose its destination calendar, then approve or reject it.
+4. When drafts are ready, Daylight opens the review automatically. Verify every draft, resolve any routing warning, choose its destination calendar, then approve or reject it.
 
 Submission only saves drafts. Approving a draft is the step that writes to your calendar.
 
@@ -16,6 +16,8 @@ Submission only saves drafts. Approving a draft is the step that writes to your 
 1. Under **Upload an image or PDF**, choose one JPEG, PNG, WebP image or PDF.
 2. Optionally add supporting text, including a calendar routing hint. Avoid repeating information that conflicts with the file.
 3. Select **Import file** and wait for the result. Review and approve the extracted drafts as above.
+
+Text input is limited to 1,000,000 Unicode characters per submission, including whitespace. The same bound applies to optional supporting text and to the complete source sent to AI (for a text PDF, extracted text plus supporting text). Oversized sources are rejected with an instruction to split them into smaller submissions; text is never silently truncated.
 
 The maximum file size is 10 MiB. PDFs may have up to 30 pages. The file's contents must match a supported format; renaming an unsupported file does not convert it. Images and scanned PDFs require an AI Task entity that supports attachments. PDFs with a usable text layer can be processed by a text-only AI Task entity. If a PDF needs visual interpretation, Daylight requires attachment support rather than silently ignoring the image content.
 
@@ -35,3 +37,12 @@ A failed calendar approval is separate from a failed submission. If approval rep
 Manual submission requires control permission on the selected AI Task entity. Reading the private inbox and approving drafts also requires control permission on the configured calendars; duplicate-safe approval requires read permission on the destination. A read-only Home Assistant user cannot submit or approve drafts. If an action is denied, ask your Home Assistant administrator to review entity permissions.
 
 Text and file contents are sent to the AI Task provider you configured. Review that provider's privacy and billing terms. Daylight uses Home Assistant's authenticated temporary upload transport; image/PDF staging files are removed after processing. Pending drafts and local activity history remain until resolved or removed by the configured retention policy. No Daylight Cloud account is needed.
+
+Unsupported recurring schedules require manual calendar entry. The AI provider
+reports recurrence, with a best-effort backstop for common English schedule
+phrases; this is not a general natural-language recurrence detector. Reprocessing
+a retained source that reveals recurrence keeps its existing drafts visible, but
+blocks single and bulk approval durably. Reject those drafts and resubmit explicit
+independent dates, or enter the repeating schedule manually. No RRULE is created.
+For zero-draft manual submissions, open activity detail to see up to 4,096
+characters of the original text under the normal local retention policy.

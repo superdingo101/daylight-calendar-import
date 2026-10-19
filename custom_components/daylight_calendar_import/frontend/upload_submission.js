@@ -13,7 +13,7 @@ const errorMessage = error => typeof error?.message === "string" ? error.message
 
 /** A persistent native file input retains its selection during panel refreshes. */
 export class FileSubmission {
-  constructor({getHass, onSubmitted = () => {}, onReview, onActivity}) {
+  constructor({getHass, onSubmitted = () => {}, onSettled = () => {}, onReview, onActivity}) {
     this.element = node("section");
     this.element.className = "manual-submission";
     this.element.setAttribute("aria-label", "Import an image or PDF");
@@ -105,6 +105,7 @@ export class FileSubmission {
         this.text.disabled = false;
         this.button.disabled = false;
         this.button.textContent = "Import file";
+        onSettled();
       }
     });
   }

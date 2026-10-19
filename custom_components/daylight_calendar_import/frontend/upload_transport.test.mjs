@@ -66,7 +66,7 @@ test("authenticated multipart upload sends only file ID and text context over we
     assert.ok(hass.http[0].body instanceof FormData);
     assert.equal(hass.http[0].body.get("file").name, file.name);
     assert.deepEqual(hass.ws[0], {type: "call_service", domain: "daylight_calendar_import", service,
-      service_data: {file_id: ID, text: "family calendar", source_id: "stable"}, return_response: true});
+      service_data: {file_id: ID, text: "  family calendar  ", source_id: "stable"}, return_response: true});
     assert.deepEqual(hass.http[1], {path: "/api/file_upload", method: "DELETE", headers: {"Content-Type": "application/json"}, body: JSON.stringify({file_id: ID})});
   }
 });
@@ -263,4 +263,16 @@ test("never-settling cleanup cannot delay acknowledged success, rejection or cal
   const fetch = hass.fetchWithAuth;
   hass.fetchWithAuth = (path, args) => args.method === "DELETE" ? new Promise(() => {}) : fetch(path, args);
   await assert.rejects(submitFile(hass, PNG(), {onUploaded: () => {throw new Error("callback failed");}}), /callback failed/);
+});
+
+
+test("raw upload context reaches server validation before whitespace normalization", async () => {
+  const text = " ".repeat(1_000_000) + "x";
+  const error = {code: "invalid_format", message: "Source text exceeds the 1,000,000-character limit."};
+  for (const file of [PNG(), PDF()]) {
+    const hass = connection({error});
+    await assert.rejects(submitFile(hass, file, {text}), failure => failure === error);
+    assert.equal(hass.ws[0].service_data.text, text);
+    assert.equal(hass.http[1].method, "DELETE");
+  }
 });
