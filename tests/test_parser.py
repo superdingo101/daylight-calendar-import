@@ -538,7 +538,7 @@ def test_inferred_ambiguous_fall_back_keeps_valid_original_offset(original_offse
 @pytest.mark.parametrize(
     ("start", "end", "expected_message"),
     [
-        ("2026-03-08T02:30:00-08:00", "2026-03-08T03:30:00-07:00", "does not exist"),
+        ("2026-03-08T02:30:00-08:00", "2026-03-08T04:30:00-07:00", "does not exist"),
         ("2026-03-08T01:30:00-08:00", "2026-03-08T02:30:00-08:00", "does not exist"),
         ("2026-11-01T01:30:00-06:00", "2026-11-01T02:30:00-08:00", "ambiguous local time"),
         ("9999-12-31T23:00:00-08:00", "9999-12-31T23:30:00-08:00", "does not exist"),
