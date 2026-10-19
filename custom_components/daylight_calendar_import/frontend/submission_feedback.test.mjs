@@ -228,3 +228,23 @@ test("text limits give text-specific advice for service and provider rejections"
     assert.doesNotMatch(advice, /10 MiB|outcome is unknown/);
   }
 });
+
+
+test("duplicate review action appears only on an all-duplicate outcome", async () => {
+  let retries = 0;
+  const feedback = new SubmissionFeedback(new FakeNode("p"), {
+    onReimport: () => { retries++; },
+    onActivity: () => {},
+  });
+  feedback.result({...empty, duplicate: true, duplicate_events: 1});
+  assert.deepEqual(feedback.actions.children.map(button => button.textContent),
+    ["Re-import for review", "View recent activity"]);
+  await feedback.actions.children[0].click();
+  assert.equal(retries, 1);
+  feedback.result({...pending, duplicate: true, duplicate_events: 1});
+  assert.deepEqual(feedback.actions.children.map(button => button.textContent),
+    ["View recent activity"]);
+  feedback.result(empty);
+  assert.deepEqual(feedback.actions.children.map(button => button.textContent),
+    ["View recent activity"]);
+});
