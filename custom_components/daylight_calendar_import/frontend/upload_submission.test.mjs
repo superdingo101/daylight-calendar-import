@@ -451,3 +451,87 @@ test("a source-only duplicate offers a fresh, opt-in upload attempt", async () =
   assert.notEqual(services[0].service_data.source_id, services[1].service_data.source_id);
   assert.equal(services[1].service_data.reimport_duplicates, true);
 });
+
+
+test("uncertain image/PDF re-import preserves bypass and source identity on manual retry", async () => {
+  for (const [selected, failure] of [[image(), {code: "timeout", message: "Timed out"}],
+    [pdf(), new Error("WebSocket connection lost")]]) {
+    const duplicate = {...empty, duplicate: true, duplicate_events: 1};
+    const {form, hass, services, uploads} = setup(duplicate);
+    hass.callWS = async request => {
+      services.push(request);
+      if (services.length === 1) return {response: duplicate};
+      if (services.length === 2) throw failure;
+      return {response: pending};
+    };
+    form.file.files = [selected];
+    form.text.value = "Calendar: Family";
+    await form.form.submit(event);
+    const firstId = services[0].service_data.source_id;
+    await form.feedback.actions.children[0].click();
+    assert.notEqual(services[1].service_data.source_id, firstId);
+    assert.equal(services[1].service_data.reimport_duplicates, true);
+    assert.match(form.status.textContent, /outcome is unknown/);
+    assert.equal(form.attempt.reimportDuplicates, true);
+    await form.form.submit(event);
+    assert.equal(services[2].service_data.source_id, services[1].service_data.source_id);
+    assert.equal(services[2].service_data.reimport_duplicates, true);
+    assert.equal(form.attempt.reimportDuplicates, false);
+    assert.match(form.status.textContent, /ready for review/);
+    assert.equal(uploads.filter(({options}) => options.method === "POST").length, 3);
+    await form.form.submit(event);
+    assert.equal(services[3].service_data.source_id, services[2].service_data.source_id);
+    assert.equal(services[3].service_data.reimport_duplicates, undefined);
+  }
+});
+
+test("changing supporting text or selected file drops an uncertain re-import bypass", async () => {
+  for (const kind of ["context", "file"]) {
+    const duplicate = {...empty, duplicate: true, duplicate_events: 1};
+    const {form, hass, services} = setup(duplicate);
+    hass.callWS = async request => {
+      services.push(request);
+      if (services.length === 1) return {response: duplicate};
+      throw {code: "timeout", message: "Timed out"};
+    };
+    form.file.files = [image()];
+    form.text.value = "Family";
+    await form.form.submit(event);
+    await form.feedback.actions.children[0].click();
+    assert.equal(form.attempt.reimportDuplicates, true);
+    const originalId = services[1].service_data.source_id;
+    if (kind === "context") {
+      // Programmatic changes are detected by forDraft even without an input event.
+      form.text.value = "Work";
+    } else {
+      form.file.files = [pdf()];
+      await form.file.change();
+    }
+    await form.form.submit(event);
+    assert.notEqual(services[2].service_data.source_id, originalId);
+    assert.equal(services[2].service_data.reimport_duplicates, undefined);
+    assert.equal(form.attempt.reimportDuplicates, false);
+  }
+});
+
+test("known file service rejection terminates the re-import override", async () => {
+  const {form, hass, services} = setup({...empty, duplicate: true, duplicate_events: 1});
+  hass.callWS = async request => {
+    services.push(request);
+    if (services.length === 1) {
+      return {response: {...empty, duplicate: true, duplicate_events: 1}};
+    }
+    if (services.length === 2) {
+      throw {code: "service_validation_error", message: "Service rejected"};
+    }
+    return {response: pending};
+  };
+  form.file.files = [pdf()];
+  await form.form.submit(event);
+  await form.feedback.actions.children[0].click();
+  assert.equal(services[1].service_data.reimport_duplicates, true);
+  assert.equal(form.attempt.reimportDuplicates, false);
+  await form.form.submit(event);
+  assert.equal(services[2].service_data.reimport_duplicates, undefined);
+  assert.equal(services[2].service_data.source_id, services[1].service_data.source_id);
+});
