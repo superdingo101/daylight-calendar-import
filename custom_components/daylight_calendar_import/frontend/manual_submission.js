@@ -1,6 +1,6 @@
 import {isSubmissionResponse} from "./submission_response.js";
 import {configureSubmissionStatus, focusSubmissionStatus} from "./submission_accessibility.js";
-import {SubmissionAttempt, SubmissionFeedback} from "./submission_feedback.js";
+import {SubmissionAttempt, SubmissionFeedback, submissionOutcomeUncertain} from "./submission_feedback.js";
 export {submissionMessage} from "./submission_feedback.js";
 
 /** Manual text intake uses the same durable review service as email imports. */
@@ -82,7 +82,6 @@ export class ManualSubmission {
         return;
       }
       this.busy = true;
-      if (reimportDuplicates) this.attempt.reset();
       this.feedback.processing("Extracting events for review…");
       focusSubmissionStatus(this.form, this.status);
       this.button.setAttribute("aria-busy", "true");
@@ -90,9 +89,12 @@ export class ManualSubmission {
       this.text.disabled = true;
       this.button.textContent = "Processing…";
       try {
+        const sourceId = reimportDuplicates ?
+          this.attempt.reimport(this.text.value) : this.attempt.forDraft(this.text.value);
         const response = await submitText(this.getHass(), this.text.value, {
-          sourceId: this.attempt.forDraft(this.text.value), reimportDuplicates,
+          sourceId, reimportDuplicates: this.attempt.reimportDuplicates,
         });
+        this.attempt.complete();
         this.feedback.result(response);
         // Keep inbox loading failures separate from successful extraction feedback.
         try {
@@ -101,6 +103,7 @@ export class ManualSubmission {
           this.status.textContent += " Refresh the review inbox to see the latest imports.";
         }
       } catch (error) {
+        if (!submissionOutcomeUncertain(error)) this.attempt.complete();
         this.feedback.error(error);
       } finally {
         this.busy = false;
