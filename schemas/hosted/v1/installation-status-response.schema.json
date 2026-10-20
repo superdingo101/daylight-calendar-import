@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/installation-status-response.schema.json",
+  "title": "Daylight v1 installation status response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "account_id",
+    "installation_id",
+    "account_status",
+    "capabilities",
+    "credential_expires_at",
+    "forwarding_address",
+    "account_url",
+    "credential_status"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "account_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{16,128}(?![\\s\\S])"
+    },
+    "installation_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{16,128}(?![\\s\\S])"
+    },
+    "account_status": {
+      "const": "active"
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "managed_ai",
+        "email_intake",
+        "source_delivery"
+      ],
+      "properties": {
+        "managed_ai": {
+          "type": "boolean"
+        },
+        "email_intake": {
+          "type": "boolean"
+        },
+        "source_delivery": {
+          "type": "boolean"
+        }
+      }
+    },
+    "credential_expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "forwarding_address": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "account_url": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048,
+      "pattern": "^https://[^/?#@\\s]+(?:/[^?#\\s]*)?(?![\\s\\S])"
+    },
+    "credential_status": {
+      "enum": [
+        "current",
+        "overlap"
+      ]
+    }
+  }
+}

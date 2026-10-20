@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/pairing-approval-request.schema.json",
+  "title": "Daylight v1 pairing approval request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "user_code",
+    "intent",
+    "expected_installation_id"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "user_code": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]{12}(?![\\s\\S])"
+    },
+    "intent": {
+      "enum": [
+        "connect",
+        "replace"
+      ]
+    },
+    "expected_installation_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{16,128}(?![\\s\\S])"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "intent": {
+            "const": "connect"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "expected_installation_id": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "expected_installation_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{16,128}(?![\\s\\S])"
+          }
+        }
+      }
+    }
+  ]
+}

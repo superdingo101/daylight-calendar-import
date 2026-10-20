@@ -3426,3 +3426,63 @@ async def test_recurrence_activity_context_is_private_bounded_and_manual_only(mo
         assert 'manual_source_text' not in detail
     assert 'manual_source_text' not in restored.list_activity()[0]
     assert text[:4096] not in str(restored.list_notifications())
+
+
+@pytest.mark.parametrize("reject_original", [False, True])
+async def test_explicit_reimport_restores_seen_events_only_for_new_review_attempt(
+    monkeypatch, reject_original,
+):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+
+    original = await store.async_add(
+        source_text="original", source_id="original-source", events=[draft()],
+    )
+    assert original.pending is not None
+    if reject_original:
+        assert await store.async_remove(original.pending.id)
+        assert event_fingerprint(draft()) in store._seen_event_fingerprints
+
+    normal = await store.async_add(
+        source_text="same event", source_id="normal-source", events=[draft()],
+    )
+    assert normal.pending is None
+    assert normal.duplicate_events == 1
+
+    reimport = await store.async_add(
+        source_text="review the flyer again", source_id="fresh-source",
+        events=[draft(), draft(), second_draft()],
+        reimport_duplicates=True,
+        source_kind="image",
+    )
+    assert reimport.pending is not None
+    assert reimport.duplicate_source is False
+    assert reimport.duplicate_events == 1  # Still dedup within the submitted batch.
+    assert tuple(item.draft for item in reimport.pending.events) == (draft(), second_draft())
+    assert reimport.pending.source_kind == "image"
+    assert store.is_source_duplicate("fresh-source") is True
+
+    # The source ID still protects an uncertain/repeated transport attempt.
+    repeated = await store.async_add(
+        source_text="repeated request", source_id="fresh-source",
+        events=[draft()], reimport_duplicates=True,
+    )
+    assert repeated.pending is None
+    assert repeated.duplicate_source is True
+
+    # An explicit retry does not reset fingerprints for ordinary submissions.
+    subsequent = await store.async_add(source_text="default behavior", events=[draft()])
+    assert subsequent.pending is None
+    assert subsequent.duplicate_events == 1
+
+
+async def test_reimport_empty_extraction_still_reports_no_events(monkeypatch):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    await store.async_load()
+    result = await store.async_add(
+        source_text="no event", events=[], reimport_duplicates=True,
+    )
+    assert result.pending is None
+    assert result.duplicate_events == 0
+    assert result.duplicate_source is False

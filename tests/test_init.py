@@ -1134,6 +1134,14 @@ def test_service_schemas_validate_source_and_pending_ids():
         {ATTR_TEXT: "text", ATTR_SOURCE_ID: "  message-1  "}
     )
     assert validated[ATTR_SOURCE_ID] == "message-1"
+    assert validated["reimport_duplicates"] is False
+    assert SUBMIT_SCHEMA({ATTR_TEXT: "text", "reimport_duplicates": True})["reimport_duplicates"] is True
+    assert SUBMIT_IMAGE_SCHEMA({ATTR_FILE_ID: "a" * 32, "reimport_duplicates": True})["reimport_duplicates"] is True
+    assert SUBMIT_PDF_SCHEMA({ATTR_FILE_ID: "a" * 32})["reimport_duplicates"] is False
+    for schema, data in ((SUBMIT_SCHEMA, {ATTR_TEXT: "text"}),
+                         (SUBMIT_IMAGE_SCHEMA, {ATTR_FILE_ID: "a" * 32})):
+        with pytest.raises(vol.Invalid):
+            schema({**data, "reimport_duplicates": "true"})
     assert SUBMIT_SCHEMA({ATTR_TEXT: "  schedule \n"})[ATTR_TEXT] == "schedule"
     for text in ("", " ", "\n\t"):
         with pytest.raises(vol.Invalid):
@@ -1773,6 +1781,12 @@ async def test_text_services_normalize_before_parser_and_storage(monkeypatch):
     assert [call.kwargs["source"].text for call in parse.await_args_list] == ["hello", "hello"]
     assert store.async_add.await_args.kwargs["source_text"] == "hello"
     assert store.async_add.await_args.kwargs["source_id"] == "source-1"
+    assert "reimport_duplicates" not in store.async_add.await_args.kwargs
+    await hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0](
+        SimpleNamespace(data={ATTR_TEXT: "hello", ATTR_SOURCE_ID: "fresh-source",
+                              "reimport_duplicates": True}, context=context)
+    )
+    assert store.async_add.await_args.kwargs["reimport_duplicates"] is True
 
 
 async def test_text_parser_boundary_rejects_attachment_only_source():
@@ -1820,6 +1834,7 @@ async def test_submit_image_routes_attachment_and_text_into_review(monkeypatch):
     assert store.async_add.await_args.kwargs["source_id"] == "upstream"
     assert store.async_add.await_args.kwargs["events"] == [draft()]
     assert store.async_add.await_args.kwargs["calendar_entity"] == "calendar.family"
+    assert "reimport_duplicates" not in store.async_add.await_args.kwargs
     assert result["pending"] is not None
     assert result["status"] == "pending_review"
     assert result["activity_id"] == "activity-id"
@@ -1828,6 +1843,13 @@ async def test_submit_image_routes_attachment_and_text_into_review(monkeypatch):
     assert duplicate == {"status": "duplicate", "activity_id": None, "pending": None, "duplicate": True, "duplicate_source": True, "duplicate_events": 0, "warnings": []}
     assert parse.await_count == 1
     store.is_source_duplicate.assert_called_with("upstream")
+    store.is_source_duplicate.return_value = False
+    await handler(SimpleNamespace(data={ATTR_FILE_ID: "a" * 32,
+                                       ATTR_SOURCE_ID: "fresh",
+                                       "reimport_duplicates": True},
+                                  context=Context(user_id=None)))
+    assert parse.await_count == 2
+    assert store.async_add.await_args.kwargs["reimport_duplicates"] is True
 
 
 async def test_submit_image_checks_control_permission_and_event_duplicate(monkeypatch):
@@ -1896,6 +1918,7 @@ async def test_submit_pdf_text_layer_uses_review_pipeline(monkeypatch):
     assert store.async_add.await_args.kwargs["source_kind"] == "pdf"
     assert store.async_add.await_args.kwargs["warnings"] == []
     assert store.async_add.await_args.kwargs["source_id"] == "pdf-upstream"
+    assert "reimport_duplicates" not in store.async_add.await_args.kwargs
     assert response["pending"] is not None
 
 
