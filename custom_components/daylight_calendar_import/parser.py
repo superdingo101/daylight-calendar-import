@@ -265,17 +265,47 @@ def _reference_zone_endpoint(value: object, zone: ZoneInfo) -> tuple[str, bool]:
             ambiguous)
 
 
+def _fall_back_candidates(value: str, zone: ZoneInfo, ambiguous: bool) -> tuple[str, ...]:
+    """Enumerate only the two real occurrences of a repeated local hour."""
+    if not ambiguous:
+        return (value,)
+    wall = datetime.fromisoformat(value).replace(tzinfo=None)
+    return tuple(wall.replace(tzinfo=zone, fold=fold).isoformat() for fold in (0, 1))
+
+
 def _correct_inferred_zone(
     raw: dict[str, Any], zone_name: str,
 ) -> tuple[dict[str, Any], bool]:
-    """Validate each local wall endpoint before final start/end range validation."""
+    """Validate local endpoints, then resolve only fall-back range ambiguity."""
     try:
         zone = ZoneInfo(zone_name)
     except (ZoneInfoNotFoundError, ValueError) as err:
         raise DraftValidationError("Home Assistant time zone is unavailable") from err
     start, start_ambiguous = _reference_zone_endpoint(raw.get("start"), zone)
     end, end_ambiguous = _reference_zone_endpoint(raw.get("end"), zone)
-    return {**raw, "start": start, "end": end}, start_ambiguous or end_ambiguous
+    ambiguous = start_ambiguous or end_ambiguous
+
+    if ambiguous and datetime.fromisoformat(end) <= datetime.fromisoformat(start):
+        # Each endpoint was validated above. Only the repeated local hour is
+        # uncertain; ordinary reversed or missing ranges remain invalid.
+        alternatives = [
+            (candidate_start, candidate_end)
+            for candidate_start in _fall_back_candidates(start, zone, start_ambiguous)
+            for candidate_end in _fall_back_candidates(end, zone, end_ambiguous)
+            if datetime.fromisoformat(candidate_end) > datetime.fromisoformat(candidate_start)
+        ]
+        if alternatives:
+            # Retain as many AI offsets as possible, then prefer the shortest
+            # valid range and the first fold on a tie. The reviewer decides.
+            start, end = min(
+                alternatives,
+                key=lambda pair: (
+                    int(pair[0] != start) + int(pair[1] != end),
+                    datetime.fromisoformat(pair[1]) - datetime.fromisoformat(pair[0]),
+                    pair[0], pair[1],
+                ),
+            )
+    return {**raw, "start": start, "end": end}, ambiguous
 
 
 def parse_ai_data(
