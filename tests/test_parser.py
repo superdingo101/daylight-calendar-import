@@ -695,3 +695,57 @@ async def test_provider_normalizes_inferred_offset_before_returning_draft(monkey
     instructions = generate.await_args.kwargs["instructions"]
     assert "Set uses_reference_time_zone to true" in instructions
     assert "Preserve explicit source zones" in instructions
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected_start", "expected_end"),
+    [
+        (
+            "2026-11-01T01:30:00-08:00", "2026-11-01T01:45:00-07:00",
+            "2026-11-01T01:30:00-07:00", "2026-11-01T01:45:00-07:00",
+        ),
+        (
+            "2026-11-01T01:50:00-08:00", "2026-11-01T01:10:00-07:00",
+            "2026-11-01T01:50:00-07:00", "2026-11-01T01:10:00-08:00",
+        ),
+        (
+            "2026-10-25T02:30:00+01:00", "2026-10-25T02:45:00+02:00",
+            "2026-10-25T02:30:00+02:00", "2026-10-25T02:45:00+02:00",
+        ),
+    ],
+)
+def test_reversed_fall_back_offsets_retain_provisional_review_draft(
+    start, end, expected_start, expected_end,
+):
+    zone = "Europe/Berlin" if start.startswith("2026-10") else "America/Los_Angeles"
+    result = parser.parse_ai_data(
+        {"events": [{**VALID, "start": start, "end": end,
+                     "uses_reference_time_zone": True}]},
+        time_zone=zone,
+    )
+    assert len(result.events) == 1
+    assert (result.events[0].start, result.events[0].end) == (expected_start, expected_end)
+    assert "DST fall-back repeats this local hour" in result.warnings[-1]
+    assert parser._FALL_BACK_REVIEW_NOTE in result.event_assumptions[0]
+    assert "corrected inferred UTC offset" in result.warnings[0]
+
+
+def test_fall_back_does_not_rescue_truly_reversed_or_explicitly_zoned_range():
+    for inferred in (True, False):
+        result = parser.parse_ai_data(
+            {"events": [{**VALID, "start": "2026-11-01T02:10:00-08:00",
+                         "end": "2026-11-01T01:30:00-07:00",
+                         "uses_reference_time_zone": inferred}]},
+            time_zone="America/Los_Angeles",
+        )
+        assert result.events == []
+        assert "end must be after start" in result.warnings[0]
+
+    result = parser.parse_ai_data(
+        {"events": [{**VALID, "start": "2026-11-01T01:30:00-08:00",
+                     "end": "2026-11-01T01:45:00-07:00",
+                     "uses_reference_time_zone": False}]},
+        time_zone="America/Los_Angeles",
+    )
+    assert result.events == []
+    assert "end must be after start" in result.warnings[0]
