@@ -105,6 +105,17 @@ function validWallOffsets(value, timeZone) {
   });
 }
 
+/** Render a fold chooser only when two real instants share this local clock time. */
+export function repeatedHourOptions(value, timeZone) {
+  const offsets = validWallOffsets(value, timeZone);
+  if (offsets.length !== 2) return [];
+  return offsets.sort((left, right) => right - left).map((offset, index) => ({
+    value: value + ":00" + formatOffset(offset),
+    label: (index === 0 ? "First occurrence" : "Second occurrence") +
+      " (" + (offset === 0 ? "UTC" : "UTC" + formatOffset(offset)) + ")",
+  }));
+}
+
 function wallZoneOffsetMinutes(value, timeZone, preferredOffset = null) {
   const offsets = validWallOffsets(value, timeZone);
   if (!offsets.length) return null;
