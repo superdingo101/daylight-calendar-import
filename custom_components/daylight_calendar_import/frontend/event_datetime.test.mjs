@@ -11,6 +11,7 @@ import {
   instantEditDateTimeIso,
   instantEditDateTimeValue,
   normalizeEventTemporalEdit,
+  repeatedHourOptions,
   timedEditToAllDayRange,
   visibleAllDayEnd,
 } from "./event_datetime.js";
@@ -279,4 +280,21 @@ test("temporal normalization rejects nonexistent active times", () => {
       error: "The selected local time does not exist in the Home Assistant time zone.",
     },
   );
+});
+
+
+test("repeated-hour options expose only real first/second fall-back instants", () => {
+  assert.deepEqual(repeatedHourOptions("2026-11-01T01:30", "America/Los_Angeles"), [
+    {value: "2026-11-01T01:30:00-07:00", label: "First occurrence (UTC-07:00)"},
+    {value: "2026-11-01T01:30:00-08:00", label: "Second occurrence (UTC-08:00)"},
+  ]);
+  assert.deepEqual(repeatedHourOptions("2026-10-25T02:15", "Europe/Berlin"), [
+    {value: "2026-10-25T02:15:00+02:00", label: "First occurrence (UTC+02:00)"},
+    {value: "2026-10-25T02:15:00+01:00", label: "Second occurrence (UTC+01:00)"},
+  ]);
+  assert.deepEqual(repeatedHourOptions("2026-11-01T00:30", "America/Los_Angeles"), []);
+  assert.deepEqual(repeatedHourOptions("2026-11-01T02:30", "America/Los_Angeles"), []);
+  assert.deepEqual(repeatedHourOptions("2026-03-08T02:30", "America/Los_Angeles"), []);
+  assert.deepEqual(repeatedHourOptions("not a date", "America/Los_Angeles"), []);
+  assert.deepEqual(repeatedHourOptions("2026-11-01T01:30", null), []);
 });

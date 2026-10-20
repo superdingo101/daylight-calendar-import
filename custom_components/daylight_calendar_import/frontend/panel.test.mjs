@@ -6064,3 +6064,101 @@ test("canceling slow bulk checks keeps retries and manual reads single-flight", 
   assert.equal(checks, 3, "a fresh bulk review reads each event after settlement");
   assert.equal(panel._content.querySelector(".actions button").disabled, false);
 });
+
+
+test("review editor can select the second occurrence of the fall-back hour", async () => {
+  const panel = new DaylightImportPanel();
+  let current = {
+    id: "fold", title: "Overnight event", all_day: false, status: "pending",
+    start: "2026-11-01T01:30:00-07:00",
+    end: "2026-11-01T01:45:00-07:00", confidence: 1,
+  };
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") {
+        return {response: {pending: {id: "one", events: [current]}}};
+      }
+      current = {...current, ...request.service_data.event};
+      return {response: {pending_id: "one", event: current}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "fold").click();
+  const form = find(panel._content, "form");
+  const startFold = form.elements.namedItem("start_occurrence");
+  const endFold = form.elements.namedItem("end_occurrence");
+  assert.equal(startFold.hidden, false);
+  assert.equal(endFold.hidden, false);
+  assert.equal(startFold.value, "2026-11-01T01:30:00-07:00");
+  assert.deepEqual(startFold.children.map(option => option.textContent), [
+    "First occurrence (UTC-07:00)", "Second occurrence (UTC-08:00)",
+  ]);
+
+  startFold.value = "2026-11-01T01:30:00-08:00";
+  endFold.value = "2026-11-01T01:45:00-08:00";
+  await panel.saveEdit(current, form);
+  const saved = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(saved.service_data.event.start, "2026-11-01T01:30:00-08:00");
+  assert.equal(saved.service_data.event.end, "2026-11-01T01:45:00-08:00");
+  assert.equal(new Date(saved.service_data.event.end) - new Date(saved.service_data.event.start), 15 * 60000);
+});
+
+
+test("fold selector follows edited wall time and disappears outside the repeated hour", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "Europe/Berlin"}};
+  const original = {
+    id: "one", title: "Late event", all_day: false, status: "pending", confidence: 1,
+    start: "2026-10-25T01:30:00+02:00",
+    end: "2026-10-25T03:30:00+01:00",
+  };
+  const form = panel.editForm(original);
+  const start = form.elements.namedItem("start");
+  assert.equal(form.elements.namedItem("start_occurrence"), undefined);
+  start.value = "2026-10-25T02:30";
+  start.change();
+  const firstOrSecond = form.elements.namedItem("start_occurrence");
+  assert.equal(firstOrSecond.hidden, false);
+  assert.equal(firstOrSecond.children[0].textContent, "First occurrence (UTC+02:00)");
+  assert.equal(firstOrSecond.children[1].textContent, "Second occurrence (UTC+01:00)");
+  start.value = "2026-10-25T03:30";
+  start.change();
+  assert.equal(form.elements.namedItem("start_occurrence"), undefined);
+
+  const fixed = panel.editForm({
+    ...original, start: "2026-10-25T02:15:00-04:00",
+    end: "2026-10-25T02:45:00-04:00",
+  });
+  assert.equal(fixed.elements.namedItem("start_occurrence"), undefined);
+});
+
+
+test("fall-back occurrence selection survives switching to all day and back", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "America/Los_Angeles"}};
+  const form = panel.editForm({
+    id: "one", title: "Fall event", all_day: false, status: "pending", confidence: 1,
+    start: "2026-11-01T01:30:00-07:00", end: "2026-11-01T01:45:00-07:00",
+  });
+  const startFold = form.elements.namedItem("start_occurrence");
+  const endFold = form.elements.namedItem("end_occurrence");
+  startFold.value = "2026-11-01T01:30:00-08:00";
+  endFold.value = "2026-11-01T01:45:00-08:00";
+  const allDay = form.elements.namedItem("all_day");
+  allDay.checked = true;
+  allDay.change();
+  assert.equal(startFold.hidden, true);
+  assert.equal(endFold.hidden, true);
+  allDay.checked = false;
+  allDay.change();
+  assert.equal(startFold.hidden, false);
+  assert.equal(endFold.hidden, false);
+  assert.equal(startFold.value, "2026-11-01T01:30:00-08:00");
+  assert.equal(endFold.value, "2026-11-01T01:45:00-08:00");
+});
