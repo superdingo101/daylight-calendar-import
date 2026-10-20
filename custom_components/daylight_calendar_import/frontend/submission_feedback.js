@@ -1,6 +1,6 @@
 /** Stable source identity prevents an explicit retry duplicating an unchanged draft. */
 export class SubmissionAttempt {
-  reset() { this.sourceId = null; }
+  reset() { this.sourceId = null; this.reimportDuplicates = false; }
   forDraft(text, file = null) {
     if (!this.sourceId || this.text !== text || this.file !== file) {
       const bytes = new Uint8Array(16);
@@ -10,9 +10,17 @@ export class SubmissionAttempt {
       this.sourceId = `manual-${Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("")}`;
       this.text = text;
       this.file = file;
+      this.reimportDuplicates = false;
     }
     return this.sourceId;
   }
+  reimport(text, file = null) {
+    this.reset();
+    const sourceId = this.forDraft(text, file);
+    this.reimportDuplicates = true;
+    return sourceId;
+  }
+  complete() { this.reimportDuplicates = false; }
 }
 
 export function submissionMessage(response) {
@@ -57,6 +65,12 @@ export function submissionPreprocessingFailure(error) {
   if (/Daylight is unloading; retry after reload/i.test(message)) return "unloading";
   if (/text must not be empty/i.test(message)) return "text";
   return pdfPreprocessingFailure(error);
+}
+
+/** Preserve an opt-in retry only when the service outcome may be unknown. */
+export function submissionOutcomeUncertain(error, submitted = true) {
+  return submitted && !completedErrors.has(error?.code) &&
+    !submissionPreprocessingFailure(error);
 }
 
 /** Separate rejected work from a transport failure whose result is unknown. */
