@@ -1483,6 +1483,7 @@ class PendingImportStore:
         source_id: str | None = None,
         calendar_entity: str | None = None,
         routing_unresolved: bool = False,
+        reimport_duplicates: bool = False,
         source_kind: str = "manual_text",
         source_title: str | None = None,
         source_sender: str | None = None,
@@ -1498,6 +1499,7 @@ class PendingImportStore:
                 source_id=source_id,
                 calendar_entity=calendar_entity,
                 routing_unresolved=routing_unresolved,
+                reimport_duplicates=reimport_duplicates,
                 source_kind=source_kind,
                 source_title=source_title,
                 source_sender=source_sender,
@@ -1518,6 +1520,7 @@ class PendingImportStore:
         source_id: str | None = None,
         calendar_entity: str | None = None,
         routing_unresolved: bool = False,
+        reimport_duplicates: bool = False,
         source_kind: str = "manual_text",
         source_title: str | None = None,
         source_sender: str | None = None,
@@ -1582,8 +1585,8 @@ class PendingImportStore:
             for event, notes in zip(event_tuple, assumptions, strict=True):
                 fingerprint = event_fingerprint(event)
                 if (
-                    fingerprint in known_events
-                    or fingerprint in accepted_fingerprints
+                    fingerprint in accepted_fingerprints
+                    or (not reimport_duplicates and fingerprint in known_events)
                 ):
                     duplicate_events += 1
                     continue

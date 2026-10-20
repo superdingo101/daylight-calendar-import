@@ -1,5 +1,5 @@
 import {configureSubmissionStatus, focusSubmissionStatus} from "./submission_accessibility.js";
-import {SubmissionAttempt, SubmissionFeedback} from "./submission_feedback.js";
+import {SubmissionAttempt, SubmissionFeedback, submissionOutcomeUncertain} from "./submission_feedback.js";
 import {inspectUpload, submitFile} from "./upload_transport.js";
 import {validateSubmissionResponse} from "./manual_submission.js";
 
@@ -14,6 +14,9 @@ const errorMessage = error => typeof error?.message === "string" ? error.message
 /** A persistent native file input retains its selection during panel refreshes. */
 export class FileSubmission {
   constructor({getHass, onSubmitted = () => {}, onSettled = () => {}, onReview, onActivity}) {
+    this.getHass = getHass;
+    this.onSubmitted = onSubmitted;
+    this.onSettled = onSettled;
     this.element = node("section");
     this.element.className = "manual-submission";
     this.element.setAttribute("aria-label", "Import an image or PDF");
@@ -42,7 +45,9 @@ export class FileSubmission {
     configureSubmissionStatus(this.status);
     this._validationSequence = 0;
     this.attempt = new SubmissionAttempt();
-    this.feedback = new SubmissionFeedback(this.status, {onReview, onActivity});
+    this.feedback = new SubmissionFeedback(this.status, {
+      onReview, onActivity, onReimport: () => this.submit(true),
+    });
     this.form.append(fileLabel, this.filename, contextLabel, this.button, this.status, this.feedback.actions);
     this.text.addEventListener("input", () => {
       if (!this.busy) { this.attempt.reset(); this.feedback.clear(); }
@@ -65,6 +70,11 @@ export class FileSubmission {
     });
     this.form.addEventListener("submit", async event => {
       event.preventDefault();
+      await this.submit();
+    });
+  }
+
+  async submit(reimportDuplicates = false) {
       if (this.busy) return;
       ++this._validationSequence; // Supersede any earlier selection-only validation.
       const selected = this.file.files?.[0];
@@ -85,18 +95,24 @@ export class FileSubmission {
       try {
         await inspectUpload(selected);
         this.feedback.processing("Uploading file…");
-        const response = validateSubmissionResponse(await submitFile(getHass(), selected, {
+        const sourceId = reimportDuplicates ?
+          this.attempt.reimport(this.text.value || "", selected) :
+          this.attempt.forDraft(this.text.value || "", selected);
+        const response = validateSubmissionResponse(await submitFile(this.getHass(), selected, {
           text: this.text.value || "",
-          sourceId: this.attempt.forDraft(this.text.value || "", selected),
+          sourceId,
+          reimportDuplicates: this.attempt.reimportDuplicates,
           onUploaded: () => { submitted = true; this.feedback.processing("Extracting events for review…"); },
         }));
+        this.attempt.complete();
         this.feedback.result(response);
         try {
-          await onSubmitted(response);
+          await this.onSubmitted(response);
         } catch {
           this.status.textContent += " Refresh the review inbox to see the latest imports.";
         }
       } catch (error) {
+        if (!submissionOutcomeUncertain(error, submitted)) this.attempt.complete();
         this.feedback.error(error, submitted);
       } finally {
         this.busy = false;
@@ -105,8 +121,7 @@ export class FileSubmission {
         this.text.disabled = false;
         this.button.disabled = false;
         this.button.textContent = "Import file";
-        onSettled();
+        this.onSettled();
       }
-    });
   }
 }

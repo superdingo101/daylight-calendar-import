@@ -61,7 +61,7 @@ async function removeUpload(hass, fileId) {
  * There are no automatic retries. Keep sourceId stable across retries when the
  * outcome of an earlier service call is unknown. File bytes never go over WS.
  */
-export async function submitFile(hass, file, {text = "", sourceId, onUploaded} = {}) {
+export async function submitFile(hass, file, {text = "", sourceId, onUploaded, reimportDuplicates = false} = {}) {
   const {kind} = await inspectUpload(file);
   if (typeof text !== "string" ||
       (sourceId !== undefined && (typeof sourceId !== "string" || !sourceId.trim()))) {
@@ -84,6 +84,7 @@ export async function submitFile(hass, file, {text = "", sourceId, onUploaded} =
   // Preserve the raw context so server-side bounds count whitespace before normalization.
   const serviceData = {file_id: fileId, text};
   if (sourceId !== undefined) serviceData.source_id = sourceId;
+  if (reimportDuplicates) serviceData.reimport_duplicates = true;
   // Avoid user callbacks escaping between upload and cleanup.
   try {
     if (onUploaded) onUploaded();

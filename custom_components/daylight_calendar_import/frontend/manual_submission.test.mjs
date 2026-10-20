@@ -259,3 +259,108 @@ test("focus detection uses the active control inside the shadow root rather than
   focusSubmissionStatus(form, status);
   assert.equal(status.focused, false);
 });
+
+
+test("duplicate review action retries text with explicit bypass and fresh source identity", async () => {
+  const calls = [];
+  const duplicate = {...empty, duplicate: true, duplicate_events: 1};
+  const form = new ManualSubmission({getHass: () => ({callWS: async request => {
+    calls.push(request.service_data);
+    return {response: calls.length === 1 ? duplicate : pending};
+  }})});
+  form.text.value = "Trunk or Treat, October 25, 3–5 PM";
+  await form.form.submit(event);
+  assert.deepEqual(form.feedback.actions.children.map(child => child.textContent), ["Re-import for review"]);
+  const initial = calls[0].source_id;
+  assert.equal(calls[0].reimport_duplicates, undefined);
+  await form.feedback.actions.children[0].click();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].reimport_duplicates, true);
+  assert.notEqual(calls[1].source_id, initial);
+  assert.equal(calls[1].text, calls[0].text);
+  assert.match(form.status.textContent, /ready for review/);
+  assert.equal(form.feedback.actions.children.length, 0);
+});
+
+
+test("source-duplicate text response also offers a deliberate re-import attempt", async () => {
+  const requests = [];
+  const form = new ManualSubmission({getHass: () => ({callWS: async request => {
+    requests.push(request);
+    return {response: {...empty, duplicate: true, duplicate_source: true}};
+  }})});
+  form.text.value = "Dinner Friday 6 PM";
+  await form.form.submit(event);
+  assert.equal(form.feedback.actions.children[0].textContent, "Re-import for review");
+  await form.feedback.actions.children[0].click();
+  assert.equal(requests[1].service_data.reimport_duplicates, true);
+  assert.notEqual(requests[1].service_data.source_id, requests[0].service_data.source_id);
+});
+
+
+test("an uncertain re-import keeps both source ID and bypass flag on text retry", async () => {
+  const calls = [];
+  const duplicate = {...empty, duplicate: true, duplicate_events: 1};
+  const form = new ManualSubmission({getHass: () => ({callWS: async request => {
+    calls.push(request.service_data);
+    if (calls.length === 1) return {response: duplicate};
+    if (calls.length === 2) throw {code: "timeout", message: "Timed out"};
+    return {response: pending};
+  }})});
+  form.text.value = "Trunk or Treat October 25 3pm";
+  await form.form.submit(event);
+  const initial = calls[0].source_id;
+  await form.feedback.actions.children[0].click();
+  assert.notEqual(calls[1].source_id, initial);
+  assert.equal(calls[1].reimport_duplicates, true);
+  assert.match(form.status.textContent, /outcome is unknown/);
+  assert.equal(form.attempt.reimportDuplicates, true);
+  await form.form.submit(event);
+  assert.equal(calls[2].source_id, calls[1].source_id);
+  assert.equal(calls[2].reimport_duplicates, true);
+  assert.match(form.status.textContent, /ready for review/);
+  assert.equal(form.attempt.reimportDuplicates, false);
+  await form.form.submit(event);
+  assert.equal(calls[3].source_id, calls[2].source_id);
+  assert.equal(calls[3].reimport_duplicates, undefined);
+});
+
+test("a changed text draft drops the retry bypass after an uncertain re-import", async () => {
+  for (const editedByEvent of [false, true]) {
+    const calls = [];
+    const form = new ManualSubmission({getHass: () => ({callWS: async request => {
+      calls.push(request.service_data);
+      if (calls.length === 1) return {response: {...empty, duplicate: true, duplicate_events: 1}};
+      throw new Error("Disconnected");
+    }})});
+    form.text.value = "Same flyer";
+    await form.form.submit(event);
+    await form.feedback.actions.children[0].click();
+    const reimportId = calls[1].source_id;
+    assert.equal(form.attempt.reimportDuplicates, true);
+    form.text.value = "Same flyer with corrected time";
+    if (editedByEvent) form.text.input();
+    await form.form.submit(event);
+    assert.notEqual(calls[2].source_id, reimportId);
+    assert.equal(calls[2].reimport_duplicates, undefined);
+    assert.equal(form.attempt.reimportDuplicates, false);
+  }
+});
+
+test("a completed text re-import rejection clears the override for later submissions", async () => {
+  const calls = [];
+  const form = new ManualSubmission({getHass: () => ({callWS: async request => {
+    calls.push(request.service_data);
+    if (calls.length === 1) return {response: {...empty, duplicate: true, duplicate_events: 1}};
+    if (calls.length === 2) throw {code: "service_validation_error", message: "Service rejected"};
+    return {response: empty};
+  }})});
+  form.text.value = "Same flyer";
+  await form.form.submit(event);
+  await form.feedback.actions.children[0].click();
+  assert.equal(calls[1].reimport_duplicates, true);
+  assert.equal(form.attempt.reimportDuplicates, false);
+  await form.form.submit(event);
+  assert.equal(calls[2].source_id, calls[1].source_id);
+  assert.equal(calls[2].reimport_duplicates, undefined);
+});
