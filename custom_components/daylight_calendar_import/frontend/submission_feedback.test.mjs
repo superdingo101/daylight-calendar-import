@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {SubmissionAttempt, SubmissionFeedback, pdfPreprocessingFailure, submissionPreprocessingFailure, submissionErrorMessage, submissionMessage} from "./submission_feedback.js";
+import {SubmissionAttempt, SubmissionFeedback, pdfPreprocessingFailure, submissionPreprocessingFailure, submissionErrorMessage, submissionMessage, submissionOutcomeUncertain} from "./submission_feedback.js";
 class FakeNode {
   constructor(tag) { this.tag = tag; this.children = []; this.textContent = ""; }
   append(...children) { this.children.push(...children); }
@@ -247,4 +247,40 @@ test("duplicate review action appears only on an all-duplicate outcome", async (
   feedback.result(empty);
   assert.deepEqual(feedback.actions.children.map(button => button.textContent),
     ["View recent activity"]);
+});
+
+
+test("re-import mode follows one stable attempt and resets on completed work or draft changes", () => {
+  const attempt = new SubmissionAttempt();
+  const original = attempt.forDraft("Dinner");
+  assert.equal(attempt.reimportDuplicates, false);
+  const reimport = attempt.reimport("Dinner");
+  assert.notEqual(reimport, original);
+  assert.equal(attempt.reimportDuplicates, true);
+  assert.equal(attempt.forDraft("Dinner"), reimport);
+  assert.equal(attempt.reimportDuplicates, true);
+  attempt.complete();
+  assert.equal(attempt.forDraft("Dinner"), reimport);
+  assert.equal(attempt.reimportDuplicates, false);
+  attempt.reimport("Dinner");
+  const changed = attempt.forDraft("Dinner tomorrow");
+  assert.equal(attempt.reimportDuplicates, false);
+  assert.notEqual(changed, reimport);
+  attempt.reimport("Dinner tomorrow");
+  attempt.reset();
+  assert.equal(attempt.reimportDuplicates, false);
+  assert.notEqual(attempt.forDraft("Dinner tomorrow"), changed);
+});
+
+test("uncertain errors retain re-import mode but completed service failures clear it", () => {
+  for (const error of [{code: "timeout"}, new Error("Disconnected"),
+    {code: "invalid_submission_response"}]) {
+    assert.equal(submissionOutcomeUncertain(error), true);
+  }
+  for (const error of [{code: "unauthorized"}, {code: "service_validation_error"},
+    {code: "home_assistant_error"}, {code: "invalid_format"},
+    {code: "too_many_pages"}]) {
+    assert.equal(submissionOutcomeUncertain(error), false);
+  }
+  assert.equal(submissionOutcomeUncertain(new Error("upload failed"), false), false);
 });
