@@ -279,7 +279,7 @@ function activityLabel(type) {
     mixed: "Mixed event outcomes"})[type] || type.replaceAll("_", " ");
 }
 
-function syncTimedDuration(start, end, event, timeZone) {
+function syncTimedDuration(start, end, event, timeZone, onChanged = () => {}) {
   const model = classifyEventTimeModel(event.start, event.end, timeZone);
   const readDuration = () => {
     const startIso = editDateTimeIso(
@@ -301,18 +301,22 @@ function syncTimedDuration(start, end, event, timeZone) {
   start.addEventListener("change", () => {
     start._daylightInstantHint = null;
     const startIso = editDateTimeIso(start.value, event.start, timeZone, null, model);
-    if (!startIso || duration === null) return;
-    const nextStart = new Date(startIso);
-    if (Number.isNaN(nextStart.getTime())) return;
-    const nextEnd = new Date(nextStart.getTime() + duration);
-    end.value = instantEditDateTimeValue(nextEnd, event.end, timeZone, model);
-    end._daylightInstantHint = instantEditDateTimeIso(
-      nextEnd, event.end, timeZone, model
-    );
+    if (startIso && duration !== null) {
+      const nextStart = new Date(startIso);
+      if (!Number.isNaN(nextStart.getTime())) {
+        const nextEnd = new Date(nextStart.getTime() + duration);
+        end.value = instantEditDateTimeValue(nextEnd, event.end, timeZone, model);
+        end._daylightInstantHint = instantEditDateTimeIso(
+          nextEnd, event.end, timeZone, model
+        );
+      }
+    }
+    onChanged();
   });
   end.addEventListener("change", () => {
     end._daylightInstantHint = null;
     refresh();
+    onChanged();
   });
   return {refresh};
 }
@@ -2183,7 +2187,8 @@ export class DaylightImportPanel extends HTMLElement {
       "End",
       event.all_day ? event.end + "T00:00" : editDateTimeValue(event.end, timeZone),
     );
-    const timedSync = syncTimedDuration(start, end, event, timeZone);
+    let refreshFolds = () => {};
+    const timedSync = syncTimedDuration(start, end, event, timeZone, () => refreshFolds());
     const timeModel = classifyEventTimeModel(event.start, event.end, timeZone);
     const foldControl = (input, original, title) => {
       const label = element("label", title + " occurrence (DST fall-back)");
@@ -2213,13 +2218,12 @@ export class DaylightImportPanel extends HTMLElement {
       };
       refresh();
       input.addEventListener("input", refresh);
-      input.addEventListener("change", refresh);
       return {select, refresh};
     };
     const startFold = foldControl(start, event.start, "Start");
     const endFold = foldControl(end, event.end, "End");
-    // A changed start clock time can programmatically update the end.
-    start.addEventListener("change", () => endFold.refresh());
+    // Preserve duration syncing and refresh fold choices after either field changes.
+    refreshFolds = () => { startFold.refresh(); endFold.refresh(); };
 
     const allDayFields = document.createElement("div");
     allDayFields.className = "all-day-event-fields";
