@@ -302,7 +302,8 @@ def _correct_inferred_zone(
                 key=lambda pair: (
                     int(pair[0] != start) + int(pair[1] != end),
                     datetime.fromisoformat(pair[1]) - datetime.fromisoformat(pair[0]),
-                    pair[0], pair[1],
+                    -datetime.fromisoformat(pair[0]).utcoffset().total_seconds(),
+                    -datetime.fromisoformat(pair[1]).utcoffset().total_seconds(),
                 ),
             )
     return {**raw, "start": start, "end": end}, ambiguous
