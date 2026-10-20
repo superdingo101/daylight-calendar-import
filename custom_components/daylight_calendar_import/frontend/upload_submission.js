@@ -1,5 +1,5 @@
 import {configureSubmissionStatus, focusSubmissionStatus} from "./submission_accessibility.js";
-import {SubmissionAttempt, SubmissionFeedback} from "./submission_feedback.js";
+import {SubmissionAttempt, SubmissionFeedback, submissionOutcomeUncertain} from "./submission_feedback.js";
 import {inspectUpload, submitFile} from "./upload_transport.js";
 import {validateSubmissionResponse} from "./manual_submission.js";
 
@@ -84,7 +84,6 @@ export class FileSubmission {
         return;
       }
       this.busy = true;
-      if (reimportDuplicates) this.attempt.reset();
       this.feedback.processing("Checking file…");
       focusSubmissionStatus(this.form, this.status);
       this.button.setAttribute("aria-busy", "true");
@@ -96,12 +95,16 @@ export class FileSubmission {
       try {
         await inspectUpload(selected);
         this.feedback.processing("Uploading file…");
+        const sourceId = reimportDuplicates ?
+          this.attempt.reimport(this.text.value || "", selected) :
+          this.attempt.forDraft(this.text.value || "", selected);
         const response = validateSubmissionResponse(await submitFile(this.getHass(), selected, {
           text: this.text.value || "",
-          sourceId: this.attempt.forDraft(this.text.value || "", selected),
-          reimportDuplicates,
+          sourceId,
+          reimportDuplicates: this.attempt.reimportDuplicates,
           onUploaded: () => { submitted = true; this.feedback.processing("Extracting events for review…"); },
         }));
+        this.attempt.complete();
         this.feedback.result(response);
         try {
           await this.onSubmitted(response);
@@ -109,6 +112,7 @@ export class FileSubmission {
           this.status.textContent += " Refresh the review inbox to see the latest imports.";
         }
       } catch (error) {
+        if (!submissionOutcomeUncertain(error, submitted)) this.attempt.complete();
         this.feedback.error(error, submitted);
       } finally {
         this.busy = false;
