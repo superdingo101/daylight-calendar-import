@@ -2191,10 +2191,10 @@ export class DaylightImportPanel extends HTMLElement {
     const timedSync = syncTimedDuration(start, end, event, timeZone, () => refreshFolds());
     const timeModel = classifyEventTimeModel(event.start, event.end, timeZone);
     const foldControl = (input, original, title) => {
-      const label = element("label", title + " occurrence (DST fall-back)");
+      const label = document.createElement("label");
+      const caption = element("span", title + " occurrence (DST fall-back)");
       const select = document.createElement("select");
       select.name = input.name + "_occurrence";
-      label.append(select);
       timedFields.append(label);
       const refresh = () => {
         const previous = select.value;
@@ -2202,6 +2202,8 @@ export class DaylightImportPanel extends HTMLElement {
           repeatedHourOptions(input.value, timeZone) : [];
         label.hidden = choices.length !== 2;
         select.hidden = label.hidden;
+        // Don't put an unused selector into the form or its keyboard navigation.
+        label.replaceChildren(caption, ...(choices.length === 2 ? [select] : []));
         select.replaceChildren(...choices.map(choice => {
           const option = document.createElement("option");
           option.value = choice.value;
