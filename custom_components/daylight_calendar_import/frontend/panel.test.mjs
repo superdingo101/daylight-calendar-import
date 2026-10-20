@@ -6120,22 +6120,22 @@ test("fold selector follows edited wall time and disappears outside the repeated
   };
   const form = panel.editForm(original);
   const start = form.elements.namedItem("start");
-  const firstOrSecond = form.elements.namedItem("start_occurrence");
-  assert.equal(firstOrSecond.hidden, true);
+  assert.equal(form.elements.namedItem("start_occurrence"), undefined);
   start.value = "2026-10-25T02:30";
   start.change();
+  const firstOrSecond = form.elements.namedItem("start_occurrence");
   assert.equal(firstOrSecond.hidden, false);
   assert.equal(firstOrSecond.children[0].textContent, "First occurrence (UTC+02:00)");
   assert.equal(firstOrSecond.children[1].textContent, "Second occurrence (UTC+01:00)");
   start.value = "2026-10-25T03:30";
   start.change();
-  assert.equal(firstOrSecond.hidden, true);
+  assert.equal(form.elements.namedItem("start_occurrence"), undefined);
 
   const fixed = panel.editForm({
     ...original, start: "2026-10-25T02:15:00-04:00",
     end: "2026-10-25T02:45:00-04:00",
   });
-  assert.equal(fixed.elements.namedItem("start_occurrence").hidden, true);
+  assert.equal(fixed.elements.namedItem("start_occurrence"), undefined);
 });
 
 
