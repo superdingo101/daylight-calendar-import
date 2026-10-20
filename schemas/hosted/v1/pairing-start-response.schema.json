@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/pairing-start-response.schema.json",
+  "title": "Daylight v1 pairing start response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pairing_id",
+    "user_code",
+    "verification_uri",
+    "expires_at",
+    "poll_interval_seconds"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "pairing_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{16,128}(?![\\s\\S])"
+    },
+    "user_code": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]{12}(?![\\s\\S])"
+    },
+    "verification_uri": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048,
+      "pattern": "^https://[^/?#@\\s]+(?:/[^?#\\s]*)?(?![\\s\\S])"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "poll_interval_seconds": {
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 30
+    }
+  }
+}
