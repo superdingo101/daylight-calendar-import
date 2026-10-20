@@ -1,4 +1,4 @@
-import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
+import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, repeatedHourOptions, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
 import {checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, settingsErrorMessage} from "./settings.js";
 
@@ -2048,6 +2048,14 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving) return;
     const fields = form.elements;
     const allDay = fields.namedItem("all_day").checked;
+    const foldHint = name => {
+      const input = fields.namedItem(name);
+      const chooser = fields.namedItem(name + "_occurrence");
+      return !allDay && chooser && !chooser.hidden &&
+        repeatedHourOptions(input.value, this._hass?.config?.time_zone)
+          .some(option => option.value === chooser.value) ?
+        chooser.value : input._daylightInstantHint || null;
+    };
     const temporal = normalizeEventTemporalEdit({
       allDay,
       startDate: fields.namedItem("start_date").value,
@@ -2057,8 +2065,8 @@ export class DaylightImportPanel extends HTMLElement {
       originalStart: event.start,
       originalEnd: event.end,
       timeZone: this._hass?.config?.time_zone,
-      startInstantHint: fields.namedItem("start")._daylightInstantHint || null,
-      endInstantHint: fields.namedItem("end")._daylightInstantHint || null,
+      startInstantHint: foldHint("start"),
+      endInstantHint: foldHint("end"),
     });
     if (!temporal.valid) {
       this._editError = temporal.error;
@@ -2176,6 +2184,42 @@ export class DaylightImportPanel extends HTMLElement {
       event.all_day ? event.end + "T00:00" : editDateTimeValue(event.end, timeZone),
     );
     const timedSync = syncTimedDuration(start, end, event, timeZone);
+    const timeModel = classifyEventTimeModel(event.start, event.end, timeZone);
+    const foldControl = (input, original, title) => {
+      const label = element("label", title + " occurrence (DST fall-back)");
+      const select = document.createElement("select");
+      select.name = input.name + "_occurrence";
+      label.append(select);
+      timedFields.append(label);
+      const refresh = () => {
+        const previous = select.value;
+        const choices = !allDay.checked && timeModel.kind === "named" ?
+          repeatedHourOptions(input.value, timeZone) : [];
+        label.hidden = choices.length !== 2;
+        select.hidden = label.hidden;
+        select.replaceChildren(...choices.map(choice => {
+          const option = document.createElement("option");
+          option.value = choice.value;
+          option.textContent = choice.label;
+          return option;
+        }));
+        if (choices.length === 2) {
+          const preferred = [input._daylightInstantHint, previous, original]
+            .find(value => choices.some(choice => choice.value === value));
+          select.value = preferred || choices[0].value;
+        } else {
+          select.value = "";
+        }
+      };
+      refresh();
+      input.addEventListener("input", refresh);
+      input.addEventListener("change", refresh);
+      return {select, refresh};
+    };
+    const startFold = foldControl(start, event.start, "Start");
+    const endFold = foldControl(end, event.end, "End");
+    // A changed start clock time can programmatically update the end.
+    start.addEventListener("change", () => endFold.refresh());
 
     const allDayFields = document.createElement("div");
     allDayFields.className = "all-day-event-fields";
@@ -2214,8 +2258,10 @@ export class DaylightImportPanel extends HTMLElement {
           originalStart: event.start,
           originalEnd: event.end,
           timeZone,
-          startInstantHint: start._daylightInstantHint || null,
-          endInstantHint: end._daylightInstantHint || null,
+          startInstantHint: !startFold.select.hidden ?
+            startFold.select.value : start._daylightInstantHint || null,
+          endInstantHint: !endFold.select.hidden ?
+            endFold.select.value : end._daylightInstantHint || null,
         });
         const range = temporal.valid ?
           timedEditToAllDayRange(start.value, end.value) : null;
@@ -2271,6 +2317,8 @@ export class DaylightImportPanel extends HTMLElement {
       this._editError = null;
       clearEditError(form);
       setEditDateMode(form, allDay.checked);
+      startFold.refresh();
+      endFold.refresh();
     });
 
     field("location", "Location", event.location);
