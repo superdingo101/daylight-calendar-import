@@ -83,6 +83,7 @@ def _origin(value: str) -> str:
         parsed = urlsplit(value)
         valid = (
             parsed.scheme == "https"
+            and value.isascii()
             and parsed.hostname is not None
             and parsed.username is None
             and parsed.password is None
@@ -100,7 +101,7 @@ def _origin(value: str) -> str:
 
 
 def _trusted_url(value: Any, origin: str) -> str:
-    if not isinstance(value, str) or len(value) > 2048:
+    if not isinstance(value, str) or len(value) > 2048 or not value.isascii():
         raise vol.Invalid("invalid account URL")
     try:
         parsed = urlsplit(value)
