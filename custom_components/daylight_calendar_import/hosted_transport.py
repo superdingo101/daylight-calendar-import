@@ -302,7 +302,9 @@ class HostedLifecycleTransport:
                 forwarding_address=vol.Any(
                     None,
                     vol.All(
-                        str, vol.Length(min=3, max=254), lambda v: _match(re.compile(r"[^\s@]+@[^\s@]+"), v)
+                        str,
+                        vol.Length(min=3, max=254),
+                        lambda v: _match(re.compile(r"[^\s@]+@[^\s@]+"), v),
                     ),
                 ),
                 account_url=url,
