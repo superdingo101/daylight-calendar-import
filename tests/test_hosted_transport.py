@@ -98,6 +98,7 @@ def test_verifier_challenge():
         "https:///",
         None,
         "https://[bad",
+        "https://é.test",
     ],
 )
 def test_bad_origins(value):
@@ -122,6 +123,7 @@ def test_origin_canonicalization():
         "https://app.daylight.test/#",
         "https://app.daylight.test/\\x",
         "https://app.daylight.test/\n",
+        "https://app.daylight.test/é",
     ],
 )
 def test_untrusted_account_urls(value):
@@ -578,3 +580,8 @@ def test_installation_status_rejects_invalid_authority_fields(transport, field, 
     data[field] = value
     with pytest.raises(vol.Invalid):
         client._validate(data, "installation")
+
+
+def test_percent_encoded_account_uri_is_valid():
+    value = "https://app.daylight.test/%C3%A9"
+    assert _trusted_url(value, "https://app.daylight.test") == value
