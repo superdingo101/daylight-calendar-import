@@ -417,8 +417,7 @@ async def test_malformed_error(transport):
         await client.installation_status(TOKEN)
 
 
-@pytest.mark.enable_socket
-async def test_real_aiohttp_post_is_not_replayed(aiohttp_server):
+async def test_real_aiohttp_post_is_not_replayed(socket_enabled, aiohttp_server):
     """A connection lost after receiving a mutation must never replay that POST."""
     from aiohttp import web
 
@@ -445,8 +444,7 @@ async def test_real_aiohttp_post_is_not_replayed(aiohttp_server):
     assert calls == [{"schema_version": 1}]
 
 
-@pytest.mark.enable_socket
-async def test_real_aiohttp_redirect_never_forwards_authority(aiohttp_server):
+async def test_real_aiohttp_redirect_never_forwards_authority(socket_enabled, aiohttp_server):
     from aiohttp import web
 
     reached = []
