@@ -227,6 +227,11 @@ async def test_fixed_routes(transport, method, name, schema, status, args, path)
     )
     assert options["allow_redirects"] is False
     assert options["timeout"].total == 15
+    assert (
+        options["json"] is None
+        if positional[0] == "GET"
+        else options["json"]["schema_version"] == 1
+    )
     assert options["headers"]["Accept"] == "application/json"
     if method == "start_pairing":
         assert options["json"]["code_challenge"] == pairing_challenge(VERIFIER)
@@ -444,7 +449,9 @@ async def test_real_aiohttp_post_is_not_replayed(socket_enabled, aiohttp_server)
     assert calls == [{"schema_version": 1}]
 
 
-async def test_real_aiohttp_redirect_never_forwards_authority(socket_enabled, aiohttp_server):
+async def test_real_aiohttp_redirect_never_forwards_authority(
+    socket_enabled, aiohttp_server
+):
     from aiohttp import web
 
     reached = []
@@ -489,9 +496,12 @@ async def test_whole_request_deadline_includes_stalled_body(transport, monkeypat
     response.content.iter_chunked = stalled
     session.request.return_value = response
     original_timeout = asyncio.timeout
-    monkeypatch.setattr(
-        module.asyncio, "timeout", lambda _seconds: original_timeout(0.01)
-    )
+
+    def short_timeout(seconds):
+        assert seconds == 15
+        return original_timeout(0.01)
+
+    monkeypatch.setattr(module.asyncio, "timeout", short_timeout)
     with pytest.raises(HostedTransportError, match="service_unavailable"):
         await client.rotate(TOKEN)
     assert released.is_set()
@@ -583,3 +593,208 @@ def test_installation_status_rejects_invalid_authority_fields(transport, field, 
 def test_percent_encoded_account_uri_is_valid():
     value = "https://app.daylight.test/%C3%A9"
     assert _trusted_url(value, "https://app.daylight.test") == value
+
+
+@pytest.mark.parametrize("status", ["pending", "approved", "exchanged"])
+async def test_all_public_pairing_states(transport, status):
+    client, session = transport
+    data = fixture("pairing-status-response")
+    data.update(pairing_id=PAIRING, status=status)
+    session.request.return_value = Response(data)
+    assert (await client.pairing_status(PAIRING, VERIFIER))["status"] == status
+
+
+@pytest.mark.parametrize(
+    "interval,valid", [(5, True), (30, True), (4, False), (31, False), (5.0, False)]
+)
+def test_public_poll_interval_boundaries(transport, interval, valid):
+    client, _ = transport
+    data = account_url(fixture("pairing-start-response"))
+    data["poll_interval_seconds"] = interval
+    if valid:
+        assert client._validate(data, "pairing-start") == data
+    else:
+        with pytest.raises(vol.Invalid):
+            client._validate(data, "pairing-start")
+
+
+@pytest.mark.parametrize("length", [1, 128])
+async def test_public_installation_label_boundaries(transport, length):
+    client, session = transport
+    session.request.return_value = Response(
+        account_url(fixture("pairing-start-response")), status=201
+    )
+    await client.start_pairing(VERIFIER, "H" * length)
+    assert (
+        session.request.call_args.kwargs["json"]["installation_label"] == "H" * length
+    )
+
+
+@pytest.mark.parametrize("length", [2048, 2049])
+def test_public_account_uri_size_boundary(length):
+    prefix = "https://app.daylight.test/"
+    value = prefix + "x" * (length - len(prefix))
+    if length == 2048:
+        assert _trusted_url(value, "https://app.daylight.test") == value
+    else:
+        with pytest.raises(vol.Invalid):
+            _trusted_url(value, "https://app.daylight.test")
+
+
+@pytest.mark.parametrize(
+    "address,valid",
+    [("a@b", True), ("a@" + "b" * 252, True), ("a@" + "b" * 253, False)],
+)
+def test_public_forwarding_address_and_overlap(transport, address, valid):
+    client, _ = transport
+    data = account_url(fixture("account-installation-status"))
+    data.update(forwarding_address=address, credential_status="overlap")
+    if valid:
+        assert client._validate(data, "installation") == data
+    else:
+        with pytest.raises(vol.Invalid):
+            client._validate(data, "installation")
+
+
+@pytest.mark.parametrize(
+    "violation", ["duplicate", "surrogate_message", "surrogate_request_id"]
+)
+async def test_strict_json_in_otherwise_valid_envelopes(transport, violation):
+    client, session = transport
+    if violation == "duplicate":
+        data = account_url(fixture("account-installation-status"))
+        raw = (
+            json.dumps(data)
+            .replace('"schema_version": 1', '"schema_version": 1, "schema_version": 1')
+            .encode()
+        )
+        response = Response(raw=raw)
+    else:
+        data = {
+            "schema_version": 1,
+            "request_id": "safe",
+            "error": {"code": "unauthenticated", "message": "safe", "retryable": False},
+        }
+        if violation == "surrogate_message":
+            data["error"]["message"] = "\ud800"
+        else:
+            data["request_id"] = "\ud800"
+        response = Response(data, status=401)
+    session.request.return_value = response
+    with pytest.raises(HostedTransportError) as error:
+        await client.installation_status(TOKEN)
+    assert error.value.code == "invalid_response"
+    assert error.value.retryable is False
+
+
+@pytest.mark.parametrize(
+    "violation",
+    [
+        "content_type",
+        "cache_control",
+        "missing_cache_control",
+        "oversized",
+        "redirect300",
+        "redirect399",
+    ],
+)
+async def test_transport_rejects_valid_payload_with_invalid_envelope(
+    transport, violation
+):
+    client, session = transport
+    value = account_url(fixture("account-installation-status"))
+    response = Response(value)
+    if violation == "content_type":
+        response.content_type = "text/html"
+    elif violation == "cache_control":
+        response.headers["Cache-Control"] = "public"
+    elif violation == "missing_cache_control":
+        del response.headers["Cache-Control"]
+    elif violation == "oversized":
+        response.content = Content(json.dumps(value).encode() + b" " * 16385)
+    else:
+        response.status = int(violation[-3:])
+    session.request.return_value = response
+    with pytest.raises(HostedTransportError) as error:
+        await client.installation_status(TOKEN)
+    assert error.value.code == "invalid_response"
+    assert error.value.status == response.status
+    assert error.value.retryable is False
+    assert response.closed
+
+
+@pytest.mark.parametrize("request_id", ["x", "x" * 128, None])
+@pytest.mark.parametrize("message", ["x", "x" * 2048])
+async def test_public_error_string_boundaries(transport, request_id, message):
+    client, session = transport
+    session.request.return_value = Response(
+        {
+            "schema_version": 1,
+            "request_id": request_id,
+            "error": {
+                "code": "invalid_request",
+                "message": message,
+                "retryable": False,
+            },
+        },
+        status=400,
+    )
+    with pytest.raises(HostedTransportError) as error:
+        await client.installation_status(TOKEN)
+    assert error.value.code == "invalid_request"
+    assert error.value.status == 400
+    assert error.value.retryable is False
+    assert error.value.retry_after is None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("request_id", ""),
+        ("request_id", "x" * 129),
+        ("request_id", ["x"]),
+        ("schema_version", True),
+        ("schema_version", 2),
+        ("error.message", ""),
+        ("error.message", "x" * 2049),
+        ("error.message", ["x"]),
+    ],
+)
+async def test_malformed_error_field_boundaries(transport, field, value):
+    client, session = transport
+    data = {
+        "schema_version": 1,
+        "request_id": "safe",
+        "error": {"code": "invalid_request", "message": "safe", "retryable": False},
+    }
+    if field.startswith("error."):
+        data["error"][field.split(".")[1]] = value
+    else:
+        data[field] = value
+    session.request.return_value = Response(data, status=400)
+    with pytest.raises(HostedTransportError) as error:
+        await client.installation_status(TOKEN)
+    assert error.value.code == "invalid_response"
+    assert error.value.retryable is False
+
+
+@pytest.mark.parametrize("cache_control", ["private,no-store", "PRIVATE, NO-STORE"])
+async def test_no_store_directive_case_and_comma_whitespace(transport, cache_control):
+    client, session = transport
+    data = account_url(fixture("account-installation-status"))
+    session.request.return_value = Response(
+        data, headers={"Cache-Control": cache_control}
+    )
+    assert await client.installation_status(TOKEN) == data
+
+
+def test_trusted_urls_preserve_valid_path_punctuation_and_host_case():
+    origin = _origin("https://eXample.test")
+    assert origin == "https://example.test"
+    for path in ("X", "!"):
+        value = "https://example.test/" + path
+        assert _trusted_url(value, origin) == value
+    with pytest.raises(ValueError):
+        _origin("https://app daylight.test")
+    with pytest.raises(vol.Invalid):
+        _trusted_url("https://example.test/with space", origin)
