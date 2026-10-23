@@ -21,11 +21,14 @@ Until the maintainer explicitly authorizes a hosted release:
   unless explicitly authorized otherwise.
 - Every hosted PR uses the existing exhaustive Codex review, coverage,
   CI, and mutation rules. An integration branch is not a testing exemption.
-- Public release candidates must pass the `Public release isolation` CI
-  check, which builds and scans the real HACS distribution ZIP for recognizable
-  hosted-service paths and text. Keep this status check required on `main`.
-  It is defense in depth, not a substitute for full review; visual assets
-  and arbitrarily disguised implementations cannot be verified by text scan.
+- Public PRs must pass the `Public release isolation` CI check.
+  It verifies Git commit provenance against `integration/hosted-v1` and
+  rejects direct integration of hosted-only commits, independently of file
+  names or source text. Keep this status check required on `main`.
+- This ancestry check **does not detect** squashed, cherry-picked, rewritten,
+  or manually copied hosted changes. Maintain an explicit human review of
+  every proposed public PR and the final HACS ZIP/release notes. Do not
+  treat a green provenance check as proof that a release has no hosted code.
 - Hosted development must not block independent public releases.
   Never merge the complete hosted branch into `main` without an explicit
   hosted release authorization, review, and separate release decision.
