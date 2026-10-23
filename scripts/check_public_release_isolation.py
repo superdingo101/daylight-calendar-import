@@ -1,102 +1,74 @@
-"""Block hosted-service surfaces from the public HACS release ZIP.
+"""Prevent direct inclusion of hosted integration branch commits in public history.
 
-This conservative text-marker check is a defense in depth, not a substitute
-for reviewing the behavior and files proposed for main.
+Git ancestry is a provenance check, not semantic feature classification. A
+squash, cherry-pick, copied patch or rewritten commit gets a different SHA and
+still needs ordinary review before merging into public main.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
-import re
+import subprocess
 import sys
-from tempfile import TemporaryDirectory
-from zipfile import ZipFile
-
-from scripts.build_hacs_release import INTEGRATION, build
-
-# Deliberately allow the existing *self-hosted* Direct IMAP copy. Do not
-# allow hosted-service client code to ship merely because it is dormant.
-HOSTED_MARKERS = (
-    ("hosted-service marker", re.compile(r"(?<!self-)(?<!self_)hosted", re.IGNORECASE)),
-    ("Daylight Cloud name", re.compile(r"daylight[\s_-]*cloud", re.IGNORECASE)),
-    (
-        "cloud service surface",
-        re.compile(
-            r"\bcloud[\s_-]*(?:account|api|backend|billing|client|connection|"
-            r"enroll(?:ment)?|installation|integration|parser|plan|portal|"
-            r"provider|settings|subscription|transport)\b",
-            re.IGNORECASE,
-        ),
-    ),
-)
-
-# Images/fonts are permitted assets, but cannot be inspected for visual text
-# by this textual check. Other non-UTF-8 files fail closed.
-BINARY_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".avif", ".woff", ".woff2", ".ttf", ".otf"}
 
 
-def scan_archive(archive_path: Path) -> list[str]:
-    """Report forbidden paths/content within the artifact users install."""
-    violations: list[str] = []
-    with ZipFile(archive_path) as archive:
-        for entry in archive.infolist():
-            name = entry.filename
-            if entry.is_dir():
-                violations.append(f"{name}: unexpected directory entry")
-                continue
+DEFAULT_HOSTED_REF = "refs/remotes/origin/integration/hosted-v1"
+DEFAULT_MAIN_REF = "refs/remotes/origin/main"
 
-            for description, pattern in HOSTED_MARKERS:
-                if pattern.search(name):
-                    violations.append(f"{name}: forbidden {description} in file path")
 
-            if Path(name).suffix.lower() in BINARY_SUFFIXES:
-                continue
+def exclusive_commits(root: Path, head: str, base: str) -> set[str]:
+    """Return commits reachable from head but not from base, failing closed."""
+    output = subprocess.run(
+        ["git", "rev-list", head, f"^{base}"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return set(output.stdout.splitlines())
 
-            try:
-                text = archive.read(entry).decode("utf-8-sig")
-            except UnicodeDecodeError:
-                violations.append(f"{name}: non-UTF-8 release file cannot be inspected")
-                continue
 
-            for line_number, line in enumerate(text.splitlines(), start=1):
-                for description, pattern in HOSTED_MARKERS:
-                    if pattern.search(line):
-                        violations.append(f"{name}:{line_number}: forbidden {description}")
-    return violations
+def hosted_commits_in_candidate(
+    root: Path, *, candidate: str, base: str, hosted: str
+) -> set[str]:
+    """Detect exact commits shared by candidate delta and hosted branch delta."""
+    return exclusive_commits(root, candidate, base) & exclusive_commits(root, hosted, base)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--archive",
-        type=Path,
-        help="Check an already-built, validated HACS ZIP (as in Publish HACS Release)",
-    )
+    parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--candidate", default="HEAD")
+    parser.add_argument("--base", default=DEFAULT_MAIN_REF)
+    parser.add_argument("--hosted", default=DEFAULT_HOSTED_REF)
     args = parser.parse_args()
 
-    if args.archive:
-        violations = scan_archive(args.archive)
-    else:
-        root = Path(__file__).resolve().parents[1]
-        manifest = json.loads((root / INTEGRATION / "manifest.json").read_text(encoding="utf-8"))
-        with TemporaryDirectory() as directory:
-            archive_path = Path(directory) / "daylight-calendar-import.zip"
-            build(root, archive_path, manifest["version"])
-            violations = scan_archive(archive_path)
+    try:
+        overlap = hosted_commits_in_candidate(
+            args.repo,
+            candidate=args.candidate,
+            base=args.base,
+            hosted=args.hosted,
+        )
+    except subprocess.CalledProcessError as exc:
+        print("Public release isolation FAILED: required Git history unavailable.", file=sys.stderr)
+        print(exc.stderr.strip(), file=sys.stderr)
+        return 1
 
-    if violations:
-        print("Public release isolation FAILED:", file=sys.stderr)
-        for violation in violations:
-            print(f"  {violation}", file=sys.stderr)
+    if overlap:
+        print("Public release isolation FAILED: hosted integration commits in public candidate:", file=sys.stderr)
+        for sha in sorted(overlap):
+            print(f"  {sha}", file=sys.stderr)
         print(
-            "Keep hosted integration changes on integration/hosted-v1; "
-            "do not include them in a public release.",
+            "Target hosted integration work to integration/hosted-v1, not main. "
+            "This cannot detect squashed, copied, or rewritten hosted changes.",
             file=sys.stderr,
         )
         return 1
-    print("Public release isolation PASS: no recognized hosted-service surfaces in HACS ZIP.")
+
+    print("Public release isolation PASS: no shared hosted-only commit ancestry.")
+    print("Review still required: this is not semantic code or release-content verification.")
     return 0
 
 
