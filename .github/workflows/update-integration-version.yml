@@ -146,6 +146,7 @@ jobs:
           # workflow_dispatch, unlike pull_request, can be triggered by GITHUB_TOKEN.
           gh workflow run tests.yml --ref "$BRANCH"
           gh workflow run hacs.yaml --ref "$BRANCH"
+          gh workflow run public-release-isolation.yml --ref "$BRANCH"
 
   clean-release-mutation:
     name: Validate release candidate with a full mutation run
