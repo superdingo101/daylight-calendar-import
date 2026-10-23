@@ -14,6 +14,7 @@ import re
 import secrets
 from datetime import datetime
 from decimal import Decimal, DecimalException
+from ipaddress import IPv6Address
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -108,6 +109,8 @@ def _origin(value: str) -> str:
         raise ValueError("invalid trusted origin")
     hostname = parsed.hostname.lower()
     if parsed.netloc.startswith("["):
+        if not hostname.startswith("v"):
+            hostname = IPv6Address(hostname).compressed
         hostname = f"[{hostname}]"
     authority = hostname if port in (None, 443) else f"{hostname}:{port}"
     return f"https://{authority}"
@@ -241,7 +244,7 @@ class HostedLifecycleTransport:
             body={"schema_version": 1} if exchange else None,
         )
         if not exchange and result["pairing_id"] != pairing_id:
-            raise HostedTransportError("invalid_response")
+            raise HostedTransportError("invalid_response", status=200)
         return result
 
     async def installation_status(self, token: str) -> dict[str, Any]:
@@ -350,6 +353,7 @@ class HostedLifecycleTransport:
         headers: dict[str, str] | None = None,
         body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        response_status = None
         try:
             async with asyncio.timeout(15):
                 async with self._session.request(
@@ -368,6 +372,7 @@ class HostedLifecycleTransport:
                     max_headers=32,
                     auto_decompress=False,
                 ) as response:
+                    response_status = response.status
                     if "Content-Encoding" in response.headers:
                         raise HostedTransportError(
                             "invalid_response", status=response.status
@@ -408,7 +413,7 @@ class HostedLifecycleTransport:
         except aiohttp.ClientError, TimeoutError:
             raise HostedTransportError("service_unavailable", retryable=True) from None
         except ValueError, UnicodeError, RecursionError, vol.Invalid:
-            raise HostedTransportError("invalid_response") from None
+            raise HostedTransportError("invalid_response", status=response_status) from None
 
     @staticmethod
     def _raise_api_error(value: Any, status: int, retry_header: str | None) -> None:
