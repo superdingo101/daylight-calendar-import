@@ -9,7 +9,9 @@ The caller supplies an HA-owned aiohttp session and separately configured truste
 HTTPS API/account origins. API paths are fixed. Pairing verification and account
 links must match the configured account origin; they cannot select API endpoints.
 HTTPS origins normalize omitted and explicit default port 443, preserving bracketed
-IPv6 hosts and distinct nondefault ports. Responses are bounded to 16 KiB and
+IPv6 hosts and distinct nondefault ports. IPv6 literals use their canonical
+address representation when comparing origins, so expanded and compressed forms
+identify the same origin. Responses are bounded to 16 KiB and
 15 seconds, with at most 32 headers and 4 KiB header-field/status-line limits.
 Both supported HA versions pin aiohttp 3.14.3, which supports these request limits.
 Automatic decompression is disabled, requests advertise `Accept-Encoding: identity`,
@@ -19,7 +21,9 @@ Responses require JSON and `no-store`, and
 reject redirects, duplicate keys, non-finite constants, invalid UTF-8/surrogates,
 unknown response fields and unsupported schema versions. Error objects expose
 only canonical code, HTTP status, retryability and bounded `Retry-After`, never
-remote message text or request secrets. The session remains HA-owned.
+remote message text or request secrets. Malformed JSON, encoding or schema errors
+retain the received HTTP status; failures before headers have no status.
+The session remains HA-owned.
 
 No operation retries automatically. A retryable error indicates a condition, not
 permission to replay an exchange, rotation or disconnect POST. The future
