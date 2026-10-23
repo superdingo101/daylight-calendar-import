@@ -276,6 +276,7 @@ async def test_pairing_identity_mismatch(transport):
     with pytest.raises(HostedTransportError) as error:
         await client.pairing_status(PAIRING, VERIFIER)
     assert error.value.code == "invalid_response"
+    assert error.value.status == 200
 
 
 @pytest.mark.parametrize(
@@ -423,6 +424,75 @@ async def test_invalid_rate_limit_deadlines(transport, header):
     assert error.value.code == "invalid_response"
     assert error.value.status == 429
     assert error.value.retryable is False
+    assert error.value.retry_after is None
+
+
+@pytest.mark.parametrize(
+    "configured,returned",
+    [
+        ("[2001:0db8:0:0:0:0:0:1]", "[2001:db8::1]"),
+        ("[2001:db8::1]", "[2001:0db8:0:0:0:0:0:1]"),
+        ("[0:0:0:0:0:ffff:c000:201]", "[::ffff:192.0.2.1]"),
+    ],
+)
+@pytest.mark.parametrize("port", ["", ":443", ":8443"])
+async def test_equivalent_ipv6_account_origins(configured, returned, port):
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = HostedLifecycleTransport(
+        session,
+        api_origin="https://api.daylight.test",
+        account_origin=f"https://{configured}{port}",
+    )
+    value = fixture("account-installation-status")
+    value["account_url"] = f"https://{returned}{port}/account"
+    session.request.return_value = Response(value)
+    assert await client.installation_status(TOKEN) == value
+    value["account_url"] = f"https://[2001:db8::2]{port}/account"
+    session.request.return_value = Response(value)
+    with pytest.raises(HostedTransportError) as error:
+        await client.installation_status(TOKEN)
+    assert error.value.code == "invalid_response"
+    assert error.value.status == 200
+
+
+def test_ipvfuture_authority_is_preserved():
+    assert _origin("https://[v1.address:part]:443") == "https://[v1.address:part]"
+
+
+@pytest.mark.parametrize("status", [200, 401, 429, 503])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"not JSON",
+        b"\xff",
+        b'{"schema_version":1,"schema_version":1}',
+        b"[" * 1100 + b"0" + b"]" * 1100,
+        b'{"schema_version":2}',
+        b'{"error":"\\ud800"}',
+    ],
+)
+async def test_malformed_response_preserves_received_status(transport, status, raw):
+    client, session = transport
+    response = Response(raw=raw, status=status)
+    session.request.return_value = response
+    with pytest.raises(HostedTransportError) as error:
+        await client.installation_status(TOKEN)
+    assert error.value.code == "invalid_response"
+    assert error.value.status == status
+    assert error.value.retryable is False
+    assert str(error.value) == "invalid_response"
+    assert response.closed
+    assert session.request.call_count == 1
+
+
+async def test_validation_failure_before_headers_has_no_status(transport):
+    client, session = transport
+    session.request.side_effect = ValueError("private request details")
+    with pytest.raises(HostedTransportError) as error:
+        await client.installation_status(TOKEN)
+    assert error.value.code == "invalid_response"
+    assert error.value.status is None
+    assert str(error.value) == "invalid_response"
     assert error.value.retry_after is None
 
 
