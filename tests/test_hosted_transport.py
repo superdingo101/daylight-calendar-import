@@ -688,7 +688,7 @@ async def test_all_public_pairing_states(transport, status):
 
 
 @pytest.mark.parametrize(
-    "interval,valid", [(5, True), (30, True), (4, False), (31, False)]
+    "interval,valid", [(5, True), (30, True), (4, False), (31, False), (5.5, False)]
 )
 def test_public_poll_interval_boundaries(transport, interval, valid):
     client, _ = transport
@@ -1178,6 +1178,8 @@ async def test_real_aggregate_response_header_budget(socket_enabled, count):
         1,
         True,
         [],
+        {"@": "x"},
+        ["@"],
         "a@" + "b" * 252,
         "a@" + "b" * 253,
     ],
@@ -1347,3 +1349,57 @@ async def test_fractional_boolean_and_unbounded_json_numbers_are_rejected(
         await client.installation_status(TOKEN)
     assert error.value.code == "invalid_response"
     assert error.value.retryable is False
+
+
+@pytest.mark.parametrize("status", [300, 301, 307, 308, 399])
+async def test_redirect_error_envelope_never_becomes_an_api_error(transport, status):
+    """Reject redirect status before interpreting even a well-formed API error."""
+    client, session = transport
+    response = Response(
+        {
+            "schema_version": 1,
+            "error": {
+                "code": "service_unavailable",
+                "message": "upstream failure",
+                "retryable": True,
+            },
+        },
+        status=status,
+    )
+    reads = []
+    original_reader = response.content.iter_chunked
+
+    async def record_read(size):
+        reads.append(True)
+        async for chunk in original_reader(size):
+            yield chunk
+
+    response.content.iter_chunked = record_read
+    session.request.return_value = response
+    with pytest.raises(HostedTransportError) as error:
+        await client.installation_status(TOKEN)
+    assert error.value.code == "invalid_response"
+    assert error.value.status == status
+    assert error.value.retryable is False
+    assert reads == []
+    assert response.closed
+    session.request.assert_called_once()
+
+
+@pytest.mark.parametrize("field", ["api_origin", "account_origin"])
+def test_trusted_origin_configuration_rejects_leading_ascii_space(field):
+    values = {
+        "api_origin": "https://api.daylight.test",
+        "account_origin": "https://app.daylight.test",
+    }
+    values[field] = " " + values[field]
+    with pytest.raises(ValueError):
+        HostedLifecycleTransport(MagicMock(spec=aiohttp.ClientSession), **values)
+
+
+@pytest.mark.parametrize("kind", [None, "unknown", "INSTALLATION"])
+def test_unknown_response_kind_cannot_select_installation_schema(transport, kind):
+    client, _ = transport
+    value = account_url(fixture("account-installation-status"))
+    with pytest.raises(ValueError):
+        client._validate(value, kind)
