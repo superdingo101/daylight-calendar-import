@@ -1,5 +1,37 @@
 # AGENTS.md
 
+## Hosted development and public-release isolation
+
+Until the maintainer explicitly authorizes a hosted release:
+
+- \`main\` is the public-only release branch. Do not merge new hosted-service
+  runtime code, dormant transport clients, onboarding, settings, translations,
+  credentials, parser selection, or feature activation into \`main\`.
+- \`integration/hosted-v1\` is the shared Home Assistant hosted-integration branch.
+  Start focused hosted feature branches from it and target hosted PRs to it,
+  **not** to \`main\`. Verify every hosted PR's base branch before opening it.
+- Public-only features and bug fixes still target \`main\`. Periodically bring
+  public changes from \`main\` into \`integration/hosted-v1\`, not the reverse.
+- Private account, provider, billing, portal, deployment, and infrastructure
+  implementation belongs in the designated hosted repositories. Keep the
+  Home Assistant integration limited to its public-facing client/interface.
+- Existing contract and documentation files already present on \`main\` do not
+  authorize additional hosted runtime code or public release notes. New
+  hosted-specific contracts and docs should also target the hosted branch
+  unless explicitly authorized otherwise.
+- Every hosted PR uses the existing exhaustive Codex review, coverage,
+  CI, and mutation rules. An integration branch is not a testing exemption.
+- Public release candidates must pass the \`Public release isolation\` CI
+  check, which builds and scans the real HACS distribution ZIP for recognizable
+  hosted-service paths and text. Keep this status check required on \`main\`.
+  It is defense in depth, not a substitute for full review; visual assets
+  and arbitrarily disguised implementations cannot be verified by text scan.
+- Hosted development must not block independent public releases.
+  Never merge the complete hosted branch into \`main\` without an explicit
+  hosted release authorization, review, and separate release decision.
+- If a requested PR target or operation conflicts with these rules, raise the
+  conflict instead of silently changing branches or weakening the guard.
+
 ## Mutation testing and release gate
 
 - Ordinary PRs use the bounded impact planner and cold base/head execution
