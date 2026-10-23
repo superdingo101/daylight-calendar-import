@@ -318,7 +318,7 @@ class HostedLifecycleTransport:
             )
         elif response == "disconnected":
             fields.update(installation_id=identifier, status="disconnected")
-        else:
+        elif response == "installation":
             fields.update(
                 account_id=identifier,
                 installation_id=identifier,
@@ -341,6 +341,8 @@ class HostedLifecycleTransport:
                 ),
                 account_url=url,
             )
+        else:
+            raise ValueError
         return vol.Schema({vol.Required(k): v for k, v in fields.items()})(value)
 
     async def _request(
@@ -413,7 +415,9 @@ class HostedLifecycleTransport:
         except aiohttp.ClientError, TimeoutError:
             raise HostedTransportError("service_unavailable", retryable=True) from None
         except ValueError, UnicodeError, RecursionError, vol.Invalid:
-            raise HostedTransportError("invalid_response", status=response_status) from None
+            raise HostedTransportError(
+                "invalid_response", status=response_status
+            ) from None
 
     @staticmethod
     def _raise_api_error(value: Any, status: int, retry_header: str | None) -> None:
