@@ -36,6 +36,7 @@ ACCOUNT = "account_1234567890"
 INSTALLATION = "installation_1234567890"
 EXPIRES = "2026-12-01T00:00:00+00:00"
 CONFIRMS = "2026-10-24T00:10:00+00:00"
+STORAGE_ERROR = r"^Hosted credential storage needs repair; preserve the original file\.$"
 
 
 def bound(**changes):
@@ -89,10 +90,10 @@ async def test_private_atomic_restart_preserves_both_bundles_and_namespaces(make
 
 async def test_checkpoint_not_available_until_loaded_and_load_only_once(make_store):
     store = make_store()
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         _ = store.snapshot
     initial = await store.async_load()
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         await store.async_load()
     assert store.snapshot is initial
 
@@ -145,7 +146,7 @@ async def test_failed_atomic_write_preserves_original_and_blocks_future_work(mak
     def fail(*args):
         raise OSError(TOKEN)
     monkeypatch.setattr(store._store, "_write_prepared_data", fail)
-    with pytest.raises(HostedCredentialStorageError) as error:
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR) as error:
         await store.async_checkpoint(committed, replace(committed, candidate=candidate()))
     assert TOKEN not in str(error.value)
     assert TOKEN not in caplog.text
@@ -153,9 +154,9 @@ async def test_failed_atomic_write_preserves_original_and_blocks_future_work(mak
     for operation in (
         store.async_load(), store.async_checkpoint(committed, committed),
     ):
-        with pytest.raises(HostedCredentialStorageError):
+        with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
             await operation
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         _ = store.snapshot
     assert await make_store().async_load() == committed
 
@@ -164,7 +165,7 @@ async def test_read_only_store_cannot_report_checkpoint_success(make_store):
     store = make_store()
     initial = await store.async_load()
     store._store.make_read_only()
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         await store.async_checkpoint(initial, initial)
 
 
@@ -191,7 +192,7 @@ async def test_caller_cancellation_does_not_interrupt_or_publish_early(make_stor
     with pytest.raises(asyncio.CancelledError):
         await task
     assert not store._pending_write.done()
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         _ = store.snapshot
     restarted = make_store()
     loading = asyncio.create_task(restarted.async_load())
@@ -199,10 +200,10 @@ async def test_caller_cancellation_does_not_interrupt_or_publish_early(make_stor
     assert not loading.done()
     release.set()
     if failure:
-        with pytest.raises(HostedCredentialStorageError):
+        with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
             await store._pending_write
         if failure == "cancel":
-            with pytest.raises(HostedCredentialStorageError):
+            with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
                 await loading
         else:
             assert await loading == initial
@@ -211,7 +212,7 @@ async def test_caller_cancellation_does_not_interrupt_or_publish_early(make_stor
         assert result.revision == 1
         assert result.pairing_verifier == VERIFIER
         assert await loading == result
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         _ = store.snapshot
 
 
@@ -255,17 +256,17 @@ async def test_cancelled_executor_future_blocks_all_entry_instances_before_late_
     assert store._pending_write in hass._tasks
     # Match final shutdown cancellation after the real OS writer has started.
     store._pending_write.cancel("Home Assistant final writes shutdown stage")
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         await outer
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         await make_store().async_load()
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         await store.async_checkpoint(initial, initial)
     assert await make_store("other").async_load() == CredentialCheckpoint()
     release.set()
     while not finished.is_set():
         await asyncio.sleep(0.001)
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         await make_store().async_load()
     assert json.loads(Path(store._store.path).read_text())["data"]["pairing_verifier"] == VERIFIER
 
@@ -280,11 +281,11 @@ async def test_corrupt_original_is_not_renamed_or_overwritten(make_store, raw):
     path = Path(store._store.path)
     path.parent.mkdir(exist_ok=True)
     path.write_bytes(raw)
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         await store.async_load()
     assert path.read_bytes() == raw
     assert not list(path.parent.glob("*.corrupt.*"))
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         await store.async_load()
 
 
@@ -302,7 +303,7 @@ async def test_bad_envelope_or_bundle_fail_closed(make_store, change):
     path = Path(store._store.path)
     path.parent.mkdir(exist_ok=True)
     path.write_text(json.dumps(envelope))
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         await store.async_load()
 
 
@@ -311,17 +312,30 @@ async def test_missing_after_prior_corruption_requires_repair(make_store):
     path = Path(store._store.path)
     path.parent.mkdir(exist_ok=True)
     path.with_name(path.name + ".corrupt.old").write_text(TOKEN)
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         await store.async_load()
     assert not path.exists()
+
+
+async def test_failed_load_blocks_instance_even_after_disk_is_repaired(make_store):
+    store = make_store()
+    path = Path(store._store.path)
+    path.parent.mkdir(exist_ok=True)
+    path.write_text("broken")
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
+        await store.async_load()
+    path.unlink()
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
+        await store.async_load()
+    assert await make_store().async_load() == CredentialCheckpoint()
 
 
 async def test_cancelled_load_fails_closed(make_store, monkeypatch):
     store = make_store()
     monkeypatch.setattr(store._store, "async_load", AsyncMock(side_effect=asyncio.CancelledError))
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         await store.async_load()
-    with pytest.raises(HostedCredentialStorageError):
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR):
         _ = store.snapshot
 
 
@@ -466,6 +480,6 @@ async def test_fixed_storage_error_and_conflict_messages(make_store):
         await other.async_checkpoint(old, old)
     assert str(error.value) == "stale persisted credential checkpoint"
     store._store.make_read_only()
-    with pytest.raises(HostedCredentialStorageError) as error:
+    with pytest.raises(HostedCredentialStorageError, match=STORAGE_ERROR) as error:
         await store._store.async_save({})
     assert str(error.value) == "Hosted credential storage needs repair; preserve the original file."
