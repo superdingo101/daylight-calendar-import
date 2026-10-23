@@ -22,6 +22,12 @@ from custom_components.daylight_calendar_import.hosted_transport import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures/hosted/v1/valid"
+ROOT = Path(__file__).resolve().parents[1]
+if not (ROOT / "schemas").is_dir():
+    ROOT = ROOT.parent
+INSTALLATION_SCHEMA = (
+    ROOT / "schemas/hosted/v1/installation-status-response.schema.json"
+)
 PAIRING = "P" * 43
 VERIFIER = "V" * 43
 TOKEN = "T" * 43
@@ -233,6 +239,8 @@ async def test_fixed_routes(transport, method, name, schema, status, args, path)
         else options["json"]["schema_version"] == 1
     )
     assert options["headers"]["Accept"] == "application/json"
+    assert options["headers"]["Accept-Encoding"] == "identity"
+    assert options["auto_decompress"] is False
     if method == "start_pairing":
         assert options["json"]["code_challenge"] == pairing_challenge(VERIFIER)
         assert VERIFIER not in json.dumps(options["json"])
@@ -583,7 +591,7 @@ async def test_complete_pairing_request_and_body_limit_boundary(transport):
         ("credential_status", "staged"),
         ("account_status", "suspended"),
         ("forwarding_address", "not-an-email"),
-        ("forwarding_address", "a@b\n"),
+        ("forwarding_address", ["a@b"]),
         ("account_url", "https://evil.test"),
     ],
 )
@@ -610,7 +618,7 @@ async def test_all_public_pairing_states(transport, status):
 
 
 @pytest.mark.parametrize(
-    "interval,valid", [(5, True), (30, True), (4, False), (31, False), (5.0, False)]
+    "interval,valid", [(5, True), (30, True), (4, False), (31, False)]
 )
 def test_public_poll_interval_boundaries(transport, interval, valid):
     client, _ = transport
@@ -895,3 +903,377 @@ async def test_malformed_json_never_reaches_response_validation(transport, raw):
         await client.installation_status(TOKEN)
     assert error.value.code == "invalid_response"
     assert received == []
+
+
+@pytest.mark.parametrize(
+    "configured,returned,expected",
+    [
+        (
+            "https://app.daylight.test",
+            "https://app.daylight.test:443/connect",
+            "https://app.daylight.test",
+        ),
+        (
+            "https://app.daylight.test:443",
+            "https://app.daylight.test/connect",
+            "https://app.daylight.test",
+        ),
+        (
+            "https://app.daylight.test:0443",
+            "https://app.daylight.test:443/connect",
+            "https://app.daylight.test",
+        ),
+        (
+            "https://[2001:DB8::1]:443",
+            "https://[2001:db8::1]/connect",
+            "https://[2001:db8::1]",
+        ),
+        (
+            "https://[2001:DB8::1]",
+            "https://[2001:db8::1]:443/connect",
+            "https://[2001:db8::1]",
+        ),
+        ("https://[::1]:8443", "https://[::1]:8443/connect", "https://[::1]:8443"),
+    ],
+)
+async def test_default_https_port_origin_equivalence(
+    transport, configured, returned, expected
+):
+    _, session = transport
+    client = HostedLifecycleTransport(
+        session, api_origin=configured, account_origin=configured
+    )
+    value = fixture("account-installation-status")
+    value["account_url"] = returned
+    session.request.return_value = Response(value)
+    assert await client.installation_status(TOKEN) == value
+    assert session.request.call_args.args[1] == expected + "/v1/installation"
+
+
+@pytest.mark.parametrize(
+    "configured,returned",
+    [
+        ("https://app.daylight.test", "https://app.daylight.test:8443/connect"),
+        ("https://app.daylight.test:8443", "https://app.daylight.test:443/connect"),
+        ("https://[::1]", "https://[::1]:8443/connect"),
+        ("https://[::1]:8443", "https://[::1]/connect"),
+        ("https://[::1]:443", "https://[::2]:443/connect"),
+    ],
+)
+async def test_other_origin_ports_and_hosts_remain_untrusted(
+    transport, configured, returned
+):
+    _, session = transport
+    client = HostedLifecycleTransport(
+        session, api_origin="https://api.daylight.test", account_origin=configured
+    )
+    value = fixture("account-installation-status")
+    value["account_url"] = returned
+    session.request.return_value = Response(value)
+    with pytest.raises(HostedTransportError) as error:
+        await client.installation_status(TOKEN)
+    assert error.value.code == "invalid_response"
+
+
+@pytest.mark.parametrize(
+    "encoding", ["gzip", "deflate", "br", "identity", "unknown", ""]
+)
+async def test_encoded_responses_rejected_before_body_read(transport, encoding):
+    client, session = transport
+    response = Response(
+        account_url(fixture("account-installation-status")),
+        headers={"Content-Encoding": encoding},
+    )
+    read = []
+
+    async def track_read(_size):
+        read.append(True)
+        yield b"unused"
+
+    response.content.iter_chunked = track_read
+    session.request.return_value = response
+    with pytest.raises(HostedTransportError) as error:
+        await client.installation_status(TOKEN)
+    assert error.value.code == "invalid_response"
+    assert error.value.status == 200
+    assert error.value.retryable is False
+    assert read == []
+    assert response.closed
+
+
+@pytest.mark.parametrize("expanded_size", [100, 4 * 1024 * 1024])
+async def test_real_gzip_never_decompresses(
+    socket_enabled, aiohttp_server, monkeypatch, expanded_size
+):
+    import gzip
+
+    from aiohttp import compression_utils, web
+
+    compressed = gzip.compress(b"x" * expanded_size)
+    calls = []
+
+    def forbidden_decompression(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError("untrusted response was decompressed")
+
+    monkeypatch.setattr(
+        compression_utils.ZLibDecompressor, "decompress_sync", forbidden_decompression
+    )
+
+    async def installation(request):
+        assert request.headers["Accept-Encoding"] == "identity"
+        return web.Response(
+            body=compressed,
+            headers={
+                "Content-Type": "application/json",
+                "Cache-Control": "no-store",
+                "Content-Encoding": "gzip",
+            },
+        )
+
+    app = web.Application()
+    app.router.add_get("/v1/installation", installation)
+    server = await aiohttp_server(app)
+    async with aiohttp.ClientSession() as session:
+        client = HostedLifecycleTransport(
+            session,
+            api_origin="https://api.daylight.test",
+            account_origin="https://app.daylight.test",
+        )
+        client._api_origin = str(server.make_url(""))
+        with pytest.raises(HostedTransportError) as error:
+            await client.installation_status(TOKEN)
+        assert error.value.code == "invalid_response"
+    assert calls == []
+
+
+@pytest.mark.parametrize("count", [32, 33, 129])
+async def test_real_aggregate_response_header_budget(socket_enabled, count):
+    value = account_url(fixture("account-installation-status"))
+    body = json.dumps(value).encode()
+    lines = [
+        b"Content-Type: application/json",
+        b"Cache-Control: no-store",
+        b"Content-Length: " + str(len(body)).encode(),
+        b"Connection: close",
+    ]
+    lines += [f"X-Test-{index}: value".encode() for index in range(count - len(lines))]
+    wire = b"HTTP/1.1 200 OK\r\n" + b"\r\n".join(lines) + b"\r\n\r\n" + body
+    completed = asyncio.Event()
+
+    async def serve(reader, writer):
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(wire)
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            completed.set()
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    try:
+        async with aiohttp.ClientSession() as session:
+            client = HostedLifecycleTransport(
+                session,
+                api_origin="https://api.daylight.test",
+                account_origin="https://app.daylight.test",
+            )
+            port = server.sockets[0].getsockname()[1]
+            client._api_origin = f"http://127.0.0.1:{port}"
+            if count == 32:
+                assert await client.installation_status(TOKEN) == value
+            else:
+                with pytest.raises(HostedTransportError) as error:
+                    await client.installation_status(TOKEN)
+                assert error.value.code == "service_unavailable"
+        await asyncio.wait_for(completed.wait(), timeout=1)
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        None,
+        "@",
+        '"a b"@example.test',
+        " a@b ",
+        "a@b\n",
+        "名前@例え.テスト",
+        "a@@b",
+        "",
+        "missing-at",
+        1,
+        True,
+        [],
+        "a@" + "b" * 252,
+        "a@" + "b" * 253,
+    ],
+)
+def test_forwarding_address_matches_canonical_schema(transport, address):
+    from jsonschema import Draft202012Validator, FormatChecker
+
+    client, _ = transport
+    value = account_url(fixture("account-installation-status"))
+    value["forwarding_address"] = address
+    canonical = Draft202012Validator(
+        json.loads(INSTALLATION_SCHEMA.read_text()), format_checker=FormatChecker()
+    )
+    if canonical.is_valid(value):
+        assert client._validate(value, "installation") == value
+    else:
+        with pytest.raises(vol.Invalid):
+            client._validate(value, "installation")
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/%GG", "/%", "/%0", "/<x>", "/[x]", '/"x"', "/{x}", "/x|y", "/x^y", "/x`y"],
+)
+def test_account_link_uri_syntax_matches_public_schema(transport, path):
+    from jsonschema import Draft202012Validator, FormatChecker
+
+    client, _ = transport
+    value = account_url(fixture("account-installation-status"))
+    value["account_url"] = "https://app.daylight.test" + path
+    canonical = Draft202012Validator(
+        json.loads(INSTALLATION_SCHEMA.read_text()), format_checker=FormatChecker()
+    )
+    assert not canonical.is_valid(value)
+    with pytest.raises(vol.Invalid):
+        client._validate(value, "installation")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "HTTPS://app.daylight.test/connect",
+        "https://app.daylight.test:70000/connect",
+        "https://[bad]/connect",
+        "https://app%GG.test/connect",
+        "https://app<bad>.test/connect",
+        "https://[fe80::1%25eth0]/connect",
+    ],
+)
+def test_invalid_account_uri_authority_and_scheme(transport, url):
+    client, _ = transport
+    value = account_url(fixture("account-installation-status"))
+    value["account_url"] = url
+    with pytest.raises(vol.Invalid):
+        client._validate(value, "installation")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://app.daylight.test/connect/a:b@c;d,e=1&f!$'()*+_~.---",
+        "https://app.daylight.test/%2f%2F%3a%3A%40%23%25%5B%5D",
+        "https://[2001:db8::1]:443/connect/_/x:y",
+        "https://[v1.test]/path",
+    ],
+)
+def test_valid_uri_punctuation_and_ip_literals(url):
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(url)
+    origin = _origin(f"https://{parsed.netloc}")
+    assert _trusted_url(url, origin) == url
+
+
+@pytest.mark.parametrize(
+    "suffix,valid",
+    [
+        ("+00:00", True),
+        ("+00:59", True),
+        ("+01:00", True),
+        ("+23:59", True),
+        ("-00:59", True),
+        ("-23:59", True),
+        ("+00:60", False),
+        ("-00:60", False),
+        ("+01:99", False),
+        ("+24:00", False),
+        ("+25:00", False),
+    ],
+)
+def test_timestamp_offset_ranges_match_public_format(suffix, valid):
+    from jsonschema import FormatChecker
+
+    value = "2026-10-21T21:40:01" + suffix
+    assert FormatChecker().conforms(value, "date-time") is valid
+    if valid:
+        assert _timestamp(value) == value
+    else:
+        with pytest.raises(vol.Invalid):
+            _timestamp(value)
+
+
+@pytest.mark.parametrize("number", ["1.0", "1e0", "10e-1", "1.00000000000000000000"])
+async def test_exact_integral_json_version_is_accepted(transport, number):
+    client, session = transport
+    value = account_url(fixture("account-installation-status"))
+    raw = (
+        json.dumps(value)
+        .replace('"schema_version": 1', '"schema_version": ' + number)
+        .encode()
+    )
+    session.request.return_value = Response(raw=raw)
+    result = await client.installation_status(TOKEN)
+    assert result == value
+    assert type(result["schema_version"]) is int
+
+
+@pytest.mark.parametrize(
+    "number,interval", [("5.0", 5), ("0.5e1", 5), ("30.0", 30), ("3e1", 30)]
+)
+async def test_exact_integral_json_poll_interval_is_accepted(
+    transport, number, interval
+):
+    client, session = transport
+    value = account_url(fixture("pairing-start-response"))
+    previous = value["poll_interval_seconds"]
+    raw = (
+        json.dumps(value)
+        .replace(
+            '"poll_interval_seconds": ' + str(previous),
+            '"poll_interval_seconds": ' + number,
+        )
+        .encode()
+    )
+    value["poll_interval_seconds"] = interval
+    session.request.return_value = Response(raw=raw, status=201)
+    result = await client.start_pairing(VERIFIER, "Home")
+    assert result == value
+    assert type(result["poll_interval_seconds"]) is int
+
+
+@pytest.mark.parametrize(
+    "number",
+    [
+        "1.00000000000000000001",
+        "0.99999999999999999999",
+        "true",
+        "1e999999999999999999999999999",
+        "1e100000000",
+        "-1e100000000",
+        "1e-100000000",
+        "1.5",
+    ],
+)
+async def test_fractional_boolean_and_unbounded_json_numbers_are_rejected(
+    transport, number
+):
+    client, session = transport
+    value = account_url(fixture("account-installation-status"))
+    raw = (
+        json.dumps(value)
+        .replace('"schema_version": 1', '"schema_version": ' + number)
+        .encode()
+    )
+    session.request.return_value = Response(raw=raw)
+    with pytest.raises(HostedTransportError) as error:
+        await client.installation_status(TOKEN)
+    assert error.value.code == "invalid_response"
+    assert error.value.retryable is False
