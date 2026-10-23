@@ -13,6 +13,7 @@ import json
 import re
 import secrets
 from datetime import datetime
+from decimal import Decimal, DecimalException
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -25,7 +26,14 @@ _VERIFIER = re.compile(r"[A-Za-z0-9_-]{43}")
 _TOKEN = re.compile(r"[A-Za-z0-9._~-]{43,256}")
 _CODE = re.compile(r"[a-z][a-z0-9_]{0,127}")
 _TIMESTAMP = re.compile(
-    r"\d{4}-\d\d-\d\d[Tt]\d\d:\d\d:\d\d(?:\.\d+)?(?:[Zz]|[+-]\d\d:\d\d)"
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]+)?(?:[Zz]|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])"
+)
+_HTTPS_URI = re.compile(
+    r"https://(?:"
+    r"(?:[A-Za-z0-9._~!$&'()*+,;=-]|%[0-9A-Fa-f]{2})+"
+    r"|\[[A-Za-z0-9:._~!$&'()*+,;=-]+\])"
+    r"(?::[0-9]*)?(?:/(?:[A-Za-z0-9._~!$&'()*+,;=:@/-]|%[0-9A-Fa-f]{2})*)?"
 )
 
 
@@ -85,6 +93,7 @@ def _origin(value: str) -> str:
             parsed.scheme == "https"
             and value.isascii()
             and parsed.hostname is not None
+            and _HTTPS_URI.fullmatch(f"https://{parsed.netloc}") is not None
             and parsed.username is None
             and parsed.password is None
             and parsed.path in ("", "/")
@@ -97,11 +106,19 @@ def _origin(value: str) -> str:
         raise ValueError("invalid trusted origin") from None
     if not valid or port == 0:
         raise ValueError("invalid trusted origin")
-    return f"https://{parsed.netloc.lower()}"
+    hostname = parsed.hostname.lower()
+    if parsed.netloc.startswith("["):
+        hostname = f"[{hostname}]"
+    authority = hostname if port in (None, 443) else f"{hostname}:{port}"
+    return f"https://{authority}"
 
 
 def _trusted_url(value: Any, origin: str) -> str:
-    if not isinstance(value, str) or len(value) > 2048 or not value.isascii():
+    if (
+        not isinstance(value, str)
+        or len(value) > 2048
+        or _HTTPS_URI.fullmatch(value) is None
+    ):
         raise vol.Invalid("invalid account URL")
     try:
         parsed = urlsplit(value)
@@ -147,6 +164,17 @@ def _strict_strings(value: Any) -> None:
 
 def _reject_constant(_value: str) -> None:
     raise ValueError("non-finite JSON")
+
+
+def _json_number(value: str) -> int:
+    """Normalize only exact small integrals; lifecycle numbers never exceed 30."""
+    try:
+        number = Decimal(value)
+        if not 0 <= number <= 30 or number != number.to_integral_value():
+            raise ValueError
+        return int(number)
+    except DecimalException:
+        raise ValueError from None
 
 
 class HostedLifecycleTransport:
@@ -304,8 +332,8 @@ class HostedLifecycleTransport:
                     None,
                     vol.All(
                         str,
-                        vol.Length(min=3, max=254),
-                        lambda v: _match(re.compile(r"[^\s@]+@[^\s@]+"), v),
+                        vol.Length(max=254),
+                        vol.Contains("@"),
                     ),
                 ),
                 account_url=url,
@@ -327,13 +355,23 @@ class HostedLifecycleTransport:
                 async with self._session.request(
                     method,
                     self._api_origin + path,
-                    headers={"Accept": "application/json", **(headers or {})},
+                    headers={
+                        "Accept": "application/json",
+                        "Accept-Encoding": "identity",
+                        **(headers or {}),
+                    },
                     json=body,
                     allow_redirects=False,
                     timeout=aiohttp.ClientTimeout(total=15),
                     max_line_size=4096,
                     max_field_size=4096,
+                    max_headers=32,
+                    auto_decompress=False,
                 ) as response:
+                    if "Content-Encoding" in response.headers:
+                        raise HostedTransportError(
+                            "invalid_response", status=response.status
+                        )
                     if 300 <= response.status < 400:
                         raise HostedTransportError(
                             "invalid_response", status=response.status
@@ -359,6 +397,7 @@ class HostedLifecycleTransport:
                         raw.decode("utf-8"),
                         object_pairs_hook=_pairs,
                         parse_constant=_reject_constant,
+                        parse_float=_json_number,
                     )
                     _strict_strings(value)
                     if response.status != expected:
