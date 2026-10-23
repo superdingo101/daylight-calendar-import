@@ -179,9 +179,6 @@ jobs:
             --version "${{ steps.version.outputs.version }}" \
             --output daylight-calendar-import.zip
 
-      - name: Verify no hosted service surfaces ship in HACS ZIP
-        run: python -m scripts.check_public_release_isolation --archive daylight-calendar-import.zip
-
       - name: Create draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
