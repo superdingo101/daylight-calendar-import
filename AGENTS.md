@@ -1,5 +1,40 @@
 # AGENTS.md
 
+## Hosted development and public-release isolation
+
+Until the maintainer explicitly authorizes a hosted release:
+
+- `main` is the public-only release branch. Do not merge new hosted-service
+  runtime code, dormant transport clients, onboarding, settings, translations,
+  credentials, parser selection, or feature activation into `main`.
+- `integration/hosted-v1` is the shared Home Assistant hosted-integration branch.
+  Start focused hosted feature branches from it and target hosted PRs to it,
+  **not** to `main`. Verify every hosted PR's base branch before opening it.
+- Public-only features and bug fixes still target `main`. Periodically bring
+  public changes from `main` into `integration/hosted-v1`, not the reverse.
+- Private account, provider, billing, portal, deployment, and infrastructure
+  implementation belongs in the designated hosted repositories. Keep the
+  Home Assistant integration limited to its public-facing client/interface.
+- Existing contract and documentation files already present on `main` do not
+  authorize additional hosted runtime code or public release notes. New
+  hosted-specific contracts and docs should also target the hosted branch
+  unless explicitly authorized otherwise.
+- Every hosted PR uses the existing exhaustive Codex review, coverage,
+  CI, and mutation rules. An integration branch is not a testing exemption.
+- Public PRs must pass the `Public release isolation` CI check.
+  It verifies Git commit provenance against `integration/hosted-v1` and
+  rejects direct integration of hosted-only commits, independently of file
+  names or source text. Keep this status check required on `main`.
+- This ancestry check **does not detect** squashed, cherry-picked, rewritten,
+  or manually copied hosted changes. Maintain an explicit human review of
+  every proposed public PR and the final HACS ZIP/release notes. Do not
+  treat a green provenance check as proof that a release has no hosted code.
+- Hosted development must not block independent public releases.
+  Never merge the complete hosted branch into `main` without an explicit
+  hosted release authorization, review, and separate release decision.
+- If a requested PR target or operation conflicts with these rules, raise the
+  conflict instead of silently changing branches or weakening the guard.
+
 ## Mutation testing and release gate
 
 - Ordinary PRs use the bounded impact planner and cold base/head execution
