@@ -265,8 +265,9 @@ async def test_reject_invalid_local_values_before_io(transport, method, args):
 async def test_pairing_identity_mismatch(transport):
     client, session = transport
     session.request.return_value = Response(fixture("pairing-status-response"))
-    with pytest.raises(HostedTransportError, match="invalid_response"):
+    with pytest.raises(HostedTransportError) as error:
         await client.pairing_status(PAIRING, VERIFIER)
+    assert error.value.code == "invalid_response"
 
 
 @pytest.mark.parametrize(
@@ -409,8 +410,12 @@ async def test_invalid_rate_limit_deadlines(transport, header):
         status=429,
         headers={"Retry-After": header} if header is not None else {},
     )
-    with pytest.raises(HostedTransportError, match="^invalid_response$"):
+    with pytest.raises(HostedTransportError) as error:
         await client.installation_status(TOKEN)
+    assert error.value.code == "invalid_response"
+    assert error.value.status == 429
+    assert error.value.retryable is False
+    assert error.value.retry_after is None
 
 
 async def test_malformed_error(transport):
@@ -798,3 +803,95 @@ def test_trusted_urls_preserve_valid_path_punctuation_and_host_case():
         _origin("https://app daylight.test")
     with pytest.raises(vol.Invalid):
         _trusted_url("https://example.test/with space", origin)
+
+
+@pytest.mark.parametrize("field", ["reason", "header"])
+@pytest.mark.parametrize("length", [4096, 4097, 8191])
+async def test_real_http_response_header_budgets(
+    socket_enabled, aiohttp_server, field, length
+):
+    """Bound metadata independently of the JSON body, including exact limits."""
+    from aiohttp import web
+
+    value = account_url(fixture("account-installation-status"))
+    calls = []
+
+    async def installation(request):
+        calls.append(request.path)
+        headers = {"Cache-Control": "no-store"}
+        options = {}
+        if field == "reason":
+            options["reason"] = "R" * length
+        else:
+            headers["X-Untrusted-Metadata"] = "R" * length
+        return web.json_response(value, headers=headers, **options)
+
+    app = web.Application()
+    app.router.add_get("/v1/installation", installation)
+    server = await aiohttp_server(app)
+    async with aiohttp.ClientSession() as session:
+        client = HostedLifecycleTransport(
+            session,
+            api_origin="https://api.daylight.test",
+            account_origin="https://app.daylight.test",
+        )
+        client._api_origin = str(server.make_url(""))
+        if length == 4096:
+            assert await client.installation_status(TOKEN) == value
+        else:
+            with pytest.raises(HostedTransportError) as error:
+                await client.installation_status(TOKEN)
+            assert error.value.code == "service_unavailable"
+            assert error.value.retryable is True
+    assert calls == ["/v1/installation"]
+
+
+def test_verifier_entropy_does_not_follow_provider_default(monkeypatch):
+    """P01 fixes 32 random bytes even if the stdlib's default entropy changes."""
+    import secrets
+
+    monkeypatch.setattr(secrets, "DEFAULT_ENTROPY", 16)
+    assert len(new_pairing_verifier()) == 43
+
+
+async def test_valid_uri_registered_name_subdelimiter():
+    # RFC3986 reg-name permits sub-delimiters. Trust validation does not resolve DNS.
+    session = MagicMock(spec=aiohttp.ClientSession)
+    client = HostedLifecycleTransport(
+        session,
+        api_origin="https://service!name.example",
+        account_origin="https://app.daylight.test",
+    )
+    data = account_url(fixture("account-installation-status"))
+    session.request.return_value = Response(data)
+    assert await client.installation_status(TOKEN) == data
+    assert (
+        session.request.call_args.args[1]
+        == "https://service!name.example/v1/installation"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"value":NaN}',
+        b'{"value":Infinity}',
+        b'{"value":-Infinity}',
+        b'{"\\ud800":"safe"}',
+    ],
+)
+async def test_malformed_json_never_reaches_response_validation(transport, raw):
+    """The JSON boundary rejects constants before any schema consumer sees them."""
+    client, session = transport
+    received = []
+
+    def validate(value, schema):
+        received.append(value)
+        return value
+
+    client._validate = validate
+    session.request.return_value = Response(raw=raw)
+    with pytest.raises(HostedTransportError) as error:
+        await client.installation_status(TOKEN)
+    assert error.value.code == "invalid_response"
+    assert received == []
