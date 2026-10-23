@@ -16,10 +16,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
+      - name: Fetch public and hosted integration histories
+        run: |
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main \
+            +refs/heads/integration/hosted-v1:refs/remotes/origin/integration/hosted-v1
       - name: Test the release isolation guard
         run: python -m unittest discover -s tests -p 'test_public_release_isolation.py' -v
-      - name: Build and scan the actual HACS ZIP
-        run: python -m scripts.check_public_release_isolation
+      - name: Check hosted commit ancestry
+        env:
+          BASE_REF: ${{ github.event_name == 'push' && github.event.before || 'refs/remotes/origin/main' }}
+        run: python -m scripts.check_public_release_isolation --base "$BASE_REF"
