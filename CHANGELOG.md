@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.9.0 (unreleased)
+
+The `v0.9.0-beta0` prerelease is available for testing. Final v0.9.0
+remains subject to release validation.
+
+- **New import workflow (#172):** Open **New import** from anywhere in
+  **Daylight Imports** to paste event details or upload an image/PDF on a
+  dedicated screen. Keep the Review inbox separate, with a compact refresh
+  control and consistent navigation.
+- **Better conflict review (#167, #168):** Show existing event start/end and
+  overlap times, and automatically check configured conflict-observation
+  calendars before approval confirmation. Incomplete observations remain
+  visible; overlaps are advisory.
+- **Recurring-announcement safeguards (#170):** Flag detected recurring
+  schedules and durably block approval rather than silently creating a
+  one-off event. Automatic recurring-event creation is still unsupported.
+- **Visible notification delivery failures (#171):** Surface terminal
+  delivery failures and settings guidance in Recent activity without
+  changing the underlying calendar outcome.
+- **Safer extraction and bounded inputs (#166, #169):** Mark imported
+  text/media as untrusted evidence in AI Task prompts, cap submitted source
+  text at 1,000,000 Unicode characters, and limit new or replacement
+  routing-alias sets to 100.
+- **Beta regression coverage (#153–#165):** Expand HACS installation and
+  historical upgrade, settings/permission, desktop/mobile, routing,
+  conflict, review/recovery, IMAP, AI Task, privacy, and concurrency tests;
+  add the public beta validation checklist. Recorded AI responses and
+  simulated browser tests are not substitutes for live-provider and
+  real-installation evaluation.
+
+Existing v0.8.0 paste/image/PDF and optional Direct IMAP workflows remain
+supported. Drafts still require explicit review and approval before calendar
+creation; a Daylight Cloud account is not needed.
+
+### Upgrade from 0.8.0
+
+Back up Home Assistant, update through HACS and restart. Preserve the
+existing integration entry, AI Task configuration, allowed/default calendars
+and private pending-review storage. Inspect uncertain writes in the
+destination calendar before recording their recovery outcome. Do not remove
+and re-add the integration or blindly resend sources: doing so can lose
+pending/history/deduplication data and lead to duplicates.
+
+Final publication still requires the recorded manual/provider checks,
+candidate CI/HACS/Hassfest/ZIP results and matching clean mutation release
+proof. See [v0.9.0 release notes](docs/releases/v0.9.0.md) and the
+[public beta checklist](docs/public-beta-checklist.md).
+
 ## 0.8.0
 
 - Submit pasted event details, images, and PDFs directly from the Daylight Imports view, including an empty inbox, without configuring IMAP.
