@@ -9,7 +9,8 @@ replace the pending-import store or change parser/calendar/IMAP behavior.
 `api_origin` and `account_origin` HTTPS origins. No service is inferred. With no
 bundle, setup makes no credential read or network request. Valid configuration
 loads one private credential store and controller with the HA-owned HTTP session.
-Load/configuration/storage failures produce hosted-only safe repair state rather
+Credential loading has a five-second budget, including waiting for an earlier
+private write lock. Load/configuration/storage failures produce hosted-only safe repair state rather
 than disabling the entry's local/BYO or Direct IMAP paths. No HTTP operation runs
 on setup, restart or reload. Authenticated recovery remains an explicit action.
 
