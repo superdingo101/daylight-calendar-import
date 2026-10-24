@@ -339,3 +339,63 @@ async def test_real_optin_saves_boolean_without_acquiring_consent(hass, hass_ws_
     disabled = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE)
     assert disabled["automatic_lifecycle"] is False
     request.assert_not_called()
+
+
+async def test_real_automatic_pairing_confirmation_and_restart_throttle(hass, hass_ws_client, settings_runtime, monkeypatch, freezer):
+    from datetime import UTC, datetime
+
+    from pytest_homeassistant_custom_component.common import async_fire_time_changed
+
+    from custom_components.daylight_calendar_import.hosted_runtime import (
+        CONF_HOSTED_AUTOMATIC,
+    )
+
+    monkeypatch.setattr(_ImmediatePrivateStore, "_async_load", _REAL_LOAD)
+    monkeypatch.setattr(_ImmediatePrivateStore, "_async_write_data", _REAL_WRITE)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_automation.secrets.randbelow", lambda _: 0)
+    cfg = settings_runtime.entry
+    client = await hass_ws_client(hass)
+    freezer.move_to("2026-10-24T00:00:00Z")
+    await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE, automatic_lifecycle=True)
+    assert cfg.options[CONF_HOSTED_AUTOMATIC] is True
+    responses = {
+        "start_pairing": {"pairing_id": "pairing_1234567890", "user_code": "ABCD1234EFGH",
+            "verification_uri": "https://account.example.test/connect", "expires_at": "2026-10-24T00:10:00Z", "poll_interval_seconds": 5},
+        "pairing_status": {"pairing_id": "pairing_1234567890", "status": "approved", "expires_at": "2026-10-24T00:10:00Z"},
+        "exchange": {"installation_id": INSTALLATION, "installation_token": TOKEN,
+            "expires_at": "2026-12-01T00:00:00Z", "confirmation_expires_at": "2026-10-24T00:10:00Z"},
+        "confirm": {"installation_id": INSTALLATION, "expires_at": "2026-12-01T00:00:00Z"},
+    }
+    mocks = {}
+    for name, response in responses.items():
+        mocks[name] = AsyncMock(return_value=response)
+        monkeypatch.setattr(f"custom_components.daylight_calendar_import.hosted_transport.HostedLifecycleTransport.{name}", mocks[name])
+    status = {"account_id": ACCOUNT, "installation_id": INSTALLATION, "credential_status": "current",
+        "credential_expires_at": "2026-12-01T00:00:00Z", "account_url": "https://account.example.test/account"}
+    checked = AsyncMock(side_effect=[HostedTransportError("unauthenticated", status=401), status])
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_transport.HostedLifecycleTransport.installation_status", checked)
+    connected = await success(client, api.WS_HOSTED_ACTION, entry_id=cfg.entry_id, action="connect", processing_consent=True, installation_label="Home")
+    assert connected["pairing"]["user_code"] == "ABCD1234EFGH"
+    freezer.tick(4)
+    async_fire_time_changed(hass, datetime.now(UTC))
+    await hass.async_block_till_done()
+    mocks["pairing_status"].assert_not_called()
+    freezer.tick(1)
+    async_fire_time_changed(hass, datetime.now(UTC))
+    await hass.async_block_till_done()
+    assert (await success(client, api.WS_HOSTED_GET))["state"] == "candidate_saved"
+    freezer.tick(1)
+    async_fire_time_changed(hass, datetime.now(UTC))
+    await hass.async_block_till_done()
+    final = await success(client, api.WS_HOSTED_GET)
+    assert final["state"] == "connected" and "pairing" not in final and TOKEN not in str(final)
+    mocks["confirm"].assert_awaited_once_with(TOKEN)
+    assert checked.await_count == 2
+    assert await hass.config_entries.async_reload(cfg.entry_id)
+    freezer.tick(100)
+    async_fire_time_changed(hass, datetime.now(UTC))
+    await hass.async_block_till_done()
+    assert checked.await_count == 2
+    assert (await success(client, api.WS_HOSTED_GET))["state"] == "recovery_required"
+    mocks["start_pairing"].assert_awaited_once()
+    mocks["exchange"].assert_awaited_once()
