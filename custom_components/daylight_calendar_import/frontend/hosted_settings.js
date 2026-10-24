@@ -162,7 +162,7 @@ export class HostedConnectionSettings {
     this.connectionInvalidated = false;
     this.reconnectEntry = null;
     this.onDisconnected = () => {
-      const entryId = this.entryId;
+      const entryId = this.entryId || this.reconnectEntry;
       this.connectionInvalidated = true;
       this.clear();
       this.reconnectEntry = entryId;
@@ -196,15 +196,16 @@ export class HostedConnectionSettings {
     const hass = this.getHass();
     const next = {id: hass?.user?.id, admin: hass?.user?.is_admin === true, connection: hass?.connection};
     this._watchConnection(next.connection);
-    if (!next.admin || next.connection?.connected === false || this.session &&
-        (next.id !== this.session.id || next.admin !== this.session.admin ||
-          next.connection !== this.session.connection)) this.clear();
+    const changed = this.session && (next.id !== this.session.id ||
+      next.admin !== this.session.admin || next.connection !== this.session.connection);
+    if (!next.admin || changed) this.clear();
+    else if (next.connection?.connected === false) this.clear({preserveReconnect: true});
     this.session = next;
     return next.admin && next.connection?.connected !== false && !this.connectionInvalidated;
   }
 
-  clear() {
-    this.reconnectEntry = null;
+  clear({preserveReconnect = false} = {}) {
+    if (!preserveReconnect) this.reconnectEntry = null;
     this.generation++;
     this.entryId = null;
     this.loaded = false;
