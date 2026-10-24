@@ -92,6 +92,26 @@ class CandidateCredential:
 
 
 @dataclass(frozen=True, slots=True)
+class PairingAttempt:
+    """Private recovery metadata; approval display data is transient only."""
+
+    pairing_id: str
+    expires_at: str
+    poll_interval_seconds: int
+    next_poll_at: str
+    exchange_attempted: bool = False
+
+    def __post_init__(self) -> None:
+        _text(self.pairing_id, _IDENTIFIER)
+        object.__setattr__(self, "expires_at", _deadline(self.expires_at))
+        object.__setattr__(self, "next_poll_at", _deadline(self.next_poll_at))
+        if (type(self.poll_interval_seconds) is not int
+                or not 5 <= self.poll_interval_seconds <= 30
+                or type(self.exchange_attempted) is not bool):
+            raise ValueError("invalid pairing recovery metadata")
+
+
+@dataclass(frozen=True, slots=True)
 class CredentialCheckpoint:
     """Immutable recovery material; repr never exposes tokens or verifiers."""
 
@@ -99,6 +119,7 @@ class CredentialCheckpoint:
     processing_consent: bool = False
     local_disconnect: str = "none"
     rotation_not_before: str | None = None
+    pairing: PairingAttempt | None = None
     pairing_verifier: str | None = field(default=None, repr=False)
     current: BoundCredential | None = field(default=None, repr=False)
     candidate: CandidateCredential | None = field(default=None, repr=False)
@@ -113,10 +134,15 @@ class CredentialCheckpoint:
         if self.local_disconnect == "confirmed" and any((
             self.processing_consent, self.pairing_verifier, self.current, self.candidate,
             self.rotation_not_before,
+            self.pairing,
         )):
             raise ValueError("confirmed disconnect retains credential material")
         if self.pairing_verifier is not None:
             _text(self.pairing_verifier, _VERIFIER)
+        if self.pairing is not None and (
+            type(self.pairing) is not PairingAttempt or self.pairing_verifier is None
+        ):
+            raise ValueError("pairing metadata requires a verifier")
         if self.rotation_not_before is not None:
             object.__setattr__(self, "rotation_not_before", _deadline(self.rotation_not_before))
             if not self.processing_consent or self.current is None:
@@ -131,14 +157,16 @@ class CredentialCheckpoint:
 
 def _decode(data: Any) -> CredentialCheckpoint:
     fields = set(CredentialCheckpoint.__dataclass_fields__)
-    if type(data) is not dict or set(data) not in (
-        fields, fields - {"rotation_not_before"}, fields - {"local_disconnect"},
-        fields - {"rotation_not_before", "local_disconnect"},
-    ):
+    optional = {"rotation_not_before", "local_disconnect", "pairing"}
+    if (type(data) is not dict or set(data) - fields
+            or fields - set(data) - optional):
         raise ValueError("invalid credential checkpoint")
     values = dict(data)
-    for key, kind in (("current", BoundCredential), ("candidate", CandidateCredential)):
-        if values[key] is not None:
+    for key, kind in (
+        ("current", BoundCredential), ("candidate", CandidateCredential),
+        ("pairing", PairingAttempt),
+    ):
+        if values.get(key) is not None:
             if type(values[key]) is not dict:
                 raise ValueError("invalid credential bundle")
             values[key] = kind(**values[key])

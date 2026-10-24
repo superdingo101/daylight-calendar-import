@@ -56,9 +56,8 @@ Old code cannot read a newly extended checkpoint: roll back code only while
 hosted remains dormant, preserve the private file and use forward repair rather
 than deleting or manually editing it. Storage uncertainty stops network work.
 
-Pairing issuance, durable exchange intent, retry scheduling, native
-consent/connect/repair settings and runtime registration remain follow-on P02
-work. Live M2 evidence remains separate from unit/CI success.
+Automatic retry/renewal scheduling, native consent/connect/repair settings and
+runtime registration remain follow-on P02 work. Live M2 evidence remains separate from unit/CI success.
 
 ## Explicit rotation and renewal intent
 
@@ -92,3 +91,46 @@ The decoder accepts the earlier checkpoint shapes. Older code rejects the new
 field, so preserve private files and repair forward rather than downgrading or
 removing recovery material. This change neither activates hosted processing nor
 changes local imports, review state, calendar writes, or journal namespaces.
+
+## First-connection pairing and exchange
+
+`async_start_pairing` requires an explicit boolean processing-consent input and
+an empty credential namespace without a local disconnect marker. It creates a
+fresh random verifier, atomically saves consent/verifier, then makes one pairing
+creation request. Only after saving the returned pairing identity/expiry does it
+return transient owner instructions (code and trusted verification URI). Neither
+the verifier nor a bearer credential enters this result; codes are omitted from
+its representation. The UI must display them only in the intended pairing flow,
+never in general diagnostics. Approval codes/URLs are not stored in the private
+checkpoint. After restart, polling can resume; redisplaying instructions requires
+a new explicit pairing and approval.
+
+A lost creation response leaves the saved verifier without a pairing identity.
+It is abandoned to server expiry. A fresh explicit start uses a new verifier;
+it never retries the old creation or retrieves an old secret. Starting with any
+saved current/candidate credential is blocked for reconciliation. This first
+connection primitive does not implement replacement or owner-authorized recovery
+of an earlier disconnected namespace.
+
+`async_poll_pairing` makes at most one status request and, if approved, at most
+one exchange. The durable poll gate includes the 15-second transport budget and
+the advertised interval, preventing early polling after restart/cancellation.
+A slow checkpoint cannot send a request after consuming that safety margin.
+Canonical Retry-After extends the saved gate. There is no timer/background loop;
+the future runtime consumer must also bound total attempts and apply jittered
+backoff. Expired attempts require fresh pairing. The original server expiry is
+immutable; a changed expiry fails closed.
+
+Before exchanging, save `exchange_attempted: true`. Lost/cancelled/invalid
+exchange responses or failed candidate persistence leave that marker intact;
+restart never replays the POST. Fresh pairing and explicit owner approval are
+required instead. Save received candidate credentials before returning
+`candidate_saved`; only the existing separate reconciliation path may confirm
+and bind them. Promotion removes the verifier/pairing metadata. The same
+credential/confirmation deadline bounds apply to exchange and rotation.
+
+The optional `pairing` recovery metadata extends the closed checkpoint format.
+Earlier shapes decode with no attempt; malformed metadata fails closed. Older
+code cannot read the new shape, so preserve files and use forward repair.
+Native runtime integration must bind saved material to its trusted service
+configuration before sending it, as required by the checkpoint contract.

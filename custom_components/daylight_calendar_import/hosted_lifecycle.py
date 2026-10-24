@@ -7,7 +7,7 @@ rotation and disconnect are never replayed here. Callers own scheduling and UI.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -15,8 +15,13 @@ from .hosted_credentials import (
     BoundCredential,
     CandidateCredential,
     HostedCredentialStore,
+    PairingAttempt,
 )
-from .hosted_transport import HostedLifecycleTransport, HostedTransportError
+from .hosted_transport import (
+    HostedLifecycleTransport,
+    HostedTransportError,
+    new_pairing_verifier,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +31,16 @@ class HostedConnectionResult:
     state: str
     credential_status: str | None = None
     credential_expires_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HostedPairingInstructions:
+    """Transient owner display; never contains the private verifier or token."""
+
+    user_code: str = field(repr=False)
+    verification_uri: str
+    expires_at: str
+    poll_interval_seconds: int
 
 
 class HostedLifecycleController:
@@ -113,6 +128,7 @@ class HostedLifecycleController:
                         candidate=None,
                         pairing_verifier=None,
                         rotation_not_before=None,
+                        pairing=None,
                     ),
                 )
                 # An overlap token still authorizes ordinary work until its
@@ -127,6 +143,126 @@ class HostedLifecycleController:
         return HostedConnectionResult(
             "disconnected" if state == "confirmed" else "remote_disconnect_unconfirmed"
         )
+
+    async def async_start_pairing(
+        self, *, processing_consent: bool, installation_label: str
+    ) -> HostedPairingInstructions | HostedConnectionResult:
+        """Explicit first connection; a lost creation is abandoned, never replayed.
+
+        Each invocation creates a fresh verifier and needs owner approval. A
+        saved installation or local disconnect requires separate owner/journal
+        reconciliation; this operation cannot silently replace either one.
+        """
+        async with self._lock:
+            checkpoint = self._store.snapshot
+            if type(processing_consent) is not bool or not processing_consent:
+                return HostedConnectionResult("consent_required")
+            if checkpoint.local_disconnect != "none":
+                return self._disconnected(checkpoint.local_disconnect)
+            if checkpoint.current is not None or checkpoint.candidate is not None:
+                return HostedConnectionResult("reconciliation_required")
+            verifier = new_pairing_verifier()
+            intent = await self._store.async_checkpoint(
+                checkpoint, replace(
+                    checkpoint, processing_consent=True, pairing_verifier=verifier,
+                    pairing=None,
+                ),
+            )
+            started = await self._transport.start_pairing(verifier, installation_label)
+            now = datetime.now(UTC)
+            attempt = PairingAttempt(
+                started["pairing_id"], started["expires_at"],
+                started["poll_interval_seconds"],
+                (now + timedelta(seconds=started["poll_interval_seconds"])).isoformat(),
+            )
+            if datetime.fromisoformat(attempt.expires_at) > now + timedelta(seconds=630):
+                raise HostedTransportError("invalid_response")
+            await self._store.async_checkpoint(intent, replace(intent, pairing=attempt))
+            return HostedPairingInstructions(
+                started["user_code"], started["verification_uri"], attempt.expires_at,
+                attempt.poll_interval_seconds,
+            )
+
+    async def async_poll_pairing(self) -> HostedConnectionResult:
+        """One bounded poll and, only after owner approval, one durable exchange.
+
+        No background task or transparent POST retry is installed. A consumed
+        or uncertain exchange requires a new explicit pairing and owner approval.
+        Saved candidates must pass the existing separate reconciliation path.
+        """
+        async with self._lock:
+            checkpoint = self._store.snapshot
+            if checkpoint.local_disconnect != "none":
+                return self._disconnected(checkpoint.local_disconnect)
+            if not checkpoint.processing_consent:
+                return HostedConnectionResult("disconnected")
+            if checkpoint.current is not None:
+                return HostedConnectionResult("reconciliation_required")
+            if checkpoint.candidate is not None:
+                return HostedConnectionResult("recovery_required")
+            attempt = checkpoint.pairing
+            if attempt is None or attempt.exchange_attempted:
+                return HostedConnectionResult("fresh_pairing_required")
+            now = datetime.now(UTC)
+            if now >= datetime.fromisoformat(attempt.expires_at):
+                return HostedConnectionResult("fresh_pairing_required")
+            if now < datetime.fromisoformat(attempt.next_poll_at):
+                return HostedConnectionResult("pairing_wait")
+            polling = await self._store.async_checkpoint(checkpoint, replace(
+                checkpoint, pairing=replace(attempt, next_poll_at=(
+                    now + timedelta(seconds=15 + attempt.poll_interval_seconds)
+                ).isoformat()),
+            ))
+            if datetime.now(UTC) + timedelta(seconds=attempt.poll_interval_seconds) > datetime.fromisoformat(
+                polling.pairing.next_poll_at
+            ):
+                return HostedConnectionResult("pairing_wait")
+            try:
+                status = await self._transport.pairing_status(
+                    attempt.pairing_id, polling.pairing_verifier
+                )
+            except HostedTransportError as error:
+                if error.retry_after is not None:
+                    await self._store.async_checkpoint(polling, replace(
+                        polling, pairing=replace(polling.pairing, next_poll_at=max(
+                            datetime.fromisoformat(polling.pairing.next_poll_at),
+                            datetime.now(UTC) + timedelta(seconds=error.retry_after),
+                        ).isoformat()),
+                    ))
+                raise
+            if datetime.fromisoformat(status["expires_at"].upper()) != datetime.fromisoformat(
+                attempt.expires_at
+            ):
+                raise HostedTransportError("identity_mismatch")
+            if status["status"] != "approved":
+                return HostedConnectionResult(
+                    "pairing_pending" if status["status"] == "pending" else "fresh_pairing_required"
+                )
+            exchange = await self._store.async_checkpoint(polling, replace(
+                polling, pairing=replace(polling.pairing, exchange_attempted=True),
+            ))
+            issued = await self._transport.exchange(
+                attempt.pairing_id, exchange.pairing_verifier
+            )
+            candidate = self._issued_candidate(issued)
+            await self._store.async_checkpoint(exchange, replace(exchange, candidate=candidate))
+            return HostedConnectionResult("candidate_saved")
+
+    @staticmethod
+    def _issued_candidate(issued: dict[str, Any]) -> CandidateCredential:
+        candidate = CandidateCredential(
+            issued["installation_id"], issued["installation_token"],
+            issued["expires_at"], issued["confirmation_expires_at"],
+        )
+        received = datetime.now(UTC)
+        if (
+            datetime.fromisoformat(candidate.expires_at)
+            > received + timedelta(days=90, seconds=30)
+            or datetime.fromisoformat(candidate.confirmation_expires_at)
+            > received + timedelta(seconds=630)
+        ):
+            raise HostedTransportError("invalid_response")
+        return candidate
 
     async def async_rotate(self) -> HostedConnectionResult:
         """Explicitly request one renewal; reconcile saved candidates separately.
@@ -177,20 +313,9 @@ class HostedLifecycleController:
             ):
                 return HostedConnectionResult("rotation_wait")
             issued = await self._transport.rotate(current.token)
-            candidate = CandidateCredential(
-                issued["installation_id"], issued["installation_token"],
-                issued["expires_at"], issued["confirmation_expires_at"],
-            )
+            candidate = self._issued_candidate(issued)
             if candidate.installation_id != current.installation_id:
                 raise HostedTransportError("identity_mismatch")
-            received = datetime.now(UTC)
-            if (
-                datetime.fromisoformat(candidate.expires_at)
-                > received + timedelta(days=90, seconds=30)
-                or datetime.fromisoformat(candidate.confirmation_expires_at)
-                > received + timedelta(seconds=630)
-            ):
-                raise HostedTransportError("invalid_response")
             await self._store.async_checkpoint(intent, replace(intent, candidate=candidate))
             return HostedConnectionResult("candidate_saved")
 
@@ -235,6 +360,7 @@ class HostedLifecycleController:
                     pairing_verifier=None,
                     local_disconnect="confirmed",
                     rotation_not_before=None,
+                    pairing=None,
                 ),
             )
             return self._disconnected("confirmed")
