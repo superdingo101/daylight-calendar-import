@@ -88,7 +88,7 @@ test("uploaded filenames are safe and based on signatures, without modifying ori
     await submitFile(hass, file);
     const uploadedFile = hass.http[0].body.get("file");
     assert.equal(uploadedFile.name, expectedName);
-    assert.doesNotMatch(uploadedFile.name, /~|\\.\\.|[/\\\\]/);
+    assert.doesNotMatch(uploadedFile.name, /~|\.\.|[/\\]/);
     assert.deepEqual(new Uint8Array(await uploadedFile.arrayBuffer()), new Uint8Array(await file.arrayBuffer()));
     assert.equal(file.name, originalName);
     assert.equal(hass.ws[0].service, expectedService);
