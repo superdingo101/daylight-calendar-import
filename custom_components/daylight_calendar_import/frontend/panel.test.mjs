@@ -6162,3 +6162,84 @@ test("fall-back occurrence selection survives switching to all day and back", ()
   assert.equal(startFold.value, "2026-11-01T01:30:00-08:00");
   assert.equal(endFold.value, "2026-11-01T01:45:00-08:00");
 });
+
+
+test("hosted settings load only in their native tab and clear approval on navigation or session loss", async () => {
+  const calls = [];
+  const general = {entry_id: "entry-1", ai_task_entity: "ai_task.openai", calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"], notifications: {enabled: false, target: null, classes: []}, email: {}};
+  const hosted = {entry_id: "entry-1", configured: true, api_origin: "https://api.example.test",
+    account_origin: "https://account.example.test", account_url: null, state: "disconnected",
+    credential_status: null, credential_expires_at: null};
+  const pairing = {user_code: "ABCD1234EFGH", verification_uri: "https://account.example.test/connect",
+    expires_at: "2026-12-01T00:10:00Z", poll_interval_seconds: 5};
+  const hass = {user: {id: "owner", is_admin: true}, connection: {connected: true}, states: {}, callWS: async message => {
+    calls.push(message);
+    if (message.type === "daylight_calendar_import/settings/get") return general;
+    if (message.type === "daylight_calendar_import/hosted/get") return hosted;
+    if (message.type === "daylight_calendar_import/hosted/action") return {...hosted, state: "pairing_pending", pairing};
+    return {response: {imports: []}};
+  }};
+  const panel = new DaylightImportPanel(); panel.hass = hass; await flush();
+  await panel.showSettings();
+  assert.equal(calls.some(call => call.type.includes("/hosted/")), false);
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Daylight Cloud").click();
+  await flush();
+  assert.equal(panel._settingsTab, "hosted");
+  assert.equal(calls.filter(call => call.type === "daylight_calendar_import/hosted/get").length, 1);
+  assert.equal(find(panel._content, "h2").textContent, "Daylight connection");
+  await panel._hostedSettings.submit("connect", {processing_consent: true, installation_label: "Home"});
+  await flush();
+  assert.equal(panel._hostedSettings.pairing.user_code, pairing.user_code);
+  assert.equal(panel._settingsSaving, false);
+  assert.equal(panel._settings.pairing, undefined);
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  assert.equal(panel._hostedSettings.pairing, null);
+  await panel.showSettings("hosted"); await flush();
+  assert.equal(panel._hostedSettings.pairing, null);
+  await panel._hostedSettings.submit("connect", {processing_consent: true, installation_label: "Home"});
+  panel.hass = {...hass, user: {id: "other", is_admin: true}};
+  assert.equal(panel._hostedSettings.pairing, null);
+  assert.equal(panel._hostedSettings.snapshot, null);
+  await panel.showReview();
+  assert.equal(panel._view, "inbox");
+  assert.equal(panel._hostedSettings.loaded, false);
+  panel.disconnectedCallback();
+  assert.equal(panel._hostedSettings.pairing, null);
+});
+
+
+test("late hosted responses cannot resurrect a pairing after panel disconnection", async () => {
+  const general = {entry_id: "entry-1", ai_task_entity: "ai_task.openai", calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"], notifications: {enabled: false, target: null, classes: []}, email: {}};
+  const hosted = {entry_id: "entry-1", configured: true, api_origin: "https://api.example.test",
+    account_origin: "https://account.example.test", account_url: null, state: "disconnected",
+    credential_status: null, credential_expires_at: null};
+  let finish;
+  const calls = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {id: "owner", is_admin: true}, states: {}, callWS: async message => {
+    calls.push(message);
+    if (message.type === "daylight_calendar_import/settings/get") return general;
+    if (message.type === "daylight_calendar_import/hosted/get") return hosted;
+    if (message.type === "daylight_calendar_import/hosted/action") return new Promise(resolve => { finish = resolve; });
+    return {response: {imports: []}};
+  }};
+  await flush(); await panel.showSettings("hosted"); await flush();
+  const operation = panel._hostedSettings.submit("connect", {processing_consent: true, installation_label: "Home"});
+  await flush();
+  assert.equal(panel._settingsSaving, true);
+  panel.disconnectedCallback();
+  finish({...hosted, pairing: {user_code: "ABCD1234EFGH", verification_uri: "https://account.example.test/connect",
+    expires_at: "2026-12-01T00:10:00Z", poll_interval_seconds: 5}});
+  await operation; await flush();
+  assert.equal(panel._hostedSettings.pairing, null);
+  assert.equal(panel._hostedSettings.snapshot, null);
+  assert.equal(panel._settingsSaving, false);
+  assert.equal(calls.filter(call => call.type === "daylight_calendar_import/hosted/get").length, 1);
+  panel.connectedCallback(); await flush();
+  assert.equal(calls.filter(call => call.type === "daylight_calendar_import/hosted/get").length, 2);
+  assert.equal(panel._hostedSettings.pairing, null);
+});

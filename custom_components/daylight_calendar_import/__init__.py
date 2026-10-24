@@ -57,6 +57,7 @@ from .email_runtime import (
     email_review_source_text,
 )
 from .hosted_runtime import async_setup_hosted_runtime
+from .hosted_settings_api import async_register_hosted_settings_api
 from .models import DraftValidationError, EventDraft
 from .dedup import source_fingerprint
 from .calendar_observation import CalendarObservationError, async_classify_conflicts
@@ -245,6 +246,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     """Set up integration-wide APIs that survive config-entry reloads."""
     del config
     async_register_settings_api(hass)
+    async_register_hosted_settings_api(hass)
     return True
 
 
@@ -1128,14 +1130,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             store.accepting_services = not getattr(
                 store, "calendar_settings_reload_guard", False
             )
-            if hosted is not None and store.accepting_services:
+            if (hosted is not None and store.accepting_services
+                    and not getattr(store, "hosted_settings_reload_guard", False)):
                 hosted.resume()
             raise
         if not platforms_unloaded:
             store.accepting_services = not getattr(
                 store, "calendar_settings_reload_guard", False
             )
-            if hosted is not None and store.accepting_services:
+            if (hosted is not None and store.accepting_services
+                    and not getattr(store, "hosted_settings_reload_guard", False)):
                 hosted.resume()
             return False
 
