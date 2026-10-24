@@ -68,7 +68,7 @@ test("selection shows filename as text and rejects invalid or oversized content"
 });
 
 test("images and PDFs use multipart intake with optional context", async () => {
-  for (const [selected, service] of [[image(), "submit_image"], [pdf(), "submit_pdf"]]) {
+  for (const [selected, service, uploadedName] of [[image(), "submit_image", "daylight-upload.png"], [pdf(), "submit_pdf", "daylight-upload.pdf"]]) {
     const {form, uploads, services} = setup();
     form.file.files = [selected];
     form.text.value = "Calendar: Family\nThe flyer is for next Tuesday";
@@ -78,7 +78,7 @@ test("images and PDFs use multipart intake with optional context", async () => {
     assert.equal(uploads[0].options.method, "POST");
     assert.ok(uploads[0].options.body instanceof FormData);
     const sent = uploads[0].options.body.get("file");
-    assert.equal(sent.name, selected.name);
+    assert.equal(sent.name, uploadedName);
     assert.deepEqual(new Uint8Array(await sent.arrayBuffer()), new Uint8Array(await selected.arrayBuffer()));
     assert.equal(services[0].service, service);
     assert.deepEqual(services[0].service_data, {file_id: fileId, text: form.text.value, source_id: form.attempt.sourceId});
