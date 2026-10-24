@@ -97,6 +97,7 @@ class CredentialCheckpoint:
 
     revision: int = 0
     processing_consent: bool = False
+    local_disconnect: str = "none"
     pairing_verifier: str | None = field(default=None, repr=False)
     current: BoundCredential | None = field(default=None, repr=False)
     candidate: CandidateCredential | None = field(default=None, repr=False)
@@ -106,6 +107,12 @@ class CredentialCheckpoint:
             raise ValueError("invalid checkpoint revision")
         if type(self.processing_consent) is not bool:
             raise ValueError("invalid processing consent")
+        if self.local_disconnect not in ("none", "unconfirmed", "confirmed"):
+            raise ValueError("invalid local disconnect state")
+        if self.local_disconnect == "confirmed" and any((
+            self.processing_consent, self.pairing_verifier, self.current, self.candidate,
+        )):
+            raise ValueError("confirmed disconnect retains credential material")
         if self.pairing_verifier is not None:
             _text(self.pairing_verifier, _VERIFIER)
         if self.current is not None and type(self.current) is not BoundCredential:
@@ -117,7 +124,8 @@ class CredentialCheckpoint:
 
 
 def _decode(data: Any) -> CredentialCheckpoint:
-    if type(data) is not dict or set(data) != set(CredentialCheckpoint.__dataclass_fields__):
+    fields = set(CredentialCheckpoint.__dataclass_fields__)
+    if type(data) is not dict or set(data) not in (fields, fields - {"local_disconnect"}):
         raise ValueError("invalid credential checkpoint")
     values = dict(data)
     for key, kind in (("current", BoundCredential), ("candidate", CandidateCredential)):

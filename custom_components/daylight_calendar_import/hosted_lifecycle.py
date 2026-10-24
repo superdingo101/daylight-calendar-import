@@ -21,6 +21,7 @@ class HostedConnectionResult:
 
     state: str
     credential_status: str | None = None
+    credential_expires_at: str | None = None
 
 
 class HostedLifecycleController:
@@ -70,6 +71,8 @@ class HostedLifecycleController:
         """Recover rotation/first connection after restart, without mutation replay."""
         async with self._lock:
             checkpoint = self._store.snapshot
+            if checkpoint.local_disconnect != "none":
+                return self._disconnected(checkpoint.local_disconnect)
             if not checkpoint.processing_consent:
                 return HostedConnectionResult("disconnected")
             candidate = checkpoint.candidate
@@ -109,8 +112,60 @@ class HostedLifecycleController:
                 )
                 # An overlap token still authorizes ordinary work until its
                 # effective deadline; lifecycle repair is a separate concern.
-                return HostedConnectionResult("connected", status["credential_status"])
+                return HostedConnectionResult(
+                    "connected", status["credential_status"], bound.expires_at
+                )
             return await self._previous()
+
+    @staticmethod
+    def _disconnected(state: str) -> HostedConnectionResult:
+        return HostedConnectionResult(
+            "disconnected" if state == "confirmed" else "remote_disconnect_unconfirmed"
+        )
+
+    async def async_disconnect(self) -> HostedConnectionResult:
+        """Persist the local stop before one bearer-authorized disconnect attempt.
+
+        An uncertain attempt is never replayed, including after restart. The
+        owner must reconcile it through the account portal before reconnecting.
+        Imports, review data and calendar events are not touched here.
+        """
+        async with self._lock:
+            checkpoint = self._store.snapshot
+            if checkpoint.local_disconnect != "none":
+                return self._disconnected(checkpoint.local_disconnect)
+            stopped = await self._store.async_checkpoint(
+                checkpoint,
+                replace(checkpoint, local_disconnect="unconfirmed"),
+            )
+            if stopped.current is None:
+                return self._disconnected("unconfirmed")
+            try:
+                status = await self._transport.installation_status(
+                    stopped.current.token
+                )
+                self._binding(status, stopped.current)
+                if status["credential_status"] != "current":
+                    return self._disconnected("unconfirmed")
+                result = await self._transport.disconnect(stopped.current.token)
+            except HostedTransportError as error:
+                if self._unauthorized(error):
+                    return self._disconnected("unconfirmed")
+                raise
+            if result["installation_id"] != stopped.current.installation_id:
+                raise HostedTransportError("identity_mismatch")
+            await self._store.async_checkpoint(
+                stopped,
+                replace(
+                    stopped,
+                    processing_consent=False,
+                    current=None,
+                    candidate=None,
+                    pairing_verifier=None,
+                    local_disconnect="confirmed",
+                ),
+            )
+            return self._disconnected("confirmed")
 
     async def _confirm(self, candidate: Any) -> None:
         confirmed = await self._transport.confirm(candidate.token)
@@ -132,8 +187,9 @@ class HostedLifecycleController:
             if self._unauthorized(error):
                 return HostedConnectionResult("repair_required")
             raise
-        self._binding(status, previous)
+        bound = self._binding(status, previous)
         return HostedConnectionResult(
             "previous_retained" if checkpoint.candidate is not None else "connected",
             status["credential_status"],
+            bound.expires_at,
         )
