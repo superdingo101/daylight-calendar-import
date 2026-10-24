@@ -85,6 +85,7 @@ async def test_verifier_before_creation_exchange_intent_before_issuance(pairing,
     assert "ABCD1234EFGH" not in repr(instructions)
     verifier = store.snapshot.pairing_verifier
     assert len(verifier) == 43 and verifier not in repr(instructions)
+    assert instructions.expires_at == "2026-10-24T00:10:00+00:00"
     assert instructions.poll_interval_seconds == 5
     assert (await c.async_poll_pairing()).state == "pairing_wait"
     transport.pairing_status.assert_not_called()
@@ -96,6 +97,7 @@ async def test_verifier_before_creation_exchange_intent_before_issuance(pairing,
     transport.exchange.side_effect = exchange
     freezer.tick(5)
     assert (await c.async_poll_pairing()).state == "candidate_saved"
+    transport.pairing_status.assert_awaited_once_with(PAIRING, verifier)
     saved = (await restart(hass)).snapshot
     assert saved.current is None and saved.candidate == CANDIDATE
     transport.confirm.assert_not_called()
@@ -230,7 +232,7 @@ async def test_pairing_expiry_is_immutable(pairing, freezer):
     await start(c)
     freezer.tick(5)
     transport.pairing_status.return_value["expires_at"] = "2026-10-24T00:10:01Z"
-    with pytest.raises(HostedTransportError, match="identity_mismatch"):
+    with pytest.raises(HostedTransportError, match="^identity_mismatch$"):
         await c.async_poll_pairing()
     transport.exchange.assert_not_called()
     assert store.snapshot.pairing.exchange_attempted is False
@@ -239,7 +241,7 @@ async def test_pairing_expiry_is_immutable(pairing, freezer):
 async def test_overlong_creation_expiry_not_saved(pairing):
     c, store, transport = pairing
     transport.start_pairing.return_value["expires_at"] = "2026-10-24T00:10:31Z"
-    with pytest.raises(HostedTransportError, match="invalid_response"):
+    with pytest.raises(HostedTransportError, match="^invalid_response$"):
         await start(c)
     assert store.snapshot.pairing is None and store.snapshot.pairing_verifier is not None
 
@@ -326,10 +328,75 @@ async def test_bad_exchange_deadline_never_saves_or_replays_candidate(pairing, h
     await start(c)
     freezer.tick(5)
     transport.exchange.return_value["expires_at"] = "2027-10-24T00:00:00Z"
-    with pytest.raises(HostedTransportError, match="invalid_response"):
+    with pytest.raises(HostedTransportError, match="^invalid_response$"):
         await c.async_poll_pairing()
     assert store.snapshot.candidate is None
     recovered = await restart(hass)
     assert (await HostedLifecycleController(recovered, transport).async_poll_pairing()).state == "fresh_pairing_required"
     transport.exchange.assert_awaited_once()
     transport.confirm.assert_not_called()
+
+
+async def test_new_explicit_creation_durably_abandons_existing_pairing(pairing, hass):
+    c, store, transport = pairing
+    await start(c)
+    previous = store.snapshot.pairing_verifier
+    assert store.snapshot.pairing is not None
+
+    async def lost_creation(verifier, _label):
+        disk = (await restart(hass)).snapshot
+        assert verifier != previous and disk.pairing_verifier == verifier
+        assert disk.pairing is None
+        raise HostedTransportError("service_unavailable")
+
+    transport.start_pairing.side_effect = lost_creation
+    with pytest.raises(HostedTransportError, match="^service_unavailable$"):
+        await start(c)
+    recovered = await restart(hass)
+    assert recovered.snapshot.pairing is None
+    assert (await HostedLifecycleController(recovered, transport).async_poll_pairing()).state == "fresh_pairing_required"
+    transport.exchange.assert_not_called()
+
+
+async def test_pairing_creation_accepts_exact_maximum_deadline(pairing):
+    c, store, transport = pairing
+    transport.start_pairing.return_value["expires_at"] = "2026-10-24T00:10:30Z"
+    instructions = await start(c)
+    assert instructions.expires_at == "2026-10-24T00:10:30+00:00"
+    assert store.snapshot.pairing.expires_at == instructions.expires_at
+    transport.exchange.assert_not_called()
+
+
+async def test_poll_checkpoint_at_exact_safety_margin_can_send(pairing, freezer, monkeypatch):
+    c, store, transport = pairing
+    await start(c)
+    verifier = store.snapshot.pairing_verifier
+    freezer.tick(5)
+    original = store.async_checkpoint
+
+    async def delayed(*args):
+        result = await original(*args)
+        freezer.tick(15)
+        return result
+
+    monkeypatch.setattr(store, "async_checkpoint", delayed)
+    transport.pairing_status.return_value["status"] = "pending"
+    assert (await c.async_poll_pairing()).state == "pairing_pending"
+    transport.pairing_status.assert_awaited_once_with(PAIRING, verifier)
+    transport.exchange.assert_not_called()
+
+
+async def test_confirmed_disconnect_cannot_poll_pairing(pairing):
+    c, store, transport = pairing
+    initial = store.snapshot
+    await store.async_checkpoint(initial, replace(initial, local_disconnect="confirmed"))
+    assert (await c.async_poll_pairing()).state == "disconnected"
+    assert not transport.mock_calls
+
+
+def test_pairing_metadata_accepts_maximum_poll_interval():
+    attempt = PairingAttempt(PAIRING, DEADLINE, 30, DEADLINE)
+    checkpoint = CredentialCheckpoint(
+        processing_consent=True, pairing_verifier="v" * 43, pairing=attempt,
+    )
+    assert _decode(asdict(checkpoint)).pairing.poll_interval_seconds == 30
