@@ -31,6 +31,7 @@ class HostedConnectionResult:
     state: str
     credential_status: str | None = None
     credential_expires_at: str | None = None
+    account_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,7 +140,8 @@ class HostedLifecycleController:
                 # An overlap token still authorizes ordinary work until its
                 # effective deadline; lifecycle repair is a separate concern.
                 return HostedConnectionResult(
-                    "connected", status["credential_status"], bound.expires_at
+                    "connected", status["credential_status"], bound.expires_at,
+                    status.get("account_url"),
                 )
             return await self._previous()
 
@@ -309,7 +311,8 @@ class HostedLifecycleController:
             bound = self._binding(status, current)
             if status["credential_status"] != "current":
                 return HostedConnectionResult(
-                    "repair_required", status["credential_status"], bound.expires_at
+                    "repair_required", status["credential_status"], bound.expires_at,
+                    status.get("account_url"),
                 )
             # No POST before this durable checkpoint. The gate includes the
             # transport's whole-request budget (15s), the protocol candidate
@@ -404,4 +407,5 @@ class HostedLifecycleController:
             "previous_retained" if checkpoint.candidate is not None else "connected",
             status["credential_status"],
             bound.expires_at,
+            status.get("account_url"),
         )

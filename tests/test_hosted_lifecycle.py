@@ -333,3 +333,12 @@ async def test_unauthorized_result_has_no_verified_expiry():
     result = await c.async_reconcile()
     assert result.state == "repair_required"
     assert result.credential_expires_at is None
+
+
+@pytest.mark.parametrize("candidate", [None, CANDIDATE])
+async def test_verified_account_link_is_available_without_credentials(candidate):
+    c, _store, transport = controller(candidate=candidate)
+    transport.installation_status.return_value = status(account_url="https://account.example.test/account")
+    result = await c.async_reconcile()
+    assert result.account_url == "https://account.example.test/account"
+    assert CURRENT.token not in repr(result) and CANDIDATE.token not in repr(result)

@@ -3273,3 +3273,25 @@ async def test_oversized_combined_pdf_is_rejected_before_activity_creation(monke
     parser.assert_not_awaited()
     assert store.active_submissions == set()
     assert cleaned == [True]
+
+
+@pytest.mark.parametrize("guard", [False, True])
+@pytest.mark.parametrize("failure", ["false", "exception"])
+async def test_hosted_admission_follows_failed_platform_unload_guard(monkeypatch, guard, failure):
+    hass = FakeHass()
+    _fake_lifecycle_store(monkeypatch)
+    cfg = entry()
+    await async_setup_entry(hass, cfg)
+    store = hass.data[DOMAIN][cfg.entry_id]
+    runtime = store.hosted_runtime
+    assert runtime.accepting
+    store.calendar_settings_reload_guard = guard
+    if failure == "false":
+        hass.config_entries.async_unload_platforms.return_value = False
+        assert await async_unload_entry(hass, cfg) is False
+    else:
+        hass.config_entries.async_unload_platforms.side_effect = RuntimeError("cannot unload")
+        with pytest.raises(RuntimeError, match="cannot unload"):
+            await async_unload_entry(hass, cfg)
+    assert runtime.accepting is (not guard)
+    assert store.accepting_services is (not guard)
