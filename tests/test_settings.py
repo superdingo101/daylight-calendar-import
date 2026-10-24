@@ -943,9 +943,12 @@ async def test_integration_setup_registers_settings_api(monkeypatch):
         "custom_components.daylight_calendar_import.async_register_settings_api",
         register,
     )
+    hosted_register = Mock()
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_hosted_settings_api", hosted_register)
     hass = SimpleNamespace()
 
     assert await async_setup(hass, {}) is True
+    hosted_register.assert_called_once_with(hass)
     register.assert_called_once_with(hass)
 
 

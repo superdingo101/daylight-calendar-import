@@ -402,3 +402,20 @@ def test_pairing_metadata_accepts_maximum_poll_interval():
         processing_consent=True, pairing_verifier="v" * 43, pairing=attempt,
     )
     assert _decode(asdict(checkpoint)).pairing.poll_interval_seconds == 30
+
+
+@pytest.mark.parametrize("saved", ["live", "expired", "exchange", "creation"])
+async def test_recovery_preserves_pairing_approval_path_without_network(pairing, freezer, saved):
+    c, store, transport = pairing
+    await start(c)
+    checkpoint = store.snapshot
+    if saved == "expired":
+        freezer.tick(600)
+    elif saved == "exchange":
+        await store.async_checkpoint(checkpoint, replace(checkpoint, pairing=replace(checkpoint.pairing, exchange_attempted=True)))
+    elif saved == "creation":
+        await store.async_checkpoint(checkpoint, replace(checkpoint, pairing=None))
+    checkpoint = store.snapshot
+    transport.reset_mock()
+    assert (await c.async_reconcile()).state == ("pairing_pending" if saved == "live" else "fresh_pairing_required")
+    assert store.snapshot is checkpoint and not transport.mock_calls
