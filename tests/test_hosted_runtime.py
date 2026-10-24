@@ -252,3 +252,125 @@ async def test_stop_cancels_normal_action_and_is_bounded(runtime):
     with pytest.raises(asyncio.CancelledError):
         await running
     assert r.snapshot()["state"] == "recovery_required"
+
+
+# Mutation guards for entry ownership, public error codes, and task identity.
+# The assertions intentionally cover observable action semantics without changing
+# the hosted implementation or the project-wide mutation score threshold.
+def test_initial_hosted_runtime_state_and_entry_scoped_ownership(hass):
+    from custom_components.daylight_calendar_import.const import DOMAIN
+    from custom_components.daylight_calendar_import.hosted_runtime import HostedConnectionRuntime
+
+    r = HostedConnectionRuntime(hass, entry({CONF_HOSTED_SERVICE: SERVICE}))
+    assert r._service is None
+    assert r._accepting is False
+    assert r._stopped is False
+    assert r._loaded is False
+    registry = hass.data[f"{DOMAIN}_hosted_tasks"]
+    assert registry["hosted-entry"] is r._tasks
+    assert None not in registry
+
+
+def test_malformed_hosted_config_has_exact_safe_error():
+    with pytest.raises(ValueError) as raised:
+        service_from_options({CONF_HOSTED_SERVICE: {"api_origin": "https://api.example.test"}})
+    assert str(raised.value) == "invalid hosted configuration"
+
+
+async def test_loaded_runtime_wires_entry_store_session_and_trusted_origins(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+
+    store = AsyncMock()
+    store.async_load.return_value = CredentialCheckpoint()
+    session = object()
+    seen = {}
+    controller = object()
+
+    def store_factory(*args):
+        seen["store_args"] = args
+        return store
+
+    def session_factory(instance):
+        seen["session_hass"] = instance
+        return session
+
+    def transport_factory(*args, **kwargs):
+        seen["transport_args"] = args
+        seen["transport_kwargs"] = kwargs
+        return "transport-sentinel"
+
+    def controller_factory(*args):
+        seen["controller_args"] = args
+        return controller
+
+    monkeypatch.setattr(module, "HostedCredentialStore", store_factory)
+    monkeypatch.setattr(module, "async_get_clientsession", session_factory)
+    monkeypatch.setattr(module, "HostedLifecycleTransport", transport_factory)
+    monkeypatch.setattr(module, "HostedLifecycleController", controller_factory)
+
+    runtime = await async_setup_hosted_runtime(hass, entry({CONF_HOSTED_SERVICE: SERVICE}))
+    assert seen["store_args"] == (hass, "hosted-entry")
+    assert seen["session_hass"] is hass
+    assert seen["transport_args"] == (session,)
+    assert seen["transport_kwargs"] == SERVICE
+    assert seen["controller_args"] == (store, "transport-sentinel")
+    assert runtime._controller is controller
+    assert runtime.snapshot()["api_origin"] == SERVICE["api_origin"]
+    assert runtime.snapshot()["account_origin"] == SERVICE["account_origin"]
+    assert runtime.snapshot()["configured"] is True
+
+
+async def test_admission_errors_are_exact_fixed_codes(runtime):
+    r, _ = runtime
+
+    async def rejected(action, expected, **kwargs):
+        with pytest.raises(HostedRuntimeError) as error:
+            await r.async_action(action, **kwargs)
+        assert str(error.value) == expected
+
+    await rejected("unknown", "invalid_hosted_action")
+    await rejected("reconcile", "invalid_hosted_action", extraneous=True)
+    with pytest.raises(HostedRuntimeError) as loaded:
+        await r.async_load()
+    assert str(loaded.value) == "hosted_already_loaded"
+    r.pause()
+    await rejected("reconcile", "hosted_unloading")
+    r.resume()
+    controller = r._controller
+    r._controller = None
+    await rejected("reconcile", "hosted_unavailable")
+    r._controller = controller
+    marker = object()
+    r._tasks.add(marker)
+    try:
+        await rejected("reconcile", "hosted_busy")
+    finally:
+        r._tasks.remove(marker)
+
+
+async def test_explicit_action_has_named_entry_owned_task(runtime, hass):
+    from custom_components.daylight_calendar_import.const import DOMAIN
+
+    r, _ = runtime
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked():
+        started.set()
+        await release.wait()
+        return HostedConnectionResult("connected")
+
+    controller = AsyncMock()
+    controller.async_reconcile.side_effect = blocked
+    r._controller = controller
+    waiter = asyncio.create_task(r.async_action("reconcile"))
+    try:
+        await started.wait()
+        assert r._task is not None
+        assert r._task.get_name() == "Daylight hosted lifecycle"
+        assert r._task in hass.data[f"{DOMAIN}_hosted_tasks"]["hosted-entry"]
+        assert r.busy
+    finally:
+        release.set()
+        await waiter
+    assert not r.busy
