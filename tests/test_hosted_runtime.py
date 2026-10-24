@@ -1,0 +1,254 @@
+"""Entry-owned hosted actions retain uncertainty and keep local setup available."""
+
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from custom_components.daylight_calendar_import.hosted_credentials import (
+    CredentialCheckpoint,
+    HostedCredentialConflict,
+    HostedCredentialStorageError,
+)
+from custom_components.daylight_calendar_import.hosted_lifecycle import (
+    HostedConnectionResult,
+    HostedPairingInstructions,
+)
+from custom_components.daylight_calendar_import.hosted_runtime import (
+    CONF_HOSTED_SERVICE,
+    HostedRuntimeError,
+    async_setup_hosted_runtime,
+    service_from_options,
+)
+from custom_components.daylight_calendar_import.hosted_transport import (
+    HostedServiceBinding,
+    HostedTransportError,
+)
+
+SERVICE = {"api_origin": "https://api.example.test", "account_origin": "https://account.example.test"}
+
+
+def entry(options=None):
+    return SimpleNamespace(entry_id="hosted-entry", options=options or {})
+
+
+@pytest.fixture
+async def runtime(hass, monkeypatch):
+    store = AsyncMock()
+    store.async_load.return_value = CredentialCheckpoint()
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_runtime.HostedCredentialStore", lambda *_: store)
+    r = await async_setup_hosted_runtime(hass, entry({CONF_HOSTED_SERVICE: SERVICE}))
+    assert not r.accepting
+    r.resume()
+    assert r.accepting and not r.busy
+    return r, store
+
+
+async def test_no_configuration_never_constructs_store_or_activates_network(hass, monkeypatch):
+    constructor = AsyncMock()
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_runtime.HostedCredentialStore", constructor)
+    r = await async_setup_hosted_runtime(hass, entry())
+    assert r.snapshot() == {
+        "entry_id": "hosted-entry", "configured": False, "api_origin": None,
+        "account_origin": None, "state": "not_configured", "account_url": None,
+        "credential_status": None, "credential_expires_at": None,
+    }
+    constructor.assert_not_called()
+    with pytest.raises(HostedRuntimeError, match="hosted_already_loaded"):
+        await r.async_load()
+    r.resume()
+    with pytest.raises(HostedRuntimeError, match="hosted_unavailable"):
+        await r.async_action("reconcile")
+    await r.async_stop()
+    await r.async_stop()
+    r.resume()
+    with pytest.raises(HostedRuntimeError, match="hosted_unloading"):
+        await r.async_action("disconnect")
+
+
+@pytest.mark.parametrize("value", [{}, [], "secret", {**SERVICE, "extra": True}, {**SERVICE, "api_origin": "http://bad.test"}])
+async def test_bad_configuration_is_hosted_only_repair(hass, value):
+    r = await async_setup_hosted_runtime(hass, entry({CONF_HOSTED_SERVICE: value}))
+    assert r.snapshot()["state"] == "configuration_repair"
+    assert r.snapshot()["api_origin"] is None
+    with pytest.raises(ValueError):
+        service_from_options({CONF_HOSTED_SERVICE: value})
+
+
+@pytest.mark.parametrize("checkpoint, expected", [
+    (CredentialCheckpoint(), "disconnected"),
+    (CredentialCheckpoint(processing_consent=True), "recovery_required"),
+    (CredentialCheckpoint(local_disconnect="unconfirmed"), "remote_disconnect_unconfirmed"),
+    (CredentialCheckpoint(local_disconnect="confirmed"), "disconnected"),
+    (CredentialCheckpoint(service_binding=HostedServiceBinding("https://other.test", SERVICE["account_origin"])), "service_repair"),
+])
+async def test_loaded_state_is_not_remote_authority(hass, monkeypatch, checkpoint, expected):
+    store = AsyncMock()
+    store.async_load.return_value = checkpoint
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_runtime.HostedCredentialStore", lambda *_: store)
+    r = await async_setup_hosted_runtime(hass, entry({CONF_HOSTED_SERVICE: SERVICE}))
+    assert r.snapshot()["state"] == expected
+    assert r.snapshot()["credential_expires_at"] is None
+    assert r.snapshot()["account_url"] is None
+
+
+async def test_storage_failure_does_not_escape_into_entry_setup(hass, monkeypatch):
+    store = AsyncMock()
+    store.async_load.side_effect = HostedCredentialStorageError("private path and token")
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_runtime.HostedCredentialStore", lambda *_: store)
+    r = await async_setup_hosted_runtime(hass, entry({CONF_HOSTED_SERVICE: SERVICE}))
+    assert r.snapshot()["state"] == "storage_repair"
+    assert "private" not in str(r.snapshot())
+
+
+async def test_storage_load_cancellation_still_cancels_entry_setup(hass, monkeypatch):
+    async def cancelled():
+        asyncio.current_task().cancel()
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            raise HostedCredentialStorageError("private") from None
+    store = AsyncMock()
+    store.async_load.side_effect = cancelled
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_runtime.HostedCredentialStore", lambda *_: store)
+    task = asyncio.create_task(async_setup_hosted_runtime(hass, entry({CONF_HOSTED_SERVICE: SERVICE})))
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.parametrize("action", ["connect", "poll", "reconcile", "rotate", "disconnect"])
+async def test_explicit_actions_use_one_controller_and_safe_projection(runtime, action):
+    r, _store = runtime
+    method = {"connect": "async_start_pairing", "poll": "async_poll_pairing", "reconcile": "async_reconcile", "rotate": "async_rotate", "disconnect": "async_disconnect"}[action]
+    controller = AsyncMock()
+    getattr(controller, method).return_value = HostedConnectionResult("connected", "current", "2026-12-01T00:00:00Z", "https://account.example.test/account")
+    r._controller = controller
+    kwargs = {"processing_consent": True, "installation_label": "Home"} if action == "connect" else {}
+    result = await r.async_action(action, **kwargs)
+    assert result == r.snapshot()
+    assert result["account_url"] == "https://account.example.test/account"
+    getattr(controller, method).assert_awaited_once_with(**kwargs)
+
+
+async def test_approval_instructions_are_only_in_connect_response(runtime):
+    r, _store = runtime
+    c = AsyncMock()
+    c.async_start_pairing.return_value = HostedPairingInstructions("ABCD1234EFGH", "https://account.example.test/connect", "2026-10-24T00:10:00Z", 5)
+    r._controller = c
+    result = await r.async_action("connect", processing_consent=True, installation_label="Home")
+    assert result["pairing"]["user_code"] == "ABCD1234EFGH"
+    assert "pairing" not in r.snapshot() and "ABCD1234EFGH" not in str(r.snapshot())
+    assert r.snapshot()["state"] == "pairing_pending"
+
+
+@pytest.mark.parametrize("action,kwargs", [("unknown", {}), ("reconcile", {"secret": "value"})])
+async def test_invalid_actions_do_not_enter_controller(runtime, action, kwargs):
+    r, _store = runtime
+    with pytest.raises(HostedRuntimeError, match="invalid_hosted_action"):
+        await r.async_action(action, **kwargs)
+
+
+@pytest.mark.parametrize("error,state", [
+    (HostedCredentialStorageError("private"), "storage_repair"),
+    (HostedCredentialConflict("private"), "recovery_required"),
+    (HostedTransportError("service_reconciliation_required"), "service_repair"),
+    (HostedTransportError("private", status=401), "repair_required"),
+    (HostedTransportError("private", status=403), "repair_required"),
+    (HostedTransportError("private", status=503), "service_unavailable"),
+])
+async def test_failure_projection_excludes_raw_errors(runtime, error, state):
+    r, _store = runtime
+    c = AsyncMock()
+    c.async_reconcile.side_effect = error
+    r._controller = c
+    result = await r.async_action("reconcile")
+    assert result["state"] == state and "private" not in str(result)
+    if isinstance(error, (HostedCredentialStorageError, HostedCredentialConflict)):
+        with pytest.raises(HostedRuntimeError, match="hosted_unavailable"):
+            await r.async_action("reconcile")
+
+
+async def test_unexpected_failure_is_sanitized(runtime):
+    r, _store = runtime
+    c = AsyncMock()
+    c.async_reconcile.side_effect = ValueError("secret in provider error")
+    r._controller = c
+    with pytest.raises(HostedRuntimeError, match="^hosted_action_failed$"):
+        await r.async_action("reconcile")
+    assert r.snapshot()["state"] == "service_unavailable"
+
+
+async def test_one_action_no_queue_pause_resume_and_stop(runtime):
+    r, _store = runtime
+    c = AsyncMock()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    async def action():
+        entered.set()
+        await release.wait()
+        return HostedConnectionResult("connected")
+    c.async_reconcile.side_effect = action
+    r._controller = c
+    running = asyncio.create_task(r.async_action("reconcile"))
+    await entered.wait()
+    assert r.busy
+    with pytest.raises(HostedRuntimeError, match="hosted_busy"):
+        await r.async_action("rotate")
+    r.pause()
+    with pytest.raises(HostedRuntimeError, match="hosted_unloading"):
+        await r.async_action("disconnect")
+    r.resume()
+    release.set()
+    await running
+    assert not r._tasks
+    await r.async_stop()
+
+
+async def test_cancellation_ownership_survives_stop_and_reload(runtime, hass, monkeypatch):
+    r, _store = runtime
+    c = AsyncMock()
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    async def action():
+        entered.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+        return HostedConnectionResult("repair_required")
+    c.async_reconcile.side_effect = action
+    r._controller = c
+    running = asyncio.create_task(r.async_action("reconcile"))
+    await entered.wait()
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    await cancelled.wait()
+    # A stopped runtime cannot reopen admission while a cancelled request lives.
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_runtime._STOP_SECONDS", 0)
+    await r.async_stop()
+    replacement = await async_setup_hosted_runtime(hass, entry({CONF_HOSTED_SERVICE: SERVICE}))
+    assert replacement.snapshot()["state"] == "operation_finishing"
+    release.set()
+    await asyncio.gather(*tuple(r._tasks), return_exceptions=True)
+    assert not r._tasks
+
+
+async def test_stop_cancels_normal_action_and_is_bounded(runtime):
+    r, _store = runtime
+    c = AsyncMock()
+    entered = asyncio.Event()
+    async def action():
+        entered.set()
+        await asyncio.Event().wait()
+    c.async_reconcile.side_effect = action
+    r._controller = c
+    running = asyncio.create_task(r.async_action("reconcile"))
+    await entered.wait()
+    await r.async_stop()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert r.snapshot()["state"] == "recovery_required"
