@@ -98,6 +98,7 @@ class CredentialCheckpoint:
     revision: int = 0
     processing_consent: bool = False
     local_disconnect: str = "none"
+    rotation_not_before: str | None = None
     pairing_verifier: str | None = field(default=None, repr=False)
     current: BoundCredential | None = field(default=None, repr=False)
     candidate: CandidateCredential | None = field(default=None, repr=False)
@@ -111,10 +112,15 @@ class CredentialCheckpoint:
             raise ValueError("invalid local disconnect state")
         if self.local_disconnect == "confirmed" and any((
             self.processing_consent, self.pairing_verifier, self.current, self.candidate,
+            self.rotation_not_before,
         )):
             raise ValueError("confirmed disconnect retains credential material")
         if self.pairing_verifier is not None:
             _text(self.pairing_verifier, _VERIFIER)
+        if self.rotation_not_before is not None:
+            object.__setattr__(self, "rotation_not_before", _deadline(self.rotation_not_before))
+            if not self.processing_consent or self.current is None:
+                raise ValueError("rotation intent requires a current credential")
         if self.current is not None and type(self.current) is not BoundCredential:
             raise ValueError("invalid bound credential")
         if self.candidate is not None and type(self.candidate) is not CandidateCredential:
@@ -125,7 +131,10 @@ class CredentialCheckpoint:
 
 def _decode(data: Any) -> CredentialCheckpoint:
     fields = set(CredentialCheckpoint.__dataclass_fields__)
-    if type(data) is not dict or set(data) not in (fields, fields - {"local_disconnect"}):
+    if type(data) is not dict or set(data) not in (
+        fields, fields - {"rotation_not_before"}, fields - {"local_disconnect"},
+        fields - {"rotation_not_before", "local_disconnect"},
+    ):
         raise ValueError("invalid credential checkpoint")
     values = dict(data)
     for key, kind in (("current", BoundCredential), ("candidate", CandidateCredential)):
