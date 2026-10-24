@@ -29,6 +29,7 @@ from .hosted_transport import (
 
 CONF_HOSTED_SERVICE = "hosted_service"
 _STOP_SECONDS = 1
+_LOAD_SECONDS = 5
 _ACTIONS = {
     "connect": "async_start_pairing",
     "poll": "async_poll_pairing",
@@ -94,8 +95,9 @@ class HostedConnectionRuntime:
         """Load only at setup or in an admitted explicit recovery operation."""
         store = HostedCredentialStore(self._hass, self._entry_id)
         try:
-            checkpoint = await store.async_load()
-        except HostedCredentialStorageError:
+            async with asyncio.timeout(_LOAD_SECONDS):
+                checkpoint = await store.async_load()
+        except (HostedCredentialStorageError, TimeoutError):
             if asyncio.current_task().cancelling():
                 raise asyncio.CancelledError
             self._state = HostedConnectionResult("storage_repair")

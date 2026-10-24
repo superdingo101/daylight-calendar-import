@@ -420,3 +420,22 @@ async def test_cancelled_deferred_load_can_be_explicitly_recovered_after_it_sett
     store.async_load.side_effect = None
     result = await r.async_action("reconcile")
     assert result["state"] == "disconnected" and r._controller is not None
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_hosted_load_budget_preserves_local_entry_availability(hass, monkeypatch, wrapped):
+    store = AsyncMock()
+    async def blocked():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if wrapped:
+                raise HostedCredentialStorageError("private timed out read") from None
+            raise
+    store.async_load.side_effect = blocked
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_runtime.HostedCredentialStore", lambda *_: store)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_runtime._LOAD_SECONDS", 0.001)
+    r = await async_setup_hosted_runtime(hass, entry({CONF_HOSTED_SERVICE: SERVICE}))
+    assert r.snapshot()["state"] == "storage_repair"
+    assert r._controller is None and not r.busy
+    assert "private" not in str(r.snapshot())
