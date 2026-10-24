@@ -418,3 +418,90 @@ async def test_pairing_expiry_is_exclusive_at_exact_deadline(automatic, freezer)
     assert policy.plan(RECOVER) is None
     assert await policy.async_step(RECOVER) is None
     controller.async_poll_pairing.assert_not_awaited()
+
+
+
+@pytest.mark.parametrize("state,phase,action,limit,due", [
+    (RECOVER, "status", "reconcile", 6, "2026-10-24T00:00:00+00:00"),
+    (ACTIVE, "rotation", "rotate", 6, "2026-11-24T00:00:00+00:00"),
+    (NEAR, "rotation", "rotate", 6, "2026-10-24T00:00:00+00:00"),
+    (replace(ACTIVE, credential_expires_at="2026-10-24T00:00:00Z"),
+     "status", "reconcile", 6, "2026-10-24T00:00:00+00:00"),
+    (HostedConnectionResult("previous_retained", "current", CURRENT.expires_at),
+     "rotation", "rotate", 6, "2026-11-24T00:00:00+00:00"),
+    (HostedConnectionResult("automatic_attention_required", "current", CURRENT.expires_at),
+     "rotation", "rotate", 6, "2026-11-24T00:00:00+00:00"),
+])
+async def test_plan_exact_phase_action_limit_and_deadline(automatic, state, phase, action, limit, due):
+    policy, _store, _controller = automatic
+    plan = policy.plan(state)
+    assert plan is not None
+    assert plan.phase == phase
+    assert plan.action == action
+    assert plan.limit == limit
+    assert plan.due_at == datetime.fromisoformat(due)
+    assert plan.attention is False
+
+
+@pytest.mark.parametrize("attempt_number,expected_delay", [
+    (1, 16), (2, 31), (3, 61), (4, 121), (5, 241), (6, 301),
+])
+async def test_retry_backoff_is_exponential_and_capped(automatic, freezer, attempt_number, expected_delay):
+    policy, store, controller = automatic
+    controller.async_reconcile.side_effect = HostedTransportError(
+        "service_unavailable", retryable=True,
+    )
+    for index in range(attempt_number):
+        now = datetime.now(UTC)
+        with pytest.raises(HostedTransportError):
+            await policy.async_step(RECOVER)
+        record = store.snapshot.automation.status
+        assert record.attempts == index + 1
+        assert datetime.fromisoformat(record.not_before) == now + timedelta(
+            seconds=min(300, 15 * 2 ** index) + 1,
+        )
+        if index < attempt_number - 1:
+            freezer.tick(400)
+    assert controller.async_reconcile.await_count == attempt_number
+
+
+async def test_rotation_uncertainty_plan_is_exact_and_requires_attention(automatic):
+    policy, store, controller = automatic
+    old = store.snapshot
+    await store.async_checkpoint(
+        old, replace(old, rotation_not_before="2026-10-25T00:00:00Z")
+    )
+    plan = policy.plan(ACTIVE)
+    assert plan is not None
+    assert plan.action == "rotate"
+    assert plan.phase == "rotation"
+    assert plan.limit == 6
+    assert plan.due_at == datetime(2026, 10, 24, tzinfo=UTC)
+    assert plan.attention is True
+    result = await policy.async_step(ACTIVE)
+    assert result.state == "automatic_attention_required"
+    controller.async_rotate.assert_not_awaited()
+
+
+@pytest.mark.parametrize("days,attention", [(90, False), (91, False), (92, True)])
+async def test_automatic_gate_91_day_boundary(automatic, days, attention):
+    policy, store, _controller = automatic
+    plan = policy.plan(RECOVER)
+    old = store.snapshot
+    gate = datetime(2026, 10, 24, tzinfo=UTC) + timedelta(days=days)
+    await store.async_checkpoint(old, replace(
+        old, automation=AutomationState(
+            status=AutomationAttempt(plan.scope, 0, gate.isoformat())
+        ),
+    ))
+    actual = policy.plan(RECOVER)
+    assert actual.due_at == gate
+    assert actual.attention is attention
+
+
+async def test_verified_status_rejects_missing_current_and_noncurrent_result(automatic):
+    policy, store, _controller = automatic
+    assert policy._verified_status(store.snapshot, RECOVER) is None
+    old = store.snapshot
+    await store.async_checkpoint(old, replace(old, current=None))
+    assert policy._verified_status(store.snapshot, ACTIVE) is None
