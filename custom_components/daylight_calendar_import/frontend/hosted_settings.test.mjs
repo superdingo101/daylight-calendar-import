@@ -402,3 +402,35 @@ test("subscription ignores foreign or private payloads and opt-out closes it", a
   await context.settings.submit("configure", {...snapshot, automatic_lifecycle: false});
   assert.equal(context.subscriptions[0].closed, true);
 });
+
+
+test("busy outage renders and late responses preserve only the same-session reconnect intent", async () => {
+  const context = setup();
+  const {settings, getHass, setHandler, setHass, calls} = context;
+  const listeners = new Map();
+  getHass().connection.addEventListener = (event, callback) => listeners.set(event, callback);
+  getHass().connection.removeEventListener = event => listeners.delete(event);
+  await settings.load("entry-1");
+  let finish;
+  setHandler(() => new Promise(resolve => { finish = resolve; }));
+  const pending = settings.submit("connect", {processing_consent: true, installation_label: "Home"});
+  getHass().connection.connected = false;
+  listeners.get("disconnected")();
+  // The parent renders during the outage, then the interrupted call settles.
+  await settings.load("entry-1");
+  finish({...snapshot, state: "pairing_pending", pairing}); await pending;
+  assert.equal(settings.reconnectEntry, "entry-1");
+  listeners.get("disconnected")(); // Repeated outage events are harmless.
+  setHandler(async () => snapshot);
+  getHass().connection.connected = true;
+  listeners.get("ready")(); await flush();
+  assert.equal(settings.snapshot.state, "disconnected");
+  assert.equal(settings.pairing, null);
+  assert.equal(calls.filter(call => call.action).length, 1);
+  getHass().connection.connected = false;
+  listeners.get("disconnected")();
+  setHass({...getHass(), user: {id: "other", is_admin: true}});
+  settings.syncSession();
+  assert.equal(settings.reconnectEntry, null);
+  settings.stop();
+});
