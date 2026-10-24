@@ -251,9 +251,10 @@ test("socket disconnect clears codes immediately and reconnect never repeats an 
   assert.equal(settings.snapshot, null);
   await settings.load("entry-1");
   assert.equal(calls.length, count);
-  listeners.get("ready")();
-  assert.equal(calls.length, count);
   setHandler(async () => snapshot);
+  listeners.get("ready")();
+  await flush();
+  assert.equal(calls.length, count + 1);
   await settings.load("entry-1");
   assert.equal(calls.at(-1).type, "daylight_calendar_import/hosted/get");
   assert.equal(settings.pairing, null);
@@ -290,4 +291,31 @@ test("a settled previous operation has an explicit recovery control without muta
   assert.equal(calls.length, 2);
   assert.equal(calls[1].action, "reconcile");
   assert.equal(settings.snapshot.state, "disconnected");
+});
+
+
+test("socket readiness reloads safe state while open without restoring codes or actions", async () => {
+  const context = setup();
+  const listeners = new Map();
+  context.getHass().connection.addEventListener = (event, callback) => listeners.set(event, callback);
+  context.getHass().connection.removeEventListener = event => listeners.delete(event);
+  await context.settings.load("entry-1");
+  context.setHandler(async () => ({...snapshot, state: "pairing_pending", pairing}));
+  await context.settings.submit("connect", {processing_consent: true, installation_label: "Home"});
+  context.getHass().connection.connected = false;
+  listeners.get("disconnected")();
+  assert.equal(context.settings.pairing, null);
+  context.setHandler(async () => ({...snapshot, state: "recovery_required"}));
+  context.getHass().connection.connected = true;
+  listeners.get("ready")();
+  await flush();
+  assert.equal(context.settings.snapshot.state, "recovery_required");
+  assert.equal(context.calls.at(-1).type, "daylight_calendar_import/hosted/get");
+  assert.equal(context.calls.filter(call => call.action).length, 1);
+  assert.equal(context.settings.pairing, null);
+  listeners.get("disconnected")();
+  context.settings.clear(); // Navigation must not reload the closed view.
+  const count = context.calls.length;
+  listeners.get("ready")(); await flush();
+  assert.equal(context.calls.length, count);
 });
