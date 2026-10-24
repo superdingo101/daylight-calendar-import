@@ -56,6 +56,7 @@ from .email_runtime import (
     async_setup_email_runtime,
     email_review_source_text,
 )
+from .hosted_runtime import async_setup_hosted_runtime
 from .models import DraftValidationError, EventDraft
 from .dedup import source_fingerprint
 from .calendar_observation import CalendarObservationError, async_classify_conflicts
@@ -258,6 +259,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         runtime = getattr(previous_store, "email_runtime", None)
         if runtime is not None:
             await runtime.async_stop()
+        await _async_stop_hosted_runtime(previous_store)
         await _async_cancel_notification_tasks(previous_store)
         if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
             raise RuntimeError("Previous Daylight sensor rollback is incomplete")
@@ -1039,9 +1041,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             pending_store,
             process_email_document,
         )
+        pending_store.hosted_runtime = await async_setup_hosted_runtime(hass, entry)
         # Forward last: a failing email configuration cannot strand sensor entities.
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         pending_store.accepting_services = True
+        pending_store.hosted_runtime.resume()
         kick_notifications()
         runtime = pending_store.email_runtime
         if runtime is not None:
@@ -1054,6 +1058,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pending_store.notification_unsubscribe()
         await _async_cancel_notification_tasks(pending_store)
         _unregister_entry_services(hass)
+        await _async_stop_hosted_runtime(pending_store)
         cleanup_ok = True
         runtime = getattr(pending_store, "email_runtime", None)
         if runtime is not None:
@@ -1078,6 +1083,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             pending_store.rollback_pending = True
         raise
     return True
+
+
+async def _async_stop_hosted_runtime(store: PendingImportStore) -> None:
+    runtime = getattr(store, "hosted_runtime", None)
+    if runtime is not None:
+        await runtime.async_stop()
 
 
 _NOTIFICATION_CANCEL_GRACE_SECONDS = 1
@@ -1105,6 +1116,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Finish unload atomically from the caller's perspective, even on cancellation."""
     store = hass.data[DOMAIN][entry.entry_id]
     store.accepting_services = False
+    hosted = getattr(store, "hosted_runtime", None)
+    if hosted is not None:
+        hosted.pause()
 
     async def finish_unload() -> bool:
         await _async_cancel_notification_tasks(store)
@@ -1114,13 +1128,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             store.accepting_services = not getattr(
                 store, "calendar_settings_reload_guard", False
             )
+            if hosted is not None and store.accepting_services:
+                hosted.resume()
             raise
         if not platforms_unloaded:
             store.accepting_services = not getattr(
                 store, "calendar_settings_reload_guard", False
             )
+            if hosted is not None and store.accepting_services:
+                hosted.resume()
             return False
 
+        await _async_stop_hosted_runtime(store)
         getattr(store, "notification_unsubscribe", lambda: None)()
         store.on_notifications = None
         _unregister_entry_services(hass)
