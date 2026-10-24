@@ -50,7 +50,7 @@ async def test_active_candidate_promotes_only_after_bound_status():
 @pytest.mark.parametrize('auth_status', [401, 403])
 async def test_staged_candidate_confirmed_once_then_status_binds(auth_status):
     c, store, transport = controller(current=None)
-    transport.installation_status.side_effect = [HostedTransportError('forbidden', status=auth_status), status()]
+    transport.installation_status.side_effect = [HostedTransportError('unauthenticated' if auth_status == 401 else 'forbidden', status=auth_status), status()]
     assert (await c.async_reconcile()).state == 'connected'
     transport.confirm.assert_awaited_once_with(CANDIDATE.token)
     assert transport.installation_status.await_count == 2
@@ -187,3 +187,14 @@ async def test_real_disk_restart_recovers_lost_confirmation(hass, tmp_path, monk
     transport.confirm.assert_awaited_once()
     final = await HostedCredentialStore(hass, 'recovery').async_load()
     assert final.current.token == CANDIDATE.token and final.candidate is None
+
+
+@pytest.mark.parametrize("candidate", [None, CANDIDATE])
+@pytest.mark.parametrize("code,http_status", [("invalid_response", 401), ("unknown_code", 403)])
+async def test_malformed_or_unknown_auth_failure_never_reconfirms_or_discards(candidate, code, http_status):
+    c, store, transport = controller(candidate=candidate)
+    transport.installation_status.side_effect = HostedTransportError(code, status=http_status)
+    with pytest.raises(HostedTransportError, match=code):
+        await c.async_reconcile()
+    transport.confirm.assert_not_called()
+    store.async_checkpoint.assert_not_called()

@@ -47,6 +47,11 @@ class HostedLifecycleController:
             raise HostedTransportError('identity_mismatch')
         return bound
 
+    @staticmethod
+    def _unauthorized(error: HostedTransportError) -> bool:
+        return (error.status == 401 and error.code == "unauthenticated"
+                or error.status == 403 and error.code == "forbidden")
+
     async def async_reconcile(self) -> HostedConnectionResult:
         """Recover rotation/first connection after restart, without mutation replay."""
         async with self._lock:
@@ -61,12 +66,12 @@ class HostedLifecycleController:
                 try:
                     status = await self._transport.installation_status(candidate.token)
                 except HostedTransportError as error:
-                    if error.status not in (401, 403):
+                    if not self._unauthorized(error):
                         raise
                     try:
                         await self._confirm(candidate)
                     except HostedTransportError as confirmation_error:
-                        if confirmation_error.status not in (401, 403):
+                        if not self._unauthorized(confirmation_error):
                             raise
                         return await self._previous()
                     # Confirm has no household binding: status must establish it.
@@ -97,7 +102,7 @@ class HostedLifecycleController:
         try:
             status = await self._transport.installation_status(previous.token)
         except HostedTransportError as error:
-            if error.status in (401, 403):
+            if self._unauthorized(error):
                 return HostedConnectionResult('repair_required')
             raise
         self._binding(status, previous)
