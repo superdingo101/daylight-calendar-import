@@ -162,12 +162,21 @@ async def test_candidate_household_mismatch_retains_previous():
     store.async_checkpoint.assert_not_called()
 
 
-async def test_superseded_candidate_preserves_both_and_requires_repair():
+async def test_superseded_candidate_preserves_authorized_ordinary_access():
     c, store, transport = controller()
-    transport.installation_status.return_value = status(credential_status="overlap")
+    deadline = "2026-10-24T00:15:00Z"
+    transport.installation_status.return_value = status(
+        credential_status="overlap",
+        credential_expires_at=deadline,
+    )
     result = await c.async_reconcile()
-    assert (result.state, result.credential_status) == ("repair_required", "overlap")
-    store.async_checkpoint.assert_not_called()
+    assert (result.state, result.credential_status) == ("connected", "overlap")
+    promoted = store.async_checkpoint.call_args.args[1]
+    assert promoted.current.token == CANDIDATE.token
+    assert promoted.current.namespace == CURRENT.namespace
+    assert promoted.current.expires_at == "2026-10-24T00:15:00+00:00"
+    assert promoted.candidate is None
+    transport.confirm.assert_not_called()
 
 
 @pytest.mark.parametrize("current", [None, CURRENT])

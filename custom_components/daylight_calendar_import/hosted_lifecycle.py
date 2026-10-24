@@ -98,8 +98,6 @@ class HostedLifecycleController:
                     and bound.namespace != checkpoint.current.namespace
                 ):
                     raise HostedTransportError("identity_mismatch")
-                if status["credential_status"] != "current":
-                    return HostedConnectionResult("repair_required", "overlap")
                 await self._store.async_checkpoint(
                     checkpoint,
                     replace(
@@ -109,7 +107,9 @@ class HostedLifecycleController:
                         pairing_verifier=None,
                     ),
                 )
-                return HostedConnectionResult("connected", "current")
+                # An overlap token still authorizes ordinary work until its
+                # effective deadline; lifecycle repair is a separate concern.
+                return HostedConnectionResult("connected", status["credential_status"])
             return await self._previous()
 
     async def _confirm(self, candidate: Any) -> None:
