@@ -14,6 +14,7 @@ from typing import Any
 from .hosted_credentials import (
     BoundCredential,
     CandidateCredential,
+    HostedCredentialConflict,
     HostedCredentialStore,
     PairingAttempt,
 )
@@ -113,7 +114,10 @@ class HostedLifecycleController:
                     if not self._unauthorized(error):
                         raise
                     try:
-                        await self._confirm(candidate)
+                        if not await self._confirm(candidate):
+                            return await self._previous()
+                        checkpoint = self._store.snapshot
+                        candidate = checkpoint.candidate
                     except HostedTransportError as confirmation_error:
                         if not self._unauthorized(confirmation_error):
                             raise
@@ -385,11 +389,20 @@ class HostedLifecycleController:
                     local_disconnect="confirmed",
                     rotation_not_before=None,
                     pairing=None,
+                    automation=None,
                 ),
             )
             return self._disconnected("confirmed")
 
-    async def _confirm(self, candidate: Any) -> None:
+    async def _confirm(self, candidate: Any) -> bool:
+        checkpoint = self._store.snapshot
+        if checkpoint.candidate != candidate:
+            raise HostedCredentialConflict("candidate recovery changed")
+        if candidate.confirmation_attempts >= 2:
+            return False
+        await self._store.async_checkpoint(checkpoint, replace(
+            checkpoint, candidate=replace(candidate, confirmation_attempts=candidate.confirmation_attempts + 1),
+        ))
         confirmed = await self._transport.confirm(candidate.token)
         if confirmed[
             "installation_id"
@@ -397,6 +410,7 @@ class HostedLifecycleController:
             confirmed["expires_at"].upper()
         ) != datetime.fromisoformat(candidate.expires_at):
             raise HostedTransportError("identity_mismatch")
+        return True
 
     async def _previous(self) -> HostedConnectionResult:
         checkpoint = self._store.snapshot

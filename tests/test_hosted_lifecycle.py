@@ -46,6 +46,11 @@ def controller(*, current=CURRENT, candidate=CANDIDATE, consent=True):
     store.snapshot = CredentialCheckpoint(
         service_binding=HostedServiceBinding("https://api.example.test", "https://account.example.test"), processing_consent=consent, current=current, candidate=candidate
     )
+    async def checkpoint(expected, proposed):
+        assert expected is store.snapshot
+        store.snapshot = replace(proposed, revision=expected.revision + 1)
+        return store.snapshot
+    store.async_checkpoint.side_effect = checkpoint
     transport = AsyncMock()
     transport.service_binding = HostedServiceBinding("https://api.example.test", "https://account.example.test")
     transport.installation_status.return_value = status()
@@ -79,7 +84,7 @@ async def test_staged_candidate_confirmed_once_then_status_binds(auth_status):
     assert (await c.async_reconcile()).state == "connected"
     transport.confirm.assert_awaited_once_with(CANDIDATE.token)
     assert transport.installation_status.await_count == 2
-    store.async_checkpoint.assert_awaited_once()
+    assert store.async_checkpoint.await_count == 2
 
 
 @pytest.mark.parametrize("old_status", ["current", "overlap"])
@@ -92,7 +97,8 @@ async def test_failed_candidate_retains_verified_previous(old_status):
     transport.confirm.side_effect = HostedTransportError("forbidden", status=403)
     result = await c.async_reconcile()
     assert (result.state, result.credential_status) == ("previous_retained", old_status)
-    store.async_checkpoint.assert_not_called()
+    store.async_checkpoint.assert_awaited_once()
+    assert store.snapshot.candidate.confirmation_attempts == 1
     assert transport.installation_status.call_args.args == (CURRENT.token,)
 
 
@@ -134,7 +140,7 @@ async def test_uncertain_network_result_keeps_all_bundles(where):
         transport.confirm.side_effect = unavailable
     with pytest.raises(HostedTransportError, match="service_unavailable"):
         await c.async_reconcile()
-    store.async_checkpoint.assert_not_called()
+    assert store.async_checkpoint.await_count == (0 if where == "status" else 1)
     assert transport.confirm.await_count <= 1
 
 
@@ -153,7 +159,7 @@ async def test_confirmation_identity_and_original_deadline(changes):
     transport.confirm.return_value.update(changes)
     with pytest.raises(HostedTransportError, match="identity_mismatch"):
         await c.async_reconcile()
-    store.async_checkpoint.assert_not_called()
+    store.async_checkpoint.assert_awaited_once()
 
 
 async def test_candidate_household_mismatch_retains_previous():
@@ -189,7 +195,7 @@ async def test_neither_saved_credential_authorized_requires_repair(current):
     )
     transport.confirm.side_effect = HostedTransportError("forbidden", status=403)
     assert (await c.async_reconcile()).state == "repair_required"
-    store.async_checkpoint.assert_not_called()
+    store.async_checkpoint.assert_awaited_once()
 
 
 async def test_no_consent_has_no_network_side_effect():
@@ -253,7 +259,7 @@ async def test_real_disk_restart_recovers_lost_confirmation(
         await HostedLifecycleController(original, transport).async_reconcile()
     restarted = HostedCredentialStore(hass, "recovery")
     recovered = await restarted.async_load()
-    assert recovered.current == CURRENT and recovered.candidate == CANDIDATE
+    assert recovered.current == CURRENT and recovered.candidate == replace(CANDIDATE, confirmation_attempts=1)
     transport.installation_status.side_effect = None
     transport.installation_status.return_value = status()
     assert (
@@ -305,10 +311,10 @@ async def test_previous_result_exposes_effective_expiry_without_dropping_candida
     assert result.state == ("previous_retained" if candidate else "connected")
     assert result.credential_status == credential_status
     assert result.credential_expires_at == "2026-10-24T00:15:00+00:00"
-    assert store.snapshot is original
+    assert (store.snapshot is original) is (candidate is None)
     assert store.snapshot.current == CURRENT
-    assert store.snapshot.candidate == candidate
-    store.async_checkpoint.assert_not_called()
+    assert store.snapshot.candidate == (replace(candidate, confirmation_attempts=1) if candidate else None)
+    assert store.async_checkpoint.await_count == (1 if candidate else 0)
 
 
 async def test_candidate_result_exposes_verified_expiry():

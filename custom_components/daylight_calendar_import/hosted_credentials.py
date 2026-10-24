@@ -82,10 +82,13 @@ class CandidateCredential:
     token: str = field(repr=False)
     expires_at: str
     confirmation_expires_at: str
+    confirmation_attempts: int = 0
 
     def __post_init__(self) -> None:
         _text(self.installation_id, _IDENTIFIER)
         _text(self.token, _TOKEN)
+        if type(self.confirmation_attempts) is not int or not 0 <= self.confirmation_attempts <= 2:
+            raise ValueError("invalid confirmation budget")
         object.__setattr__(self, "expires_at", _deadline(self.expires_at))
         object.__setattr__(self, "confirmation_expires_at", _deadline(self.confirmation_expires_at))
         if datetime.fromisoformat(self.confirmation_expires_at) > datetime.fromisoformat(self.expires_at):
@@ -113,6 +116,50 @@ class PairingAttempt:
 
 
 @dataclass(frozen=True, slots=True)
+class AutomationAttempt:
+    """A durable request budget; its scope digest conveys no remote authority."""
+
+    scope: str
+    attempts: int
+    not_before: str
+
+    def __post_init__(self) -> None:
+        _text(self.scope, re.compile(r"[0-9a-f]{64}"))
+        if type(self.attempts) is not int or not 0 <= self.attempts <= 32:
+            raise ValueError("invalid automatic attempt budget")
+        object.__setattr__(self, "not_before", _deadline(self.not_before))
+
+
+@dataclass(frozen=True, slots=True)
+class AutomationState:
+    """Independent bounded budgets so changing phases cannot reset retries."""
+
+    status: AutomationAttempt | None = None
+    pairing: AutomationAttempt | None = None
+    candidate: AutomationAttempt | None = None
+    rotation: AutomationAttempt | None = None
+
+    def __post_init__(self) -> None:
+        if any(value is not None and type(value) is not AutomationAttempt for value in (
+            self.status, self.pairing, self.candidate, self.rotation,
+        )):
+            raise ValueError("invalid automatic state")
+
+    @classmethod
+    def decode(cls, value: Any) -> AutomationState:
+        if type(value) is not dict or set(value) != {"status", "pairing", "candidate", "rotation"}:
+            raise ValueError("invalid automatic state")
+        parsed = {}
+        for key, record in value.items():
+            if record is not None:
+                if type(record) is not dict:
+                    raise ValueError("invalid automatic budget")
+                record = AutomationAttempt(**record)
+            parsed[key] = record
+        return cls(**parsed)
+
+
+@dataclass(frozen=True, slots=True)
 class CredentialCheckpoint:
     """Immutable recovery material; repr never exposes tokens or verifiers."""
 
@@ -122,6 +169,7 @@ class CredentialCheckpoint:
     local_disconnect: str = "none"
     rotation_not_before: str | None = None
     pairing: PairingAttempt | None = None
+    automation: AutomationState | None = field(default=None, repr=False)
     pairing_verifier: str | None = field(default=None, repr=False)
     current: BoundCredential | None = field(default=None, repr=False)
     candidate: CandidateCredential | None = field(default=None, repr=False)
@@ -135,10 +183,12 @@ class CredentialCheckpoint:
             raise ValueError("invalid processing consent")
         if self.local_disconnect not in ("none", "unconfirmed", "confirmed"):
             raise ValueError("invalid local disconnect state")
+        if self.automation is not None and (type(self.automation) is not AutomationState or not self.processing_consent):
+            raise ValueError("automatic budgets require processing consent")
         if self.local_disconnect == "confirmed" and any((
             self.processing_consent, self.pairing_verifier, self.current, self.candidate,
             self.rotation_not_before,
-            self.pairing,
+            self.pairing, self.automation,
         )):
             raise ValueError("confirmed disconnect retains credential material")
         if self.pairing_verifier is not None:
@@ -161,11 +211,13 @@ class CredentialCheckpoint:
 
 def _decode(data: Any) -> CredentialCheckpoint:
     fields = set(CredentialCheckpoint.__dataclass_fields__)
-    optional = {"rotation_not_before", "local_disconnect", "pairing", "service_binding"}
+    optional = {"rotation_not_before", "local_disconnect", "pairing", "service_binding", "automation"}
     if (type(data) is not dict or set(data) - fields
             or fields - set(data) - optional):
         raise ValueError("invalid credential checkpoint")
     values = dict(data)
+    if values.get("automation") is not None:
+        values["automation"] = AutomationState.decode(values["automation"])
     for key, kind in (
         ("current", BoundCredential), ("candidate", CandidateCredential),
         ("pairing", PairingAttempt), ("service_binding", HostedServiceBinding),
@@ -173,7 +225,11 @@ def _decode(data: Any) -> CredentialCheckpoint:
         if values.get(key) is not None:
             if type(values[key]) is not dict:
                 raise ValueError("invalid credential bundle")
-            values[key] = kind(**values[key])
+            bundle = dict(values[key])
+            if key == "candidate":
+                # Legacy recovery does not prove how many confirmations were sent.
+                bundle.setdefault("confirmation_attempts", 2)
+            values[key] = kind(**bundle)
     return CredentialCheckpoint(**values)
 
 
