@@ -143,6 +143,13 @@ class HostedLifecycleController:
                     "connected", status["credential_status"], bound.expires_at,
                     status.get("account_url"),
                 )
+            if checkpoint.current is None and checkpoint.pairing_verifier is not None:
+                attempt = checkpoint.pairing
+                live = (attempt is not None and not attempt.exchange_attempted
+                        and datetime.now(UTC) < datetime.fromisoformat(attempt.expires_at))
+                return HostedConnectionResult(
+                    "pairing_pending" if live else "fresh_pairing_required"
+                )
             return await self._previous()
 
     @staticmethod

@@ -2,6 +2,8 @@ import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editD
 import {checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, settingsErrorMessage} from "./settings.js";
 
+import {HostedConnectionSettings} from "./hosted_settings.js";
+
 import {ManualSubmission} from "./manual_submission.js";
 import {FileSubmission} from "./upload_submission.js";
 
@@ -584,6 +586,15 @@ export class DaylightImportPanel extends HTMLElement {
     this._notificationConflictNeedsRebase = false;
     this._routingRawDraft = null;
     this._settingsSaving = false;
+    this._hostedDetached = false;
+    this._hostedSettings = new HostedConnectionSettings({
+      getHass: () => this._hostedDetached ? null : this._hass,
+      onBusy: busy => {
+        this._settingsSaving = busy;
+        // Let session invalidation finish before re-rendering the parent.
+        queueMicrotask(() => this.render());
+      },
+    });
     const style = element("style", css);
     const header = document.createElement("header");
     header.className = "topbar";
@@ -744,6 +755,7 @@ export class DaylightImportPanel extends HTMLElement {
 
   set hass(value) {
     this._hass = value;
+    this._hostedSettings.syncSession();
     this._syncMenuButton();
     if (!this._loaded) {
       this._loaded = true;
@@ -792,6 +804,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
     const generation = ++this._generation;
+    this._hostedSettings.clear();
     this._view = "activity";
     this._calendarCheck = null;
     this._approvalObservation = null;
@@ -816,6 +829,7 @@ export class DaylightImportPanel extends HTMLElement {
   async showReview() {
     if (this._saving || this._settingsSaving) return;
     this._clearEmailDraftPassword();
+    this._hostedSettings.clear();
     this._view = "inbox";
     this._selectedId = null;
     this._detail = null;
@@ -832,6 +846,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._settingsSaving || this._editingId ||
         this._decision || this._batchAction || this._resolution) return;
     const generation = ++this._generation;
+    if (tab !== "hosted" || reload) this._hostedSettings.clear();
     this._view = "settings";
     this._settingsTab = tab;
     this._selectedId = null;
@@ -1048,8 +1063,15 @@ export class DaylightImportPanel extends HTMLElement {
         null : sanitized;
   }
 
+  connectedCallback() {
+    this._hostedDetached = false;
+    if (this._view === "settings" && this._settingsTab === "hosted") this.render();
+  }
+
   disconnectedCallback() {
+    this._hostedDetached = true;
     this._clearEmailDraftPassword();
+    this._hostedSettings.stop();
   }
 
   async saveGeneralSettings(form) {
@@ -1106,6 +1128,7 @@ export class DaylightImportPanel extends HTMLElement {
       ["routing", "Routing"],
       ["email", "Email"],
       ["notifications", "Notifications"],
+      ["hosted", "Daylight Cloud"],
     ]) {
       const button = element("button", label);
       button.type = "button";
@@ -1113,6 +1136,7 @@ export class DaylightImportPanel extends HTMLElement {
       if (this._settingsTab === tab) button.setAttribute("aria-current", "page");
       button.addEventListener("click", () => {
         if (this._settingsSaving || this._settingsTab === tab) return;
+        this._hostedSettings.clear();
         this._settingsTab = tab;
         this._settingsError = null;
         this._announcement.replaceChildren();
@@ -1122,6 +1146,14 @@ export class DaylightImportPanel extends HTMLElement {
       nav.append(button);
     }
     return nav;
+  }
+
+  hostedSettingsView() {
+    if (!this._hostedDetached &&
+        (!this._hostedSettings.loaded || this._hostedSettings.entryId !== this._settings.entry_id)) {
+      void this._hostedSettings.load(this._settings.entry_id);
+    }
+    return this._hostedSettings.element;
   }
 
   generalSettingsView() {
@@ -2383,6 +2415,8 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   render() {
+    if ((this._view !== "settings" || this._settingsTab !== "hosted") &&
+        (this._hostedSettings.loaded || this._hostedSettings.busy)) this._hostedSettings.clear();
     this._manualSubmission.element.hidden = this._view !== "new" || this._newImportMode !== "text" || Boolean(this._selectedId);
     this._fileSubmission.element.hidden = this._view !== "new" || this._newImportMode !== "file" || Boolean(this._selectedId);
     this._refreshButton.hidden = this._view === "new";
@@ -2489,7 +2523,9 @@ export class DaylightImportPanel extends HTMLElement {
             this._settingsTab === "email" ?
               this.emailSettingsView() :
             this._settingsTab === "notifications" ?
-              this.notificationSettingsView() : this.generalSettingsView(),
+              this.notificationSettingsView() :
+            this._settingsTab === "hosted" ?
+              this.hostedSettingsView() : this.generalSettingsView(),
         );
       }
       this._viewContent.replaceChildren(content);
