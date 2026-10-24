@@ -160,8 +160,19 @@ export class HostedConnectionSettings {
     this.session = null;
     this.connection = null;
     this.connectionInvalidated = false;
-    this.onDisconnected = () => { this.connectionInvalidated = true; this.clear(); };
-    this.onReady = () => { this.connectionInvalidated = false; };
+    this.reconnectEntry = null;
+    this.onDisconnected = () => {
+      const entryId = this.entryId;
+      this.connectionInvalidated = true;
+      this.clear();
+      this.reconnectEntry = entryId;
+    };
+    this.onReady = () => {
+      this.connectionInvalidated = false;
+      const entryId = this.reconnectEntry;
+      this.reconnectEntry = null;
+      if (entryId) void this.load(entryId);
+    };
     this.render();
   }
 
@@ -193,6 +204,7 @@ export class HostedConnectionSettings {
   }
 
   clear() {
+    this.reconnectEntry = null;
     this.generation++;
     this.entryId = null;
     this.loaded = false;
