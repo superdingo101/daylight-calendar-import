@@ -391,15 +391,17 @@ test("opens detail, renders source and events as text, and returns to inbox", as
   await panel.showImport("one");
   assert.equal(requests[1].service_data.pending_id, "one");
   assert.equal(find(panel._content, "h3").textContent, "Picnic");
-  assert.equal(find(panel._content, "section").children[1].textContent,
-    "2026-10-01 · All day");
+  assert.match(find(panel._content, "section").querySelector(".event-date").textContent,
+    /Oct 1 · All day/);
   assert.equal(globalThis.focusedNode.tag, "h2");
   assert.equal(panel._announcement.textContent, undefined);
   assert.equal(find(panel._content, "p").attributes.role, undefined);
-  assert.equal(find(panel._content, "section").children[2].textContent,
-    "Calendar: calendar.family · Status: pending");
-  assert.equal(find(panel._content, "section").children[3].textContent,
-    "AI extraction confidence: 0% (estimate)");
+  assert.equal(find(panel._content, "section").querySelector(".event-status").textContent,
+    "Pending review");
+  assert.equal(find(panel._content, "section").querySelector(".event-calendar").textContent,
+    "Calendar · family");
+  assert.ok(find(panel._content, "section").querySelector(".event-diagnostics")
+    .querySelectorAll("p").some(item => item.textContent === "AI confidence: 0% (estimate)"));
   panel._content.querySelector("[data-import-back]").click();
   await flush();
   assert.equal(find(panel._content, "h2").children[0].textContent, "Picnic");
@@ -493,7 +495,7 @@ test("editor preserves long meeting descriptions and retains a stale edit on fai
     .find(button => button.dataset.eventId === "sibling");
   const edit = panel._content.querySelectorAll("button")
     .find(button => button.dataset.eventId === "event" &&
-      button.textContent === "Edit Meeting");
+      button.textContent === "Edit");
   edit.click();
   const form = find(panel._content, "form");
   assert.equal(form.elements.namedItem("description").value, description);
@@ -981,7 +983,7 @@ test("focus falls back to the detail heading if the saved event disappears", asy
   await panel.showImport("one");
   panel._content.querySelectorAll("button")
     .find(button => button.dataset.eventId === "event" &&
-      button.textContent === "Edit Meeting").click();
+      button.textContent === "Edit").click();
   await panel.saveEdit(event, find(panel._content, "form"));
   assert.equal(globalThis.focusedNode.tag, "h2");
 });
@@ -1003,7 +1005,7 @@ test("a successful save with a failed detail reload offers refresh and restores 
   await panel.showImport("one");
   panel._content.querySelectorAll("button")
     .find(button => button.dataset.eventId === "event" &&
-      button.textContent === "Edit Meeting").click();
+      button.textContent === "Edit").click();
   await panel.saveEdit(event, find(panel._content, "form"));
   assert.match(find(panel._content, "p").textContent, /saved, but the detail could not be reloaded: Offline/);
   assert.equal(globalThis.focusedNode.textContent, "Back to inbox");
@@ -1058,13 +1060,13 @@ test("rejected decision keeps the import visible with the backend error", async 
   await flush();
   await panel.showImport("one");
   find(panel._content, "section").querySelectorAll("button")
-    .find(button => button.textContent === "Reject Picnic").click();
+    .find(button => button.textContent === "Reject").click();
   await panel.runDecision(event, "reject");
   assert.equal(reads, 2);
   assert.match(find(panel._content, "p").textContent, /refresh before deciding/);
   assert.equal(globalThis.focusedNode.attributes.role, "alert");
   find(panel._content, "section").querySelectorAll("button")
-    .find(button => button.textContent === "Edit Picnic").click();
+    .find(button => button.textContent === "Edit").click();
   assert.equal(panel._decisionError, null);
 });
 
@@ -1094,7 +1096,7 @@ test("bulk approval reports each result and leaves failed events in review", asy
   assert.equal(globalThis.focusedNode.textContent, "Cancel bulk review");
   assert.equal(calls.filter(call => call.service === "approve_pending_event").length, 0);
   assert.equal(panel._content.querySelectorAll("button")
-    .some(button => button.textContent === "Edit Practice"), false);
+    .some(button => button.textContent === "Edit"), false);
   await flush(); // Automatic advisory observations finish before confirmation.
   await panel.runBatch("approve");
   const decisions = calls.filter(call => call.service === "approve_pending_event");
@@ -4647,7 +4649,7 @@ test("calendar check completion never replaces an in-progress edit", async () =>
   const pending = panel.checkCalendarEvent(event);
   const edit = panel._content.querySelectorAll("button")
     .find(button => button.dataset.eventId === "e1" &&
-      button.textContent === "Edit Dinner");
+      button.textContent === "Edit");
   edit.click();
   const form = find(panel._content, "form");
   form.elements.namedItem("title").value = "Important unsaved edit";
@@ -5962,7 +5964,7 @@ test("canceling automatic observation discards stale results and stops bulk read
   await panel.showImport("one");
   panel._content.querySelectorAll("button").find(button => button.dataset.batchAction === "approve").click();
   panel._content.querySelectorAll("button").find(button => button.textContent === "Cancel bulk review").click();
-  panel._content.querySelectorAll("button").find(button => button.textContent === "Edit Practice").click();
+  panel._content.querySelectorAll("button").find(button => button.textContent === "Edit").click();
   const form = panel._content.querySelector("form");
   release();
   await flush();
