@@ -19,6 +19,7 @@ from custom_components.daylight_calendar_import.hosted_lifecycle import (
     HostedPairingInstructions,
 )
 from custom_components.daylight_calendar_import.hosted_transport import (
+    HostedServiceBinding,
     HostedTransportError,
 )
 from tests.test_hosted_lifecycle import (
@@ -44,6 +45,7 @@ async def pairing(hass, tmp_path, monkeypatch, freezer):
     store = HostedCredentialStore(hass, "pairing")
     await store.async_load()
     transport = AsyncMock()
+    transport.service_binding = HostedServiceBinding("https://api.example.test", "https://account.example.test")
     transport.start_pairing.return_value = {
         "pairing_id": PAIRING, "user_code": "ABCD1234EFGH",
         "verification_uri": "https://account.example.test/connect",
@@ -160,7 +162,7 @@ async def test_consent_is_explicit_boolean_before_any_io(pairing, consent):
 async def test_start_cannot_bypass_replacement_or_disconnect(pairing, changes, expected):
     c, store, transport = pairing
     old = store.snapshot
-    await store.async_checkpoint(old, replace(old, **changes))
+    await store.async_checkpoint(old, replace(old, service_binding=transport.service_binding, **changes))
     assert (await start(c)).state == expected
     assert not transport.mock_calls
 
@@ -175,7 +177,7 @@ async def test_start_cannot_bypass_replacement_or_disconnect(pairing, changes, e
 async def test_poll_ineligible_state_has_no_io(pairing, changes, expected):
     c, store, transport = pairing
     old = store.snapshot
-    await store.async_checkpoint(old, replace(old, **changes))
+    await store.async_checkpoint(old, replace(old, service_binding=transport.service_binding, **changes))
     assert (await c.async_poll_pairing()).state == expected
     assert not transport.mock_calls
 

@@ -57,6 +57,10 @@ class HostedLifecycleController:
         self._transport = transport
         self._lock = asyncio.Lock()
 
+    def _require_service(self, checkpoint: Any) -> None:
+        if checkpoint.service_binding != self._transport.service_binding:
+            raise HostedTransportError("service_reconciliation_required")
+
     @staticmethod
     def _binding(status: dict[str, Any], credential: Any) -> BoundCredential:
         bound = BoundCredential(
@@ -94,6 +98,7 @@ class HostedLifecycleController:
                 return self._disconnected(checkpoint.local_disconnect)
             if not checkpoint.processing_consent:
                 return HostedConnectionResult("disconnected")
+            self._require_service(checkpoint)
             candidate = checkpoint.candidate
             if candidate is not None:
                 if (
@@ -161,10 +166,16 @@ class HostedLifecycleController:
                 return self._disconnected(checkpoint.local_disconnect)
             if checkpoint.current is not None or checkpoint.candidate is not None:
                 return HostedConnectionResult("reconciliation_required")
+            if checkpoint.service_binding is not None:
+                self._require_service(checkpoint)
+            elif checkpoint.processing_consent or checkpoint.pairing_verifier is not None:
+                # Legacy material has no trustworthy destination provenance.
+                raise HostedTransportError("service_reconciliation_required")
             verifier = new_pairing_verifier()
             intent = await self._store.async_checkpoint(
                 checkpoint, replace(
                     checkpoint, processing_consent=True, pairing_verifier=verifier,
+                    service_binding=self._transport.service_binding,
                     pairing=None,
                 ),
             )
@@ -196,6 +207,7 @@ class HostedLifecycleController:
                 return self._disconnected(checkpoint.local_disconnect)
             if not checkpoint.processing_consent:
                 return HostedConnectionResult("disconnected")
+            self._require_service(checkpoint)
             if checkpoint.current is not None:
                 return HostedConnectionResult("reconciliation_required")
             if checkpoint.candidate is not None:
@@ -277,6 +289,7 @@ class HostedLifecycleController:
                 return self._disconnected(checkpoint.local_disconnect)
             if not checkpoint.processing_consent:
                 return HostedConnectionResult("disconnected")
+            self._require_service(checkpoint)
             if checkpoint.candidate is not None or checkpoint.pairing_verifier is not None:
                 return HostedConnectionResult("recovery_required")
             current = checkpoint.current
@@ -336,6 +349,7 @@ class HostedLifecycleController:
             )
             if stopped.current is None:
                 return self._disconnected("unconfirmed")
+            self._require_service(stopped)
             try:
                 status = await self._transport.installation_status(
                     stopped.current.token

@@ -15,6 +15,7 @@ from custom_components.daylight_calendar_import.hosted_lifecycle import (
     HostedLifecycleController,
 )
 from custom_components.daylight_calendar_import.hosted_transport import (
+    HostedServiceBinding,
     HostedTransportError,
 )
 
@@ -43,9 +44,10 @@ def status(**changes):
 def controller(*, current=CURRENT, candidate=CANDIDATE, consent=True):
     store = AsyncMock()
     store.snapshot = CredentialCheckpoint(
-        processing_consent=consent, current=current, candidate=candidate
+        service_binding=HostedServiceBinding("https://api.example.test", "https://account.example.test"), processing_consent=consent, current=current, candidate=candidate
     )
     transport = AsyncMock()
+    transport.service_binding = HostedServiceBinding("https://api.example.test", "https://account.example.test")
     transport.installation_status.return_value = status()
     transport.confirm.return_value = {
         "installation_id": INSTALLATION,
@@ -234,11 +236,13 @@ async def test_real_disk_restart_recovers_lost_confirmation(
         replace(
             blank,
             processing_consent=True,
+            service_binding=HostedServiceBinding("https://api.example.test", "https://account.example.test"),
             current=CURRENT,
         ),
     )
     await original.async_checkpoint(active, replace(active, candidate=CANDIDATE))
     transport = AsyncMock()
+    transport.service_binding = HostedServiceBinding("https://api.example.test", "https://account.example.test")
     transport.installation_status.side_effect = HostedTransportError(
         "unauthenticated", status=401
     )

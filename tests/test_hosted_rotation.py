@@ -17,6 +17,7 @@ from custom_components.daylight_calendar_import.hosted_lifecycle import (
     HostedLifecycleController,
 )
 from custom_components.daylight_calendar_import.hosted_transport import (
+    HostedServiceBinding,
     HostedTransportError,
 )
 from tests.test_hosted_lifecycle import (
@@ -39,8 +40,9 @@ async def rotation(hass, tmp_path, monkeypatch, freezer):
     monkeypatch.setattr(_ImmediatePrivateStore, "_async_write_data", _REAL_WRITE)
     store = HostedCredentialStore(hass, "rotation")
     blank = await store.async_load()
-    await store.async_checkpoint(blank, replace(blank, processing_consent=True, current=CURRENT))
+    await store.async_checkpoint(blank, replace(blank, service_binding=HostedServiceBinding("https://api.example.test", "https://account.example.test"), processing_consent=True, current=CURRENT))
     transport = AsyncMock()
+    transport.service_binding = HostedServiceBinding("https://api.example.test", "https://account.example.test")
     transport.installation_status.return_value = status()
     transport.rotate.return_value = {
         "installation_id": INSTALLATION,
