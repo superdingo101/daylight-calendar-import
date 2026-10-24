@@ -101,7 +101,36 @@ const css = `
   .error { color: var(--error-color); }
   .event-description { white-space: pre-wrap; max-height: 18rem; overflow: auto; }
   .source { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; }
-  .detail-event { border-top: 1px solid var(--divider-color); padding: 12px 0; }
+  .detail-event {
+    margin: 14px 0; padding: 18px; background: var(--card-background-color);
+    border: 1px solid var(--divider-color); border-radius: 16px;
+    display: grid; gap: 10px; min-width: 0;
+  }
+  .detail-event h3 { margin: 0; font-size: 1.14rem; line-height: 1.4; overflow-wrap: anywhere; }
+  .event-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+  .event-date { margin: 0; color: var(--secondary-text-color); font-size: .9rem; font-weight: 500; }
+  .event-status { color: var(--secondary-text-color); font-size: .8rem; }
+  .event-calendar, .event-location { color: var(--secondary-text-color); font-size: .9rem; }
+  .event-note { font-size: .88rem; color: var(--warning-color, var(--primary-text-color)); }
+  .event-diagnostics { font-size: .86rem; color: var(--secondary-text-color); }
+  .event-diagnostics summary { cursor: pointer; min-height: 32px; padding: 6px 0; }
+  .event-diagnostics p { margin: 6px 0; }
+  .event-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 10px; border-top: 1px solid var(--divider-color); }
+  .event-controls button { min-height: 44px; }
+  .event-controls .event-primary { margin-left: auto; background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 600; }
+  .event-more { position: relative; }
+  .event-more summary { display: flex; align-items: center; min-height: 44px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--divider-color); cursor: pointer; list-style: none; }
+  .event-more summary::-webkit-details-marker { display: none; }
+  .event-more summary::after { content: "⋯"; font-size: 1.2rem; padding-left: 8px; line-height: 1; }
+  .event-more[open] { flex-basis: 100%; }
+  .event-more[open] summary { width: fit-content; }
+  .event-more button { margin: 4px 8px 4px 0; }
+  .event-description { margin: 0; line-height: 1.5; }
+  @media (max-width: 480px) {
+    .detail-event { padding: 14px; }
+    .event-controls .event-primary { margin-left: auto; }
+    .event-controls > button { flex: 0 1 auto; width: auto; }
+  }
   form { display: grid; gap: 12px; }
   label { display: grid; gap: 4px; }
   input, textarea, select { box-sizing: border-box; width: 100%; padding: 8px; font: inherit; color: inherit; background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; }
@@ -206,7 +235,7 @@ const css = `
       padding-left: max(12px, var(--daylight-safe-left));
     }
     li { padding: 12px; }
-    .actions button, .detail-event > button { flex: 1 1 100%; width: 100%; }
+    .actions button { flex: 1 1 100%; width: 100%; }
     nav[aria-label="Daylight views"] button {
       flex: 0 0 auto;
       width: auto;
@@ -263,6 +292,41 @@ function shouldShowMenuButton(narrow, hass) {
 
 function eventRange(event, hass) {
   return formatEventRange(event, hass?.locale, hass?.config?.time_zone);
+}
+
+// Date-only strings are calendar dates, not local instants. Format in UTC to
+// avoid shifting a school all-day event to the previous day in western zones.
+function reviewRange(event, hass) {
+  if (!event.all_day || !/^\d{4}-\d{2}-\d{2}$/.test(event.start || "") ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(event.end || "")) return eventRange(event, hass);
+  const start = new Date(event.start + "T12:00:00Z");
+  const exclusiveEnd = new Date(event.end + "T12:00:00Z");
+  if (Number.isNaN(start.getTime()) || Number.isNaN(exclusiveEnd.getTime()) ||
+      exclusiveEnd <= start) return eventRange(event, hass);
+  const end = new Date(exclusiveEnd.getTime() - 86400000);
+  try {
+    const formatter = new Intl.DateTimeFormat(hass?.locale?.language || undefined,
+      {weekday: "short", month: "short", day: "numeric", timeZone: "UTC"});
+    const first = formatter.format(start);
+    return (event.start === end.toISOString().slice(0, 10) ?
+      first : first + " – " + formatter.format(end)) + " · All day";
+  } catch {
+    return eventRange(event, hass) + " · All day";
+  }
+}
+
+function reviewCalendarName(event, hass) {
+  const entity = event.calendar_entity;
+  if (!entity) return "Default calendar";
+  const friendly = hass?.states?.[entity]?.attributes?.friendly_name;
+  if (typeof friendly === "string" && friendly.trim()) return friendly;
+  return entity.replace(/^calendar\./, "").replaceAll("_", " ");
+}
+
+function reviewStatus(status) {
+  return ({pending: "Pending review", write_uncertain: "Needs confirmation",
+    rejected: "Rejected", approved: "Approved", created: "Added to calendar"})[status] ||
+    String(status || "Unknown").replaceAll("_", " ");
 }
 
 function activityTime(value, hass) {
@@ -2671,25 +2735,40 @@ export class DaylightImportPanel extends HTMLElement {
           content.append(card);
           continue;
         }
-        card.append(element("h3", event.title || "Untitled event"));
-        card.append(element("p", `${eventRange(event, this._hass)}${event.all_day ? " · All day" : ""}`));
-        card.append(element("p", `Calendar: ${event.calendar_entity || "Default"} · Status: ${event.status}`));
-        if (event.routing_unresolved) {
-          card.append(element("p", "Routing hint was unrecognized or conflicting. Edit this event, choose its destination calendar, then save before approval.", "error"));
-        }
-        for (const assumption of event.date_time_assumptions || []) {
-          card.append(element("p", `Date/time assumption: ${assumption}`));
-        }
-        if (typeof event.confidence === "number") {
-          card.append(element("p", `AI extraction confidence: ${Math.round(event.confidence * 100)}% (estimate)`));
-        }
-        if (event.location) card.append(element("p", `Location: ${event.location}`));
+        const meta = element("div", "", "event-meta");
+        meta.append(element("p", reviewRange(event, this._hass), "event-date"));
+        meta.append(element("span", reviewStatus(event.status), "event-status"));
+        card.append(meta, element("h3", event.title || "Untitled event"));
         if (event.description) {
           const description = element("p", event.description, "event-description");
           description.setAttribute("tabindex", "0");
           description.setAttribute("role", "region");
           description.setAttribute("aria-label", "Event description");
           card.append(description);
+        }
+        card.append(element("p", "Calendar · " + reviewCalendarName(event, this._hass), "event-calendar"));
+        if (event.location) card.append(element("p", "Location · " + event.location, "event-location"));
+        if (event.routing_unresolved) {
+          card.append(element("p", "Choose a destination calendar before approving this event.", "error"));
+        }
+        if (event.date_time_assumptions?.length) {
+          const yearInferred = event.date_time_assumptions.some(note => /year/i.test(note));
+          card.append(element("p", yearInferred ?
+            "Year inferred — verify the date" : "Date interpretation needs review", "event-note"));
+        }
+        if (event.date_time_assumptions?.length || typeof event.confidence === "number" ||
+            event.calendar_entity) {
+          const diagnostics = element("details", "", "event-diagnostics");
+          diagnostics.append(element("summary", "Extraction details"));
+          if (event.calendar_entity) diagnostics.append(element("p", "Calendar ID: " + event.calendar_entity));
+          for (const assumption of event.date_time_assumptions || []) {
+            diagnostics.append(element("p", "Date/time assumption: " + assumption));
+          }
+          if (typeof event.confidence === "number") {
+            diagnostics.append(element("p", "AI confidence: " +
+              Math.round(event.confidence * 100) + "% (estimate)"));
+          }
+          card.append(diagnostics);
         }
         const approvalResult = this._approvalObservation?.detail === detail &&
           this._approvalObservation.decision === this._decision &&
@@ -2744,8 +2823,12 @@ export class DaylightImportPanel extends HTMLElement {
             }
           }
         }
+        const controls = element("div", "", "event-controls");
+        const more = element("details", "", "event-more");
+        more.append(element("summary", "More actions"));
         if (event.status === "pending" && !this._editingId && !this._decision && !this._batchAction && !this._resolution) {
-          const edit = element("button", `Edit ${event.title}`);
+          const edit = element("button", "Edit");
+          edit.setAttribute("aria-label", `Edit ${event.title || "event"}`);
           edit.type = "button";
           edit.dataset.eventId = event.id;
           edit.addEventListener("click", () => { if (this._saving || this._editingId) return;
@@ -2753,9 +2836,11 @@ export class DaylightImportPanel extends HTMLElement {
             this._calendarCheck = null;
             this._editingId = event.id; this.render();
             this._content.querySelector("form input")?.focus(); });
-          card.append(edit);
+          controls.append(edit);
           for (const action of ["approve", "reject"]) {
-            const button = element("button", `${action === "approve" ? "Approve" : "Reject"} ${event.title}`);
+            const button = element("button", action === "approve" ? "Approve" : "Reject");
+            button.setAttribute("aria-label", `${action === "approve" ? "Approve" : "Reject"} ${event.title || "event"}`);
+            if (action === "approve") button.className = "event-primary";
             button.type = "button";
             button.dataset.action = action;
             button.dataset.eventId = event.id;
@@ -2771,7 +2856,7 @@ export class DaylightImportPanel extends HTMLElement {
               Array.from(this._content.querySelectorAll(".actions button"))
                 .find(button => !button.disabled)?.focus();
             });
-            card.append(button);
+            (action === "approve" ? controls : more).append(button);
           }
         } else if (this._decision?.id === event.id) {
           const action = this._decision.action;
@@ -2809,8 +2894,10 @@ export class DaylightImportPanel extends HTMLElement {
           if (busy) check.setAttribute("aria-disabled", "true");
           if (checking) check.setAttribute("aria-busy", "true");
           check.addEventListener("click", () => void this.checkCalendarEvent(event));
-          card.append(check);
+          more.append(check);
         }
+        if (more.children.length > 1) controls.append(more);
+        if (controls.children.length) card.append(controls);
         content.append(card);
       }
     } else if (this._items.length === 0) {
