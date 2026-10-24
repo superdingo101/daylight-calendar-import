@@ -456,7 +456,7 @@ test("detail renders timed events with the Home Assistant time preference", asyn
   };
   await flush();
   await panel.showImport("one");
-  assert.equal(find(panel._content, "section").children[1].textContent.replace(/\s/g, " "),
+  assert.equal(find(panel._content, "section").querySelector(".event-date").textContent.replace(/\s/g, " "),
     "Oct 7, 2026 · 8–9 PM (PDT)");
 });
 
@@ -1026,7 +1026,7 @@ test("approval requires explicit confirmation and returns to the inbox", async (
   await flush();
   await panel.showImport("one");
   const approve = find(panel._content, "section").querySelectorAll("button")
-    .find(button => button.textContent === "Approve Picnic");
+    .find(button => button.dataset.action === "approve" && button.dataset.eventId === "event");
   approve.click();
   assert.equal(globalThis.focusedNode.textContent, "Cancel");
   assert.equal(calls.filter(call => call.service === "approve_pending_event").length, 0);
