@@ -621,6 +621,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._detail = null;
     this._calendarCheck = null;
     this._approvalObservation = null;
+    this._openEventMenuId = null;
     // Transport lifetime is independent of canceled or superseded review UI.
     this._calendarObservationRequest = null;
     this._returnFocusId = null;
@@ -1910,6 +1911,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._editingId || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
     const generation = ++this._generation;
+    if (id !== this._selectedId) this._openEventMenuId = null;
     this._selectedId = id;
     this._detail = null;
     this._calendarCheck = null;
@@ -1950,6 +1952,7 @@ export class DaylightImportPanel extends HTMLElement {
     ++this._generation;
     this._selectedId = null;
     this._detail = null;
+    this._openEventMenuId = null;
     void this.refresh();
   }
 
@@ -2825,6 +2828,9 @@ export class DaylightImportPanel extends HTMLElement {
         }
         const controls = element("div", "", "event-controls");
         const more = element("details", "", "event-more");
+        // A calendar check replaces the button DOM while it is still focused.
+        // Keep the disclosure open through the check and any canceled rejection.
+        more.open = this._openEventMenuId === event.id || this._calendarCheck?.event === event;
         more.append(element("summary", "More actions"));
         if (event.status === "pending" && !this._editingId && !this._decision && !this._batchAction && !this._resolution) {
           const edit = element("button", "Edit");
@@ -2848,6 +2854,7 @@ export class DaylightImportPanel extends HTMLElement {
             button.addEventListener("click", () => {
               if (this._saving || this._editingId || this._decision) return;
               this._calendarCheck = null;
+              if (action === "reject") this._openEventMenuId = event.id;
               this._decision = {id: event.id, action};
               this._decisionError = null;
               this._approvalObservation = null;
@@ -2893,7 +2900,10 @@ export class DaylightImportPanel extends HTMLElement {
           // controls focusable with ARIA and reject concurrent calls in the handler.
           if (busy) check.setAttribute("aria-disabled", "true");
           if (checking) check.setAttribute("aria-busy", "true");
-          check.addEventListener("click", () => void this.checkCalendarEvent(event));
+          check.addEventListener("click", () => {
+            this._openEventMenuId = event.id;
+            void this.checkCalendarEvent(event);
+          });
           more.append(check);
         }
         if (more.children.length > 1) controls.append(more);
