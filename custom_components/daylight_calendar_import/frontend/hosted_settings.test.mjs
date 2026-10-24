@@ -275,3 +275,19 @@ test("returning without a saved approval code offers fresh explicit consent and 
   }
   assert.equal(calls.every(call => call.type.endsWith("/get")), true);
 });
+
+
+test("a settled previous operation has an explicit recovery control without mutation replay", async () => {
+  const {settings, setHandler, calls} = setup();
+  setHandler(async call => ({...snapshot, state: call.action === "reconcile" ? "disconnected" : "operation_finishing"}));
+  await settings.load("entry-1");
+  const check = findButton(settings.element, "Check and recover connection");
+  assert.equal(check.disabled, false);
+  assert.equal(findButton(settings.element, "Check pairing approval").disabled, true);
+  assert.equal(findButton(settings.element, "Renew credentials").disabled, true);
+  assert.equal(calls.length, 1);
+  check.click(); await flush();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].action, "reconcile");
+  assert.equal(settings.snapshot.state, "disconnected");
+});

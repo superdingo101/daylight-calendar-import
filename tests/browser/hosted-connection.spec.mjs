@@ -52,6 +52,7 @@ test.beforeEach(async ({page}) => {
           return {...fixture.state, pairing: instructions,
             ...(fixture.malformed ? {installation_token: secret} : {})};
         }
+        if (call.action === "reconcile" && fixture.state.state === "operation_finishing") fixture.state = {...fixture.state, state: "disconnected"};
         if (call.action === "disconnect") fixture.state = {...fixture.state, state: "remote_disconnect_unconfirmed"};
         return structuredClone(fixture.state);
       }
@@ -139,4 +140,18 @@ test("a secret-bearing malformed response remains an unconfirmed failure", async
   await expect(page.getByText(SECRET, {exact: false})).toHaveCount(0);
   expect((await actions(page)).map(call => call.action)).toEqual(["connect"]);
   await assertNoStoredSecrets(page);
+});
+
+
+test("settled operation recovery is explicit and does not replay creation or renewal", async ({page}) => {
+  await page.evaluate(() => { window.hostedFixture.state.state = "operation_finishing"; });
+  await page.getByRole("navigation", {name: "Daylight views"}).getByRole("button", {name: "Settings", exact: true}).click();
+  await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
+  const recover = page.getByRole("button", {name: "Check and recover connection", exact: true});
+  await expect(recover).toBeEnabled();
+  await expect(page.getByRole("button", {name: "Renew credentials", exact: true})).toBeDisabled();
+  expect(await actions(page)).toEqual([]);
+  await recover.click();
+  await expect(consent(page)).not.toBeChecked();
+  expect((await actions(page)).map(call => call.action)).toEqual(["reconcile"]);
 });

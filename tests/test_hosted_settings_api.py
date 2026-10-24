@@ -16,6 +16,9 @@ from custom_components.daylight_calendar_import.const import DOMAIN
 from custom_components.daylight_calendar_import.hosted_credentials import (
     _ImmediatePrivateStore,
 )
+from custom_components.daylight_calendar_import.hosted_lifecycle import (
+    HostedConnectionResult,
+)
 from custom_components.daylight_calendar_import.hosted_runtime import (
     CONF_HOSTED_SERVICE,
     HostedRuntimeError,
@@ -280,3 +283,18 @@ async def test_unchanged_reload_cannot_reopen_closed_store(monkeypatch):
     monkeypatch.setattr(api, "async_save_option_patch", save)
     response = await invoke(api.websocket_hosted_configure, hass, {"entry_id": cfg.entry_id, **SERVICE})
     assert response.errors[0][1] == "hosted_unloading" and not r.accepting
+
+
+async def test_native_explicit_recovery_initializes_settled_replacement_without_http(hass, hass_ws_client, settings_runtime, monkeypatch):
+    cfg = settings_runtime.entry
+    client = await hass_ws_client(hass)
+    await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE)
+    runtime = hass.data[DOMAIN][cfg.entry_id].hosted_runtime
+    runtime._controller = None
+    runtime._state = HostedConnectionResult("operation_finishing")
+    request = AsyncMock(side_effect=AssertionError("no automatic request"))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_transport.HostedLifecycleTransport._request", request)
+    assert (await success(client, api.WS_HOSTED_GET))["state"] == "operation_finishing"
+    result = await success(client, api.WS_HOSTED_ACTION, entry_id=cfg.entry_id, action="reconcile")
+    assert result["state"] == "disconnected" and runtime._controller is not None
+    request.assert_not_called()

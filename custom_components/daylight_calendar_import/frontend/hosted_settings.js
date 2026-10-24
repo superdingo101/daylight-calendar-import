@@ -119,7 +119,7 @@ const EXPLANATIONS = {
   storage_repair: "Private connection storage needs repair. Preserve the original file and repair storage before continuing.",
   service_repair: "The saved connection belongs to a different or unknown service. Owner and service reconciliation is required; changing origins does not move credentials.",
   service_unavailable: "Daylight could not be reached. Check status when the service is available.",
-  operation_finishing: "A previous operation is still finishing. Check status after it settles.",
+  operation_finishing: "A previous operation is still finishing. Use Check and recover connection after it settles.",
   recovery_required: "Saved connection material needs verification. Check and recover it before connecting again.",
   repair_required: "This installation needs owner attention. Open the account portal and reconcile the existing installation.",
   reconciliation_required: "An existing installation needs explicit owner and journal reconciliation before a new connection.",
@@ -336,12 +336,12 @@ export class HostedConnectionSettings {
       instructions.append(approve, node("p", `Expires: ${this.pairing.expires_at}. Check no more often than every ${this.pairing.poll_interval_seconds} seconds.`));
       section.append(instructions);
     }
-    const blocked = ["configuration_repair", "storage_repair", "service_repair", "operation_finishing"].includes(state.state);
+    const blocked = ["configuration_repair", "storage_repair", "service_repair"].includes(state.state);
     const actions = node("div", "", "actions");
     for (const [action, label] of [["reconcile", "Check and recover connection"], ["poll", "Check pairing approval"], ["rotate", "Renew credentials"]]) {
       const button = node("button", label);
       button.type = "button";
-      button.disabled = this.busy || blocked || action === "rotate" &&
+      button.disabled = this.busy || blocked || state.state === "operation_finishing" && action !== "reconcile" || action === "rotate" &&
         !(state.state === "connected" && state.credential_status === "current") ||
         action === "poll" && !["pairing_pending", "pairing_wait", "recovery_required"].includes(state.state);
       button.addEventListener("click", () => void this.submit(action));

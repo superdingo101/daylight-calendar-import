@@ -21,6 +21,11 @@ and DOM detachment clear it; late responses cannot restore old instructions.
 After restart, a live saved attempt remains eligible for manual approval checks;
 generic recovery does not strand it or replay exchange.
 
+If reload reports an earlier operation is still finishing, wait for that work
+to settle, then explicitly **Check and recover connection**. It can initialize
+the replacement controller once the shared task set is empty; ordinary status
+refresh never loads or replays a remote mutation.
+
 The separate authenticated account URL is displayed only after validated status.
 The native client does not invent a portal path or accept cross-origin links.
 **Renew credentials** is an explicit single operation; candidate recovery remains

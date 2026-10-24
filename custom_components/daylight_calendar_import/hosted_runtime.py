@@ -88,6 +88,10 @@ class HostedConnectionRuntime:
         if self._tasks:
             self._state = HostedConnectionResult("operation_finishing")
             return
+        await self._async_load_controller()
+
+    async def _async_load_controller(self) -> None:
+        """Load only at setup or in an admitted explicit recovery operation."""
         store = HostedCredentialStore(self._hass, self._entry_id)
         try:
             checkpoint = await store.async_load()
@@ -148,10 +152,12 @@ class HostedConnectionRuntime:
             raise HostedRuntimeError("invalid_hosted_action")
         if not self._accepting or self._stopped:
             raise HostedRuntimeError("hosted_unloading")
-        if self._controller is None:
-            raise HostedRuntimeError("hosted_unavailable")
         if self._tasks:
             raise HostedRuntimeError("hosted_busy")
+        if self._controller is None and not (
+            action == "reconcile" and self._state.state == "operation_finishing"
+        ):
+            raise HostedRuntimeError("hosted_unavailable")
         task = self._hass.async_create_task(
             self._perform(action, kwargs), "Daylight hosted lifecycle", eager_start=False,
         )
@@ -164,7 +170,8 @@ class HostedConnectionRuntime:
             await asyncio.wait({task})
             return task.result()
         except asyncio.CancelledError:
-            self._state = HostedConnectionResult("recovery_required")
+            if self._controller is not None:
+                self._state = HostedConnectionResult("recovery_required")
             task.cancel()
             raise
 
@@ -175,6 +182,10 @@ class HostedConnectionRuntime:
 
     async def _perform(self, action: str, kwargs: dict[str, Any]) -> dict[str, Any]:
         try:
+            if self._controller is None:
+                await self._async_load_controller()
+                if self._controller is None:
+                    return self.snapshot()
             result = await getattr(self._controller, _ACTIONS[action])(**kwargs)
         except HostedCredentialStorageError:
             self._controller = None
@@ -190,7 +201,8 @@ class HostedConnectionRuntime:
             )
             self._state = HostedConnectionResult(state)
         except asyncio.CancelledError:
-            self._state = HostedConnectionResult("recovery_required")
+            if self._controller is not None:
+                self._state = HostedConnectionResult("recovery_required")
             raise
         except Exception:  # noqa: BLE001 -- fixed sanitized boundary
             # Never forward raw storage, request, provider or argument errors.
