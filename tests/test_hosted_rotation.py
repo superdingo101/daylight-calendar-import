@@ -68,6 +68,7 @@ async def test_saved_intent_precedes_issuance_candidate_precedes_confirmation(ro
     transport.rotate.side_effect = issue
     assert (await c.async_rotate()).state == "candidate_saved"
     transport.confirm.assert_not_called()
+    transport.installation_status.assert_awaited_once_with(CURRENT.token)
     saved = (await restart(hass)).snapshot
     assert saved.current == CURRENT and saved.candidate == CANDIDATE
     assert (await c.async_rotate()).state == "recovery_required"
@@ -97,7 +98,7 @@ async def test_expired_gate_allows_explicit_attempt_with_fresh_authority(rotatio
     transport.rotate.side_effect = HostedTransportError("rotation_pending", status=409, retryable=True)
     with pytest.raises(HostedTransportError):
         await c.async_rotate()
-    freezer.tick(646)
+    freezer.tick(645)
     transport.rotate.side_effect = None
     assert (await c.async_rotate()).state == "candidate_saved"
     assert transport.installation_status.await_count == 2
@@ -167,7 +168,7 @@ async def test_overlap_keeps_deadline_but_cannot_rotate(rotation):
 async def test_wrong_rotation_namespace_never_staged_or_confirmed(rotation):
     c, store, transport = rotation
     transport.rotate.return_value["installation_id"] += "other"
-    with pytest.raises(HostedTransportError, match="identity_mismatch"):
+    with pytest.raises(HostedTransportError, match="^identity_mismatch$"):
         await c.async_rotate()
     assert store.snapshot.current == CURRENT and store.snapshot.candidate is None
     assert store.snapshot.rotation_not_before is not None
@@ -213,9 +214,61 @@ def test_rotation_checkpoint_validation_and_backward_compatibility():
 async def test_excessive_server_deadlines_retain_uncertainty(rotation, field, value):
     c, store, transport = rotation
     transport.rotate.return_value[field] = value
-    with pytest.raises(HostedTransportError, match="invalid_response"):
+    with pytest.raises(HostedTransportError, match="^invalid_response$"):
         await c.async_rotate()
     assert store.snapshot.candidate is None
     assert store.snapshot.current == CURRENT
     assert (await c.async_rotate()).state == "rotation_wait"
     transport.confirm.assert_not_called()
+
+
+@pytest.mark.parametrize("field,limit", [
+    ("expires_at", "2027-01-22T00:00:30+00:00"),
+    ("confirmation_expires_at", "2026-10-24T00:10:30+00:00"),
+])
+@pytest.mark.parametrize("extra_microseconds", [0, 1, 1_000_000])
+async def test_server_deadline_boundaries_are_inclusive(
+    rotation, field, limit, extra_microseconds,
+):
+    from datetime import datetime, timedelta
+
+    c, store, transport = rotation
+    deadline = datetime.fromisoformat(limit) + timedelta(microseconds=extra_microseconds)
+    transport.rotate.return_value[field] = deadline.isoformat()
+    if extra_microseconds:
+        with pytest.raises(HostedTransportError, match="^invalid_response$"):
+            await c.async_rotate()
+        assert store.snapshot.candidate is None
+        assert store.snapshot.current == CURRENT
+        assert (await c.async_rotate()).state == "rotation_wait"
+    else:
+        assert (await c.async_rotate()).state == "candidate_saved"
+        assert getattr(store.snapshot.candidate, field) == deadline.isoformat()
+    transport.confirm.assert_not_called()
+
+
+async def test_checkpoint_at_exact_safety_margin_can_issue(rotation, freezer, monkeypatch):
+    c, store, transport = rotation
+    original = store.async_checkpoint
+
+    async def delayed(*args):
+        result = await original(*args)
+        freezer.tick(30)
+        return result
+
+    monkeypatch.setattr(store, "async_checkpoint", delayed)
+    assert (await c.async_rotate()).state == "candidate_saved"
+    transport.rotate.assert_awaited_once_with(CURRENT.token)
+    assert store.snapshot.current == CURRENT
+    assert store.snapshot.candidate == CANDIDATE
+    transport.confirm.assert_not_called()
+
+
+async def test_confirmed_disconnect_cannot_resume_rotation(rotation):
+    c, store, transport = rotation
+    old = store.snapshot
+    await store.async_checkpoint(old, replace(
+        old, processing_consent=False, current=None, local_disconnect="confirmed",
+    ))
+    assert (await c.async_rotate()).state == "disconnected"
+    assert not transport.mock_calls
