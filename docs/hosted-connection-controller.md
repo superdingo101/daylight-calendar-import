@@ -134,3 +134,28 @@ Earlier shapes decode with no attempt; malformed metadata fails closed. Older
 code cannot read the new shape, so preserve files and use forward repair.
 Native runtime integration must bind saved material to its trusted service
 configuration before sending it, as required by the checkpoint contract.
+
+## Trusted service binding
+
+Before first pairing creation, the same private atomic checkpoint now saves the
+transport's canonical API and account HTTPS origins alongside consent/verifier.
+Origins come from local trusted configuration, never a response. Default HTTPS
+ports, host case and equivalent IPv6 spelling normalize before comparison.
+Every operation that sends saved credentials or pairing recovery material checks
+both origins against the saved binding first. Rotation/promotion retain it.
+Disconnect saves the local stop before checking the binding; a mismatch stops
+locally without contacting either service. Confirmed disconnect retains the
+binding as destination provenance, without retaining credentials.
+
+A changed API **or** account origin raises the sanitized
+`service_reconciliation_required` error. Legacy checkpoints still decode but
+unbound recovery material cannot acquire provenance from today's configuration.
+Do not delete/edit a private file or relabel its tokens to bypass this gate.
+Explicit owner/service and journal reconciliation remains a follow-on consumer;
+this PR supplies no migration or automatic rebind. A genuinely empty store can
+bind only as part of explicit consent and first pairing. Native settings and
+scheduling remain dormant follow-up work.
+
+Older code rejects the extended checkpoint shape. Preserve private recovery files
+and repair forward. The binding is configuration provenance, not proof of remote
+account authority; existing authenticated identity/expiry checks remain required.

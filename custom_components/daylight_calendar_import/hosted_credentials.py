@@ -18,6 +18,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
+from .hosted_transport import HostedServiceBinding
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{16,128}")
 _TOKEN = re.compile(r"[A-Za-z0-9._~-]{43,256}")
@@ -115,6 +116,7 @@ class PairingAttempt:
 class CredentialCheckpoint:
     """Immutable recovery material; repr never exposes tokens or verifiers."""
 
+    service_binding: HostedServiceBinding | None = None
     revision: int = 0
     processing_consent: bool = False
     local_disconnect: str = "none"
@@ -125,6 +127,8 @@ class CredentialCheckpoint:
     candidate: CandidateCredential | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        if self.service_binding is not None and type(self.service_binding) is not HostedServiceBinding:
+            raise ValueError("invalid service binding")
         if type(self.revision) is not int or not 0 <= self.revision < 2**63:
             raise ValueError("invalid checkpoint revision")
         if type(self.processing_consent) is not bool:
@@ -157,14 +161,14 @@ class CredentialCheckpoint:
 
 def _decode(data: Any) -> CredentialCheckpoint:
     fields = set(CredentialCheckpoint.__dataclass_fields__)
-    optional = {"rotation_not_before", "local_disconnect", "pairing"}
+    optional = {"rotation_not_before", "local_disconnect", "pairing", "service_binding"}
     if (type(data) is not dict or set(data) - fields
             or fields - set(data) - optional):
         raise ValueError("invalid credential checkpoint")
     values = dict(data)
     for key, kind in (
         ("current", BoundCredential), ("candidate", CandidateCredential),
-        ("pairing", PairingAttempt),
+        ("pairing", PairingAttempt), ("service_binding", HostedServiceBinding),
     ):
         if values.get(key) is not None:
             if type(values[key]) is not dict:

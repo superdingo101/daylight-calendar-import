@@ -16,6 +16,7 @@ from custom_components.daylight_calendar_import.hosted_lifecycle import (
     HostedLifecycleController,
 )
 from custom_components.daylight_calendar_import.hosted_transport import (
+    HostedServiceBinding,
     HostedTransportError,
 )
 from tests.test_hosted_lifecycle import (
@@ -29,7 +30,7 @@ from tests.test_hosted_lifecycle import (
 
 class MemoryStore:
     def __init__(self, current=CURRENT):
-        self.snapshot = CredentialCheckpoint(processing_consent=True, current=current)
+        self.snapshot = CredentialCheckpoint(service_binding=HostedServiceBinding("https://api.example.test", "https://account.example.test"), processing_consent=True, current=current)
         self.writes = []
         self.fail = False
 
@@ -45,6 +46,7 @@ class MemoryStore:
 def setup(*, current=CURRENT):
     store = MemoryStore(current)
     transport = AsyncMock()
+    transport.service_binding = HostedServiceBinding("https://api.example.test", "https://account.example.test")
     transport.installation_status.return_value = status()
     transport.disconnect.return_value = {
         "installation_id": CURRENT.installation_id,
@@ -185,9 +187,10 @@ async def test_real_private_disk_restart_does_not_resume_or_replay(
     store = HostedCredentialStore(hass, "disconnect")
     blank = await store.async_load()
     await store.async_checkpoint(
-        blank, replace(blank, processing_consent=True, current=CURRENT)
+        blank, replace(blank, service_binding=HostedServiceBinding("https://api.example.test", "https://account.example.test"), processing_consent=True, current=CURRENT)
     )
     transport = AsyncMock()
+    transport.service_binding = HostedServiceBinding("https://api.example.test", "https://account.example.test")
     transport.installation_status.return_value = status()
     transport.disconnect.side_effect = HostedTransportError(
         "service_unavailable", retryable=True

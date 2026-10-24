@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import secrets
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, DecimalException
 from ipaddress import IPv6Address
@@ -116,6 +117,21 @@ def _origin(value: str) -> str:
     return f"https://{authority}"
 
 
+@dataclass(frozen=True, slots=True)
+class HostedServiceBinding:
+    """Canonical local service configuration, never learned from a response."""
+
+    api_origin: str
+    account_origin: str
+
+    def __post_init__(self) -> None:
+        for origin in (self.api_origin, self.account_origin):
+            if type(origin) is not str or len(origin) > 2048:
+                raise ValueError("invalid trusted origin")
+        object.__setattr__(self, "api_origin", _origin(self.api_origin))
+        object.__setattr__(self, "account_origin", _origin(self.account_origin))
+
+
 def _trusted_url(value: Any, origin: str) -> str:
     if (
         not isinstance(value, str)
@@ -191,8 +207,14 @@ class HostedLifecycleTransport:
         self, session: aiohttp.ClientSession, *, api_origin: str, account_origin: str
     ) -> None:
         self._session = session
-        self._api_origin = _origin(api_origin)
-        self._account_origin = _origin(account_origin)
+        self._service_binding = HostedServiceBinding(api_origin, account_origin)
+        self._api_origin = self._service_binding.api_origin
+        self._account_origin = self._service_binding.account_origin
+
+    @property
+    def service_binding(self) -> HostedServiceBinding:
+        """The immutable destination identity used for every request."""
+        return self._service_binding
 
     async def start_pairing(
         self, verifier: str, installation_label: str

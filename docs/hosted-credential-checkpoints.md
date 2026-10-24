@@ -82,12 +82,10 @@ This primitive does not authenticate server results, advance a lifecycle,
 schedule renewal, decide which token works, or reconcile disconnected journals.
 The next controller must verify candidate identity and server deadlines, obtain
 and save consent/verifier before starting, checkpoint issuance before confirming,
-and prove the account/installation binding before promotion. The same
-controller must durably bind credentials to the configured trusted service/API
+and prove the account/installation binding before promotion. The controller now durably binds credentials to the configured trusted service/API
 origins. Changing those origins requires explicit disconnect/re-pair and
 reconciliation; never send a saved token to a newly selected origin merely
-because its account/installation namespace matches. This primitive has no origin
-configuration and makes no network request. The same
+because its account/installation namespace matches. The storage primitive itself makes no network request. The same
 installation can retain its journal namespace on rotation; replacement and
 reconnect require explicit reconciliation of prior namespaces. No checkpoint
 alone permits transferring or replaying ACK obligations.
@@ -103,3 +101,10 @@ fixture's in-memory Store. They cover restart, file permissions, candidate and
 previous bundles, entry separation, disk revision races, malformed original
 bytes/envelopes, real delayed-writer cancellation, fail-closed recovery and
 secret-free representations/errors.
+
+The checkpoint now optionally contains a closed `service_binding` bundle with
+canonical `api_origin` and `account_origin` fields. The lifecycle controller saves
+it with first-pairing consent/verifier and enforces it before saved material is
+sent. Older shapes load as unbound and require explicit reconciliation before
+network use; they are never automatically labelled with a new destination.
+See [controller service binding](hosted-connection-controller.md#trusted-service-binding).
