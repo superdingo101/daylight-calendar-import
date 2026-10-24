@@ -51,7 +51,7 @@ async def test_no_configuration_never_constructs_store_or_activates_network(hass
     monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_runtime.HostedCredentialStore", constructor)
     r = await async_setup_hosted_runtime(hass, entry())
     assert r.snapshot() == {
-        "entry_id": "hosted-entry", "configured": False, "api_origin": None,
+        "entry_id": "hosted-entry", "configured": False, "automatic_lifecycle": False, "api_origin": None,
         "account_origin": None, "state": "not_configured", "account_url": None,
         "credential_status": None, "credential_expires_at": None,
     }

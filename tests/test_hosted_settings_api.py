@@ -102,7 +102,7 @@ async def test_real_socket_connect_candidate_recovery_disconnect_and_restart(has
     assert TOKEN not in str(result) and TOKEN not in caplog.text
 
 
-@pytest.mark.parametrize("command,fields", [(api.WS_HOSTED_GET, {}), (api.WS_HOSTED_CONFIGURE, SERVICE),
+@pytest.mark.parametrize("command,fields", [(api.WS_HOSTED_GET, {}), (api.WS_HOSTED_SUBSCRIBE, {}), (api.WS_HOSTED_CONFIGURE, SERVICE),
                                           (api.WS_HOSTED_ACTION, {"action": "connect", "processing_consent": True, "installation_label": "Home"})])
 async def test_nonadmin_cannot_read_configure_or_act(hass, hass_ws_client, settings_runtime, command, fields):
     group = await hass.auth.async_get_group(GROUP_ID_USER)
@@ -114,7 +114,7 @@ async def test_nonadmin_cannot_read_configure_or_act(hass, hass_ws_client, setti
 
 
 @pytest.mark.parametrize("handler,msg", [(api.websocket_hosted_get, {}),
-    (api.websocket_hosted_configure, SERVICE), (api.websocket_hosted_action, {"action": "reconcile"})])
+    (api.websocket_hosted_subscribe, {}), (api.websocket_hosted_configure, SERVICE), (api.websocket_hosted_action, {"action": "reconcile"})])
 async def test_unknown_entry_is_uniform_failure(handler, msg):
     cfg = entry()
     hass = hass_for(cfg)
@@ -132,7 +132,7 @@ async def test_unready_runtime_never_accepts_get_or_action(kind):
             hass.data[DOMAIN][cfg.entry_id].accepting_services = False
         else:
             r.accepting = False
-    for handler, msg in [(api.websocket_hosted_get, {}), (api.websocket_hosted_action, {"action": "reconcile"})]:
+    for handler, msg in [(api.websocket_hosted_get, {}), (api.websocket_hosted_subscribe, {}), (api.websocket_hosted_action, {"action": "reconcile"})]:
         result = await invoke(handler, hass, {"entry_id": cfg.entry_id, **msg})
         assert result.errors[0][1] == "hosted_unloading"
 
@@ -297,4 +297,45 @@ async def test_native_explicit_recovery_initializes_settled_replacement_without_
     assert (await success(client, api.WS_HOSTED_GET))["state"] == "operation_finishing"
     result = await success(client, api.WS_HOSTED_ACTION, entry_id=cfg.entry_id, action="reconcile")
     assert result["state"] == "disconnected" and runtime._controller is not None
+    request.assert_not_called()
+
+
+async def test_real_admin_subscription_only_invalidates_safe_entry_and_unsubscribes(hass, hass_ws_client, settings_runtime):
+    from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+    from custom_components.daylight_calendar_import.hosted_runtime import hosted_signal
+
+    cfg = settings_runtime.entry
+    client = await hass_ws_client(hass)
+    subscribed = await call(client, api.WS_HOSTED_SUBSCRIBE, entry_id=cfg.entry_id)
+    assert subscribed["success"] is True
+    initial = await client.receive_json()
+    assert initial == {"id": subscribed["id"], "type": "event", "event": {"entry_id": cfg.entry_id}}
+    async_dispatcher_send(hass, hosted_signal(cfg.entry_id))
+    assert await client.receive_json() == initial
+    result = await call(client, "unsubscribe_events", subscription=subscribed["id"])
+    assert result["success"] is True
+    async_dispatcher_send(hass, hosted_signal(cfg.entry_id))
+    # With no queued invalidation, the next message belongs to this get.
+    assert (await success(client, api.WS_HOSTED_GET))["entry_id"] == cfg.entry_id
+
+
+async def test_real_optin_saves_boolean_without_acquiring_consent(hass, hass_ws_client, settings_runtime, monkeypatch):
+    from custom_components.daylight_calendar_import.hosted_runtime import (
+        CONF_HOSTED_AUTOMATIC,
+    )
+    cfg = settings_runtime.entry
+    client = await hass_ws_client(hass)
+    request = AsyncMock(side_effect=AssertionError("No consent means no network"))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_transport.HostedLifecycleTransport._request", request)
+    result = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE, automatic_lifecycle=True)
+    assert result["automatic_lifecycle"] is True and result["state"] == "disconnected"
+    assert cfg.options[CONF_HOSTED_AUTOMATIC] is True
+    r = hass.data[DOMAIN][cfg.entry_id].hosted_runtime
+    assert r._cancel_timer is None
+    same = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE, automatic_lifecycle=True)
+    assert same == result and hass.data[DOMAIN][cfg.entry_id].hosted_runtime is r
+    # Older clients cannot silently keep a previously enabled opt-in.
+    disabled = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE)
+    assert disabled["automatic_lifecycle"] is False
     request.assert_not_called()

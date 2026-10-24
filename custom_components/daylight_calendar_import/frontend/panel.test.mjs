@@ -6168,7 +6168,7 @@ test("hosted settings load only in their native tab and clear approval on naviga
   const calls = [];
   const general = {entry_id: "entry-1", ai_task_entity: "ai_task.openai", calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"], notifications: {enabled: false, target: null, classes: []}, email: {}};
-  const hosted = {entry_id: "entry-1", configured: true, api_origin: "https://api.example.test",
+  const hosted = {entry_id: "entry-1", configured: true, automatic_lifecycle: false, api_origin: "https://api.example.test",
     account_origin: "https://account.example.test", account_url: null, state: "disconnected",
     credential_status: null, credential_expires_at: null};
   const pairing = {user_code: "ABCD1234EFGH", verification_uri: "https://account.example.test/connect",
@@ -6214,7 +6214,7 @@ test("hosted settings load only in their native tab and clear approval on naviga
 test("late hosted responses cannot resurrect a pairing after panel disconnection", async () => {
   const general = {entry_id: "entry-1", ai_task_entity: "ai_task.openai", calendar_entity: "calendar.family",
     calendar_entities: ["calendar.family"], notifications: {enabled: false, target: null, classes: []}, email: {}};
-  const hosted = {entry_id: "entry-1", configured: true, api_origin: "https://api.example.test",
+  const hosted = {entry_id: "entry-1", configured: true, automatic_lifecycle: false, api_origin: "https://api.example.test",
     account_origin: "https://account.example.test", account_url: null, state: "disconnected",
     credential_status: null, credential_expires_at: null};
   let finish;

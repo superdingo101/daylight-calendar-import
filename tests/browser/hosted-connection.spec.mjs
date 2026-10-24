@@ -29,13 +29,18 @@ test.beforeEach(async ({page}) => {
   await page.evaluate(({code, secret}) => {
     const panel = document.querySelector("daylight-import-panel");
     const fallback = panel._hass.callWS;
-    const state = {entry_id: "entry-1", configured: true,
+    const state = {entry_id: "entry-1", configured: true, automatic_lifecycle: false,
       api_origin: "https://api.example.test", account_origin: "https://account.example.test",
       account_url: null, state: "disconnected", credential_status: null, credential_expires_at: null};
     const instructions = {user_code: code, verification_uri: "https://account.example.test/connect",
       expires_at: "2026-12-01T00:10:00Z", poll_interval_seconds: 5};
     const fixture = window.hostedFixture = {calls: [], state, hold: false, malformed: false, release: null};
-    panel.hass = {...panel._hass, user: {id: "owner", is_admin: true}, callWS: async call => {
+    const connection = {connected: true, subscribeMessage: async (callback, message) => {
+      fixture.subscriber = callback;
+      fixture.subscription = message;
+      return () => { fixture.subscriber = null; };
+    }};
+    panel.hass = {...panel._hass, connection, user: {id: "owner", is_admin: true}, callWS: async call => {
       if (call.type === "daylight_calendar_import/settings/get") {
         return {entry_id: "entry-1", ai_task_entity: "ai_task.openai", calendar_entity: "calendar.family",
           calendar_entities: ["calendar.family"], notifications: {enabled: false, target: null, classes: []},
@@ -45,6 +50,11 @@ test.beforeEach(async ({page}) => {
       if (!call.type?.startsWith("daylight_calendar_import/hosted/")) return fallback(call);
       fixture.calls.push(structuredClone(call));
       if (call.type.endsWith("/get")) return structuredClone(fixture.state);
+      if (call.type.endsWith("/configure")) {
+        fixture.state = {...fixture.state, api_origin: call.api_origin, account_origin: call.account_origin,
+          automatic_lifecycle: call.automatic_lifecycle};
+        return structuredClone(fixture.state);
+      }
       if (call.type.endsWith("/action")) {
         if (call.action === "connect") {
           fixture.state = {...fixture.state, state: "pairing_pending"};
@@ -154,4 +164,29 @@ test("settled operation recovery is explicit and does not replay creation or ren
   await recover.click();
   await expect(consent(page)).not.toBeChecked();
   expect((await actions(page)).map(call => call.action)).toEqual(["reconcile"]);
+});
+
+
+test("opt-in maintenance refreshes safe status and clears transient approval", async ({page}) => {
+  await openCloud(page);
+  const automatic = page.getByRole("checkbox", {name: "Automatically maintain this connection", exact: true});
+  await expect(automatic).not.toBeChecked();
+  await automatic.check();
+  await page.getByRole("button", {name: "Save service configuration", exact: true}).click();
+  await expect(automatic).toBeChecked();
+  await expect.poll(() => page.evaluate(() => typeof window.hostedFixture.subscriber)).toBe("function");
+  expect(await actions(page)).toEqual([]);
+  await consent(page).check();
+  await page.getByRole("button", {name: "Start new connection", exact: true}).click();
+  await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toBeVisible();
+  await page.evaluate(() => {
+    const fixture = window.hostedFixture;
+    fixture.state = {...fixture.state, state: "connected", credential_status: "current", credential_expires_at: "2026-12-01T00:00:00Z"};
+    fixture.subscriber({entry_id: "entry-1"});
+  });
+  await expect(page.getByText("The saved installation credential has been verified.", {exact: true})).toBeVisible();
+  await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toHaveCount(0);
+  expect((await actions(page)).map(call => call.action)).toEqual(["connect"]);
+  await sections(page).getByRole("button", {name: "General", exact: true}).click();
+  await expect.poll(() => page.evaluate(() => window.hostedFixture.subscriber)).toBe(null);
 });

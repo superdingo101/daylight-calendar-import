@@ -10,12 +10,15 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import DOMAIN
 from .hosted_runtime import (
+    CONF_HOSTED_AUTOMATIC,
     CONF_HOSTED_SERVICE,
     HostedConnectionRuntime,
     HostedRuntimeError,
+    hosted_signal,
 )
 from .hosted_transport import HostedServiceBinding
 from .settings import SettingsValidationError, async_save_option_patch, settings_lock
@@ -23,6 +26,7 @@ from .settings_api import _entry_for_message
 
 WS_HOSTED_GET = f"{DOMAIN}/hosted/get"
 WS_HOSTED_CONFIGURE = f"{DOMAIN}/hosted/configure"
+WS_HOSTED_SUBSCRIBE = f"{DOMAIN}/hosted/subscribe"
 WS_HOSTED_ACTION = f"{DOMAIN}/hosted/action"
 _ERRORS = {
     "hosted_busy", "hosted_unloading", "hosted_unavailable", "invalid_hosted_action",
@@ -71,6 +75,7 @@ async def websocket_hosted_get(hass: HomeAssistant, connection: Any, msg: dict[s
     vol.Required("entry_id"): cv.string,
     vol.Required("api_origin"): vol.All(str, vol.Length(min=1, max=2048)),
     vol.Required("account_origin"): vol.All(str, vol.Length(min=1, max=2048)),
+    vol.Optional("automatic_lifecycle", default=False): bool,
 })
 @websocket_api.async_response
 async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
@@ -86,7 +91,9 @@ async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: 
             if runtime.busy:
                 raise HostedRuntimeError("hosted_busy")
             canonical = asdict(service)
-            if entry.options.get(CONF_HOSTED_SERVICE) == canonical:
+            automatic = msg.get("automatic_lifecycle", False)
+            if (entry.options.get(CONF_HOSTED_SERVICE) == canonical
+                    and (entry.options.get(CONF_HOSTED_AUTOMATIC) is True) == automatic):
                 result = runtime.snapshot()
             else:
                 before = dict(entry.options)
@@ -95,7 +102,9 @@ async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: 
                 old_store.hosted_settings_reload_guard = True
                 runtime.pause()
                 try:
-                    await async_save_option_patch(hass, entry, {CONF_HOSTED_SERVICE: canonical})
+                    await async_save_option_patch(hass, entry, {
+                        CONF_HOSTED_SERVICE: canonical, CONF_HOSTED_AUTOMATIC: automatic,
+                    })
                 finally:
                     # Only an unchanged configuration may reopen the old owner.
                     # Saved origins with failed reload must remain fail-closed.
@@ -108,9 +117,9 @@ async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: 
                         runtime.pause()
                 loaded = _runtime(hass, entry)
                 result = loaded.snapshot()
-                if (result["api_origin"], result["account_origin"]) != (
+                if ((result["api_origin"], result["account_origin"]) != (
                     service.api_origin, service.account_origin,
-                ):
+                ) or result.get("automatic_lifecycle", False) != automatic):
                     loaded.pause()
                     raise HostedRuntimeError("reload_failed")
     except SettingsValidationError as error:
@@ -160,8 +169,33 @@ async def websocket_hosted_action(hass: HomeAssistant, connection: Any, msg: dic
         connection.send_result(msg["id"], result)
 
 
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    "type": WS_HOSTED_SUBSCRIBE, vol.Required("entry_id"): cv.string,
+})
+@websocket_api.async_response
+async def websocket_hosted_subscribe(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Send invalidations only; administrators fetch the current owner's snapshot."""
+    try:
+        entry = _entry_for_message(hass, msg)
+        _runtime(hass, entry)
+    except SettingsValidationError:
+        _error(connection, msg, "entry_not_found")
+    except HostedRuntimeError as error:
+        _error(connection, msg, str(error))
+    else:
+        @callback
+        def changed() -> None:
+            connection.send_event(msg["id"], {"entry_id": entry.entry_id})
+        connection.subscriptions[msg["id"]] = async_dispatcher_connect(
+            hass, hosted_signal(entry.entry_id), changed,
+        )
+        connection.send_result(msg["id"])
+        changed()
+
+
 @callback
 def async_register_hosted_settings_api(hass: HomeAssistant) -> None:
     """Register admin-only native commands without making a network request."""
-    for command in (websocket_hosted_get, websocket_hosted_configure, websocket_hosted_action):
+    for command in (websocket_hosted_get, websocket_hosted_configure, websocket_hosted_action, websocket_hosted_subscribe):
         websocket_api.async_register_command(hass, command)

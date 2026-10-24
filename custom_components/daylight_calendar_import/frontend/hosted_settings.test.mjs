@@ -22,7 +22,7 @@ class FakeNode {
 globalThis.document = {createElement: tag => new FakeNode(tag)};
 const {HostedConnectionSettings, configureHostedService, loadHostedState, runHostedAction, trustedHostedOrigin, validateHostedState} = await import("./hosted_settings.js");
 const snapshot = {
-  entry_id: "entry-1", configured: true, api_origin: "https://api.example.test",
+  entry_id: "entry-1", configured: true, automatic_lifecycle: false, api_origin: "https://api.example.test",
   account_origin: "https://account.example.test", account_url: null,
   state: "disconnected", credential_status: null, credential_expires_at: null,
 };
@@ -56,7 +56,7 @@ test("hosted client sends only explicit closed requests and never secrets", asyn
   assert.deepEqual(calls, [
     {type: "daylight_calendar_import/hosted/get"},
     {type: "daylight_calendar_import/hosted/get", entry_id: "entry-1"},
-    {type: "daylight_calendar_import/hosted/configure", entry_id: "entry-1", api_origin: snapshot.api_origin, account_origin: snapshot.account_origin},
+    {type: "daylight_calendar_import/hosted/configure", entry_id: "entry-1", api_origin: snapshot.api_origin, account_origin: snapshot.account_origin, automatic_lifecycle: false},
     {type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "connect", processing_consent: true, installation_label: "Home"},
     {type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "disconnect", confirm_disconnect: true},
   ]);
@@ -83,7 +83,7 @@ test("trusted origins canonicalize equivalent HTTPS destinations and reject URL 
 
 test("hosted response is closed, entry-scoped, and secret-free", () => {
   assert.deepEqual(validateHostedState(snapshot, {entryId: "entry-1"}), snapshot);
-  const unconfigured = {...snapshot, configured: false, api_origin: null, account_origin: null, state: "not_configured"};
+  const unconfigured = {...snapshot, configured: false, automatic_lifecycle: false, api_origin: null, account_origin: null, state: "not_configured"};
   assert.deepEqual(validateHostedState(unconfigured), unconfigured);
   for (const value of [null, [], {}, {...snapshot, installation_token: "secret"}, {...snapshot, state: "<script>"},
     {...snapshot, configured: 1}, {...snapshot, entry_id: ""}, {...snapshot, credential_status: "secret"},
@@ -318,4 +318,87 @@ test("socket readiness reloads safe state while open without restoring codes or 
   const count = context.calls.length;
   listeners.get("ready")(); await flush();
   assert.equal(context.calls.length, count);
+});
+
+const automaticSnapshot = {...snapshot, automatic_lifecycle: true};
+function subscribedContext(response = automaticSnapshot) {
+  const context = setup(response);
+  const subscriptions = [];
+  context.getHass().connection.subscribeMessage = (callback, message) => {
+    const subscription = {callback, message, closed: false};
+    subscriptions.push(subscription);
+    return Promise.resolve(() => { subscription.closed = true; });
+  };
+  return {...context, subscriptions};
+}
+
+test("automatic maintenance checkbox is explicit and saved with trusted origins", async () => {
+  const context = setup();
+  await context.settings.load("entry-1");
+  const form = context.settings.element.querySelector("[data-hosted-configure]");
+  const checkbox = form.elements.namedItem("automatic_lifecycle");
+  assert.equal(checkbox.checked, false);
+  checkbox.checked = true;
+  context.setHandler(async () => automaticSnapshot);
+  form.submit(event()); await flush();
+  assert.equal(context.calls.at(-1).automatic_lifecycle, true);
+  assert.equal(context.settings.element.querySelector("[data-hosted-configure]").elements.namedItem("automatic_lifecycle").checked, true);
+});
+
+test("admin subscription fetches fresh safe state and retains only current pending approval", async () => {
+  const context = subscribedContext();
+  const {settings, subscriptions} = context;
+  await settings.load("entry-1"); await flush();
+  assert.deepEqual(subscriptions[0].message, {type: "daylight_calendar_import/hosted/subscribe", entry_id: "entry-1"});
+  context.setHandler(async message => message.action === "connect" ? {...automaticSnapshot, state: "pairing_pending", pairing} :
+    {...automaticSnapshot, state: "pairing_wait"});
+  await settings.submit("connect", {processing_consent: true, installation_label: "Home"});
+  subscriptions[0].callback({entry_id: "entry-1"}); await flush();
+  assert.equal(settings.pairing.user_code, pairing.user_code);
+  assert.equal(settings.snapshot.state, "pairing_wait");
+  context.setHandler(async () => ({...automaticSnapshot, state: "connected", credential_status: "current", credential_expires_at: "2026-12-01T00:00:00Z"}));
+  subscriptions[0].callback({entry_id: "entry-1"}); await flush();
+  assert.equal(settings.pairing, null);
+  assert.equal(settings.snapshot.state, "connected");
+  assert.equal(context.calls.filter(call => call.action).length, 1);
+  settings.clear(); assert.equal(subscriptions[0].closed, true);
+  const count = context.calls.length;
+  subscriptions[0].callback({entry_id: "entry-1"}); await flush();
+  assert.equal(context.calls.length, count);
+});
+
+test("late subscription and refresh cannot restore another session or older state", async () => {
+  const context = subscribedContext();
+  const {settings, subscriptions} = context;
+  let resolveSubscription, unsubscribed = false;
+  context.getHass().connection.subscribeMessage = () => new Promise(resolve => { resolveSubscription = resolve; });
+  await settings.load("entry-1"); settings.clear();
+  resolveSubscription(() => { unsubscribed = true; }); await flush();
+  assert.equal(unsubscribed, true);
+  context.getHass().connection.subscribeMessage = (callback, message) => {
+    subscriptions.push({callback, message}); return Promise.resolve(() => {});
+  };
+  await settings.load("entry-1"); await flush();
+  const finishes = [];
+  context.setHandler(() => new Promise(resolve => finishes.push(resolve)));
+  subscriptions[0].callback({entry_id: "entry-1"});
+  subscriptions[0].callback({entry_id: "entry-1"});
+  finishes[1]({...automaticSnapshot, state: "connected"}); await flush();
+  finishes[0]({...automaticSnapshot, state: "pairing_pending"}); await flush();
+  assert.equal(settings.snapshot.state, "connected");
+  subscriptions[0].callback({entry_id: "entry-1"});
+  settings.stop();
+  finishes[2](automaticSnapshot); await flush();
+  assert.equal(settings.snapshot, null);
+});
+
+test("subscription ignores foreign or private payloads and opt-out closes it", async () => {
+  const context = subscribedContext();
+  await context.settings.load("entry-1"); await flush();
+  const count = context.calls.length;
+  for (const payload of [{entry_id: "other"}, {entry_id: "entry-1", token: "secret"}, null]) context.subscriptions[0].callback(payload);
+  await flush(); assert.equal(context.calls.length, count);
+  context.setHandler(async () => snapshot);
+  await context.settings.submit("configure", {...snapshot, automatic_lifecycle: false});
+  assert.equal(context.subscriptions[0].closed, true);
 });
