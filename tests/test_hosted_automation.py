@@ -372,3 +372,49 @@ async def test_confirmation_successful_disconnect_clears_automatic_metadata(auto
 def test_invalid_automatic_state_type_cannot_enter_checkpoint():
     with pytest.raises(ValueError):
         CredentialCheckpoint(processing_consent=True, automation={})
+
+
+
+def test_automatic_scope_is_exactly_domain_separated():
+    """Changing the separator must not silently change persisted scope IDs."""
+    import hashlib
+    from custom_components.daylight_calendar_import.hosted_automation import _scope
+
+    phase, identity = "status", "test-credential"
+    expected = hashlib.sha256(b"status:test-credential").hexdigest()
+    assert _scope(phase, identity) == expected
+    assert _scope("rotation", identity) != expected
+
+
+def test_retry_jitter_uses_exact_bounded_random_range(monkeypatch):
+    from custom_components.daylight_calendar_import.hosted_automation import _jitter
+
+    seen = []
+    def randbelow(limit):
+        seen.append(limit)
+        return limit - 1
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.hosted_automation.secrets.randbelow",
+        randbelow,
+    )
+    assert _jitter() == 5
+    assert seen == [5]
+
+
+async def test_pairing_expiry_is_exclusive_at_exact_deadline(automatic, freezer):
+    from custom_components.daylight_calendar_import.hosted_credentials import PairingAttempt
+
+    policy, store, controller = automatic
+    deadline = "2026-10-24T00:10:00Z"
+    attempt = PairingAttempt(
+        "pairing_1234567890", deadline, 5, "2026-10-24T00:00:00Z"
+    )
+    old = store.snapshot
+    await store.async_checkpoint(
+        old, replace(old, current=None, pairing_verifier="v" * 43, pairing=attempt)
+    )
+    freezer.move_to(deadline)
+    assert policy.plan(RECOVER) is None
+    assert await policy.async_step(RECOVER) is None
+    controller.async_poll_pairing.assert_not_awaited()
