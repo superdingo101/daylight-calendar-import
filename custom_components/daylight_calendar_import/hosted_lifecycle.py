@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .hosted_credentials import BoundCredential, HostedCredentialStore
+from .hosted_credentials import (
+    BoundCredential,
+    CandidateCredential,
+    HostedCredentialStore,
+)
 from .hosted_transport import HostedLifecycleTransport, HostedTransportError
 
 
@@ -108,6 +112,7 @@ class HostedLifecycleController:
                         current=bound,
                         candidate=None,
                         pairing_verifier=None,
+                        rotation_not_before=None,
                     ),
                 )
                 # An overlap token still authorizes ordinary work until its
@@ -122,6 +127,72 @@ class HostedLifecycleController:
         return HostedConnectionResult(
             "disconnected" if state == "confirmed" else "remote_disconnect_unconfirmed"
         )
+
+    async def async_rotate(self) -> HostedConnectionResult:
+        """Explicitly request one renewal; reconcile saved candidates separately.
+
+        A durable gate survives crashes and response loss. It is a scheduling
+        bound only: the server rechecks current authority on every issuance.
+        This dormant operation starts no automatic timer or background work.
+        """
+        async with self._lock:
+            checkpoint = self._store.snapshot
+            if checkpoint.local_disconnect != "none":
+                return self._disconnected(checkpoint.local_disconnect)
+            if not checkpoint.processing_consent:
+                return HostedConnectionResult("disconnected")
+            if checkpoint.candidate is not None or checkpoint.pairing_verifier is not None:
+                return HostedConnectionResult("recovery_required")
+            current = checkpoint.current
+            if current is None:
+                return HostedConnectionResult("repair_required")
+            now = datetime.now(UTC)
+            if checkpoint.rotation_not_before is not None and now < datetime.fromisoformat(
+                checkpoint.rotation_not_before
+            ):
+                return HostedConnectionResult("rotation_wait")
+            try:
+                status = await self._transport.installation_status(current.token)
+            except HostedTransportError as error:
+                if self._unauthorized(error):
+                    return HostedConnectionResult("repair_required")
+                raise
+            bound = self._binding(status, current)
+            if status["credential_status"] != "current":
+                return HostedConnectionResult(
+                    "repair_required", status["credential_status"], bound.expires_at
+                )
+            # No POST before this durable checkpoint. The gate includes the
+            # transport's whole-request budget (15s), the protocol candidate
+            # lifetime (600s), and 30s scheduling skew. Local time never grants
+            # authority and a server rotation_pending still prevents reissue.
+            intent = await self._store.async_checkpoint(
+                checkpoint,
+                replace(checkpoint, rotation_not_before=(
+                    datetime.now(UTC) + timedelta(seconds=645)
+                ).isoformat()),
+            )
+            if datetime.now(UTC) + timedelta(seconds=615) > datetime.fromisoformat(
+                intent.rotation_not_before
+            ):
+                return HostedConnectionResult("rotation_wait")
+            issued = await self._transport.rotate(current.token)
+            candidate = CandidateCredential(
+                issued["installation_id"], issued["installation_token"],
+                issued["expires_at"], issued["confirmation_expires_at"],
+            )
+            if candidate.installation_id != current.installation_id:
+                raise HostedTransportError("identity_mismatch")
+            received = datetime.now(UTC)
+            if (
+                datetime.fromisoformat(candidate.expires_at)
+                > received + timedelta(days=90, seconds=30)
+                or datetime.fromisoformat(candidate.confirmation_expires_at)
+                > received + timedelta(seconds=630)
+            ):
+                raise HostedTransportError("invalid_response")
+            await self._store.async_checkpoint(intent, replace(intent, candidate=candidate))
+            return HostedConnectionResult("candidate_saved")
 
     async def async_disconnect(self) -> HostedConnectionResult:
         """Persist the local stop before one bearer-authorized disconnect attempt.
@@ -163,6 +234,7 @@ class HostedLifecycleController:
                     candidate=None,
                     pairing_verifier=None,
                     local_disconnect="confirmed",
+                    rotation_not_before=None,
                 ),
             )
             return self._disconnected("confirmed")

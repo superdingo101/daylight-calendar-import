@@ -50,12 +50,45 @@ this marker alone is not sufficient authorization to resume work.
 ## Persistence and rollback
 
 The marker extends the existing private checkpoint envelope without moving or
-copying secrets. The decoder accepts exactly the legacy field set (defaulting to
-`none`) or the extended set. Malformed/unknown data still fails closed.
+copying secrets. The decoder accepts the earlier field sets (defaulting missing
+optional markers) or the extended set. Malformed/unknown data still fails closed.
 Old code cannot read a newly extended checkpoint: roll back code only while
 hosted remains dormant, preserve the private file and use forward repair rather
 than deleting or manually editing it. Storage uncertainty stops network work.
 
-Pairing issuance, durable rotation/exchange intent, retry scheduling, native
+Pairing issuance, durable exchange intent, retry scheduling, native
 consent/connect/repair settings and runtime registration remain follow-on P02
 work. Live M2 evidence remains separate from unit/CI success.
+
+## Explicit rotation and renewal intent
+
+`async_rotate` is a dormant one-attempt operation, without a scheduler or native
+settings registration. It first checks saved consent, the local stop marker and
+absence of unresolved pairing/candidate recovery. A fresh status must match the
+saved household/installation and identify a current credential. Overlap tokens
+retain ordinary access and their effective expiry, but require owner repair for
+lifecycle authority.
+
+Before issuance, the private checkpoint saves `rotation_not_before`. A request
+failure, cancellation, malformed candidate, or failed candidate write preserves
+this gate and the previous credential across restart. No issuance POST is
+transparently replayed. The 645-second scheduling gate covers the transport's
+15-second request budget, the protocol's 600-second maximum staged lifetime,
+and 30 seconds of scheduling skew. A slow intent checkpoint cannot consume that
+margin and then issue with a stale gate. Once the gate elapses, only a new
+explicit invocation with fresh server authority may attempt issuance; server
+`rotation_pending` still rejects a candidate that remains live. Clock skew never
+grants server authority.
+
+A returned same-installation candidate is saved before reporting
+`candidate_saved`. The existing reconciliation operation verifies/activates it;
+rotation itself never confirms. Promotion clears the gate, and confirmed
+disconnect removes it with all private bundles. Recovery continues to expose an
+authorized previous connection while an uncertain issuance waits. An existing
+candidate is retained for reconciliation instead of being overwritten by another
+rotation.
+
+The decoder accepts the earlier checkpoint shapes. Older code rejects the new
+field, so preserve private files and repair forward rather than downgrading or
+removing recovery material. This change neither activates hosted processing nor
+changes local imports, review state, calendar writes, or journal namespaces.
