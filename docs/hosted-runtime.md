@@ -35,7 +35,12 @@ closed. Successful unload/setup rollback stops it, cancels its active operation
 and waits at most one second. HA retains ownership of a cancellation-resistant
 operation in an entry-specific task set until it really ends; reload refuses to
 load another credential controller while that operation can still mutate state.
-The credential store separately serializes pending/uncertain disk writes.
+Once the task set is empty, an explicit reconcile action may initialize the
+replacement controller and verify saved state. It is admitted through the same
+single-operation gate; it never replays issuance/exchange or grants authority
+from a local deadline. Setup and status reads still make no request. Storage
+failures during deferred load remain fail-closed. The credential store separately
+serializes pending/uncertain disk writes.
 
 Native admin-only settings/API, bounded automatic pairing/renewal scheduling and
 owner-authorized reconnect remain separate consumers. This runtime does not

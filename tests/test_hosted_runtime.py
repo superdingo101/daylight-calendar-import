@@ -37,6 +37,7 @@ def entry(options=None):
 async def runtime(hass, monkeypatch):
     store = AsyncMock()
     store.async_load.return_value = CredentialCheckpoint()
+    store.snapshot = store.async_load.return_value
     monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_runtime.HostedCredentialStore", lambda *_: store)
     r = await async_setup_hosted_runtime(hass, entry({CONF_HOSTED_SERVICE: SERVICE}))
     assert not r.accepting
@@ -232,9 +233,16 @@ async def test_cancellation_ownership_survives_stop_and_reload(runtime, hass, mo
     await r.async_stop()
     replacement = await async_setup_hosted_runtime(hass, entry({CONF_HOSTED_SERVICE: SERVICE}))
     assert replacement.snapshot()["state"] == "operation_finishing"
+    replacement.resume()
+    with pytest.raises(HostedRuntimeError, match="hosted_busy"):
+        await replacement.async_action("reconcile")
     release.set()
     await asyncio.gather(*tuple(r._tasks), return_exceptions=True)
     assert not r._tasks
+    result = await replacement.async_action("reconcile")
+    assert result["state"] == "disconnected"
+    assert replacement._controller is not None
+    assert _store.async_load.await_count == 2
 
 
 async def test_stop_cancels_normal_action_and_is_bounded(runtime):
@@ -254,12 +262,24 @@ async def test_stop_cancels_normal_action_and_is_bounded(runtime):
     assert r.snapshot()["state"] == "recovery_required"
 
 
+async def test_explicit_deferred_recovery_still_blocks_private_storage_failure(runtime):
+    r, store = runtime
+    r._controller = None
+    r._state = HostedConnectionResult("operation_finishing")
+    store.async_load.side_effect = HostedCredentialStorageError("private")
+    result = await r.async_action("reconcile")
+    assert result["state"] == "storage_repair"
+    assert r._controller is None and "private" not in str(result)
+
+
 # Mutation guards for entry ownership, public error codes, and task identity.
 # The assertions intentionally cover observable action semantics without changing
 # the hosted implementation or the project-wide mutation score threshold.
 def test_initial_hosted_runtime_state_and_entry_scoped_ownership(hass):
     from custom_components.daylight_calendar_import.const import DOMAIN
-    from custom_components.daylight_calendar_import.hosted_runtime import HostedConnectionRuntime
+    from custom_components.daylight_calendar_import.hosted_runtime import (
+        HostedConnectionRuntime,
+    )
 
     r = HostedConnectionRuntime(hass, entry({CONF_HOSTED_SERVICE: SERVICE}))
     assert r._service is None
@@ -374,3 +394,29 @@ async def test_explicit_action_has_named_entry_owned_task(runtime, hass):
         release.set()
         await waiter
     assert not r.busy
+
+
+async def test_cancelled_deferred_load_can_be_explicitly_recovered_after_it_settles(runtime):
+    r, store = runtime
+    r._controller = None
+    r._state = HostedConnectionResult("operation_finishing")
+    entered = asyncio.Event()
+    async def blocked_load():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise HostedCredentialStorageError("private cancelled read") from None
+    store.async_load.side_effect = blocked_load
+    waiter = asyncio.create_task(r.async_action("reconcile"))
+    await entered.wait()
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    await asyncio.gather(*tuple(r._tasks), return_exceptions=True)
+    await asyncio.sleep(0)  # Let the owned task's completion callback retire it.
+    assert not r.busy and r._controller is None
+    assert r.snapshot()["state"] == "operation_finishing"
+    store.async_load.side_effect = None
+    result = await r.async_action("reconcile")
+    assert result["state"] == "disconnected" and r._controller is not None
