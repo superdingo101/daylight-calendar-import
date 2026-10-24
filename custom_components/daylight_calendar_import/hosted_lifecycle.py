@@ -21,6 +21,7 @@ class HostedConnectionResult:
 
     state: str
     credential_status: str | None = None
+    credential_expires_at: str | None = None
 
 
 class HostedLifecycleController:
@@ -111,7 +112,9 @@ class HostedLifecycleController:
                 )
                 # An overlap token still authorizes ordinary work until its
                 # effective deadline; lifecycle repair is a separate concern.
-                return HostedConnectionResult("connected", status["credential_status"])
+                return HostedConnectionResult(
+                    "connected", status["credential_status"], bound.expires_at
+                )
             return await self._previous()
 
     @staticmethod
@@ -184,8 +187,9 @@ class HostedLifecycleController:
             if self._unauthorized(error):
                 return HostedConnectionResult("repair_required")
             raise
-        self._binding(status, previous)
+        bound = self._binding(status, previous)
         return HostedConnectionResult(
             "previous_retained" if checkpoint.candidate is not None else "connected",
             status["credential_status"],
+            bound.expires_at,
         )

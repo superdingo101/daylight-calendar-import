@@ -6,8 +6,8 @@ service, expose settings, select a parser or start a polling task. The accepted
 
 The controller requires one loaded `HostedCredentialStore` and the trusted-origin
 `HostedLifecycleTransport`. Its result contains only connection state and an
-optional credential class; never serialize the store snapshot into settings,
-WebSocket responses or diagnostics.
+optional credential class and verified effective expiry. Never serialize the store
+snapshot into settings, WebSocket responses or diagnostics.
 
 ## Recovery
 
@@ -17,6 +17,11 @@ attempt, followed by status binding. Validate account/installation identity and
 effective expiry before committing local activation. Preserve bundles on
 transport/storage uncertainty. Verified overlap credentials preserve ordinary
 access until their effective deadline; overlap is not current lifecycle authority.
+Every authorized recovery result exposes the verified effective expiry as
+`credential_expires_at`, including retention of a previous overlap credential
+while a failed candidate remains staged. This status snapshot is not an extension
+of server authority. Retaining a previous credential leaves its private recovery
+bundles unchanged.
 A candidate for a different installation is blocked pending explicit durable
 journal reconciliation. This primitive cannot authorize namespace replacement.
 

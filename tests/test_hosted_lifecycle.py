@@ -275,3 +275,57 @@ async def test_malformed_or_unknown_auth_failure_never_reconfirms_or_discards(
         await c.async_reconcile()
     transport.confirm.assert_not_called()
     store.async_checkpoint.assert_not_called()
+
+
+@pytest.mark.parametrize("candidate", [None, CANDIDATE])
+@pytest.mark.parametrize("credential_status", ["current", "overlap"])
+async def test_previous_result_exposes_effective_expiry_without_dropping_candidate(
+    candidate, credential_status
+):
+    c, store, transport = controller(candidate=candidate)
+    original = store.snapshot
+    effective = "2026-10-24T00:15:00Z"
+    verified = status(
+        credential_status=credential_status,
+        credential_expires_at=effective,
+    )
+    if candidate is not None:
+        transport.installation_status.side_effect = [
+            HostedTransportError("unauthenticated", status=401),
+            verified,
+        ]
+        transport.confirm.side_effect = HostedTransportError("forbidden", status=403)
+    else:
+        transport.installation_status.return_value = verified
+    result = await c.async_reconcile()
+    assert result.state == ("previous_retained" if candidate else "connected")
+    assert result.credential_status == credential_status
+    assert result.credential_expires_at == "2026-10-24T00:15:00+00:00"
+    assert store.snapshot is original
+    assert store.snapshot.current == CURRENT
+    assert store.snapshot.candidate == candidate
+    store.async_checkpoint.assert_not_called()
+
+
+async def test_candidate_result_exposes_verified_expiry():
+    c, store, transport = controller()
+    transport.installation_status.return_value = status(
+        credential_status="overlap",
+        credential_expires_at="2026-10-24T00:15:00Z",
+    )
+    result = await c.async_reconcile()
+    assert result.credential_expires_at == "2026-10-24T00:15:00+00:00"
+    assert (
+        result.credential_expires_at
+        == store.async_checkpoint.call_args.args[1].current.expires_at
+    )
+
+
+async def test_unauthorized_result_has_no_verified_expiry():
+    c, _store, transport = controller(candidate=None)
+    transport.installation_status.side_effect = HostedTransportError(
+        "unauthenticated", status=401
+    )
+    result = await c.async_reconcile()
+    assert result.state == "repair_required"
+    assert result.credential_expires_at is None
