@@ -55,7 +55,7 @@ test("size validation precedes reading/upload; the exact 10MiB bound is accepted
 });
 
 test("authenticated multipart upload sends only file ID and text context over websocket", async () => {
-  for (const [file, service] of [[PNG(), "submit_image"], [PDF(), "submit_pdf"]]) {
+  for (const [file, service, uploadedName] of [[PNG(), "submit_image", "daylight-upload.png"], [PDF(), "submit_pdf", "daylight-upload.pdf"]]) {
     const hass = connection();
     let notified = false;
     assert.deepEqual(await submitFile(hass, file, {text: "  family calendar  ", sourceId: "stable", onUploaded: () => {notified = true;}}),
@@ -64,10 +64,34 @@ test("authenticated multipart upload sends only file ID and text context over we
     assert.equal(hass.http[0].path, "/api/file_upload");
     assert.equal(hass.http[0].method, "POST");
     assert.ok(hass.http[0].body instanceof FormData);
-    assert.equal(hass.http[0].body.get("file").name, file.name);
+    assert.equal(hass.http[0].body.get("file").name, uploadedName);
     assert.deepEqual(hass.ws[0], {type: "call_service", domain: "daylight_calendar_import", service,
       service_data: {file_id: ID, text: "  family calendar  ", source_id: "stable"}, return_response: true});
     assert.deepEqual(hass.http[1], {path: "/api/file_upload", method: "DELETE", headers: {"Content-Type": "application/json"}, body: JSON.stringify({file_id: ID})});
+  }
+});
+
+test("uploaded filenames are safe and based on signatures, without modifying original bytes", async () => {
+  const cases = [
+    [new File([new Uint8Array([255, 216, 255])], "Screenshot_20261024-123658~2.jpg",
+      {type: "image/png"}), "daylight-upload.jpg", "submit_image"],
+    [new File([PNG()], "family/..schedule.jpeg",
+      {type: "application/pdf"}), "daylight-upload.png", "submit_image"],
+    [new File(["RIFF1234WEBP"], "club\\flyer~1.png",
+      {type: "image/jpeg"}), "daylight-upload.webp", "submit_image"],
+    [new File(["%PDF-1.7"], "school/../bulletin.jpg",
+      {type: "image/jpeg"}), "daylight-upload.pdf", "submit_pdf"],
+  ];
+  for (const [file, expectedName, expectedService] of cases) {
+    const hass = connection();
+    const originalName = file.name;
+    await submitFile(hass, file);
+    const uploadedFile = hass.http[0].body.get("file");
+    assert.equal(uploadedFile.name, expectedName);
+    assert.doesNotMatch(uploadedFile.name, /~|\\.\\.|[/\\\\]/);
+    assert.deepEqual(new Uint8Array(await uploadedFile.arrayBuffer()), new Uint8Array(await file.arrayBuffer()));
+    assert.equal(file.name, originalName);
+    assert.equal(hass.ws[0].service, expectedService);
   }
 });
 
@@ -80,9 +104,9 @@ test("invalid context never uploads", async () => {
 });
 
 test("HTTP/network/JSON/malformed ID failures never invoke ingestion", async () => {
-  for (const [status, code] of [[413, "source_too_large"], [401, "unauthorized"], [403, "unauthorized"], [500, "upload_failed"]]) {
+  for (const [status, code] of [[400, "upload_failed"], [413, "source_too_large"], [401, "unauthorized"], [403, "unauthorized"], [500, "upload_failed"]]) {
     const hass = connection({status});
-    await assert.rejects(submitFile(hass, PNG()), {code});
+    await assert.rejects(submitFile(hass, PNG()), status === 400 ? {code, message: /HTTP 400/} : {code});
     assert.equal(hass.ws.length, 0);
     assert.equal(hass.http.length, 1);
   }
