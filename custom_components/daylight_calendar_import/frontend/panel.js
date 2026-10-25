@@ -101,7 +101,56 @@ const css = `
   .error { color: var(--error-color); }
   .event-description { white-space: pre-wrap; max-height: 18rem; overflow: auto; }
   .source { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; }
-  .detail-event { border-top: 1px solid var(--divider-color); padding: 12px 0; }
+  .detail-event {
+    margin: 14px 0; padding: 18px; background: var(--card-background-color);
+    border: 1px solid var(--divider-color); border-radius: 16px;
+    display: grid; gap: 10px; min-width: 0;
+  }
+  .detail-event h3 { margin: 0; font-size: 1.14rem; line-height: 1.4; overflow-wrap: anywhere; }
+  .event-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+  .event-date { margin: 0; color: var(--secondary-text-color); font-size: .9rem; font-weight: 500; }
+  .event-status { color: var(--secondary-text-color); font-size: .8rem; }
+  .event-calendar, .event-location { color: var(--secondary-text-color); font-size: .9rem; }
+  .event-note { font-size: .88rem; color: var(--warning-color, var(--primary-text-color)); }
+  .event-diagnostics { font-size: .86rem; color: var(--secondary-text-color); }
+  .event-diagnostics summary { cursor: pointer; min-height: 32px; padding: 6px 0; }
+  .event-diagnostics p { margin: 6px 0; }
+  .event-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 10px; border-top: 1px solid var(--divider-color); }
+  .event-controls button { min-height: 44px; }
+  .event-controls .event-primary { margin-left: auto; background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 600; }
+  .event-more { position: relative; }
+  .event-more summary { display: flex; align-items: center; min-height: 44px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--divider-color); cursor: pointer; list-style: none; }
+  .event-more summary::-webkit-details-marker { display: none; }
+  .event-more summary::after { content: "⋯"; font-size: 1.2rem; padding-left: 8px; line-height: 1; }
+  .event-more[open] { flex-basis: 100%; }
+  .event-more[open] summary { width: fit-content; }
+  .event-more button { margin: 4px 8px 4px 0; }
+  .event-description { margin: 0; line-height: 1.5; }
+  .import-overview { margin: 14px 0; padding: 14px 16px; border-radius: 12px; background: var(--secondary-background-color, var(--card-background-color)); }
+  .import-overview p { margin: 0; color: var(--secondary-text-color); }
+  .source-details { margin: 12px 0 20px; color: var(--secondary-text-color); }
+  .source-details summary { cursor: pointer; min-height: 40px; padding: 8px 0; }
+  .source-details .source { margin: 6px 0 14px; color: var(--primary-text-color); }
+  .event-group-heading { margin: 18px 0 4px; }
+  .event-group .actions { margin: 10px 0 18px; }
+  .event-group .actions [data-batch-action="approve"] { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 600; }
+  .event-group .detail-event { margin: 12px 0; }
+  .event-fold { min-width: 0; }
+  .event-fold > summary { list-style: none; display: flex; gap: 10px; align-items: center; min-height: 58px; cursor: pointer; }
+  .event-fold > summary::-webkit-details-marker { display: none; }
+  .event-fold > summary::before { content: "▸"; color: var(--secondary-text-color); flex: none; }
+  .event-fold[open] > summary::before { content: "▾"; }
+  .event-fold-summary { flex: 1; min-width: 0; display: grid; gap: 3px; }
+  .event-fold-summary h3 { margin: 0; }
+  .event-fold-summary .event-date { font-weight: 400; }
+  .event-fold-alert { color: var(--warning-color, var(--primary-text-color)); font-size: .82rem; }
+  .event-fold-body { margin-top: 10px; display: grid; gap: 10px; }
+  .event-fold-body .event-meta { display: none; }
+  @media (max-width: 480px) {
+    .detail-event { padding: 14px; }
+    .event-controls .event-primary { margin-left: auto; }
+    .event-controls > button { flex: 0 1 auto; width: auto; }
+  }
   form { display: grid; gap: 12px; }
   label { display: grid; gap: 4px; }
   input, textarea, select { box-sizing: border-box; width: 100%; padding: 8px; font: inherit; color: inherit; background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; }
@@ -206,7 +255,7 @@ const css = `
       padding-left: max(12px, var(--daylight-safe-left));
     }
     li { padding: 12px; }
-    .actions button, .detail-event > button { flex: 1 1 100%; width: 100%; }
+    .actions button { flex: 1 1 100%; width: 100%; }
     nav[aria-label="Daylight views"] button {
       flex: 0 0 auto;
       width: auto;
@@ -263,6 +312,41 @@ function shouldShowMenuButton(narrow, hass) {
 
 function eventRange(event, hass) {
   return formatEventRange(event, hass?.locale, hass?.config?.time_zone);
+}
+
+// Date-only strings are calendar dates, not local instants. Format in UTC to
+// avoid shifting a school all-day event to the previous day in western zones.
+function reviewRange(event, hass) {
+  if (!event.all_day || !/^\d{4}-\d{2}-\d{2}$/.test(event.start || "") ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(event.end || "")) return eventRange(event, hass);
+  const start = new Date(event.start + "T12:00:00Z");
+  const exclusiveEnd = new Date(event.end + "T12:00:00Z");
+  if (Number.isNaN(start.getTime()) || Number.isNaN(exclusiveEnd.getTime()) ||
+      exclusiveEnd <= start) return eventRange(event, hass);
+  const end = new Date(exclusiveEnd.getTime() - 86400000);
+  try {
+    const formatter = new Intl.DateTimeFormat(hass?.locale?.language || undefined,
+      {weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC"});
+    const first = formatter.format(start);
+    return (event.start === end.toISOString().slice(0, 10) ?
+      first : first + " – " + formatter.format(end)) + " · All day";
+  } catch {
+    return eventRange(event, hass) + " · All day";
+  }
+}
+
+function reviewCalendarName(event, hass) {
+  const entity = event.calendar_entity;
+  if (!entity) return "Default calendar";
+  const friendly = hass?.states?.[entity]?.attributes?.friendly_name;
+  if (typeof friendly === "string" && friendly.trim()) return friendly;
+  return entity.replace(/^calendar\./, "").replaceAll("_", " ");
+}
+
+function reviewStatus(status) {
+  return ({pending: "Pending review", write_uncertain: "Needs confirmation",
+    rejected: "Rejected", approved: "Approved", created: "Added to calendar"})[status] ||
+    String(status || "Unknown").replaceAll("_", " ");
 }
 
 function activityTime(value, hass) {
@@ -557,6 +641,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._detail = null;
     this._calendarCheck = null;
     this._approvalObservation = null;
+    this._openEventMenuId = null;
     // Transport lifetime is independent of canceled or superseded review UI.
     this._calendarObservationRequest = null;
     this._returnFocusId = null;
@@ -569,6 +654,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._batchAction = null;
     this._batchResults = [];
     this._batchContext = null;
+    // Folded source-event previews are view-local; never share expansion across imports.
+    this._expandedEventIds = new Set();
     this._view = "inbox";
     this._newImportMode = null;
     this._newImportOrigin = null;
@@ -1846,6 +1933,8 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._editingId || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
     const generation = ++this._generation;
+    if (id !== this._selectedId) this._expandedEventIds.clear();
+    if (id !== this._selectedId) this._openEventMenuId = null;
     this._selectedId = id;
     this._detail = null;
     this._calendarCheck = null;
@@ -1886,6 +1975,8 @@ export class DaylightImportPanel extends HTMLElement {
     ++this._generation;
     this._selectedId = null;
     this._detail = null;
+    this._openEventMenuId = null;
+    this._expandedEventIds.clear();
     void this.refresh();
   }
 
@@ -2594,10 +2685,17 @@ export class DaylightImportPanel extends HTMLElement {
         error.setAttribute("role", "alert");
         content.append(error);
       }
-      content.append(element("p", `Source: ${detail.source_kind || "Text"}`));
-      for (const warning of detail.warnings || []) content.append(element("p", `Warning: ${warning}`));
+      const ready = detail.events.filter(event => event.status === "pending");
+      const overview = element("div", "", "import-overview");
+      const total = detail.events.length;
+      overview.append(element("p",
+        `${total} ${total === 1 ? "event" : "events"} in this import · ${ready.length} awaiting review`));
+      content.append(overview);
+      for (const warning of detail.warnings || []) content.append(element("p", "Warning: " + warning, "event-note"));
       if (detail.duplicate_events) content.append(element("p", `${detail.duplicate_events} duplicates skipped`));
-      content.append(element("h2", "Source context"));
+      const sourceDetails = element("details", "", "source-details");
+      sourceDetails.append(element("summary", "View source details"));
+      sourceDetails.append(element("p", "Source: " + (detail.source_kind || "Text")));
       if (detail.source_kind === "email") {
         const source = element("div", "", "source");
         source.tabIndex = 0;
@@ -2608,16 +2706,20 @@ export class DaylightImportPanel extends HTMLElement {
           element("p", `Email sender: ${detail.source_sender || "Unknown sender"}`),
           element("p", `Received: ${activityTime(detail.created_at, this._hass)}`),
         );
-        content.append(source);
+        sourceDetails.append(source);
       } else {
         const source = element("p", detail.source_text || "No source text available.", "source");
         source.tabIndex = 0;
         source.setAttribute("role", "region");
         source.setAttribute("aria-label", "Source text");
-        content.append(source);
+        sourceDetails.append(source);
       }
-      content.append(element("h2", "Events"));
-      const ready = detail.events.filter(event => event.status === "pending");
+      content.append(sourceDetails);
+      const eventGroup = element("div", "", "event-group");
+      eventGroup.setAttribute("role", "region");
+      eventGroup.setAttribute("aria-label", "Events from this import");
+      eventGroup.append(element("h2", "Events from this import", "event-group-heading"));
+      content.append(eventGroup);
       if (ready.length > 1 && !this._editingId && !this._decision && !this._resolution) {
         const bulk = element("div", "", "actions");
         if (this._batchAction) {
@@ -2662,34 +2764,82 @@ export class DaylightImportPanel extends HTMLElement {
             bulk.append(button);
           }
         }
-        content.append(bulk);
+        eventGroup.append(bulk);
       }
       for (const event of detail.events) {
         const card = element("section", "", "detail-event");
         if (this._editingId === event.id) {
           card.append(this.editForm(event));
-          content.append(card);
+          eventGroup.append(card);
           continue;
         }
-        card.append(element("h3", event.title || "Untitled event"));
-        card.append(element("p", `${eventRange(event, this._hass)}${event.all_day ? " · All day" : ""}`));
-        card.append(element("p", `Calendar: ${event.calendar_entity || "Default"} · Status: ${event.status}`));
-        if (event.routing_unresolved) {
-          card.append(element("p", "Routing hint was unrecognized or conflicting. Edit this event, choose its destination calendar, then save before approval.", "error"));
+        // Several extracted events share one source. Show short rows until
+        // expanded, but force advisory checks and active decisions into view.
+        let surface = card;
+        const grouped = detail.events.length > 1;
+        if (grouped) {
+          const fold = element("details", "", "event-fold");
+          const summary = element("summary", "", "event-fold-heading");
+          const summaryText = element("div", "", "event-fold-summary");
+          summaryText.append(
+            element("h3", event.title || "Untitled event"),
+            element("p", reviewRange(event, this._hass), "event-date"));
+          if (event.routing_unresolved || event.date_time_assumptions?.length ||
+              event.status === "write_uncertain") {
+            summaryText.append(element("span",
+              event.status === "write_uncertain" ? "Needs calendar confirmation" :
+                event.routing_unresolved ? "Destination needs attention" :
+                  "Review date interpretation", "event-fold-alert"));
+          }
+          summary.append(summaryText, element("span", reviewStatus(event.status), "event-status"));
+          const foldBody = element("div", "", "event-fold-body");
+          fold.open = this._expandedEventIds.has(event.id) ||
+            this._decision?.id === event.id || this._resolution?.id === event.id ||
+            this._calendarCheck?.event === event ||
+            (this._approvalObservation?.detail === detail &&
+              this._approvalObservation.results.has(event));
+          fold.addEventListener("toggle", () => {
+            if (fold.open) this._expandedEventIds.add(event.id);
+            else this._expandedEventIds.delete(event.id);
+          });
+          fold.append(summary, foldBody);
+          card.append(fold);
+          surface = foldBody;
         }
-        for (const assumption of event.date_time_assumptions || []) {
-          card.append(element("p", `Date/time assumption: ${assumption}`));
-        }
-        if (typeof event.confidence === "number") {
-          card.append(element("p", `AI extraction confidence: ${Math.round(event.confidence * 100)}% (estimate)`));
-        }
-        if (event.location) card.append(element("p", `Location: ${event.location}`));
+        const meta = element("div", "", "event-meta");
+        meta.append(element("p", reviewRange(event, this._hass), "event-date"));
+        meta.append(element("span", reviewStatus(event.status), "event-status"));
+        if (!grouped) surface.append(meta, element("h3", event.title || "Untitled event"));
         if (event.description) {
           const description = element("p", event.description, "event-description");
           description.setAttribute("tabindex", "0");
           description.setAttribute("role", "region");
           description.setAttribute("aria-label", "Event description");
-          card.append(description);
+          surface.append(description);
+        }
+        surface.append(element("p", "Calendar · " + reviewCalendarName(event, this._hass), "event-calendar"));
+        if (event.location) surface.append(element("p", "Location · " + event.location, "event-location"));
+        if (event.routing_unresolved) {
+          surface.append(element("p", "Choose a destination calendar before approving this event.", "error"));
+        }
+        if (event.date_time_assumptions?.length) {
+          const yearInferred = event.date_time_assumptions.some(note => /year/i.test(note));
+          surface.append(element("p", yearInferred ?
+            "Year inferred — verify the date" : "Date interpretation needs review", "event-note"));
+        }
+        if (event.date_time_assumptions?.length || typeof event.confidence === "number" ||
+            event.calendar_entity) {
+          const diagnostics = element("details", "", "event-diagnostics");
+          diagnostics.append(element("summary", "Extraction details"));
+          if (event.calendar_entity) diagnostics.append(element("p", "Calendar ID: " + event.calendar_entity));
+          for (const assumption of event.date_time_assumptions || []) {
+            diagnostics.append(element("p", "Date/time assumption: " + assumption));
+          }
+          if (typeof event.confidence === "number") {
+            diagnostics.append(element("p", "AI confidence: " +
+              Math.round(event.confidence * 100) + "% (estimate)"));
+          }
+          surface.append(diagnostics);
         }
         const approvalResult = this._approvalObservation?.detail === detail &&
           this._approvalObservation.decision === this._decision &&
@@ -2700,15 +2850,15 @@ export class DaylightImportPanel extends HTMLElement {
           section.setAttribute("role", "region");
           section.setAttribute("aria-label", "Calendar check results");
           this.renderCalendarCheckDetails(section, approvalResult || this._calendarCheck);
-          card.append(section);
+          surface.append(section);
         }
         if (event.status === "write_uncertain") {
-          card.append(element("p", "Calendar write could not be confirmed. Check the destination calendar before choosing an outcome. Retrying without checking may create a duplicate."));
+          surface.append(element("p", "Calendar write could not be confirmed. Check the destination calendar before choosing an outcome. Retrying without checking may create a duplicate."));
           if (this._resolution?.id === event.id) {
             const actions = element("div", "", "actions");
             const labels = {created: "It was created", not_created: "It was not created — return to review",
               discard: "Discard without a calendar event"};
-            card.append(element("p", `Confirm: ${labels[this._resolution.choice]}?`));
+            surface.append(element("p", `Confirm: ${labels[this._resolution.choice]}?`));
             const confirm = element("button", "Confirm recovery choice");
             confirm.type = "button";
             confirm.addEventListener("click", () => void this.runResolution(event, this._resolution.choice));
@@ -2723,7 +2873,7 @@ export class DaylightImportPanel extends HTMLElement {
                 .find(button => button.dataset.eventId === event.id && button.dataset.resolution === choice)?.focus();
             });
             actions.append(confirm, cancel);
-            card.append(actions);
+            surface.append(actions);
           } else if (!this._editingId && !this._decision && !this._batchAction && !this._resolution) {
             const choices = [{value: "created", label: "It was created"},
               {value: "not_created", label: "It was not created — return to review"},
@@ -2740,12 +2890,19 @@ export class DaylightImportPanel extends HTMLElement {
                 this.render();
                 this._content.querySelector(".actions button")?.focus();
               });
-              card.append(button);
+              surface.append(button);
             }
           }
         }
+        const controls = element("div", "", "event-controls");
+        const more = element("details", "", "event-more");
+        // A calendar check replaces the button DOM while it is still focused.
+        // Keep the disclosure open through the check and any canceled rejection.
+        more.open = this._openEventMenuId === event.id || this._calendarCheck?.event === event;
+        more.append(element("summary", "More actions"));
         if (event.status === "pending" && !this._editingId && !this._decision && !this._batchAction && !this._resolution) {
-          const edit = element("button", `Edit ${event.title}`);
+          const edit = element("button", "Edit");
+          edit.setAttribute("aria-label", `Edit ${event.title || "event"}`);
           edit.type = "button";
           edit.dataset.eventId = event.id;
           edit.addEventListener("click", () => { if (this._saving || this._editingId) return;
@@ -2753,9 +2910,11 @@ export class DaylightImportPanel extends HTMLElement {
             this._calendarCheck = null;
             this._editingId = event.id; this.render();
             this._content.querySelector("form input")?.focus(); });
-          card.append(edit);
+          controls.append(edit);
           for (const action of ["approve", "reject"]) {
-            const button = element("button", `${action === "approve" ? "Approve" : "Reject"} ${event.title}`);
+            const button = element("button", action === "approve" ? "Approve" : "Reject");
+            button.setAttribute("aria-label", `${action === "approve" ? "Approve" : "Reject"} ${event.title || "event"}`);
+            if (action === "approve") button.className = "event-primary";
             button.type = "button";
             button.dataset.action = action;
             button.dataset.eventId = event.id;
@@ -2763,6 +2922,7 @@ export class DaylightImportPanel extends HTMLElement {
             button.addEventListener("click", () => {
               if (this._saving || this._editingId || this._decision) return;
               this._calendarCheck = null;
+              if (action === "reject") this._openEventMenuId = event.id;
               this._decision = {id: event.id, action};
               this._decisionError = null;
               this._approvalObservation = null;
@@ -2771,7 +2931,7 @@ export class DaylightImportPanel extends HTMLElement {
               Array.from(this._content.querySelectorAll(".actions button"))
                 .find(button => !button.disabled)?.focus();
             });
-            card.append(button);
+            (action === "approve" ? controls : more).append(button);
           }
         } else if (this._decision?.id === event.id) {
           const action = this._decision.action;
@@ -2793,7 +2953,7 @@ export class DaylightImportPanel extends HTMLElement {
                 button.dataset.action === action) || this._refreshButton).focus();
           });
           actions.append(confirm, cancel);
-          card.append(actions);
+          surface.append(actions);
         }
         if (["pending", "write_uncertain"].includes(event.status) &&
             !this._editingId && !this._decision && !this._batchAction && !this._resolution) {
@@ -2808,10 +2968,15 @@ export class DaylightImportPanel extends HTMLElement {
           // controls focusable with ARIA and reject concurrent calls in the handler.
           if (busy) check.setAttribute("aria-disabled", "true");
           if (checking) check.setAttribute("aria-busy", "true");
-          check.addEventListener("click", () => void this.checkCalendarEvent(event));
-          card.append(check);
+          check.addEventListener("click", () => {
+            this._openEventMenuId = event.id;
+            void this.checkCalendarEvent(event);
+          });
+          more.append(check);
         }
-        content.append(card);
+        if (more.children.length > 1) controls.append(more);
+        if (controls.children.length) surface.append(controls);
+        eventGroup.append(card);
       }
     } else if (this._items.length === 0) {
       content.append(element("p", "No imports awaiting review.", "status"));
