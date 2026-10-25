@@ -128,8 +128,10 @@ async def test_near_expiry_renewal_and_uncertain_intent_never_reissued(scheduled
     r.resume()
     await tick(hass, freezer, 1)
     controller.async_rotate.assert_awaited_once()
-    # Reconcile current authority, then stop despite a future/elapsed rotation gate.
+    # The renewal failure gates recovery too; then verify authority and stop.
     await tick(hass, freezer, 1)
+    controller.async_reconcile.assert_not_called()
+    await tick(hass, freezer, 15)
     assert r.snapshot()["state"] == "automatic_attention_required"
     assert r._cancel_timer is None
     await tick(hass, freezer, 5000)
@@ -300,3 +302,61 @@ async def test_repair_clear_requires_optin_and_verified_authority(scheduled, has
     await r._perform("reconcile", {})
     issue = ir.async_get(hass).async_get_issue(DOMAIN, "hosted_lifecycle_hosted-entry")
     assert (issue is None) is cleared
+
+
+async def test_manual_rate_limit_never_triggers_early_automatic_status(scheduled, hass, freezer):
+    r, store, controller = scheduled
+    r.resume()
+    controller.async_reconcile.side_effect = HostedTransportError("rate_limited", status=429, retryable=True, retry_after=300)
+    result = await r.async_action("reconcile")
+    assert result["state"] == "service_unavailable"
+    assert store.snapshot.automation.status.attempts == 0
+    await tick(hass, freezer, 300)
+    assert controller.async_reconcile.await_count == 1
+    await tick(hass, freezer, 1)
+    assert controller.async_reconcile.await_count == 2
+
+
+async def test_automatic_renewal_rate_limit_gates_subsequent_status(scheduled, hass, freezer):
+    r, _store, controller = scheduled
+    r._state = NEAR
+    controller.async_rotate.side_effect = HostedTransportError("rate_limited", status=429, retryable=True, retry_after=300)
+    r.resume()
+    await tick(hass, freezer, 1)
+    assert controller.async_rotate.await_count == 1
+    await tick(hass, freezer, 300)
+    controller.async_reconcile.assert_not_called()
+    await tick(hass, freezer, 1)
+    controller.async_reconcile.assert_awaited_once()
+
+
+@pytest.mark.parametrize("consumed", [False, True])
+async def test_expired_or_consumed_pairing_surfaces_repairs_and_never_replays(scheduled, hass, freezer, consumed):
+    from custom_components.daylight_calendar_import.hosted_credentials import (
+        PairingAttempt,
+    )
+    r, store, controller = scheduled
+    old = store.snapshot
+    attempt = PairingAttempt("pairing_1234567890", "2026-10-24T00:00:05Z", 5, "2026-10-24T00:00:00Z", consumed)
+    await store.async_checkpoint(old, replace(old, current=None, pairing_verifier="v" * 43, pairing=attempt))
+    freezer.tick(5)
+    r.resume()
+    assert r.snapshot()["state"] == "automatic_attention_required"
+    assert r._cancel_timer is None
+    assert ir.async_get(hass).async_get_issue(DOMAIN, "hosted_lifecycle_hosted-entry") is not None
+    assert not controller.mock_calls
+
+
+async def test_transient_live_pairing_failure_reports_retry_without_losing_attempt(scheduled):
+    from custom_components.daylight_calendar_import.hosted_credentials import (
+        PairingAttempt,
+    )
+    r, store, controller = scheduled
+    old = store.snapshot
+    attempt = PairingAttempt("pairing_1234567890", "2026-10-24T00:10:00Z", 5, "2026-10-24T00:00:00Z")
+    await store.async_checkpoint(old, replace(old, current=None, pairing_verifier="v" * 43, pairing=attempt))
+    controller.async_poll_pairing.side_effect = HostedTransportError("service_unavailable", retryable=True)
+    r.resume()
+    result = await r.async_action("poll")
+    assert result["state"] == "pairing_retry" and "pairing" not in result
+    assert store.snapshot.pairing == attempt

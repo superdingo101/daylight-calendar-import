@@ -37,3 +37,16 @@ payload. Notifications carry no credentials, approval codes or account links.
 Navigation, socket/session changes and opt-out unsubscribe; late responses cannot
 restore old entry state. Approval codes remain transient and disappear on
 completion or view/session loss. Socket readiness reloads safe status only.
+
+Manual failures also persist their retry gates before scheduling resumes. Renewal
+failures carry the same deadline into status recovery, so changing phases cannot
+repeat a rate-limited endpoint early. These gates survive restart without
+resetting any independent attempt budget. An expired pairing or a saved uncertain
+exchange stops with attention and an HA Repairs issue; it never silently remains
+in a waiting state or repeats the exchange.
+
+Transient approval-poll failures retain the current live approval instructions
+in the open view while the bounded retry waits. Completion, expiry, uncertain
+exchange and view/session loss still clear them. Status invalidations preserve
+unsaved service origins, the maintenance checkbox and other in-progress controls;
+an unchanged snapshot does not rebuild the forms.

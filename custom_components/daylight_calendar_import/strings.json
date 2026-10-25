@@ -59,7 +59,7 @@
     },
     "hosted_lifecycle": {
       "title": "Daylight connection needs attention",
-      "description": "Automatic connection maintenance reached its safe limit or an earlier renewal may still be pending. Open Daylight settings > Daylight Cloud, check and recover the existing connection, and use the owner account portal if reconciliation is required. Automatic maintenance cannot create a new connection or repeat uncertain credential issuance."
+      "description": "Automatic connection maintenance needs attention: approval may have expired, an exchange or renewal may be uncertain, or retries reached a safe limit. Open Daylight settings > Daylight Cloud, check and recover the existing connection, and use the owner account portal if reconciliation is required. Automatic maintenance cannot create a new connection or repeat uncertain credential issuance."
     }
   }
 }

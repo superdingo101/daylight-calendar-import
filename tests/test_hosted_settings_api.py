@@ -341,7 +341,8 @@ async def test_real_optin_saves_boolean_without_acquiring_consent(hass, hass_ws_
     request.assert_not_called()
 
 
-async def test_real_automatic_pairing_confirmation_and_restart_throttle(hass, hass_ws_client, settings_runtime, monkeypatch, freezer):
+@pytest.mark.parametrize("lost_exchange", [False, True])
+async def test_real_automatic_pairing_confirmation_and_restart_throttle(hass, hass_ws_client, settings_runtime, monkeypatch, freezer, lost_exchange):
     from datetime import UTC, datetime
 
     from pytest_homeassistant_custom_component.common import async_fire_time_changed
@@ -370,6 +371,8 @@ async def test_real_automatic_pairing_confirmation_and_restart_throttle(hass, ha
     for name, response in responses.items():
         mocks[name] = AsyncMock(return_value=response)
         monkeypatch.setattr(f"custom_components.daylight_calendar_import.hosted_transport.HostedLifecycleTransport.{name}", mocks[name])
+    if lost_exchange:
+        mocks["exchange"].side_effect = HostedTransportError("service_unavailable", retryable=True)
     status = {"account_id": ACCOUNT, "installation_id": INSTALLATION, "credential_status": "current",
         "credential_expires_at": "2026-12-01T00:00:00Z", "account_url": "https://account.example.test/account"}
     checked = AsyncMock(side_effect=[HostedTransportError("unauthenticated", status=401), status])
@@ -383,6 +386,16 @@ async def test_real_automatic_pairing_confirmation_and_restart_throttle(hass, ha
     freezer.tick(1)
     async_fire_time_changed(hass, datetime.now(UTC))
     await hass.async_block_till_done()
+    if lost_exchange:
+        from homeassistant.helpers import issue_registry as ir
+        assert (await success(client, api.WS_HOSTED_GET))["state"] == "automatic_attention_required"
+        assert ir.async_get(hass).async_get_issue(DOMAIN, f"hosted_lifecycle_{cfg.entry_id}") is not None
+        assert await hass.config_entries.async_reload(cfg.entry_id)
+        assert (await success(client, api.WS_HOSTED_GET))["state"] == "automatic_attention_required"
+        mocks["exchange"].assert_awaited_once()
+        mocks["confirm"].assert_not_called()
+        checked.assert_not_called()
+        return
     assert (await success(client, api.WS_HOSTED_GET))["state"] == "candidate_saved"
     freezer.tick(1)
     async_fire_time_changed(hass, datetime.now(UTC))

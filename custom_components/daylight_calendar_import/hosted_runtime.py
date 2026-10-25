@@ -67,6 +67,14 @@ def service_from_options(options: Any) -> HostedServiceBinding | None:
     return HostedServiceBinding(**value)
 
 
+def _transport_state(error: HostedTransportError) -> str:
+    return (
+        "service_repair" if error.code == "service_reconciliation_required"
+        else "repair_required" if error.status in (401, 403)
+        else "service_unavailable"
+    )
+
+
 class HostedConnectionRuntime:
     """One loaded store/controller and one admitted operation per HA entry.
 
@@ -277,7 +285,14 @@ class HostedConnectionRuntime:
                 if result is None:
                     return self.snapshot()
             else:
-                result = await getattr(self._controller, _ACTIONS[action])(**kwargs)
+                try:
+                    result = await getattr(self._controller, _ACTIONS[action])(**kwargs)
+                except HostedTransportError as error:
+                    if self._automation is not None:
+                        await self._automation.async_note_failure(
+                            HostedConnectionResult(_transport_state(error)), error,
+                        )
+                    raise
                 if self._automation is not None and isinstance(result, HostedConnectionResult):
                     await self._automation.async_note_verified(result)
         except HostedCredentialStorageError:
@@ -289,12 +304,11 @@ class HostedConnectionRuntime:
             self._automation = None
             self._state = HostedConnectionResult("recovery_required")
         except HostedTransportError as error:
-            state = (
-                "service_repair" if error.code == "service_reconciliation_required"
-                else "repair_required" if error.status in (401, 403)
-                else "service_unavailable"
-            )
-            self._state = HostedConnectionResult(state)
+            self._state = HostedConnectionResult(_transport_state(error))
+            if error.retryable and self._automation is not None and self._state.state == "service_unavailable":
+                plan = self._automation.plan(self._state)
+                if plan is not None and plan.phase == "pairing" and not plan.attention:
+                    self._state = HostedConnectionResult("pairing_retry")
         except asyncio.CancelledError:
             if self._controller is not None:
                 self._state = HostedConnectionResult("recovery_required")
@@ -311,10 +325,10 @@ class HostedConnectionRuntime:
             if self._automatic and (result.credential_status in ("current", "overlap")
                                     or result.state == "disconnected"):
                 ir.async_delete_issue(self._hass, DOMAIN, f"hosted_lifecycle_{self._entry_id}")
-            if self._automation is not None:
-                plan = self._automation.plan(self._state)
-                if plan is not None and plan.attention:
-                    self._state = replace(self._state, state="automatic_attention_required")
+        if self._automation is not None:
+            plan = self._automation.plan(self._state)
+            if plan is not None and plan.attention:
+                self._state = replace(self._state, state="automatic_attention_required")
         return self.snapshot()
 
     async def async_stop(self) -> None:

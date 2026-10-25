@@ -179,6 +179,16 @@ test("opt-in maintenance refreshes safe status and clears transient approval", a
   await consent(page).check();
   await page.getByRole("button", {name: "Start new connection", exact: true}).click();
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toBeVisible();
+  await page.getByLabel("API origin", {exact: true}).fill("https://draft-api.example.test");
+  await automatic.uncheck();
+  await page.evaluate(() => {
+    window.hostedFixture.state.state = "pairing_retry";
+    window.hostedFixture.subscriber({entry_id: "entry-1"});
+  });
+  await expect(page.getByText("Approval checking was interrupted.", {exact: false})).toBeVisible();
+  await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toBeVisible();
+  await expect(page.getByLabel("API origin", {exact: true})).toHaveValue("https://draft-api.example.test");
+  await expect(automatic).not.toBeChecked();
   await page.evaluate(() => {
     const fixture = window.hostedFixture;
     fixture.state = {...fixture.state, state: "connected", credential_status: "current", credential_expires_at: "2026-12-01T00:00:00Z"};

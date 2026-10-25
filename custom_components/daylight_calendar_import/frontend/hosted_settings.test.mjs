@@ -434,3 +434,47 @@ test("busy outage renders and late responses preserve only the same-session reco
   assert.equal(settings.reconnectEntry, null);
   settings.stop();
 });
+
+
+test("automatic status updates preserve unsaved origins and opt-out without rebuilding unchanged forms", async () => {
+  const context = subscribedContext();
+  const {settings, subscriptions, setHandler} = context;
+  await settings.load("entry-1"); await flush();
+  const form = settings.element.querySelector("[data-hosted-configure]");
+  form.elements.namedItem("api_origin").value = "https://new-api.example.test";
+  form.elements.namedItem("automatic_lifecycle").checked = false;
+  subscriptions[0].callback({entry_id: "entry-1"}); await flush();
+  assert.equal(settings.element.querySelector("[data-hosted-configure]"), form);
+  setHandler(async () => ({...automaticSnapshot, state: "service_unavailable"}));
+  subscriptions[0].callback({entry_id: "entry-1"}); await flush();
+  const changed = settings.element.querySelector("[data-hosted-configure]");
+  assert.equal(changed.elements.namedItem("api_origin").value, "https://new-api.example.test");
+  assert.equal(changed.elements.namedItem("automatic_lifecycle").checked, false);
+  changed.submit(event()); await flush();
+  assert.equal(context.calls.at(-1).api_origin, "https://new-api.example.test");
+  assert.equal(context.calls.at(-1).automatic_lifecycle, false);
+});
+
+
+test("live approval survives transient polling retries but clears on attention and expiry", async () => {
+  const context = subscribedContext();
+  const {settings, subscriptions, setHandler} = context;
+  await settings.load("entry-1"); await flush();
+  setHandler(async () => ({...automaticSnapshot, state: "pairing_pending", pairing}));
+  await settings.submit("connect", {processing_consent: true, installation_label: "Home"});
+  setHandler(async () => ({...automaticSnapshot, state: "pairing_retry"}));
+  subscriptions[0].callback({entry_id: "entry-1"}); await flush();
+  assert.equal(settings.pairing.user_code, pairing.user_code);
+  assert.ok(texts(settings.element).includes(`Approval code: ${pairing.user_code}`));
+  setHandler(async () => ({...automaticSnapshot, state: "pairing_pending"}));
+  subscriptions[0].callback({entry_id: "entry-1"}); await flush();
+  assert.equal(settings.pairing.user_code, pairing.user_code);
+  settings.pairing = {...pairing, expires_at: "2000-01-01T00:00:00Z"};
+  subscriptions[0].callback({entry_id: "entry-1"}); await flush();
+  assert.equal(settings.pairing, null);
+  assert.equal(settings.element.querySelector("[data-hosted-pairing]"), null);
+  setHandler(async () => ({...automaticSnapshot, state: "automatic_attention_required"}));
+  subscriptions[0].callback({entry_id: "entry-1"}); await flush();
+  assert.equal(settings.snapshot.state, "automatic_attention_required");
+  assert.equal(settings.pairing, null);
+});

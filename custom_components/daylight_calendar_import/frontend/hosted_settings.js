@@ -130,9 +130,10 @@ const EXPLANATIONS = {
   candidate_saved: "The new credential was saved privately. Check and recover it to finish verification.",
   pairing_pending: "Waiting for approval in the account portal. Check approval after the advertised interval.",
   pairing_wait: "Wait for the pairing interval before checking approval again.",
+  pairing_retry: "Approval checking was interrupted. This approval attempt is still live; automatic checks will resume after the retry delay.",
   fresh_pairing_required: "A fresh pairing and owner approval are required. Start a new connection deliberately.",
   rotation_wait: "A previous renewal may still be pending. Wait before issuing another renewal, then check status.",
-  automatic_attention_required: "Automatic maintenance stopped at a safe limit. Check and recover this connection, then use the owner account portal if reconciliation is required.",
+  automatic_attention_required: "Automatic maintenance needs attention. Approval may have expired, an exchange or renewal may be uncertain, or retries reached a safe limit. Check and recover this connection, then use the owner account portal if reconciliation is required.",
   consent_required: "Cloud processing requires your explicit consent.",
 };
 
@@ -264,7 +265,7 @@ export class HostedConnectionSettings {
       const {pairing, ...snapshot} = result;
       this.snapshot = snapshot;
       if (action === "connect" && pairing) this.pairing = pairing;
-      else if (action === "poll" && ["pairing_pending", "pairing_wait"].includes(snapshot.state)) this.pairing = previousPairing;
+      else if (action === "poll" && ["pairing_pending", "pairing_wait", "pairing_retry"].includes(snapshot.state)) this.pairing = previousPairing;
     } catch {
       if (!this.syncSession() || generation !== this.generation) return;
       this.error = SAFE_FAILURE;
@@ -317,13 +318,54 @@ export class HostedConnectionSettings {
     try {
       const result = await loadHostedState(this.getHass(), entryId);
       if (!this.syncSession() || this.busy || generation !== this.generation || sequence !== this.refreshSequence) return;
-      if (!["pairing_pending", "pairing_wait"].includes(result.state) ||
+      const previousPairing = this.pairing;
+      if (!["pairing_pending", "pairing_wait", "pairing_retry"].includes(result.state) ||
+          this.pairing && Date.parse(this.pairing.expires_at) <= Date.now() ||
           result.api_origin !== this.snapshot.api_origin || result.account_origin !== this.snapshot.account_origin) this.pairing = null;
+      const unchanged = JSON.stringify(result) === JSON.stringify(this.snapshot) && previousPairing === this.pairing;
+      const draft = this._captureDraft();
       this.snapshot = result;
       this._subscribe();
-      this.render();
+      if (!unchanged) {
+        this.render();
+        this._restoreDraft(draft);
+      }
     } catch {
       // Keep explicit recovery controls available after a dropped invalidation.
+    }
+  }
+
+  _captureDraft() {
+    // Status invalidations must not discard a user's in-progress configuration.
+    const inputs = this.element.querySelectorAll("input");
+    const values = [];
+    let focus = null;
+    for (const input of inputs) {
+      const saved = input.name === "automatic_lifecycle" ? this.snapshot.automatic_lifecycle :
+        ["api_origin", "account_origin"].includes(input.name) ? this.snapshot[input.name] || "" :
+        input.type === "checkbox" ? false : "Home Assistant";
+      const value = input.type === "checkbox" ? input.checked : input.value;
+      if (value !== saved) values.push({name: input.name, value});
+      if (input === document.activeElement) focus = {name: input.name, start: input.selectionStart, end: input.selectionEnd};
+    }
+    return {values, focus};
+  }
+
+  _restoreDraft({values, focus}) {
+    for (const {name, value} of values) {
+      const input = Array.from(this.element.querySelectorAll("input")).find(node => node.name === name);
+      if (!input) continue;
+      if (input.type === "checkbox") input.checked = value;
+      else input.value = value;
+      input.dispatchEvent?.(new Event("change"));
+    }
+    const input = focus && Array.from(this.element.querySelectorAll("input")).find(node => node.name === focus.name);
+    if (input) {
+      input.focus();
+      if (["text", "url"].includes(input.type) && focus.start !== null) {
+        // URL fields do not support selection ranges in every browser.
+        try { input.setSelectionRange?.(focus.start, focus.end); } catch { /* Keep focus. */ }
+      }
     }
   }
 
@@ -416,13 +458,13 @@ export class HostedConnectionSettings {
       button.type = "button";
       button.disabled = this.busy || blocked || state.state === "operation_finishing" && action !== "reconcile" || action === "rotate" &&
         !(["connected", "automatic_attention_required"].includes(state.state) && state.credential_status === "current") ||
-        action === "poll" && !["pairing_pending", "pairing_wait", "recovery_required"].includes(state.state);
+        action === "poll" && !["pairing_pending", "pairing_wait", "pairing_retry", "recovery_required"].includes(state.state);
       button.addEventListener("click", () => void this.submit(action));
       actions.append(button);
     }
     section.append(actions);
     if (["disconnected", "fresh_pairing_required", "consent_required"].includes(state.state) ||
-        ["pairing_pending", "pairing_wait"].includes(state.state) && this.pairing === null) {
+        ["pairing_pending", "pairing_wait", "pairing_retry"].includes(state.state) && this.pairing === null) {
       const connection = document.createElement("form");
       connection.setAttribute("data-hosted-connect", "");
       const label = node("label", "Installation name");
