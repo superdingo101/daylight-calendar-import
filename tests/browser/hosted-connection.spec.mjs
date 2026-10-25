@@ -56,8 +56,12 @@ test.beforeEach(async ({page}) => {
         return structuredClone(fixture.state);
       }
       if (call.type.endsWith("/action")) {
-        if (call.action === "connect") {
-          fixture.state = {...fixture.state, state: "pairing_pending"};
+        if (call.action === "reconnect" && fixture.pristine) {
+          fixture.state = {...fixture.state, state: "first_connection_required"};
+          return structuredClone(fixture.state);
+        }
+        if (["connect", "reconnect"].includes(call.action)) {
+          fixture.state = {...fixture.state, state: call.action === "reconnect" ? "reconnect_pending" : "pairing_pending"};
           if (fixture.hold) await new Promise(resolve => { fixture.release = resolve; });
           return {...fixture.state, pairing: instructions,
             ...(fixture.malformed ? {installation_token: secret} : {})};
@@ -201,4 +205,39 @@ test("opt-in maintenance refreshes safe status and clears transient approval", a
   expect((await actions(page)).map(call => call.action)).toEqual(["connect"]);
   await sections(page).getByRole("button", {name: "General", exact: true}).click();
   await expect.poll(() => page.evaluate(() => window.hostedFixture.subscriber)).toBe(null);
+});
+
+
+test("reconnect needs renewed consent, replacement confirmation and fresh transient owner approval", async ({page}) => {
+  await openCloud(page);
+  const reconnect = page.getByRole("button", {name: "Start owner-approved reconnect", exact: true});
+  await expect(reconnect).toBeDisabled();
+  await page.getByRole("checkbox", {name: "I renew my consent to cloud processing for this new owner-approved connection.", exact: true}).check();
+  await expect(reconnect).toBeDisabled();
+  await page.getByRole("checkbox", {name: "I understand that owner approval may replace this installation. Existing imports and calendar events will be kept.", exact: true}).check();
+  await expect(reconnect).toBeEnabled();
+  await reconnect.click();
+  await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toBeVisible();
+  await expect(page.getByRole("button", {name: "Check pairing approval", exact: true})).toBeEnabled();
+  expect(await actions(page)).toEqual([{type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "reconnect", processing_consent: true, installation_label: "Home Assistant", confirm_reconnect: true}]);
+  await sections(page).getByRole("button", {name: "General", exact: true}).click();
+  await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
+  await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toHaveCount(0);
+  await expect(page.getByRole("button", {name: "Check pairing approval", exact: true})).toBeEnabled();
+  expect((await actions(page)).map(call => call.action)).toEqual(["reconnect"]);
+});
+
+
+test("pristine reconnect remains read-only and leads to first connection without reconfiguration", async ({page}) => {
+  await page.evaluate(() => { window.hostedFixture.pristine = true; });
+  await openCloud(page);
+  await page.getByRole("checkbox", {name: "I renew my consent to cloud processing for this new owner-approved connection.", exact: true}).check();
+  await page.getByRole("checkbox", {name: "I understand that owner approval may replace this installation. Existing imports and calendar events will be kept.", exact: true}).check();
+  await page.getByRole("button", {name: "Start owner-approved reconnect", exact: true}).click();
+  await expect(page.getByText("This installation has no saved connection yet.", {exact: false})).toBeVisible();
+  await expect(page.getByRole("button", {name: "Start owner-approved reconnect", exact: true})).toHaveCount(0);
+  await consent(page).check();
+  await page.getByRole("button", {name: "Start new connection", exact: true}).click();
+  await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toBeVisible();
+  expect((await actions(page)).map(call => call.action)).toEqual(["reconnect", "connect"]);
 });

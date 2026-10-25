@@ -27,11 +27,13 @@ from .hosted_lifecycle import (
     HostedLifecycleController,
     HostedPairingInstructions,
 )
+from .hosted_namespace import LocalOnlyNamespaceReconciler
 from .hosted_transport import (
     HostedLifecycleTransport,
     HostedServiceBinding,
     HostedTransportError,
 )
+from .storage import PendingImportStore
 
 CONF_HOSTED_SERVICE = "hosted_service"
 CONF_HOSTED_AUTOMATIC = "hosted_automatic_lifecycle"
@@ -46,6 +48,7 @@ _STOP_SECONDS = 1
 _LOAD_SECONDS = 5
 _ACTIONS = {
     "connect": "async_start_pairing",
+    "reconnect": "async_start_reconnect",
     "poll": "async_poll_pairing",
     "reconcile": "async_reconcile",
     "rotate": "async_rotate",
@@ -128,16 +131,21 @@ class HostedConnectionRuntime:
                 raise asyncio.CancelledError
             self._state = HostedConnectionResult("storage_repair")
             return
+        pending = self._hass.data.get(DOMAIN, {}).get(self._entry_id)
+        kwargs = ({"reconciler": LocalOnlyNamespaceReconciler(pending)}
+                  if type(pending) is PendingImportStore else {})
         self._controller = HostedLifecycleController(store, HostedLifecycleTransport(
             async_get_clientsession(self._hass),
             api_origin=self._service.api_origin,
             account_origin=self._service.account_origin,
-        ))
+        ), **kwargs)
         state = "disconnected"
-        if checkpoint.local_disconnect == "unconfirmed":
-            state = "remote_disconnect_unconfirmed"
-        elif checkpoint.service_binding is not None and checkpoint.service_binding != self._service:
+        if checkpoint.service_binding is not None and checkpoint.service_binding != self._service:
             state = "service_repair"
+        elif checkpoint.reconnect is not None:
+            state = "reconnect_pending"
+        elif checkpoint.local_disconnect == "unconfirmed":
+            state = "remote_disconnect_unconfirmed"
         elif checkpoint.local_disconnect == "none" and checkpoint.processing_consent:
             state = "recovery_required"
         self._state = HostedConnectionResult(state)
@@ -232,7 +240,7 @@ class HostedConnectionRuntime:
 
     async def async_action(self, action: str, **kwargs: Any) -> dict[str, Any]:
         """Admit one explicit action; reject queues and never replay a mutation."""
-        if action not in _ACTIONS or (kwargs and action != "connect"):
+        if action not in _ACTIONS or (kwargs and action not in ("connect", "reconnect")):
             raise HostedRuntimeError("invalid_hosted_action")
         if not self._accepting or self._stopped:
             raise HostedRuntimeError("hosted_unloading")
@@ -319,7 +327,7 @@ class HostedConnectionRuntime:
             raise HostedRuntimeError("hosted_action_failed") from None
         else:
             if isinstance(result, HostedPairingInstructions):
-                self._state = HostedConnectionResult("pairing_pending")
+                self._state = HostedConnectionResult("reconnect_pending" if action == "reconnect" else "pairing_pending")
                 return {**self.snapshot(), "pairing": asdict(result)}
             self._state = result
             if self._automatic and (result.credential_status in ("current", "overlap")

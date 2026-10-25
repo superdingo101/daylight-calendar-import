@@ -65,3 +65,34 @@ Python acceptance tests use actual HA admin WebSockets, entry reload and private
 atomic checkpoints, with only the remote hosted boundary stubbed. Frontend tests
 cover consent/confirmation, same-origin links, late responses and transient code
 lifetime. These automated checks do not replace M2's protected live rehearsal.
+
+## Owner-approved reconnect
+
+The separate **Reconnect with owner approval** form requires renewed processing
+consent and explicit replacement confirmation. It starts a fresh verifier-bound
+pairing; approve the new code in the existing account portal, where the owner
+reviews the actual installation and completes recent account verification. Then
+use **Check pairing approval** and **Check and recover connection** deliberately.
+Repair polling and confirmation are never scheduled automatically.
+
+The runtime binds the reconnect primitive to the actual loaded pending store's
+local-only namespace reconciler. Unknown/future journal formats and uncertain
+storage block the transition. Local stop markers and the prior current bundle
+remain until an authenticated current candidate in the prior household, when
+known, is verified and atomically promoted. A local checkbox is not owner proof
+and cannot authorize a nonempty ACK journal remap. Existing local imports and
+calendar events are preserved; no namespace history is copied.
+
+`hosted/action` accepts `action: reconnect` only with `processing_consent: true`,
+an installation label and `confirm_reconnect: true`. These confirmation fields
+cannot be used on other actions; there is no ledger-empty, owner-session, token,
+account or namespace selector. General snapshots expose only safe fixed state;
+one-time instructions appear only in that explicit response and clear on view or
+session loss. Restart reports `reconnect_pending` and keeps manual recovery
+available without recreating or exchanging an uncertain attempt.
+
+If reconnect is requested before this entry has ever saved a connection, it
+returns `first_connection_required` without writing intent or sending a request.
+The UI directs the administrator to **Start new connection**, with fresh consent,
+without changing service origins or entering a blocking service-repair state.
+An unbound legacy stop or existing recovery material remains fail-closed.

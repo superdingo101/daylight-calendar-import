@@ -495,3 +495,44 @@ test("changed automatic status restores the input focused inside the owning shad
   assert.equal(replacement.focused, true);
   document.activeElement = null;
 });
+
+
+test("owner-approved reconnect requires fresh consent and confirmation and clears codes on view loss", async () => {
+  const context = setup({...snapshot, state: "repair_required"});
+  const {settings, calls, setHandler} = context;
+  await settings.load("entry-1");
+  const form = settings.element.querySelector("[data-hosted-reconnect]");
+  const consent = form.elements.namedItem("reconnect_consent");
+  const confirmation = form.elements.namedItem("confirm_reconnect");
+  const button = findButton(form, "Start owner-approved reconnect");
+  assert.equal(button.disabled, true);
+  form.submit(event()); await flush(); assert.equal(calls.length, 1);
+  consent.checked = true; consent.change(); assert.equal(button.disabled, true);
+  confirmation.checked = true; confirmation.change(); assert.equal(button.disabled, false);
+  setHandler(async () => ({...snapshot, state: "reconnect_pending", pairing}));
+  form.submit(event()); await flush();
+  assert.deepEqual(calls.at(-1), {type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "reconnect", processing_consent: true, installation_label: "Home Assistant", confirm_reconnect: true});
+  assert.equal(settings.pairing.user_code, pairing.user_code);
+  assert.equal(findButton(settings.element, "Check pairing approval").disabled, false);
+  settings.clear(); assert.equal(settings.pairing, null);
+  for (const confirm_reconnect of [undefined, false, 1]) {
+    await assert.rejects(() => runHostedAction({callWS: () => { throw Error("No request"); }}, "entry-1", "reconnect", {processing_consent: true, installation_label: "Home", confirm_reconnect}), /Confirm/);
+  }
+});
+
+
+test("pristine reconnect result routes directly to a usable first connection form", async () => {
+  const context = setup();
+  await context.settings.load("entry-1");
+  context.setHandler(async message => message.action === "reconnect" ? {...snapshot, state: "first_connection_required"} : {...snapshot, state: "pairing_pending", pairing});
+  await context.settings.submit("reconnect", {processing_consent: true, installation_label: "Home", confirm_reconnect: true});
+  assert.equal(context.settings.snapshot.state, "first_connection_required");
+  assert.equal(context.settings.element.querySelector("[data-hosted-reconnect]"), null);
+  const first = context.settings.element.querySelector("[data-hosted-connect]");
+  assert.ok(first);
+  const consent = first.elements.namedItem("processing_consent");
+  consent.checked = true; consent.change();
+  first.submit(event()); await flush();
+  assert.equal(context.calls.at(-1).action, "connect");
+  assert.equal(context.settings.pairing.user_code, pairing.user_code);
+});
