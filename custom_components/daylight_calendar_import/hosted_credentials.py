@@ -160,6 +160,33 @@ class AutomationState:
 
 
 @dataclass(frozen=True, slots=True)
+class ReconnectIntent:
+    """Local repair intent; neither a receipt nor evidence of owner authority."""
+
+    prior_account_id: str | None
+    prior_installation_id: str | None
+    prior_disconnect: str
+    journal_contract: str
+
+    def __post_init__(self) -> None:
+        if (self.prior_account_id is None) != (self.prior_installation_id is None):
+            raise ValueError("incomplete prior namespace")
+        if self.prior_account_id is not None:
+            _text(self.prior_account_id, _IDENTIFIER)
+            _text(self.prior_installation_id, _IDENTIFIER)
+        if self.prior_disconnect not in ("none", "unconfirmed", "confirmed"):
+            raise ValueError("invalid prior disconnect marker")
+        if (type(self.journal_contract) is not str
+                or self.journal_contract != "pending-v2-local-only"):
+            raise ValueError("unsupported namespace contract")
+
+    @property
+    def namespace(self) -> tuple[str, str] | None:
+        """The retained old namespace, without granting access to another one."""
+        return (self.prior_account_id, self.prior_installation_id) if self.prior_account_id is not None else None
+
+
+@dataclass(frozen=True, slots=True)
 class CredentialCheckpoint:
     """Immutable recovery material; repr never exposes tokens or verifiers."""
 
@@ -169,6 +196,7 @@ class CredentialCheckpoint:
     local_disconnect: str = "none"
     rotation_not_before: str | None = None
     pairing: PairingAttempt | None = None
+    reconnect: ReconnectIntent | None = field(default=None, repr=False)
     automation: AutomationState | None = field(default=None, repr=False)
     pairing_verifier: str | None = field(default=None, repr=False)
     current: BoundCredential | None = field(default=None, repr=False)
@@ -185,7 +213,7 @@ class CredentialCheckpoint:
             raise ValueError("invalid local disconnect state")
         if self.automation is not None and (type(self.automation) is not AutomationState or not self.processing_consent):
             raise ValueError("automatic budgets require processing consent")
-        if self.local_disconnect == "confirmed" and any((
+        if self.local_disconnect == "confirmed" and self.reconnect is None and any((
             self.processing_consent, self.pairing_verifier, self.current, self.candidate,
             self.rotation_not_before,
             self.pairing, self.automation,
@@ -205,13 +233,22 @@ class CredentialCheckpoint:
             raise ValueError("invalid bound credential")
         if self.candidate is not None and type(self.candidate) is not CandidateCredential:
             raise ValueError("invalid candidate credential")
+        if self.reconnect is not None:
+            if (type(self.reconnect) is not ReconnectIntent or not self.processing_consent
+                    or self.service_binding is None or self.pairing_verifier is None):
+                raise ValueError("invalid reconnect intent")
+            prior = self.current.namespace if self.current is not None else None
+            if (self.reconnect.namespace != prior
+                    or self.reconnect.prior_disconnect != self.local_disconnect
+                    or (self.local_disconnect == "confirmed" and self.current is not None)):
+                raise ValueError("reconnect changed prior namespace or stop")
         if not self.processing_consent and any((self.pairing_verifier, self.current, self.candidate)):
             raise ValueError("credential recovery material requires processing consent")
 
 
 def _decode(data: Any) -> CredentialCheckpoint:
     fields = set(CredentialCheckpoint.__dataclass_fields__)
-    optional = {"rotation_not_before", "local_disconnect", "pairing", "service_binding", "automation"}
+    optional = {"rotation_not_before", "local_disconnect", "pairing", "service_binding", "automation", "reconnect"}
     if (type(data) is not dict or set(data) - fields
             or fields - set(data) - optional):
         raise ValueError("invalid credential checkpoint")
@@ -221,6 +258,7 @@ def _decode(data: Any) -> CredentialCheckpoint:
     for key, kind in (
         ("current", BoundCredential), ("candidate", CandidateCredential),
         ("pairing", PairingAttempt), ("service_binding", HostedServiceBinding),
+        ("reconnect", ReconnectIntent),
     ):
         if values.get(key) is not None:
             if type(values[key]) is not dict:

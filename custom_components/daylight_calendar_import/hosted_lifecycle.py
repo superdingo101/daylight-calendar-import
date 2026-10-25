@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 
 from .hosted_credentials import (
     BoundCredential,
@@ -17,12 +17,20 @@ from .hosted_credentials import (
     HostedCredentialConflict,
     HostedCredentialStore,
     PairingAttempt,
+    ReconnectIntent,
 )
+from .hosted_namespace import NamespaceReconciliationError
 from .hosted_transport import (
     HostedLifecycleTransport,
     HostedTransportError,
     new_pairing_verifier,
 )
+
+
+class _NamespaceReconciler(Protocol):
+    async def async_receipt(self, prior_namespace: tuple[str, str] | None) -> str:
+        """Prove the supported local storage contract, without browser authority."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,15 +61,31 @@ class HostedLifecycleController:
     """
 
     def __init__(
-        self, store: HostedCredentialStore, transport: HostedLifecycleTransport
+        self, store: HostedCredentialStore, transport: HostedLifecycleTransport,
+        reconciler: _NamespaceReconciler | None = None,
     ) -> None:
         self._store = store
         self._transport = transport
+        self._reconciler = reconciler
         self._lock = asyncio.Lock()
 
     def _require_service(self, checkpoint: Any) -> None:
         if checkpoint.service_binding != self._transport.service_binding:
             raise HostedTransportError("service_reconciliation_required")
+
+    async def _namespace_receipt(self, namespace: tuple[str, str] | None) -> str | None:
+        if self._reconciler is None:
+            return None
+        try:
+            receipt = await self._reconciler.async_receipt(namespace)
+        except NamespaceReconciliationError:
+            return None
+        return receipt if type(receipt) is str and receipt == "pending-v2-local-only" else None
+
+    async def _reconnect_authorized(self, checkpoint: Any) -> bool:
+        intent = checkpoint.reconnect
+        return (intent is not None and
+                await self._namespace_receipt(intent.namespace) == intent.journal_contract)
 
     @staticmethod
     def _binding(status: dict[str, Any], credential: Any) -> BoundCredential:
@@ -96,17 +120,24 @@ class HostedLifecycleController:
         """Recover rotation/first connection after restart, without mutation replay."""
         async with self._lock:
             checkpoint = self._store.snapshot
-            if checkpoint.local_disconnect != "none":
+            if checkpoint.local_disconnect != "none" and checkpoint.reconnect is None:
                 return self._disconnected(checkpoint.local_disconnect)
             if not checkpoint.processing_consent:
                 return HostedConnectionResult("disconnected")
             self._require_service(checkpoint)
+            reconnect = checkpoint.reconnect
+            if reconnect is not None and not await self._reconnect_authorized(checkpoint):
+                return HostedConnectionResult("reconciliation_required")
             candidate = checkpoint.candidate
             if candidate is not None:
                 if (
                     checkpoint.current is not None
                     and candidate.installation_id != checkpoint.current.installation_id
+                    and reconnect is None
                 ):
+                    return HostedConnectionResult("reconciliation_required")
+                if (reconnect is not None and reconnect.prior_installation_id is not None
+                        and candidate.installation_id == reconnect.prior_installation_id):
                     return HostedConnectionResult("reconciliation_required")
                 try:
                     status = await self._transport.installation_status(candidate.token)
@@ -115,20 +146,28 @@ class HostedLifecycleController:
                         raise
                     try:
                         if not await self._confirm(candidate):
-                            return await self._previous()
+                            return (HostedConnectionResult("reconciliation_required")
+                                    if reconnect is not None else await self._previous())
                         checkpoint = self._store.snapshot
                         candidate = checkpoint.candidate
                     except HostedTransportError as confirmation_error:
                         if not self._unauthorized(confirmation_error):
                             raise
-                        return await self._previous()
+                        return (HostedConnectionResult("reconciliation_required")
+                                if reconnect is not None else await self._previous())
                     # Confirm has no household binding: status must establish it.
                     status = await self._transport.installation_status(candidate.token)
                 bound = self._binding(status, candidate)
-                if (
-                    checkpoint.current is not None
-                    and bound.namespace != checkpoint.current.namespace
-                ):
+                if reconnect is not None:
+                    if status["credential_status"] != "current":
+                        return HostedConnectionResult("reconciliation_required")
+                    if (reconnect.prior_account_id is not None
+                            and bound.account_id != reconnect.prior_account_id):
+                        return HostedConnectionResult("reconciliation_required")
+                    if not await self._reconnect_authorized(checkpoint):
+                        return HostedConnectionResult("reconciliation_required")
+                elif (checkpoint.current is not None
+                      and bound.namespace != checkpoint.current.namespace):
                     raise HostedTransportError("identity_mismatch")
                 await self._store.async_checkpoint(
                     checkpoint,
@@ -139,6 +178,9 @@ class HostedLifecycleController:
                         pairing_verifier=None,
                         rotation_not_before=None,
                         pairing=None,
+                        local_disconnect="none",
+                        reconnect=None,
+                        automation=None if reconnect is not None else checkpoint.automation,
                     ),
                 )
                 # An overlap token still authorizes ordinary work until its
@@ -147,7 +189,7 @@ class HostedLifecycleController:
                     "connected", status["credential_status"], bound.expires_at,
                     status.get("account_url"),
                 )
-            if checkpoint.current is None and checkpoint.pairing_verifier is not None:
+            if (checkpoint.current is None or reconnect is not None) and checkpoint.pairing_verifier is not None:
                 attempt = checkpoint.pairing
                 live = (attempt is not None and not attempt.exchange_attempted
                         and datetime.now(UTC) < datetime.fromisoformat(attempt.expires_at))
@@ -177,7 +219,8 @@ class HostedLifecycleController:
                 return HostedConnectionResult("consent_required")
             if checkpoint.local_disconnect != "none":
                 return self._disconnected(checkpoint.local_disconnect)
-            if checkpoint.current is not None or checkpoint.candidate is not None:
+            if (checkpoint.current is not None or checkpoint.candidate is not None
+                    or checkpoint.reconnect is not None):
                 return HostedConnectionResult("reconciliation_required")
             if checkpoint.service_binding is not None:
                 self._require_service(checkpoint)
@@ -207,6 +250,51 @@ class HostedLifecycleController:
                 attempt.poll_interval_seconds,
             )
 
+    async def async_start_reconnect(
+        self, *, processing_consent: bool, installation_label: str,
+    ) -> HostedPairingInstructions | HostedConnectionResult:
+        """Stage explicit repair without discarding old credentials or local stop.
+
+        The local receipt proves only a supported namespace/storage contract.
+        A new verifier-bound pairing still requires fresh owner approval in the
+        account portal; local intent never selects connect versus replacement.
+        """
+        async with self._lock:
+            checkpoint = self._store.snapshot
+            if type(processing_consent) is not bool or not processing_consent:
+                return HostedConnectionResult("consent_required")
+            if checkpoint.candidate is not None:
+                return HostedConnectionResult("reconciliation_required")
+            self._require_service(checkpoint)
+            prior = checkpoint.current.namespace if checkpoint.current is not None else None
+            receipt = await self._namespace_receipt(prior)
+            if receipt is None:
+                return HostedConnectionResult("reconciliation_required")
+            intent = ReconnectIntent(
+                prior[0] if prior else None, prior[1] if prior else None,
+                checkpoint.local_disconnect, receipt,
+            )
+            verifier = new_pairing_verifier()
+            saved = await self._store.async_checkpoint(checkpoint, replace(
+                checkpoint, processing_consent=True, pairing_verifier=verifier,
+                reconnect=intent, pairing=None, automation=None,
+            ))
+            if not await self._reconnect_authorized(saved):
+                return HostedConnectionResult("reconciliation_required")
+            started = await self._transport.start_pairing(verifier, installation_label)
+            now = datetime.now(UTC)
+            attempt = PairingAttempt(
+                started["pairing_id"], started["expires_at"], started["poll_interval_seconds"],
+                (now + timedelta(seconds=started["poll_interval_seconds"])).isoformat(),
+            )
+            if datetime.fromisoformat(attempt.expires_at) > now + timedelta(seconds=630):
+                raise HostedTransportError("invalid_response")
+            await self._store.async_checkpoint(saved, replace(saved, pairing=attempt))
+            return HostedPairingInstructions(
+                started["user_code"], started["verification_uri"], attempt.expires_at,
+                attempt.poll_interval_seconds,
+            )
+
     async def async_poll_pairing(self) -> HostedConnectionResult:
         """One bounded poll and, only after owner approval, one durable exchange.
 
@@ -216,12 +304,15 @@ class HostedLifecycleController:
         """
         async with self._lock:
             checkpoint = self._store.snapshot
-            if checkpoint.local_disconnect != "none":
+            if checkpoint.local_disconnect != "none" and checkpoint.reconnect is None:
                 return self._disconnected(checkpoint.local_disconnect)
             if not checkpoint.processing_consent:
                 return HostedConnectionResult("disconnected")
             self._require_service(checkpoint)
-            if checkpoint.current is not None:
+            if checkpoint.reconnect is not None:
+                if not await self._reconnect_authorized(checkpoint):
+                    return HostedConnectionResult("reconciliation_required")
+            elif checkpoint.current is not None:
                 return HostedConnectionResult("reconciliation_required")
             if checkpoint.candidate is not None:
                 return HostedConnectionResult("recovery_required")
@@ -263,9 +354,13 @@ class HostedLifecycleController:
                 return HostedConnectionResult(
                     "pairing_pending" if status["status"] == "pending" else "fresh_pairing_required"
                 )
+            if checkpoint.reconnect is not None and not await self._reconnect_authorized(polling):
+                return HostedConnectionResult("reconciliation_required")
             exchange = await self._store.async_checkpoint(polling, replace(
                 polling, pairing=replace(polling.pairing, exchange_attempted=True),
             ))
+            if checkpoint.reconnect is not None and not await self._reconnect_authorized(exchange):
+                return HostedConnectionResult("reconciliation_required")
             issued = await self._transport.exchange(
                 attempt.pairing_id, exchange.pairing_verifier
             )
@@ -298,6 +393,8 @@ class HostedLifecycleController:
         """
         async with self._lock:
             checkpoint = self._store.snapshot
+            if checkpoint.reconnect is not None:
+                return HostedConnectionResult("reconciliation_required")
             if checkpoint.local_disconnect != "none":
                 return self._disconnected(checkpoint.local_disconnect)
             if not checkpoint.processing_consent:
@@ -355,6 +452,11 @@ class HostedLifecycleController:
         """
         async with self._lock:
             checkpoint = self._store.snapshot
+            if checkpoint.reconnect is not None:
+                await self._store.async_checkpoint(checkpoint, replace(
+                    checkpoint, reconnect=None, local_disconnect="unconfirmed",
+                ))
+                return self._disconnected("unconfirmed")
             if checkpoint.local_disconnect != "none":
                 return self._disconnected(checkpoint.local_disconnect)
             stopped = await self._store.async_checkpoint(
@@ -390,6 +492,7 @@ class HostedLifecycleController:
                     rotation_not_before=None,
                     pairing=None,
                     automation=None,
+                    reconnect=None,
                 ),
             )
             return self._disconnected("confirmed")
@@ -403,6 +506,9 @@ class HostedLifecycleController:
         await self._store.async_checkpoint(checkpoint, replace(
             checkpoint, candidate=replace(candidate, confirmation_attempts=candidate.confirmation_attempts + 1),
         ))
+        checkpoint = self._store.snapshot
+        if checkpoint.reconnect is not None and not await self._reconnect_authorized(checkpoint):
+            return False
         confirmed = await self._transport.confirm(candidate.token)
         if confirmed[
             "installation_id"
