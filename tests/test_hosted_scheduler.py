@@ -223,3 +223,80 @@ async def test_intentional_disconnect_and_optout_clear_entry_repair(scheduled, h
     r._automatic = False
     r.resume()
     assert registry.async_get_issue(DOMAIN, "hosted_lifecycle_hosted-entry") is None
+
+
+@pytest.mark.parametrize("state", [
+    "configuration_repair", "service_repair", "reconciliation_required",
+    "fresh_pairing_required",
+])
+async def test_all_terminal_states_create_entry_scoped_warning(scheduled, hass, state):
+    r, _store, controller = scheduled
+    r._state = HostedConnectionResult(state)
+    r.resume()
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, "hosted_lifecycle_hosted-entry")
+    assert issue is not None
+    assert issue.is_fixable is False
+    assert issue.severity == ir.IssueSeverity.WARNING
+    assert issue.translation_key == "hosted_lifecycle"
+    assert issue.is_persistent is False
+    assert r._cancel_timer is None
+    controller.async_reconcile.assert_not_awaited()
+    controller.async_rotate.assert_not_awaited()
+
+
+async def test_due_work_is_scheduled_one_second_in_future(scheduled, monkeypatch):
+    r, _store, _controller = scheduled
+    from unittest.mock import Mock
+
+    schedule = Mock(return_value=lambda: None)
+    monkeypatch.setattr(module, "async_track_point_in_utc_time", schedule)
+    now = datetime.now(UTC)
+    r.resume()
+    schedule.assert_called_once_with(r._hass, r._automatic_tick, now + timedelta(seconds=1))
+
+
+@pytest.mark.parametrize("enabled,accepting", [(False, True), (True, False), (True, True)])
+async def test_completion_invalidates_only_active_automatic_entry(scheduled, monkeypatch, enabled, accepting):
+    from unittest.mock import Mock
+
+    r, _store, _controller = scheduled
+    r._automatic = enabled
+    r._accepting = accepting
+    send = Mock()
+    monkeypatch.setattr(module, "async_dispatcher_send", send)
+    task = asyncio.create_task(asyncio.sleep(0))
+    await task
+    r._tasks.add(task)
+    r._finished(task)
+    assert task not in r._tasks
+    if enabled and accepting:
+        send.assert_called_once_with(r._hass, module.hosted_signal("hosted-entry"))
+    else:
+        send.assert_not_called()
+
+
+@pytest.mark.parametrize("error", [
+    module.HostedCredentialStorageError("private"),
+    module.HostedCredentialConflict("private"),
+])
+async def test_failed_storage_discards_automatic_policy(scheduled, error):
+    r, _store, controller = scheduled
+    controller.async_reconcile.side_effect = error
+    await r._perform("reconcile", {})
+    assert r._controller is None
+    assert r._automation is None
+
+
+@pytest.mark.parametrize("enabled,status,cleared", [
+    (True, "overlap", True), (True, None, False), (False, "current", False),
+])
+async def test_repair_clear_requires_optin_and_verified_authority(scheduled, hass, enabled, status, cleared):
+    r, _store, controller = scheduled
+    r._automatic = enabled
+    r._attention_issue()
+    controller.async_reconcile.return_value = HostedConnectionResult(
+        "connected", status, ACTIVE.credential_expires_at,
+    )
+    await r._perform("reconcile", {})
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, "hosted_lifecycle_hosted-entry")
+    assert (issue is None) is cleared

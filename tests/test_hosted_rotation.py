@@ -274,3 +274,18 @@ async def test_confirmed_disconnect_cannot_resume_rotation(rotation):
     ))
     assert (await c.async_rotate()).state == "disconnected"
     assert not transport.mock_calls
+
+
+async def test_overlap_repair_retains_verified_account_link_without_issuance(rotation):
+    controller, store, transport = rotation
+    account_url = "https://account.example.test/account"
+    transport.installation_status.return_value = status(
+        credential_status="overlap", account_url=account_url,
+    )
+    result = await controller.async_rotate()
+    assert result.state == "repair_required"
+    assert result.credential_status == "overlap"
+    assert result.credential_expires_at == CURRENT.expires_at
+    assert result.account_url == account_url
+    assert store.snapshot.rotation_not_before is None
+    transport.rotate.assert_not_awaited()
