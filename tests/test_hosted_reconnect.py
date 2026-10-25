@@ -505,3 +505,18 @@ def test_durable_hosted_metadata_rejects_invalid_states_with_specific_repair_rea
     with pytest.raises(ValueError) as failure:
         invalid()
     assert str(failure.value) == expected, case
+
+
+@pytest.mark.parametrize("marker", ["none", "confirmed"])
+async def test_unbound_pristine_reconnect_is_read_only_without_relabelling_legacy_stop(reconnect, marker):
+    c, store, transport, adapter = reconnect
+    old = store.snapshot
+    await store.async_checkpoint(old, CredentialCheckpoint(local_disconnect=marker, revision=old.revision))
+    before = store.snapshot
+    if marker == "none":
+        assert (await start(c)).state == "first_connection_required"
+    else:
+        with pytest.raises(HostedTransportError, match="service_reconciliation_required"):
+            await start(c)
+    assert store.snapshot is before
+    assert not transport.mock_calls and not adapter.mock_calls
