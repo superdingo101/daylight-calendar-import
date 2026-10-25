@@ -340,13 +340,14 @@ export class HostedConnectionSettings {
     const inputs = this.element.querySelectorAll("input");
     const values = [];
     let focus = null;
+    const activeElement = this.element.getRootNode?.()?.activeElement || document.activeElement;
     for (const input of inputs) {
       const saved = input.name === "automatic_lifecycle" ? this.snapshot.automatic_lifecycle :
         ["api_origin", "account_origin"].includes(input.name) ? this.snapshot[input.name] || "" :
         input.type === "checkbox" ? false : "Home Assistant";
       const value = input.type === "checkbox" ? input.checked : input.value;
       if (value !== saved) values.push({name: input.name, value});
-      if (input === document.activeElement) focus = {name: input.name, start: input.selectionStart, end: input.selectionEnd};
+      if (input === activeElement) focus = {name: input.name, start: input.selectionStart, end: input.selectionEnd};
     }
     return {values, focus};
   }
