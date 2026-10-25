@@ -78,9 +78,9 @@ test("empty paste/file validation and keyboard submission, loading, and review n
   await expect(text).toBeHidden();
 });
 
-for (const [filename, service, mimeType] of [
-  ["media-screenshot.png", "submit_image", "image/png"],
-  ["media-multipage-text.pdf", "submit_pdf", "application/pdf"],
+for (const [filename, service, mimeType, uploadedName] of [
+  ["media-screenshot.png", "submit_image", "image/png", "daylight-upload.png"],
+  ["media-multipage-text.pdf", "submit_pdf", "application/pdf", "daylight-upload.pdf"],
 ]) {
   test(`native file input uploads ${filename} and opens review`, async ({page}) => {
     await openImport(page, "file");
@@ -96,7 +96,7 @@ for (const [filename, service, mimeType] of [
     await expect.poll(() => page.evaluate(() => window.fixture.uploads.length)).toBe(1);
     const [received] = await page.evaluate(() => window.fixture.uploads);
     const bytes = await readFile(new URL(`../fixtures/extraction/assets/${filename}`, import.meta.url));
-    expect(received.headers).toContain(`filename="${filename}"`);
+    expect(received.headers).toContain(`filename="${uploadedName}"`);
     expect(received.headers).toContain(mimeType);
     expect(received.size).toBe(bytes.length);
     expect(received.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));

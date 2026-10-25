@@ -6,6 +6,15 @@ import {isSubmissionResponse} from "./submission_response.js";
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
+// Home Assistant rejects unsafe original filenames (including "~" and "..").
+// Use the inspected file signature to supply a safe temporary upload name.
+const uploadFilenames = {
+  "image/png": "daylight-upload.png",
+  "image/jpeg": "daylight-upload.jpg",
+  "image/webp": "daylight-upload.webp",
+  "application/pdf": "daylight-upload.pdf",
+};
+
 const finishedServiceErrors = new Set([
   "unauthorized", "not_allowed", "not_found", "not_supported", "invalid_format",
   "home_assistant_error", "service_validation_error", "unknown_error",
@@ -62,20 +71,20 @@ async function removeUpload(hass, fileId) {
  * outcome of an earlier service call is unknown. File bytes never go over WS.
  */
 export async function submitFile(hass, file, {text = "", sourceId, onUploaded, reimportDuplicates = false} = {}) {
-  const {kind} = await inspectUpload(file);
+  const {kind, mediaType} = await inspectUpload(file);
   if (typeof text !== "string" ||
       (sourceId !== undefined && (typeof sourceId !== "string" || !sourceId.trim()))) {
     throw new UploadError("invalid_submission", "The file submission contains invalid context.");
   }
   const form = new FormData();
-  form.append("file", file, file.name);
+  form.append("file", file, uploadFilenames[mediaType]);
   const uploaded = await hass.fetchWithAuth("/api/file_upload", {method: "POST", body: form});
   if (uploaded.status === 413) {
     throw new UploadError("source_too_large", "Home Assistant rejected the file size. Choose a file no larger than 10 MiB.");
   }
   if (uploaded.status !== 200) {
     throw new UploadError(uploaded.status === 401 || uploaded.status === 403 ? "unauthorized" : "upload_failed",
-      "Home Assistant could not upload the file. Check your connection and permissions.");
+      `Home Assistant could not upload the file (HTTP ${uploaded.status}). Check your connection and permissions.`);
   }
   const fileId = (await uploaded.json())?.file_id;
   if (typeof fileId !== "string" || !/^[0-9a-f]{32}$/.test(fileId)) {
