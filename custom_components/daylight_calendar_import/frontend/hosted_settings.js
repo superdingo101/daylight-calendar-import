@@ -2,7 +2,7 @@
 
 const PREFIX = "daylight_calendar_import/hosted/";
 const STATE_KEYS = ["entry_id", "configured", "automatic_lifecycle", "api_origin", "account_origin", "account_url", "state", "credential_status", "credential_expires_at"];
-const ACTIONS = new Set(["connect", "poll", "reconcile", "rotate", "disconnect"]);
+const ACTIONS = new Set(["connect", "reconnect", "poll", "reconcile", "rotate", "disconnect"]);
 const SAFE_FAILURE = "The connection request could not be confirmed. Check status before making another change.";
 
 function node(tag, text = "", className) {
@@ -98,7 +98,7 @@ export async function configureHostedService(hass, entryId, apiOrigin, accountOr
 export async function runHostedAction(hass, entryId, action, input = {}) {
   if (!ACTIONS.has(action)) throw new Error("Unsupported Daylight connection action.");
   const request = {type: `${PREFIX}action`, entry_id: entryId, action};
-  if (action === "connect") {
+  if (["connect", "reconnect"].includes(action)) {
     if (input.processing_consent !== true || typeof input.installation_label !== "string" ||
         input.installation_label.length < 1 || input.installation_label.length > 128) {
       throw new Error("Confirm cloud processing consent and enter an installation name.");
@@ -106,11 +106,15 @@ export async function runHostedAction(hass, entryId, action, input = {}) {
     request.processing_consent = true;
     request.installation_label = input.installation_label;
   }
+  if (action === "reconnect") {
+    if (input.confirm_reconnect !== true) throw new Error("Confirm owner-approved reconnect first.");
+    request.confirm_reconnect = true;
+  }
   if (action === "disconnect") {
     if (input.confirm_disconnect !== true) throw new Error("Confirm local stop and disconnection first.");
     request.confirm_disconnect = true;
   }
-  return validateHostedState(await hass.callWS(request), {entryId, pairing: action === "connect"});
+  return validateHostedState(await hass.callWS(request), {entryId, pairing: ["connect", "reconnect"].includes(action)});
 }
 
 const EXPLANATIONS = {
@@ -120,6 +124,7 @@ const EXPLANATIONS = {
   service_repair: "The saved connection belongs to a different or unknown service. Owner and service reconciliation is required; changing origins does not move credentials.",
   service_unavailable: "Daylight could not be reached. Check status when the service is available.",
   operation_finishing: "A previous operation is still finishing. Use Check and recover connection after it settles.",
+  reconnect_pending: "A fresh owner-approved reconnect is in progress. Approve the new attempt in the account portal, then check approval and recover it explicitly. Previous credentials and local stop remain preserved until verification.",
   recovery_required: "Saved connection material needs verification. Check and recover it before connecting again.",
   repair_required: "This installation needs owner attention. Open the account portal and reconcile the existing installation.",
   reconciliation_required: "An existing installation needs explicit owner and journal reconciliation before a new connection.",
@@ -264,8 +269,8 @@ export class HostedConnectionSettings {
       if (!this.syncSession() || generation !== this.generation) return;
       const {pairing, ...snapshot} = result;
       this.snapshot = snapshot;
-      if (action === "connect" && pairing) this.pairing = pairing;
-      else if (action === "poll" && ["pairing_pending", "pairing_wait", "pairing_retry"].includes(snapshot.state)) this.pairing = previousPairing;
+      if (["connect", "reconnect"].includes(action) && pairing) this.pairing = pairing;
+      else if (action === "poll" && ["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"].includes(snapshot.state)) this.pairing = previousPairing;
     } catch {
       if (!this.syncSession() || generation !== this.generation) return;
       this.error = SAFE_FAILURE;
@@ -319,7 +324,7 @@ export class HostedConnectionSettings {
       const result = await loadHostedState(this.getHass(), entryId);
       if (!this.syncSession() || this.busy || generation !== this.generation || sequence !== this.refreshSequence) return;
       const previousPairing = this.pairing;
-      if (!["pairing_pending", "pairing_wait", "pairing_retry"].includes(result.state) ||
+      if (!["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"].includes(result.state) ||
           this.pairing && Date.parse(this.pairing.expires_at) <= Date.now() ||
           result.api_origin !== this.snapshot.api_origin || result.account_origin !== this.snapshot.account_origin) this.pairing = null;
       const unchanged = JSON.stringify(result) === JSON.stringify(this.snapshot) && previousPairing === this.pairing;
@@ -459,7 +464,7 @@ export class HostedConnectionSettings {
       button.type = "button";
       button.disabled = this.busy || blocked || state.state === "operation_finishing" && action !== "reconcile" || action === "rotate" &&
         !(["connected", "automatic_attention_required"].includes(state.state) && state.credential_status === "current") ||
-        action === "poll" && !["pairing_pending", "pairing_wait", "pairing_retry", "recovery_required"].includes(state.state);
+        action === "poll" && !["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending", "recovery_required"].includes(state.state);
       button.addEventListener("click", () => void this.submit(action));
       actions.append(button);
     }
@@ -490,6 +495,34 @@ export class HostedConnectionSettings {
       });
       section.append(connection);
     }
+    const reconnect = document.createElement("form");
+    reconnect.setAttribute("data-hosted-reconnect", "");
+    reconnect.append(node("h3", "Reconnect with owner approval"), node("p", "Use a fresh approval to repair or replace this installation. The account portal verifies ownership and the current installation. Existing imports and calendar events are kept. Connections with cloud delivery history require separate owner repair.", "settings-help"));
+    const reconnectLabel = node("label", "New installation name");
+    const reconnectName = document.createElement("input");
+    reconnectName.name = "reconnect_label";
+    reconnectName.value = "Home Assistant";
+    reconnectName.required = true;
+    reconnectName.maxLength = 128;
+    reconnectName.disabled = this.busy || blocked;
+    reconnectLabel.append(reconnectName);
+    const reconnectConsent = checkbox("reconnect_consent", "I renew my consent to cloud processing for this new owner-approved connection.");
+    const reconnectConfirmation = checkbox("confirm_reconnect", "I understand that owner approval may replace this installation. Existing imports and calendar events will be kept.");
+    reconnectConsent.input.disabled = reconnectConfirmation.input.disabled = this.busy || blocked;
+    const repair = node("button", "Start owner-approved reconnect");
+    repair.type = "submit";
+    repair.disabled = true;
+    const canReconnect = () => { repair.disabled = this.busy || blocked || state.state === "operation_finishing" || !reconnectConsent.input.checked || !reconnectConfirmation.input.checked; };
+    reconnectConsent.input.addEventListener("change", canReconnect);
+    reconnectConfirmation.input.addEventListener("change", canReconnect);
+    reconnect.append(reconnectLabel, reconnectConsent.label, reconnectConfirmation.label, repair);
+    reconnect.addEventListener("submit", event => {
+      event.preventDefault();
+      if (!reconnectConsent.input.checked || !reconnectConfirmation.input.checked) return;
+      void this.submit("reconnect", {processing_consent: true, installation_label: reconnectName.value, confirm_reconnect: true});
+    });
+    section.append(reconnect);
+
     const disconnect = document.createElement("form");
     disconnect.setAttribute("data-hosted-disconnect", "");
     const confirmation = checkbox("confirm_disconnect", "Stop hosted work on this installation and request remote disconnection.");

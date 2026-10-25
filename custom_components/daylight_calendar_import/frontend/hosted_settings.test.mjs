@@ -495,3 +495,27 @@ test("changed automatic status restores the input focused inside the owning shad
   assert.equal(replacement.focused, true);
   document.activeElement = null;
 });
+
+
+test("owner-approved reconnect requires fresh consent and confirmation and clears codes on view loss", async () => {
+  const context = setup({...snapshot, state: "repair_required"});
+  const {settings, calls, setHandler} = context;
+  await settings.load("entry-1");
+  const form = settings.element.querySelector("[data-hosted-reconnect]");
+  const consent = form.elements.namedItem("reconnect_consent");
+  const confirmation = form.elements.namedItem("confirm_reconnect");
+  const button = findButton(form, "Start owner-approved reconnect");
+  assert.equal(button.disabled, true);
+  form.submit(event()); await flush(); assert.equal(calls.length, 1);
+  consent.checked = true; consent.change(); assert.equal(button.disabled, true);
+  confirmation.checked = true; confirmation.change(); assert.equal(button.disabled, false);
+  setHandler(async () => ({...snapshot, state: "reconnect_pending", pairing}));
+  form.submit(event()); await flush();
+  assert.deepEqual(calls.at(-1), {type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "reconnect", processing_consent: true, installation_label: "Home Assistant", confirm_reconnect: true});
+  assert.equal(settings.pairing.user_code, pairing.user_code);
+  assert.equal(findButton(settings.element, "Check pairing approval").disabled, false);
+  settings.clear(); assert.equal(settings.pairing, null);
+  for (const confirm_reconnect of [undefined, false, 1]) {
+    await assert.rejects(() => runHostedAction({callWS: () => { throw Error("No request"); }}, "entry-1", "reconnect", {processing_consent: true, installation_label: "Home", confirm_reconnect}), /Confirm/);
+  }
+});

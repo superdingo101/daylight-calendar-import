@@ -1,8 +1,0 @@
-{
-  "schema_version": 1,
-  "pairing_id": "pairing_ABCDEFGHIJKLMNOP",
-  "user_code": "ABCD1234EFGH",
-  "verification_uri": "https://user:password@accounts.example.test/connect",
-  "expires_at": "2026-10-19T12:10:00Z",
-  "poll_interval_seconds": 5
-}
