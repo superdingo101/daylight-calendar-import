@@ -252,3 +252,54 @@ test("multi-event import is compact, source-grouped, and expands individual cont
   await expect(page.getByRole("button", {name: "Approve Wear Red Day"})).toBeVisible();
   await expect(page.getByRole("button", {name: "Approve School picnic"})).toBeHidden();
 });
+
+
+test("mobile and desktop review menus do not reflow event actions or hide calendar destinations", async ({page}) => {
+  await page.evaluate(() => {
+    const fixture = window.fixture;
+    const panel = document.querySelector("daylight-import-panel");
+    panel._hass.states["calendar.family"] = {attributes: {friendly_name: "Family"}};
+    panel._hass.states["calendar.work"] = {attributes: {friendly_name: "Work"}};
+    const base = fixture.pending.events[0];
+    fixture.pending.events = [
+      {...base, calendar_entity: null},
+      {...base, id: "second", title: "Wear Red Day", start: "2026-10-26",
+        end: "2026-10-27", all_day: true, status: "pending",
+        calendar_entity: "calendar.work"},
+    ];
+  });
+  await openImport(page, "text");
+  await textForm(page).getByRole("textbox").fill(source);
+  await textForm(page).getByRole("button", {name: "Import events", exact: true}).click();
+  const cards = page.locator(".detail-event");
+  await expect(cards).toHaveCount(2);
+  const first = cards.nth(0);
+  const second = cards.nth(1);
+  await expect(first.locator(".event-fold-summary .event-calendar")).toHaveText("Calendar · Family");
+  await expect(second.locator(".event-fold-summary .event-calendar")).toHaveText("Calendar · Work");
+  await expect(second.locator(".event-fold")).not.toHaveAttribute("open");
+  await second.locator(".event-fold > summary").click();
+  const edit = second.getByRole("button", {name: "Edit Wear Red Day"});
+  const approve = second.getByRole("button", {name: "Approve Wear Red Day"});
+  const more = second.locator(".event-more > summary");
+  const popup = second.locator(".event-more-menu");
+  const before = await Promise.all([edit.boundingBox(), approve.boundingBox(), more.boundingBox()]);
+  expect(before.every(Boolean)).toBe(true);
+  expect(before[2].width).toBeLessThanOrEqual(45);
+  await more.click();
+  await expect(second.locator(".event-more")).toHaveAttribute("open");
+  await expect(second.getByRole("button", {name: "Reject Wear Red Day"})).toBeVisible();
+  await expect(second.getByRole("button", {name: "Check calendars for Wear Red Day"})).toBeVisible();
+  const after = await Promise.all([edit.boundingBox(), approve.boundingBox(), more.boundingBox()]);
+  for (let index = 0; index < before.length; index++) {
+    expect(Math.abs(after[index].x - before[index].x)).toBeLessThan(2);
+    expect(Math.abs(after[index].y - before[index].y)).toBeLessThan(2);
+  }
+  const controls = await second.locator(".event-controls").boundingBox();
+  const menuBox = await popup.boundingBox();
+  expect(menuBox.y).toBeGreaterThanOrEqual(controls.y + controls.height - 1);
+  await more.click();
+  await expect(second.locator(".event-more")).not.toHaveAttribute("open");
+  await expect(popup).toBeHidden();
+  await expect(approve).toBeVisible();
+});
