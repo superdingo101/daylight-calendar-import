@@ -12,17 +12,20 @@ loads one private credential store and controller with the HA-owned HTTP session
 Credential loading has a five-second budget, including waiting for an earlier
 private write lock. Load/configuration/storage failures produce hosted-only safe repair state rather
 than disabling the entry's local/BYO or Direct IMAP paths. No HTTP operation runs
-on setup, restart or reload. Authenticated recovery remains an explicit action.
+while loading. By default, recovery remains explicit. Opt-in
+[automatic maintenance](hosted-automatic-maintenance.md) may schedule bounded
+recovery after successful platform setup; it shares this operation owner.
 
 An explicit consumer can invoke connect, check approval, reconcile, rotate or
 disconnect. One action is admitted at a time; excess calls fail with a fixed busy
 code rather than queueing. The controller retains its consent, intent, origin,
-identity and journal checks. No mutation is retried. Cancellation preserves
+identity and journal checks. Manual calls are not automatically replayed. Opt-in work uses durable bounded
+policy gates rather than replaying uncertain issuance. Cancellation preserves
 uncertainty; the runtime does not infer disconnect or credential authority from
 an interrupted operation.
 
 General snapshots contain only entry ID, configured origins, fixed connection
-state, verified credential class/deadline and an optional authenticated account
+state, automatic-maintenance opt-in, verified credential class/deadline and an optional authenticated account
 URL. They never contain a credential checkpoint, tokens, verifier, approval code
 or instructions. The authenticated account URL comes from the public status
 contract and has already passed the transport's trusted-origin check; clients
@@ -39,12 +42,12 @@ load another credential controller while that operation can still mutate state.
 Once the task set is empty, an explicit reconcile action may initialize the
 replacement controller and verify saved state. It is admitted through the same
 single-operation gate; it never replays issuance/exchange or grants authority
-from a local deadline. Setup and status reads still make no request. Storage
+from a local deadline. Controller loading and status reads make no request. Storage
 failures during deferred load remain fail-closed. The credential store separately
 serializes pending/uncertain disk writes.
 
-Native admin-only settings/API, bounded automatic pairing/renewal scheduling and
-owner-authorized reconnect remain separate consumers. This runtime does not
+Native admin-only settings/API and bounded automatic pairing/renewal scheduling
+are separate consumers. Owner-authorized reconnect remains a future scope. This runtime does not
 register services or hosted settings, select hosted parsing, start delivery
 polling, provision resources, clear disconnect markers, rebind a service or
 transfer another installation's ACK journal. M2 still requires live evidence.

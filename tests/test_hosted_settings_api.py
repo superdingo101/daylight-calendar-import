@@ -102,7 +102,7 @@ async def test_real_socket_connect_candidate_recovery_disconnect_and_restart(has
     assert TOKEN not in str(result) and TOKEN not in caplog.text
 
 
-@pytest.mark.parametrize("command,fields", [(api.WS_HOSTED_GET, {}), (api.WS_HOSTED_CONFIGURE, SERVICE),
+@pytest.mark.parametrize("command,fields", [(api.WS_HOSTED_GET, {}), (api.WS_HOSTED_SUBSCRIBE, {}), (api.WS_HOSTED_CONFIGURE, SERVICE),
                                           (api.WS_HOSTED_ACTION, {"action": "connect", "processing_consent": True, "installation_label": "Home"})])
 async def test_nonadmin_cannot_read_configure_or_act(hass, hass_ws_client, settings_runtime, command, fields):
     group = await hass.auth.async_get_group(GROUP_ID_USER)
@@ -114,7 +114,7 @@ async def test_nonadmin_cannot_read_configure_or_act(hass, hass_ws_client, setti
 
 
 @pytest.mark.parametrize("handler,msg", [(api.websocket_hosted_get, {}),
-    (api.websocket_hosted_configure, SERVICE), (api.websocket_hosted_action, {"action": "reconcile"})])
+    (api.websocket_hosted_subscribe, {}), (api.websocket_hosted_configure, SERVICE), (api.websocket_hosted_action, {"action": "reconcile"})])
 async def test_unknown_entry_is_uniform_failure(handler, msg):
     cfg = entry()
     hass = hass_for(cfg)
@@ -132,7 +132,7 @@ async def test_unready_runtime_never_accepts_get_or_action(kind):
             hass.data[DOMAIN][cfg.entry_id].accepting_services = False
         else:
             r.accepting = False
-    for handler, msg in [(api.websocket_hosted_get, {}), (api.websocket_hosted_action, {"action": "reconcile"})]:
+    for handler, msg in [(api.websocket_hosted_get, {}), (api.websocket_hosted_subscribe, {}), (api.websocket_hosted_action, {"action": "reconcile"})]:
         result = await invoke(handler, hass, {"entry_id": cfg.entry_id, **msg})
         assert result.errors[0][1] == "hosted_unloading"
 
@@ -298,3 +298,117 @@ async def test_native_explicit_recovery_initializes_settled_replacement_without_
     result = await success(client, api.WS_HOSTED_ACTION, entry_id=cfg.entry_id, action="reconcile")
     assert result["state"] == "disconnected" and runtime._controller is not None
     request.assert_not_called()
+
+
+async def test_real_admin_subscription_only_invalidates_safe_entry_and_unsubscribes(hass, hass_ws_client, settings_runtime):
+    from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+    from custom_components.daylight_calendar_import.hosted_runtime import hosted_signal
+
+    cfg = settings_runtime.entry
+    client = await hass_ws_client(hass)
+    subscribed = await call(client, api.WS_HOSTED_SUBSCRIBE, entry_id=cfg.entry_id)
+    assert subscribed["success"] is True
+    initial = await client.receive_json()
+    assert initial == {"id": subscribed["id"], "type": "event", "event": {"entry_id": cfg.entry_id}}
+    async_dispatcher_send(hass, hosted_signal(cfg.entry_id))
+    assert await client.receive_json() == initial
+    result = await call(client, "unsubscribe_events", subscription=subscribed["id"])
+    assert result["success"] is True
+    async_dispatcher_send(hass, hosted_signal(cfg.entry_id))
+    # With no queued invalidation, the next message belongs to this get.
+    assert (await success(client, api.WS_HOSTED_GET))["entry_id"] == cfg.entry_id
+
+
+async def test_real_optin_saves_boolean_without_acquiring_consent(hass, hass_ws_client, settings_runtime, monkeypatch):
+    from custom_components.daylight_calendar_import.hosted_runtime import (
+        CONF_HOSTED_AUTOMATIC,
+    )
+    cfg = settings_runtime.entry
+    client = await hass_ws_client(hass)
+    request = AsyncMock(side_effect=AssertionError("No consent means no network"))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_transport.HostedLifecycleTransport._request", request)
+    result = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE, automatic_lifecycle=True)
+    assert result["automatic_lifecycle"] is True and result["state"] == "disconnected"
+    assert cfg.options[CONF_HOSTED_AUTOMATIC] is True
+    r = hass.data[DOMAIN][cfg.entry_id].hosted_runtime
+    assert r._cancel_timer is None
+    same = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE, automatic_lifecycle=True)
+    assert same == result and hass.data[DOMAIN][cfg.entry_id].hosted_runtime is r
+    # Older clients cannot silently keep a previously enabled opt-in.
+    disabled = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE)
+    assert disabled["automatic_lifecycle"] is False
+    request.assert_not_called()
+
+
+@pytest.mark.parametrize("lost_exchange", [False, True])
+async def test_real_automatic_pairing_confirmation_and_restart_throttle(hass, hass_ws_client, settings_runtime, monkeypatch, freezer, lost_exchange):
+    from datetime import UTC, datetime
+
+    from pytest_homeassistant_custom_component.common import async_fire_time_changed
+
+    from custom_components.daylight_calendar_import.hosted_runtime import (
+        CONF_HOSTED_AUTOMATIC,
+    )
+
+    monkeypatch.setattr(_ImmediatePrivateStore, "_async_load", _REAL_LOAD)
+    monkeypatch.setattr(_ImmediatePrivateStore, "_async_write_data", _REAL_WRITE)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_automation.secrets.randbelow", lambda _: 0)
+    cfg = settings_runtime.entry
+    client = await hass_ws_client(hass)
+    freezer.move_to("2026-10-24T00:00:00Z")
+    await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE, automatic_lifecycle=True)
+    assert cfg.options[CONF_HOSTED_AUTOMATIC] is True
+    responses = {
+        "start_pairing": {"pairing_id": "pairing_1234567890", "user_code": "ABCD1234EFGH",
+            "verification_uri": "https://account.example.test/connect", "expires_at": "2026-10-24T00:10:00Z", "poll_interval_seconds": 5},
+        "pairing_status": {"pairing_id": "pairing_1234567890", "status": "approved", "expires_at": "2026-10-24T00:10:00Z"},
+        "exchange": {"installation_id": INSTALLATION, "installation_token": TOKEN,
+            "expires_at": "2026-12-01T00:00:00Z", "confirmation_expires_at": "2026-10-24T00:10:00Z"},
+        "confirm": {"installation_id": INSTALLATION, "expires_at": "2026-12-01T00:00:00Z"},
+    }
+    mocks = {}
+    for name, response in responses.items():
+        mocks[name] = AsyncMock(return_value=response)
+        monkeypatch.setattr(f"custom_components.daylight_calendar_import.hosted_transport.HostedLifecycleTransport.{name}", mocks[name])
+    if lost_exchange:
+        mocks["exchange"].side_effect = HostedTransportError("service_unavailable", retryable=True)
+    status = {"account_id": ACCOUNT, "installation_id": INSTALLATION, "credential_status": "current",
+        "credential_expires_at": "2026-12-01T00:00:00Z", "account_url": "https://account.example.test/account"}
+    checked = AsyncMock(side_effect=[HostedTransportError("unauthenticated", status=401), status])
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_transport.HostedLifecycleTransport.installation_status", checked)
+    connected = await success(client, api.WS_HOSTED_ACTION, entry_id=cfg.entry_id, action="connect", processing_consent=True, installation_label="Home")
+    assert connected["pairing"]["user_code"] == "ABCD1234EFGH"
+    freezer.tick(4)
+    async_fire_time_changed(hass, datetime.now(UTC))
+    await hass.async_block_till_done()
+    mocks["pairing_status"].assert_not_called()
+    freezer.tick(1)
+    async_fire_time_changed(hass, datetime.now(UTC))
+    await hass.async_block_till_done()
+    if lost_exchange:
+        from homeassistant.helpers import issue_registry as ir
+        assert (await success(client, api.WS_HOSTED_GET))["state"] == "automatic_attention_required"
+        assert ir.async_get(hass).async_get_issue(DOMAIN, f"hosted_lifecycle_{cfg.entry_id}") is not None
+        assert await hass.config_entries.async_reload(cfg.entry_id)
+        assert (await success(client, api.WS_HOSTED_GET))["state"] == "automatic_attention_required"
+        mocks["exchange"].assert_awaited_once()
+        mocks["confirm"].assert_not_called()
+        checked.assert_not_called()
+        return
+    assert (await success(client, api.WS_HOSTED_GET))["state"] == "candidate_saved"
+    freezer.tick(1)
+    async_fire_time_changed(hass, datetime.now(UTC))
+    await hass.async_block_till_done()
+    final = await success(client, api.WS_HOSTED_GET)
+    assert final["state"] == "connected" and "pairing" not in final and TOKEN not in str(final)
+    mocks["confirm"].assert_awaited_once_with(TOKEN)
+    assert checked.await_count == 2
+    assert await hass.config_entries.async_reload(cfg.entry_id)
+    freezer.tick(100)
+    async_fire_time_changed(hass, datetime.now(UTC))
+    await hass.async_block_till_done()
+    assert checked.await_count == 2
+    assert (await success(client, api.WS_HOSTED_GET))["state"] == "recovery_required"
+    mocks["start_pairing"].assert_awaited_once()
+    mocks["exchange"].assert_awaited_once()

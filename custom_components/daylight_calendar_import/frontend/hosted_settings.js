@@ -1,7 +1,7 @@
-/** Explicit, admin-only Daylight connection controls. No background mutations. */
+/** Explicit, admin-only Daylight connection controls. Background work is owned by the opted-in entry runtime. */
 
 const PREFIX = "daylight_calendar_import/hosted/";
-const STATE_KEYS = ["entry_id", "configured", "api_origin", "account_origin", "account_url", "state", "credential_status", "credential_expires_at"];
+const STATE_KEYS = ["entry_id", "configured", "automatic_lifecycle", "api_origin", "account_origin", "account_url", "state", "credential_status", "credential_expires_at"];
 const ACTIONS = new Set(["connect", "poll", "reconcile", "rotate", "disconnect"]);
 const SAFE_FAILURE = "The connection request could not be confirmed. Check status before making another change.";
 
@@ -52,7 +52,7 @@ export function validateHostedState(result, {entryId, pairing = false} = {}) {
   if (!closed(result, keys) || typeof result.entry_id !== "string" ||
       result.entry_id.length < 1 || result.entry_id.length > 128 ||
       entryId !== undefined && result.entry_id !== entryId ||
-      typeof result.configured !== "boolean" ||
+      typeof result.configured !== "boolean" || typeof result.automatic_lifecycle !== "boolean" ||
       ![null, "current", "overlap"].includes(result.credential_status) ||
       result.credential_expires_at !== null && !deadline(result.credential_expires_at) ||
       typeof result.state !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(result.state)) {
@@ -86,12 +86,12 @@ export async function loadHostedState(hass, entryId) {
   return validateHostedState(await hass.callWS({type: `${PREFIX}get`, ...(entryId ? {entry_id: entryId} : {})}), {entryId});
 }
 
-export async function configureHostedService(hass, entryId, apiOrigin, accountOrigin) {
+export async function configureHostedService(hass, entryId, apiOrigin, accountOrigin, automatic = false) {
   if (!trustedHostedOrigin(apiOrigin) || !trustedHostedOrigin(accountOrigin)) {
     throw new Error("Enter complete HTTPS service origins, without paths or credentials.");
   }
   return validateHostedState(await hass.callWS({
-    type: `${PREFIX}configure`, entry_id: entryId, api_origin: apiOrigin, account_origin: accountOrigin,
+    type: `${PREFIX}configure`, entry_id: entryId, api_origin: apiOrigin, account_origin: accountOrigin, automatic_lifecycle: automatic,
   }), {entryId});
 }
 
@@ -130,8 +130,10 @@ const EXPLANATIONS = {
   candidate_saved: "The new credential was saved privately. Check and recover it to finish verification.",
   pairing_pending: "Waiting for approval in the account portal. Check approval after the advertised interval.",
   pairing_wait: "Wait for the pairing interval before checking approval again.",
+  pairing_retry: "Approval checking was interrupted. This approval attempt is still live; automatic checks will resume after the retry delay.",
   fresh_pairing_required: "A fresh pairing and owner approval are required. Start a new connection deliberately.",
   rotation_wait: "A previous renewal may still be pending. Wait before issuing another renewal, then check status.",
+  automatic_attention_required: "Automatic maintenance needs attention. Approval may have expired, an exchange or renewal may be uncertain, or retries reached a safe limit. Check and recover this connection, then use the owner account portal if reconciliation is required.",
   consent_required: "Cloud processing requires your explicit consent.",
 };
 
@@ -160,6 +162,9 @@ export class HostedConnectionSettings {
     this.session = null;
     this.connection = null;
     this.connectionInvalidated = false;
+    this.subscription = null;
+    this.subscriptionToken = 0;
+    this.refreshSequence = 0;
     this.reconnectEntry = null;
     this.onDisconnected = () => {
       const entryId = this.entryId || this.reconnectEntry;
@@ -206,6 +211,7 @@ export class HostedConnectionSettings {
 
   clear({preserveReconnect = false} = {}) {
     if (!preserveReconnect) this.reconnectEntry = null;
+    this._unsubscribe();
     this.generation++;
     this.entryId = null;
     this.loaded = false;
@@ -231,6 +237,7 @@ export class HostedConnectionSettings {
       const result = await loadHostedState(this.getHass(), entryId);
       if (!this.syncSession() || generation !== this.generation) return;
       this.snapshot = result;
+      this._subscribe();
     } catch {
       if (!this.syncSession() || generation !== this.generation) return;
       this.snapshot = null;
@@ -252,13 +259,13 @@ export class HostedConnectionSettings {
     this.render();
     try {
       const result = action === "configure" ?
-        await configureHostedService(this.getHass(), entryId, input.api_origin, input.account_origin) :
+        await configureHostedService(this.getHass(), entryId, input.api_origin, input.account_origin, input.automatic_lifecycle === true) :
         await runHostedAction(this.getHass(), entryId, action, input);
       if (!this.syncSession() || generation !== this.generation) return;
       const {pairing, ...snapshot} = result;
       this.snapshot = snapshot;
       if (action === "connect" && pairing) this.pairing = pairing;
-      else if (action === "poll" && ["pairing_pending", "pairing_wait"].includes(snapshot.state)) this.pairing = previousPairing;
+      else if (action === "poll" && ["pairing_pending", "pairing_wait", "pairing_retry"].includes(snapshot.state)) this.pairing = previousPairing;
     } catch {
       if (!this.syncSession() || generation !== this.generation) return;
       this.error = SAFE_FAILURE;
@@ -266,8 +273,99 @@ export class HostedConnectionSettings {
       if (generation === this.generation) {
         this.busy = false;
         this.onBusy(false);
+        this._subscribe();
         this.render();
         this.element.querySelector("[role=alert]")?.focus();
+      }
+    }
+  }
+
+  _unsubscribe() {
+    this.subscriptionToken++;
+    this.subscription?.unsubscribe?.();
+    this.subscription = null;
+  }
+
+  _subscribe() {
+    const connection = this.getHass()?.connection;
+    if (!this.snapshot?.automatic_lifecycle || !connection?.subscribeMessage) {
+      this._unsubscribe();
+      return;
+    }
+    if (this.subscription?.connection === connection && this.subscription.entryId === this.entryId) return;
+    this._unsubscribe();
+    const token = this.subscriptionToken;
+    const entryId = this.entryId;
+    this.subscription = {connection, entryId};
+    // A late subscription must be closed after navigation or session changes.
+    Promise.resolve(connection.subscribeMessage(event => {
+      if (token === this.subscriptionToken && closed(event, ["entry_id"]) && event.entry_id === entryId) {
+        void this._refreshAutomatic();
+      }
+    }, {type: `${PREFIX}subscribe`, entry_id: entryId})).then(unsubscribe => {
+      if (token !== this.subscriptionToken) unsubscribe();
+      else this.subscription.unsubscribe = unsubscribe;
+    }).catch(() => {
+      if (token === this.subscriptionToken) this.subscription = null;
+    });
+  }
+
+  async _refreshAutomatic() {
+    if (!this.syncSession() || this.busy || !this.snapshot) return;
+    const generation = this.generation;
+    const sequence = ++this.refreshSequence;
+    const entryId = this.entryId;
+    try {
+      const result = await loadHostedState(this.getHass(), entryId);
+      if (!this.syncSession() || this.busy || generation !== this.generation || sequence !== this.refreshSequence) return;
+      const previousPairing = this.pairing;
+      if (!["pairing_pending", "pairing_wait", "pairing_retry"].includes(result.state) ||
+          this.pairing && Date.parse(this.pairing.expires_at) <= Date.now() ||
+          result.api_origin !== this.snapshot.api_origin || result.account_origin !== this.snapshot.account_origin) this.pairing = null;
+      const unchanged = JSON.stringify(result) === JSON.stringify(this.snapshot) && previousPairing === this.pairing;
+      const draft = this._captureDraft();
+      this.snapshot = result;
+      this._subscribe();
+      if (!unchanged) {
+        this.render();
+        this._restoreDraft(draft);
+      }
+    } catch {
+      // Keep explicit recovery controls available after a dropped invalidation.
+    }
+  }
+
+  _captureDraft() {
+    // Status invalidations must not discard a user's in-progress configuration.
+    const inputs = this.element.querySelectorAll("input");
+    const values = [];
+    let focus = null;
+    const activeElement = this.element.getRootNode?.()?.activeElement || document.activeElement;
+    for (const input of inputs) {
+      const saved = input.name === "automatic_lifecycle" ? this.snapshot.automatic_lifecycle :
+        ["api_origin", "account_origin"].includes(input.name) ? this.snapshot[input.name] || "" :
+        input.type === "checkbox" ? false : "Home Assistant";
+      const value = input.type === "checkbox" ? input.checked : input.value;
+      if (value !== saved) values.push({name: input.name, value});
+      if (input === activeElement) focus = {name: input.name, start: input.selectionStart, end: input.selectionEnd};
+    }
+    return {values, focus};
+  }
+
+  _restoreDraft({values, focus}) {
+    for (const {name, value} of values) {
+      const input = Array.from(this.element.querySelectorAll("input")).find(node => node.name === name);
+      if (!input) continue;
+      if (input.type === "checkbox") input.checked = value;
+      else input.value = value;
+      input.dispatchEvent?.(new Event("change"));
+    }
+    const input = focus && Array.from(this.element.querySelectorAll("input")).find(node => node.name === focus.name);
+    if (input) {
+      input.focus();
+      if (["text", "url"].includes(input.type) && focus.start !== null) {
+        // URL fields do not support selection ranges in every browser.
+        try { input.setSelectionRange?.(focus.start, focus.end); } catch { /* Keep focus. */ }
       }
     }
   }
@@ -315,6 +413,10 @@ export class HostedConnectionSettings {
       label.append(input);
       configuration.append(label);
     }
+    const automatic = checkbox("automatic_lifecycle", "Automatically maintain this connection");
+    automatic.input.checked = state.automatic_lifecycle;
+    automatic.input.disabled = this.busy;
+    configuration.append(automatic.label, node("p", "After you grant connection consent, automatically check approval, recover saved credentials and renew before expiry using bounded retries. This does not enable source delivery or cloud parsing.", "settings-help"));
     const save = node("button", "Save service configuration");
     save.type = "submit";
     save.disabled = this.busy;
@@ -324,6 +426,7 @@ export class HostedConnectionSettings {
       void this.submit("configure", {
         api_origin: configuration.elements.namedItem("api_origin").value,
         account_origin: configuration.elements.namedItem("account_origin").value,
+        automatic_lifecycle: automatic.input.checked,
       });
     });
     section.append(configuration);
@@ -355,14 +458,14 @@ export class HostedConnectionSettings {
       const button = node("button", label);
       button.type = "button";
       button.disabled = this.busy || blocked || state.state === "operation_finishing" && action !== "reconcile" || action === "rotate" &&
-        !(state.state === "connected" && state.credential_status === "current") ||
-        action === "poll" && !["pairing_pending", "pairing_wait", "recovery_required"].includes(state.state);
+        !(["connected", "automatic_attention_required"].includes(state.state) && state.credential_status === "current") ||
+        action === "poll" && !["pairing_pending", "pairing_wait", "pairing_retry", "recovery_required"].includes(state.state);
       button.addEventListener("click", () => void this.submit(action));
       actions.append(button);
     }
     section.append(actions);
     if (["disconnected", "fresh_pairing_required", "consent_required"].includes(state.state) ||
-        ["pairing_pending", "pairing_wait"].includes(state.state) && this.pairing === null) {
+        ["pairing_pending", "pairing_wait", "pairing_retry"].includes(state.state) && this.pairing === null) {
       const connection = document.createElement("form");
       connection.setAttribute("data-hosted-connect", "");
       const label = node("label", "Installation name");

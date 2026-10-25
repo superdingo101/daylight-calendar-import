@@ -5,7 +5,10 @@ in the Daylight panel. Local/BYO and Direct IMAP remain independent. This does
 not select a hosted parser, activate the private service or enable delivery.
 
 Configure the reviewed API and account HTTPS origins explicitly. Configuration
-records no processing consent and makes no hosted request. A changed service
+records no processing consent. With automatic maintenance off (the default),
+it makes no hosted request. The optional **Automatically maintain this connection**
+checkbox enables [bounded maintenance](hosted-automatic-maintenance.md) only for
+already-consented saved material. A changed service
 never relabels private credentials; saved provenance must still match before any
 saved material can be sent. Failed configuration reload keeps the old owner
 closed until restart/repair, including a platform unload failure.
@@ -29,7 +32,8 @@ refresh never loads or replays a remote mutation.
 The separate authenticated account URL is displayed only after validated status.
 The native client does not invent a portal path or accept cross-origin links.
 **Renew credentials** is an explicit single operation; candidate recovery remains
-separate. Automatic polling/renewal scheduling is a later bounded consumer.
+separate by default. Optional automatic maintenance performs bounded polling,
+recovery and renewal, stopping for attention instead of replaying uncertain issuance.
 
 **Disconnect** requires explicit confirmation. It durably stops local hosted work
 before attempting remote revocation, retaining unconfirmed state on ambiguity.
@@ -42,7 +46,10 @@ where the controller requires it. Storage repair must preserve original files.
 The admin-only WebSocket commands are:
 
 - `daylight_calendar_import/hosted/get`: safe shared-runtime status only.
-- `daylight_calendar_import/hosted/configure`: closed API/account origin bundle.
+- `daylight_calendar_import/hosted/configure`: closed API/account origin bundle
+  plus the explicit `automatic_lifecycle` boolean (default false).
+- `daylight_calendar_import/hosted/subscribe`: admin-only entry invalidations;
+  clients fetch current safe status and unsubscribe on navigation/session loss.
 - `daylight_calendar_import/hosted/action`: one explicit connect/poll/reconcile/
   rotate/disconnect action. Connect requires affirmative consent and a label;
   disconnect requires affirmative confirmation. Action-specific fields cannot

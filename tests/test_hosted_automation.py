@@ -234,7 +234,8 @@ async def test_pairing_exchange_and_creation_are_never_replayed(automatic, kind)
     old = store.snapshot
     attempt = PairingAttempt("pairing_1234567890", "2026-10-24T00:10:00Z" if kind == "exchanged" else "2026-10-23T00:00:00Z", 5, "2026-10-24T00:00:00Z", kind == "exchanged")
     await store.async_checkpoint(old, replace(old, current=None, pairing_verifier="v" * 43, pairing=attempt))
-    assert policy.plan(RECOVER) is None
+    assert policy.plan(RECOVER).attention is True
+    assert (await policy.async_step(RECOVER)).state == "automatic_attention_required"
     assert not controller.mock_calls
 
 
@@ -378,6 +379,7 @@ def test_invalid_automatic_state_type_cannot_enter_checkpoint():
 def test_automatic_scope_is_exactly_domain_separated():
     """Changing the separator must not silently change persisted scope IDs."""
     import hashlib
+
     from custom_components.daylight_calendar_import.hosted_automation import _scope
 
     phase, identity = "status", "test-credential"
@@ -403,7 +405,9 @@ def test_retry_jitter_uses_exact_bounded_random_range(monkeypatch):
 
 
 async def test_pairing_expiry_is_exclusive_at_exact_deadline(automatic, freezer):
-    from custom_components.daylight_calendar_import.hosted_credentials import PairingAttempt
+    from custom_components.daylight_calendar_import.hosted_credentials import (
+        PairingAttempt,
+    )
 
     policy, store, controller = automatic
     deadline = "2026-10-24T00:10:00Z"
@@ -415,8 +419,8 @@ async def test_pairing_expiry_is_exclusive_at_exact_deadline(automatic, freezer)
         old, replace(old, current=None, pairing_verifier="v" * 43, pairing=attempt)
     )
     freezer.move_to(deadline)
-    assert policy.plan(RECOVER) is None
-    assert await policy.async_step(RECOVER) is None
+    assert policy.plan(RECOVER).attention is True
+    assert (await policy.async_step(RECOVER)).state == "automatic_attention_required"
     controller.async_poll_pairing.assert_not_awaited()
 
 
@@ -547,3 +551,76 @@ async def test_verified_overlap_records_restart_safe_status_cooldown(automatic, 
     assert record.scope == _scope("status", CURRENT.token)
     assert record.attempts == 0
     assert datetime.fromisoformat(record.not_before) == datetime.now(UTC) + timedelta(minutes=5)
+
+
+async def test_manual_retry_after_is_durable_without_resetting_attempts(automatic, hass, freezer):
+    policy, _store, controller = automatic
+    unavailable = HostedConnectionResult("service_unavailable")
+    error = HostedTransportError("rate_limited", status=429, retryable=True, retry_after=300)
+    await policy.async_note_failure(unavailable, error)
+    restarted = await reload(hass)
+    record = restarted.snapshot.automation.status
+    assert record.attempts == 0
+    assert datetime.fromisoformat(record.not_before) == datetime.now(UTC) + timedelta(seconds=301)
+    fresh = HostedAutomationPolicy(restarted, controller, SERVICE)
+    assert await fresh.async_step(RECOVER) is None
+    freezer.tick(300)
+    assert await fresh.async_step(RECOVER) is None
+    controller.async_reconcile.assert_not_called()
+    freezer.tick(1)
+    await fresh.async_step(RECOVER)
+    controller.async_reconcile.assert_awaited_once()
+
+
+async def test_rotation_rate_limit_carries_to_status_phase_and_restart(automatic, hass, freezer):
+    policy, _store, controller = automatic
+    controller.async_rotate.side_effect = HostedTransportError("rate_limited", status=429, retryable=True, retry_after=300)
+    with pytest.raises(HostedTransportError):
+        await policy.async_step(NEAR)
+    restarted = await reload(hass)
+    assert restarted.snapshot.automation.rotation.attempts == 1
+    assert restarted.snapshot.automation.status.attempts == 0
+    fresh = HostedAutomationPolicy(restarted, controller, SERVICE)
+    assert fresh.plan(RECOVER).due_at == datetime.now(UTC) + timedelta(seconds=301)
+    freezer.tick(300)
+    assert await fresh.async_step(RECOVER) is None
+    controller.async_reconcile.assert_not_called()
+    freezer.tick(1)
+    await fresh.async_step(RECOVER)
+    controller.async_reconcile.assert_awaited_once()
+    assert restarted.snapshot.automation.rotation.attempts == 1
+
+
+@pytest.mark.parametrize("state", [HostedConnectionResult("repair_required"), RECOVER])
+async def test_manual_terminal_or_attention_failure_cannot_reopen_budget(automatic, state):
+    policy, store, controller = automatic
+    if state == RECOVER:
+        old = store.snapshot
+        plan = policy.plan(state)
+        await store.async_checkpoint(old, replace(old, automation=AutomationState(status=AutomationAttempt(plan.scope, 6, datetime.now(UTC).isoformat()))))
+    before = store.snapshot
+    await policy.async_note_failure(state, HostedTransportError("forbidden", status=403))
+    assert store.snapshot is before
+    assert not controller.mock_calls
+
+
+async def test_manual_failure_preserves_later_gate_and_nonretryable_limit(automatic):
+    policy, store, _controller = automatic
+    await policy.async_note_verified(ACTIVE)
+    prior = store.snapshot.automation.status
+    await policy.async_note_failure(RECOVER, HostedTransportError("malformed_response"))
+    record = store.snapshot.automation.status
+    assert record.attempts == 6
+    assert record.not_before == prior.not_before
+
+
+async def test_live_pairing_attention_check_is_scheduled_at_expiry_before_retry_gate(automatic):
+    from custom_components.daylight_calendar_import.hosted_credentials import (
+        PairingAttempt,
+    )
+    policy, store, _controller = automatic
+    old = store.snapshot
+    attempt = PairingAttempt("pairing_1234567890", "2026-10-24T00:01:00Z", 5, "2026-10-24T00:00:00Z")
+    await store.async_checkpoint(old, replace(old, current=None, pairing_verifier="v" * 43, pairing=attempt))
+    await policy.async_note_failure(RECOVER, HostedTransportError("rate_limited", retryable=True, retry_after=300))
+    assert policy.plan(RECOVER).due_at == datetime(2026, 10, 24, 0, 1, tzinfo=UTC)

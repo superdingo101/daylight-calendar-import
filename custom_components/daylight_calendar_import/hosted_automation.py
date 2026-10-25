@@ -75,11 +75,12 @@ class HostedAutomationPolicy:
             identity = checkpoint.candidate.token
         elif checkpoint.current is None:
             attempt = checkpoint.pairing
-            if (attempt is None or attempt.exchange_attempted
-                    or now >= datetime.fromisoformat(attempt.expires_at)):
+            if attempt is None:
                 return None
             phase, action, limit = "pairing", "poll", 32
             identity = attempt.pairing_id
+            if attempt.exchange_attempted or now >= datetime.fromisoformat(attempt.expires_at):
+                return AutomationPlan(action, phase, _scope(phase, identity), limit, due, True)
             due = max(now, datetime.fromisoformat(attempt.next_poll_at))
         elif state.credential_status == "overlap":
             return None
@@ -106,6 +107,8 @@ class HostedAutomationPolicy:
         if record is not None and record.scope == scope:
             due = max(due, datetime.fromisoformat(record.not_before))
             attention = record.attempts >= limit or due > now + timedelta(days=91)
+        if phase == "pairing":
+            due = min(due, datetime.fromisoformat(checkpoint.pairing.expires_at))
         return AutomationPlan(action, phase, scope, limit, due, attention)
 
     async def async_step(self, state: HostedConnectionResult) -> HostedConnectionResult | None:
@@ -166,11 +169,44 @@ class HostedAutomationPolicy:
                 datetime.now(UTC) + timedelta(seconds=delay + _jitter()),
             ).isoformat())
             automatic = replace(automatic, **{plan.phase: record})
+            automatic = self._carry_failure_gate(checkpoint, automatic, record.not_before)
         if result is not None:
             verified = self._verified_status(checkpoint, result)
             if verified is not None:
                 automatic = replace(automatic, status=verified)
         await self._store.async_checkpoint(checkpoint, replace(checkpoint, automation=automatic))
+
+    @staticmethod
+    def _carry_failure_gate(checkpoint: Any, automatic: AutomationState, gate: str) -> AutomationState:
+        """A renewal and recovery can call the same status endpoint."""
+        if checkpoint.current is None:
+            return automatic
+        scope = _scope("status", checkpoint.current.token)
+        record = automatic.status
+        if record is None or record.scope != scope:
+            record = AutomationAttempt(scope, 0, gate)
+        else:
+            record = replace(record, not_before=max(
+                datetime.fromisoformat(record.not_before), datetime.fromisoformat(gate),
+            ).isoformat())
+        return replace(automatic, status=record)
+
+    async def async_note_failure(self, state: HostedConnectionResult, error: HostedTransportError) -> None:
+        """Manual failures must gate subsequent automatic work without granting authority."""
+        async with self._lock:
+            plan = self.plan(state)
+            if plan is None or plan.attention:
+                return
+            checkpoint = self._store.snapshot
+            automatic = checkpoint.automation or AutomationState()
+            record = getattr(automatic, plan.phase)
+            attempts = record.attempts if record is not None and record.scope == plan.scope else 0
+            delay = error.retry_after if error.retry_after is not None else 15
+            gate = max(plan.due_at, datetime.now(UTC) + timedelta(seconds=delay + _jitter())).isoformat()
+            record = AutomationAttempt(plan.scope, attempts if error.retryable else plan.limit, gate)
+            automatic = replace(automatic, **{plan.phase: record})
+            automatic = self._carry_failure_gate(checkpoint, automatic, gate)
+            await self._store.async_checkpoint(checkpoint, replace(checkpoint, automation=automatic))
 
     async def async_note_verified(self, result: HostedConnectionResult) -> None:
         """A successful explicit recovery can reopen bounded status scheduling."""
