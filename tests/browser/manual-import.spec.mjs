@@ -285,6 +285,7 @@ test("mobile and desktop review menus do not reflow event actions or hide calend
   const more = second.locator(".event-more > summary");
   const popup = second.locator(".event-more-menu");
   const before = await Promise.all([edit.boundingBox(), approve.boundingBox(), more.boundingBox()]);
+  const beforeScroll = await page.evaluate(() => window.scrollY);
   expect(before.every(Boolean)).toBe(true);
   expect(before[2].width).toBeLessThanOrEqual(45);
   await more.click();
@@ -292,9 +293,13 @@ test("mobile and desktop review menus do not reflow event actions or hide calend
   await expect(second.getByRole("button", {name: "Reject Wear Red Day"})).toBeVisible();
   await expect(second.getByRole("button", {name: "Check calendars for Wear Red Day"})).toBeVisible();
   const after = await Promise.all([edit.boundingBox(), approve.boundingBox(), more.boundingBox()]);
+  const afterScroll = await page.evaluate(() => window.scrollY);
   for (let index = 0; index < before.length; index++) {
+    // Playwright may scroll a long review page to bring the popover on screen.
+    // Compare document positions rather than viewport positions to detect reflow.
     expect(Math.abs(after[index].x - before[index].x)).toBeLessThan(2);
-    expect(Math.abs(after[index].y - before[index].y)).toBeLessThan(2);
+    expect(Math.abs((after[index].y + afterScroll) -
+      (before[index].y + beforeScroll))).toBeLessThan(2);
   }
   const controls = await second.locator(".event-controls").boundingBox();
   const menuBox = await popup.boundingBox();
