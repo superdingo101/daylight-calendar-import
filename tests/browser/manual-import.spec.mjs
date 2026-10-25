@@ -309,3 +309,25 @@ test("mobile and desktop review menus do not reflow event actions or hide calend
   await expect(popup).toBeHidden();
   await expect(approve).toBeVisible();
 });
+
+
+test("uncertain calendar write keeps the left-edge overflow actions on screen", async ({page}) => {
+  await page.evaluate(() => {
+    window.fixture.pending.events[0].status = "write_uncertain";
+  });
+  await openImport(page, "text");
+  await textForm(page).getByRole("textbox").fill(source);
+  await textForm(page).getByRole("button", {name: "Import events", exact: true}).click();
+  await expect(page.getByText("Calendar write could not be confirmed.", {exact: false})).toBeVisible();
+  const overflow = page.locator(".detail-event .event-more");
+  await overflow.locator("summary").click();
+  await expect(overflow).toHaveAttribute("open");
+  const check = page.getByRole("button", {name: "Check calendars for School picnic"});
+  await expect(check).toBeVisible();
+  const box = await check.boundingBox();
+  const viewport = page.viewportSize();
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+  await check.click();
+  await expect(page.getByRole("region", {name: "Calendar check results"})).toContainText("Scheduling conflict");
+});
