@@ -1,0 +1,1286 @@
+"""Daylight Calendar Import integration."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import replace
+from typing import Any
+
+import voluptuous as vol
+
+from homeassistant.auth.permissions.const import CAT_ENTITIES, POLICY_CONTROL
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_DESCRIPTION
+from homeassistant.core import callback, Context, HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.exceptions import ConfigEntryError, ServiceValidationError, Unauthorized, UnknownUser
+from homeassistant.util import dt as dt_util
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.event import async_track_time_interval
+from datetime import datetime, timedelta
+
+from .const import (
+    ATTR_EVENT_ID,
+    ATTR_FILE_ID,
+    ATTR_PENDING_ID,
+    ATTR_SOURCE_ID,
+    ATTR_TEXT,
+    MAX_SOURCE_TEXT_CHARS,
+    SOURCE_TEXT_LIMIT_MESSAGE,
+    CONF_AI_TASK_ENTITY,
+    CONF_CALENDAR_ENTITIES,
+    CONF_CALENDAR_ENTITY,
+    DOMAIN,
+    SERVICE_APPROVE_PENDING,
+    SERVICE_APPROVE_PENDING_EVENT,
+    SERVICE_EDIT_PENDING_EVENT,
+    SERVICE_GET_PENDING,
+    SERVICE_REPROCESS_PENDING,
+    SERVICE_RESET_DEDUPLICATION,
+    SERVICE_GET_PENDING_EVENT,
+    SERVICE_CHECK_PENDING_EVENT,
+    SERVICE_IMPORT_TEXT,
+    SERVICE_LIST_PENDING,
+    SERVICE_LIST_ACTIVITY,
+    SERVICE_GET_ACTIVITY,
+    SERVICE_PARSE_TEXT,
+    SERVICE_REJECT_PENDING,
+    SERVICE_REJECT_PENDING_EVENT,
+    SERVICE_RESOLVE_PENDING_EVENT,
+    SERVICE_SUBMIT_TEXT,
+    SERVICE_SUBMIT_IMAGE,
+    SERVICE_SUBMIT_PDF,
+)
+from .email_runtime import (
+    async_setup_email_runtime,
+    email_review_source_text,
+)
+from .hosted_runtime import async_setup_hosted_runtime
+from .hosted_settings_api import async_register_hosted_settings_api
+from .models import DraftValidationError, EventDraft
+from .dedup import source_fingerprint
+from .calendar_observation import CalendarObservationError, async_classify_conflicts
+from .parser import ParseOutcome, async_parse_source as parse_source_with_provider
+from .pdfs import async_pdf_source
+from .providers import SourceValidationError, ProviderError
+from .review_panel import async_register_review_panel, async_remove_review_panel
+from .settings import effective_ai_task_entity, effective_calendar_options, effective_calendar_intelligence
+from .settings_api import async_register_settings_api
+from .settings import effective_notification_preferences
+from .notification_delivery import async_deliver_notifications, MAX_ACTIVE_TASKS as _MAX_NOTIFICATION_TASKS
+from .sources import SourceDocument, SourceKind, TextSourceAdapter
+from .source_routing import plan_source_routing
+from .uploads import async_image_source
+from .storage import (
+    PendingEventEditError,
+    PendingEventResolutionError,
+    PendingEvent,
+    PendingImport,
+    PendingImportAddResult,
+    PendingImportApprovalUncertainError,
+    PendingImportStore,
+    PendingImportStorageError,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+PLATFORMS = ["sensor"]
+
+_ENTRY_SERVICES = (
+    SERVICE_PARSE_TEXT,
+    SERVICE_IMPORT_TEXT,
+    SERVICE_SUBMIT_TEXT,
+    SERVICE_SUBMIT_IMAGE,
+    SERVICE_SUBMIT_PDF,
+    SERVICE_APPROVE_PENDING,
+    SERVICE_REJECT_PENDING,
+    SERVICE_LIST_PENDING,
+    SERVICE_LIST_ACTIVITY,
+    SERVICE_GET_ACTIVITY,
+    SERVICE_GET_PENDING,
+    SERVICE_REPROCESS_PENDING,
+    SERVICE_RESET_DEDUPLICATION,
+    SERVICE_GET_PENDING_EVENT,
+    SERVICE_CHECK_PENDING_EVENT,
+    SERVICE_EDIT_PENDING_EVENT,
+    SERVICE_REJECT_PENDING_EVENT,
+    SERVICE_APPROVE_PENDING_EVENT,
+    SERVICE_RESOLVE_PENDING_EVENT,
+)
+
+
+def _submission_response(
+    result: PendingImportAddResult, warnings: list[str], activity_id: str | None,
+) -> ServiceResponse:
+    """Describe durable review outcomes without implying a calendar write.
+
+    Known sources skipped before parsing do not create a new activity record.
+    Partial event deduplication still yields a pending review outcome.
+    """
+    duplicate = result.duplicate_source or result.duplicate_events > 0
+    status = "pending_review" if result.pending is not None else "duplicate" if duplicate else "no_events"
+    return {
+        "status": status,
+        "activity_id": activity_id,
+        "pending": result.pending.as_service_dict() if result.pending is not None else None,
+        "duplicate": duplicate,
+        "duplicate_source": result.duplicate_source,
+        "duplicate_events": result.duplicate_events,
+        "warnings": warnings,
+    }
+
+
+def _unregister_entry_services(hass: HomeAssistant) -> None:
+    """Remove each registered service; safe for partial entry setup."""
+    for name in _ENTRY_SERVICES:
+        hass.services.async_remove(DOMAIN, name)
+
+
+
+BOUNDED_TEXT = vol.All(
+    cv.string, vol.Length(max=MAX_SOURCE_TEXT_CHARS, msg=SOURCE_TEXT_LIMIT_MESSAGE),
+)
+PARSE_SCHEMA = vol.Schema({vol.Required(ATTR_TEXT): BOUNDED_TEXT})
+SUBMIT_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_TEXT): vol.All(
+            BOUNDED_TEXT, lambda value: value.strip(), vol.Length(min=1),
+        ),
+        vol.Optional(ATTR_SOURCE_ID): vol.All(
+            cv.string,
+            lambda value: value.strip(),
+            vol.Length(min=1, max=2048),
+        ),
+        vol.Optional("reimport_duplicates", default=False): bool,
+    }
+)
+RESET_DEDUPLICATION_SCHEMA = vol.Schema(vol.Any(
+    {vol.Required(ATTR_SOURCE_ID): vol.All(
+        cv.string, lambda value: value.strip(), vol.Length(min=1, max=2048),
+    )},
+    {vol.Required("event"): dict},
+))
+SUBMIT_IMAGE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_FILE_ID): vol.All(cv.string, vol.Match(r"^[0-9a-f]{32}$")),
+        vol.Optional(ATTR_TEXT, default=""): BOUNDED_TEXT,
+        vol.Optional(ATTR_SOURCE_ID): vol.All(
+            cv.string, lambda value: value.strip(), vol.Length(min=1, max=2048)
+        ),
+        vol.Optional("reimport_duplicates", default=False): bool,
+    }
+)
+SUBMIT_PDF_SCHEMA = SUBMIT_IMAGE_SCHEMA
+PENDING_SCHEMA = vol.Schema(
+    {vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1))}
+)
+PENDING_EVENT_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Optional("expected_event"): dict,
+    }
+)
+EDIT_EVENT_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required("event"): dict,
+        vol.Optional(CONF_CALENDAR_ENTITY): cv.entity_id,
+        vol.Optional("expected_event"): dict,
+    }
+)
+RESOLVE_EVENT_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required("resolution"): vol.In(("created", "not_created", "discard")),
+        vol.Optional("expected_event"): dict,
+    }
+)
+
+
+def _expected_event(
+    raw: dict | None, event_id: str, *, allow_uncertain: bool = False,
+) -> PendingEvent | None:
+    """Decode a review snapshot; decisions require pending, reads may be uncertain."""
+    if raw is None:
+        return None
+    status = raw.get("status")
+    if raw.get("id") != event_id or (
+        status != "pending" and not (allow_uncertain and status == "write_uncertain")
+    ):
+        raise PendingEventEditError("Event changed since it was loaded; refresh before deciding")
+    return PendingEvent(
+        event_id, EventDraft.from_mapping(raw), status,
+        raw.get(CONF_CALENDAR_ENTITY),
+        raw.get("write_attempt") if allow_uncertain else None,
+        raw.get("routing_unresolved", False),
+    )
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Give existing single-calendar entries an explicit allowed calendar list."""
+    if entry.version == 1:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, CONF_CALENDAR_ENTITIES: [entry.data[CONF_CALENDAR_ENTITY]]},
+            version=2,
+        )
+    return entry.version == 2
+
+
+def _calendar_configuration(entry: ConfigEntry) -> tuple[str, tuple[str, ...]]:
+    """Return effective calendar settings."""
+    default_calendar, allowed_calendars = effective_calendar_options(entry)
+    return default_calendar, tuple(allowed_calendars)
+
+
+def _ai_task_configuration(entry: ConfigEntry) -> str:
+    """Return the effective AI Task entity."""
+    return effective_ai_task_entity(entry)
+
+
+async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
+    """Set up integration-wide APIs that survive config-entry reloads."""
+    del config
+    async_register_settings_api(hass)
+    async_register_hosted_settings_api(hass)
+    return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up Daylight Calendar Import from a config entry."""
+    # A failed sensor rollback may have left entities pointing at an old
+    # store. Never silently replace it with a freshly loaded snapshot.
+    previous_store = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if previous_store is not None:
+        if not getattr(previous_store, "rollback_pending", False):
+            raise RuntimeError("Daylight entry is already initialized")
+        runtime = getattr(previous_store, "email_runtime", None)
+        if runtime is not None:
+            await runtime.async_stop()
+        await _async_stop_hosted_runtime(previous_store)
+        await _async_cancel_notification_tasks(previous_store)
+        if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+            raise RuntimeError("Previous Daylight sensor rollback is incomplete")
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+    pending_store = PendingImportStore(hass)
+    pending_store.notification_preferences = lambda: effective_notification_preferences(entry)
+    # Retention must see live providers from the previous entry before loading.
+    # Keep task ownership across config-entry reloads. Providers that ignore
+    # cancellation must not become invisible when the old store unloads.
+    registry = hass.data.setdefault(f"{DOMAIN}_notification_tasks", {})
+    pending_store.notification_tasks = registry.setdefault(entry.entry_id, set())
+    try:
+        await pending_store.async_load()
+    except PendingImportStorageError:
+        ir.async_create_issue(
+            hass, DOMAIN, "storage_recovery", is_fixable=False,
+            severity=ir.IssueSeverity.ERROR, translation_key="storage_recovery",
+            is_persistent=True,
+            translation_placeholders={"documentation_url":
+                "https://github.com/superdingo101/daylight-calendar-import/blob/main/docs/storage-recovery.md"},
+        )
+        raise ConfigEntryError(
+            "Daylight import storage needs repair. See Settings > System > Repairs."
+        ) from None
+    ir.async_delete_issue(hass, DOMAIN, "storage_recovery")
+    pending_store.active_submissions = set()
+    pending_store.processing_source_fingerprints = {}
+    # Track entry service calls *before* their first await so unload cannot
+    # miss a request waiting for authorization or a source claim.
+    pending_store.active_service_handlers = set()
+    # Do not expose half-initialized handlers while email/sensor setup awaits.
+    pending_store.accepting_services = False
+    default_calendar, allowed_calendars = _calendar_configuration(entry)
+    ai_task_entity = _ai_task_configuration(entry)
+    aliases, _ = effective_calendar_intelligence(entry)
+    await async_register_review_panel(hass)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = pending_store
+    def on_review_ready(pending: Any) -> None:
+        """Publish only IDs/counts after a durable review-queue transaction."""
+        try:
+            hass.bus.async_fire(
+                f"{DOMAIN}_pending_added",
+                {"pending_id": pending.id, "event_count": len(pending.events)},
+            )
+        except Exception:
+            _LOGGER.exception("Pending-added notification could not be published")
+
+    notify_preferences = effective_notification_preferences(entry)
+    worker = None
+
+    @callback
+    def kick_notifications(_now=None) -> None:
+        """Schedule one bounded delivery pass without blocking lifecycle commits."""
+        nonlocal worker
+        if (not pending_store.accepting_services
+                or notify_preferences != effective_notification_preferences(entry)):
+            return
+        if sum(len(tasks) for tasks in registry.values()) >= _MAX_NOTIFICATION_TASKS:
+            _LOGGER.warning("Daylight notification capacity reached; deferring durable delivery")
+            return
+        if worker is not None and not worker.done():
+            return
+        if not any(record.status == "pending" for record in pending_store.list_notifications()):
+            return
+        worker = hass.async_create_task(
+            async_deliver_notifications(hass, pending_store, registry),
+            "Daylight durable notification delivery", eager_start=False,
+        )
+        pending_store.notification_tasks.add(worker)
+        worker.add_done_callback(pending_store.notification_tasks.discard)
+
+    def on_review_ready_with_notification(pending: Any) -> None:
+        on_review_ready(pending)
+        kick_notifications()
+
+    pending_store.on_review_ready = on_review_ready_with_notification
+    pending_store.on_notifications = kick_notifications
+    pending_store.notification_unsubscribe = async_track_time_interval(
+        hass, kick_notifications, timedelta(seconds=60),
+    )
+    entry.async_on_unload(pending_store.notification_unsubscribe)
+
+    def tracked(handler, *, source_submission=False):
+        async def invoke(call):
+            if not pending_store.accepting_services:
+                raise ServiceValidationError("Daylight is unloading; retry after reload")
+            task = asyncio.current_task()
+            pending_store.active_service_handlers.add(task)
+            try:
+                if source_submission:
+                    await _async_check_entity_control_permission(hass, ai_task_entity, call.context)
+                    source_id = call.data.get(ATTR_SOURCE_ID)
+                    if source_id is not None:
+                        fingerprint = source_fingerprint(source_id)
+                        # Check and register without an await so a retry cannot
+                        # enter the parser before the first request commits.
+                        if fingerprint in pending_store.processing_source_fingerprints.values():
+                            raise ServiceValidationError(
+                                "This submission is still processing; wait and check activity before retrying"
+                            )
+                        pending_store.processing_source_fingerprints[task] = fingerprint
+                return await handler(call)
+            finally:
+                pending_store.processing_source_fingerprints.pop(task, None)
+                pending_store.active_service_handlers.discard(task)
+
+        return invoke
+
+    def route_review_source(source: SourceDocument):
+        # Enforce the original normalized input bound before routing removes
+        # control-data lines from parser evidence, including for IMAP sources.
+        if source.text is not None and len(source.text) > MAX_SOURCE_TEXT_CHARS:
+            raise SourceValidationError("source_too_large", SOURCE_TEXT_LIMIT_MESSAGE)
+        return plan_source_routing(
+            source,
+            default_calendar=default_calendar,
+            allowed_calendars=set(allowed_calendars),
+            aliases=aliases,
+        )
+
+    async def parse_submission(source: SourceDocument, activity_id: str) -> Any:
+        """Finish a stopped parser without obscuring its original error."""
+        try:
+            return await _async_parse_source(hass, source, ai_task_entity)
+        except (asyncio.CancelledError, Exception) as error:
+            try:
+                if isinstance(error, ProviderError):
+                    await pending_store.async_record_parse_failure(
+                        activity_id, provider_error_code=error.code,
+                    )
+                else:
+                    await pending_store.async_record_parse_failure(activity_id)
+            except Exception:
+                pass
+            raise
+
+    async def process_email_document(
+        source: SourceDocument,
+        activity_id: str,
+    ) -> None:
+        """Send one normalized email through the existing review pipeline."""
+        # Email polling owns retry/terminal classification for parser failures.
+        route = route_review_source(source)
+        outcome = await _async_parse_source(hass, route.parser_source, ai_task_entity)
+        await pending_store.async_add(
+            source_text=email_review_source_text(source),
+            events=outcome.events,
+            **({"event_assumptions": outcome.event_assumptions}
+               if outcome.event_assumptions else {}),
+            source_id=source.upstream_source_id,
+            calendar_entity=route.calendar_entity,
+            source_kind=source.kind.value,
+            source_title=source.title,
+            source_sender=source.metadata.get("sender"),
+            warnings=[*outcome.warnings, *route.warnings],
+            routing_unresolved=route.requires_confirmation,
+            activity_id=activity_id,
+        )
+
+    def event_calendar(event: PendingEvent) -> str:
+        calendar_entity = event.calendar_entity or default_calendar
+        if calendar_entity not in allowed_calendars:
+            raise ServiceValidationError("Event calendar is not in the allowed calendars")
+        return calendar_entity
+
+    async def handle_parse_text(call: ServiceCall) -> ServiceResponse:
+        outcome = await _parse_text_with_ai_task(
+            hass, ai_task_entity, call.data[ATTR_TEXT], context=call.context
+        )
+        return {"events": [draft.as_dict() for draft in outcome.events],
+                "warnings": outcome.warnings}
+
+    async def handle_import_text(call: ServiceCall) -> ServiceResponse:
+        outcome = await _parse_text_with_ai_task(
+            hass, ai_task_entity, call.data[ATTR_TEXT], context=call.context
+        )
+        for draft in outcome.events:
+            await _async_create_calendar_event(
+                hass,
+                default_calendar,
+                draft,
+                context=call.context,
+            )
+        return {
+            "events": [draft.as_dict() for draft in outcome.events],
+            "imported": len(outcome.events),
+            "warnings": outcome.warnings,
+        }
+
+    async def handle_submit_text(call: ServiceCall) -> ServiceResponse:
+        source_id = call.data.get(ATTR_SOURCE_ID)
+
+        if (
+            source_id is not None
+            and pending_store.is_source_duplicate(source_id)
+        ):
+            return _submission_response(PendingImportAddResult(None, True, 0), [], None)
+
+        source = TextSourceAdapter().create(call.data[ATTR_TEXT], source_id=source_id)
+        route = route_review_source(source)
+        activity_id = await pending_store.async_begin_submission(
+            source_kind=source.kind.value, source_title=source.title, received_at=source.received_at
+        )
+        task = asyncio.current_task()
+        pending_store.active_submissions.add(task)
+        try:
+            outcome = await parse_submission(route.parser_source, activity_id)
+            result = await pending_store.async_add(
+                source_text=source.text,
+                events=outcome.events,
+                **({"event_assumptions": outcome.event_assumptions}
+                   if outcome.event_assumptions else {}),
+                source_id=source.upstream_source_id,
+                calendar_entity=route.calendar_entity,
+                **({"reimport_duplicates": True}
+                   if call.data.get("reimport_duplicates", False) else {}),
+                warnings=[*outcome.warnings, *route.warnings],
+                routing_unresolved=route.requires_confirmation,
+                activity_id=activity_id,
+            )
+        finally:
+            pending_store.active_submissions.discard(task)
+        return _submission_response(result, [*outcome.warnings, *route.warnings], activity_id)
+
+    async def submit_attachment_source(
+        source: SourceDocument, *, reimport_duplicates: bool = False,
+    ) -> ServiceResponse:
+        """Send a normalized upload through parsing and pending review."""
+        if source.upstream_source_id is not None and pending_store.is_source_duplicate(source.upstream_source_id):
+            return _submission_response(PendingImportAddResult(None, True, 0), [], None)
+        route = route_review_source(source)
+        activity_id = await pending_store.async_begin_submission(
+            source_kind=source.kind.value, source_title=source.title, received_at=source.received_at
+        )
+        task = asyncio.current_task()
+        pending_store.active_submissions.add(task)
+        try:
+            outcome = await parse_submission(route.parser_source, activity_id)
+            label = "PDF" if source.kind is SourceKind.PDF else "Image"
+            attachment_note = f"{label} attachment (SHA-256: {source.attachments[0].sha256})" if source.attachments else ""
+            result = await pending_store.async_add(
+                source_text="\n\n".join(part for part in (source.text, attachment_note) if part),
+                events=outcome.events,
+                **({"event_assumptions": outcome.event_assumptions}
+                   if outcome.event_assumptions else {}),
+                source_id=source.upstream_source_id,
+                calendar_entity=route.calendar_entity,
+                **({"reimport_duplicates": True} if reimport_duplicates else {}),
+                source_kind=source.kind.value,
+                source_title=source.title,
+                warnings=[*outcome.warnings, *route.warnings],
+                routing_unresolved=route.requires_confirmation,
+                activity_id=activity_id,
+            )
+        finally:
+            pending_store.active_submissions.discard(task)
+        return _submission_response(result, [*outcome.warnings, *route.warnings], activity_id)
+
+    async def handle_submit_image(call: ServiceCall) -> ServiceResponse:
+        """Queue event drafts from an uploaded image and optional source text."""
+        async with async_image_source(hass, call.data[ATTR_FILE_ID]) as image:
+            source = replace(image, text=call.data.get(ATTR_TEXT, "").strip() or None,
+                             upstream_source_id=call.data.get(ATTR_SOURCE_ID))
+            return await submit_attachment_source(
+                source, reimport_duplicates=call.data.get("reimport_duplicates", False),
+            )
+
+    async def handle_submit_pdf(call: ServiceCall) -> ServiceResponse:
+        """Queue event drafts from a text PDF or attachment-capable parser."""
+        async with async_pdf_source(hass, call.data[ATTR_FILE_ID], call.data.get(ATTR_TEXT, "")) as pdf:
+            return await submit_attachment_source(
+                replace(pdf, upstream_source_id=call.data.get(ATTR_SOURCE_ID)),
+                reimport_duplicates=call.data.get("reimport_duplicates", False),
+            )
+
+    class CalendarApprovalWriter:
+        """Perform a fresh destination-only duplicate check before creating."""
+
+        def __init__(self, context: Context | None) -> None:
+            self.context = context
+
+        async def async_preflight(self, event: PendingEvent) -> None:
+            """Fail closed without changing pending state or write-attempt state."""
+            destination = event_calendar(event)
+            await _async_check_entity_control_permission(hass, destination, self.context)
+            try:
+                matches = await async_classify_conflicts(
+                    hass,
+                    event.draft,
+                    observed_calendars=[destination],
+                    local_zone=dt_util.get_time_zone(hass.config.time_zone),
+                    # A duplicate verdict reveals private calendar state.
+                    # Authenticated approvals therefore need both CONTROL
+                    # (checked above) and READ on the destination. Only trusted
+                    # userless HA service calls may bypass the user read check.
+                    context=self.context,
+                    trusted_internal=self.context is None or self.context.user_id is None,
+                    approval_start_only=True,
+                )
+            except Unauthorized as err:
+                # This refusal happens before any checkpoint or provider write.
+                # Do not expose whether the guessed event exists on the calendar.
+                raise ServiceValidationError(
+                    "Approval rejected before calendar write: Destination calendar "
+                    "read permission is required for duplicate-safe approval"
+                ) from err
+            except CalendarObservationError as err:
+                raise ServiceValidationError(
+                    "Approval rejected before calendar write: Cannot verify destination calendar before approval: "
+                    "calendar observation is incomplete"
+                ) from err
+            if any(match.kind == "exact_duplicate" for match in matches):
+                raise ServiceValidationError(
+                    "Approval rejected before calendar write: Exact duplicate already exists on the destination calendar; "
+                    "review or reject the pending event"
+                )
+
+        async def __call__(self, event: PendingEvent) -> None:
+            destination = event_calendar(event)
+            await _async_check_entity_control_permission(hass, destination, self.context)
+            await _async_create_calendar_event(
+                hass, destination, event.draft, context=self.context,
+            )
+
+    async def handle_approve_pending(call: ServiceCall) -> ServiceResponse:
+        pending_id = call.data[ATTR_PENDING_ID]
+        pending_to_approve = pending_store.get(pending_id)
+        if pending_to_approve is None:
+            await _async_check_entity_control_permission(
+                hass, default_calendar, call.context
+            )
+        else:
+            for calendar_entity in {event_calendar(event) for event in pending_to_approve.events}:
+                await _async_check_entity_control_permission(hass, calendar_entity, call.context)
+
+        try:
+            pending = await pending_store.async_process_events(
+                pending_id, CalendarApprovalWriter(call.context)
+            )
+        except PendingEventEditError as err:
+            raise ServiceValidationError(str(err)) from err
+        except PendingImportApprovalUncertainError as err:
+            raise ServiceValidationError(
+                "Pending import has an unfinished approval attempt; "
+                "automatic retry is blocked to avoid duplicates. Check the "
+                "calendar and use resolve_pending_event for the uncertain event"
+            ) from err
+        if pending is None:
+            raise ServiceValidationError(
+                f"Pending import not found: {pending_id}"
+            )
+
+        return {
+            "pending_id": pending.id,
+            "approved": True,
+            "imported": len(pending.events),
+            "events": [event.draft.as_dict() for event in pending.events],
+        }
+
+    async def handle_reject_pending(call: ServiceCall) -> ServiceResponse:
+        for calendar_entity in allowed_calendars:
+            await _async_check_entity_control_permission(hass, calendar_entity, call.context)
+        pending_id = call.data[ATTR_PENDING_ID]
+        try:
+            removed = await pending_store.async_remove(pending_id)
+        except PendingImportApprovalUncertainError as err:
+            raise ServiceValidationError(
+                "Pending import has an uncertain calendar write; resolve it before rejecting"
+            ) from err
+        if not removed:
+            raise ServiceValidationError(
+                f"Pending import not found: {pending_id}"
+            )
+        return {"pending_id": pending_id, "rejected": True}
+
+    async def check_read_permission(call: ServiceCall) -> None:
+        """Protect stored source text and drafts from anonymous or limited users."""
+        if call.context is None or call.context.user_id is None:
+            raise Unauthorized(context=call.context, permission=POLICY_CONTROL)
+        await _async_check_entity_control_permission(
+            hass, ai_task_entity, call.context
+        )
+        for calendar_entity in allowed_calendars:
+            await _async_check_entity_control_permission(hass, calendar_entity, call.context)
+
+    async def handle_reset_deduplication(call: ServiceCall) -> ServiceResponse:
+        """Authorize an explicit reset of one handled source or event identity."""
+        await check_read_permission(call)
+        try:
+            event = EventDraft.from_mapping(call.data["event"]) if "event" in call.data else None
+        except (DraftValidationError, OverflowError) as err:
+            raise ServiceValidationError("Invalid event draft for deduplication reset") from err
+        try:
+            reset = await pending_store.async_reset_deduplication(
+                source_id=call.data.get(ATTR_SOURCE_ID), event=event,
+            )
+        except PendingEventEditError as err:
+            raise ServiceValidationError(str(err)) from err
+        except OverflowError as err:
+            # A valid local timestamp near year 1/9999 can overflow while
+            # calculating its canonical UTC fingerprint.
+            raise ServiceValidationError("Invalid event draft for deduplication reset") from err
+        return {"reset": reset, "kind": "source" if event is None else "event"}
+
+    async def handle_reprocess_pending(call: ServiceCall) -> ServiceResponse:
+        """Explicitly reparse available source text without replacing user work."""
+        await check_read_permission(call)
+
+        async def reparse(original: PendingImport):
+            source = SourceDocument(
+                id=original.id, kind=SourceKind.MANUAL_TEXT,
+                received_at=datetime.fromisoformat(original.created_at),
+                text=original.source_text, title=original.source_title,
+            )
+            route = route_review_source(source)
+            outcome = await _async_parse_source(
+                hass, route.parser_source, ai_task_entity,
+                reference_datetime=source.received_at,
+            )
+            assumptions = outcome.event_assumptions or ((),) * len(outcome.events)
+            candidates = tuple(PendingEvent.create(
+                event, route.calendar_entity,
+                routing_unresolved=route.requires_confirmation,
+                date_time_assumptions=notes,
+            ) for event, notes in zip(outcome.events, assumptions, strict=True))
+            return candidates, tuple([*outcome.warnings, *route.warnings])
+
+        task = asyncio.current_task()
+        pending_store.active_submissions.add(task)
+        try:
+            try:
+                updated, added, duplicates = await pending_store.async_reprocess(
+                    call.data[ATTR_PENDING_ID], reparse,
+                )
+            except PendingEventEditError as err:
+                raise ServiceValidationError(str(err)) from err
+            return {"pending": updated.as_service_dict(), "added_events": added,
+                    "duplicate_events": duplicates}
+        finally:
+            pending_store.active_submissions.discard(task)
+
+    async def handle_list_pending(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        return {"imports": [
+            {
+                "id": item.id,
+                "created_at": item.created_at,
+                "event_count": len(item.events),
+                "title": item.events[0].draft.title,
+                "source_kind": item.source_kind,
+                "source_title": item.source_title,
+                "warnings": list(item.warnings),
+                "duplicate_events": item.duplicate_events,
+                "approval_in_flight": item.approval_in_flight,
+            }
+            for item in pending_store.list()
+        ]}
+
+    async def handle_get_pending(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        pending = pending_store.get(pending_id)
+        if pending is None:
+            raise ServiceValidationError(f"Pending import not found: {pending_id}")
+        result = pending.as_service_dict()
+        result.pop("source_fingerprint", None)
+        result["allowed_calendars"] = list(allowed_calendars)
+        result["default_calendar"] = default_calendar
+        return {"pending": result}
+
+    async def handle_list_activity(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        return {"activity": [
+            {**{key: value for key, value in record.items() if key != "transitions"},
+             **({"notification_delivery_failed": True} if any(
+                 step.get("type") == "notification_delivery_failed"
+                 for step in record.get("transitions", ())
+             ) else {})}
+            for record in pending_store.list_activity()
+        ]}
+
+    async def handle_get_activity(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        record = pending_store.get_activity(pending_id)
+        if record is None:
+            raise ServiceValidationError(f"Activity not found: {pending_id}")
+        return {"activity": record}
+
+    async def handle_get_pending_event(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+        event = pending_store.get_event(pending_id, event_id)
+        if event is None:
+            raise ServiceValidationError(
+                f"Pending event not found: {pending_id}/{event_id}"
+            )
+        return {"pending_id": pending_id, "event": event.as_service_dict()}
+
+    async def handle_check_pending_event(call: ServiceCall) -> ServiceResponse:
+        """Read-only, user-authorized on-demand calendar observation."""
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+        event = pending_store.get_event(pending_id, event_id)
+        if event is None:
+            raise ServiceValidationError(f"Pending event not found: {pending_id}/{event_id}")
+        try:
+            expected = _expected_event(
+                call.data.get("expected_event"), event_id, allow_uncertain=True,
+            )
+        except (DraftValidationError, PendingEventEditError) as err:
+            raise ServiceValidationError(str(err)) from err
+        if expected is not None and expected != event:
+            raise ServiceValidationError("Event changed since it was loaded; refresh before checking")
+        destination = event_calendar(event)
+        _, conflict_calendars = effective_calendar_intelligence(entry)
+        scope = list(dict.fromkeys([destination, *conflict_calendars]))
+        try:
+            matches = await async_classify_conflicts(
+                hass, event.draft, observed_calendars=scope,
+                local_zone=dt_util.get_time_zone(hass.config.time_zone),
+                context=call.context,
+            )
+        except CalendarObservationError as err:
+            raise ServiceValidationError(f"Calendar check incomplete: {err}") from err
+        # Provider reads await external entities; edits and review decisions
+        # can occur meanwhile. Never label an old result as the current draft.
+        if pending_store.get_event(pending_id, event_id) != event:
+            raise ServiceValidationError("Pending event changed during calendar check; refresh")
+        if any(match.kind in ("exact_duplicate", "possible_duplicate", "conflict") for match in matches):
+            try:
+                current = await pending_store.async_record_conflict(pending_id, event, scope)
+            except Exception:
+                # Notification storage must not hide a valid calendar result.
+                _LOGGER.warning("Daylight conflict notification could not be persisted")
+            else:
+                if not current:
+                    raise ServiceValidationError("Pending event changed during calendar check; refresh")
+        if pending_store.get_event(pending_id, event_id) != event:
+            raise ServiceValidationError("Pending event changed during calendar check; refresh")
+        return {
+            "pending_id": pending_id,
+            "event_id": event_id,
+            "matches": [
+                {"kind": item.kind, "calendar_entity": item.calendar_entity,
+                 "existing_title": item.existing_title,
+                 "existing_start": item.existing_start, "existing_end": item.existing_end,
+                 "existing_all_day": item.existing_all_day,
+                 "overlap_start": item.overlap_start, "overlap_end": item.overlap_end}
+                for item in matches
+            ],
+            "observed_calendars": scope,
+        }
+
+    async def handle_edit_pending_event(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+        try:
+            draft = EventDraft.from_mapping(call.data["event"])
+            expected = call.data.get("expected_event")
+            expected_event = None
+            if expected is not None:
+                if expected.get("id") != event_id or expected.get("status") not in (
+                    "pending", "write_uncertain"
+                ):
+                    raise PendingEventEditError("Event changed since it was loaded; refresh before editing")
+                expected_event = PendingEvent(
+                    event_id, EventDraft.from_mapping(expected), expected["status"],
+                    expected.get(CONF_CALENDAR_ENTITY),
+                    routing_unresolved=expected.get("routing_unresolved", False),
+                )
+            calendar_entity = call.data.get(CONF_CALENDAR_ENTITY)
+            if calendar_entity is not None and calendar_entity not in allowed_calendars:
+                raise ServiceValidationError("Calendar is not in the allowed calendars")
+            edited = await pending_store.async_edit_event(
+                pending_id, event_id, draft, calendar_entity=calendar_entity,
+                expected_event=expected_event,
+            )
+        except (DraftValidationError, PendingEventEditError) as err:
+            raise ServiceValidationError(str(err)) from err
+        if edited is None:
+            raise ServiceValidationError(
+                f"Pending event not found: {pending_id}/{event_id}"
+            )
+        return {"pending_id": pending_id, "event": edited.as_service_dict()}
+
+    async def handle_reject_pending_event(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+        try:
+            expected_event = _expected_event(call.data.get("expected_event"), event_id)
+            if expected_event is None:
+                rejected = await pending_store.async_reject_event(pending_id, event_id)
+            else:
+                rejected = await pending_store.async_reject_event(
+                    pending_id, event_id, expected_event=expected_event,
+                )
+        except PendingImportApprovalUncertainError as err:
+            raise ServiceValidationError(
+                "This event has an uncertain calendar write; resolve it before rejecting"
+            ) from err
+        except (DraftValidationError, PendingEventEditError) as err:
+            raise ServiceValidationError(str(err)) from err
+        if not rejected:
+            raise ServiceValidationError(
+                f"Pending event not found: {pending_id}/{event_id}"
+            )
+        return {"pending_id": pending_id, "event_id": event_id, "rejected": True}
+
+    async def handle_approve_pending_event(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+
+        event_to_approve = pending_store.get_event(pending_id, event_id)
+        if event_to_approve is not None:
+            await _async_check_entity_control_permission(
+                hass, event_calendar(event_to_approve), call.context
+            )
+
+        writer = CalendarApprovalWriter(call.context)
+
+        try:
+            expected_event = _expected_event(call.data.get("expected_event"), event_id)
+            if expected_event is None:
+                event = await pending_store.async_approve_event(
+                    pending_id, event_id, writer,
+                )
+            else:
+                event = await pending_store.async_approve_event(
+                    pending_id, event_id, writer, expected_event=expected_event,
+                )
+        except PendingImportApprovalUncertainError as err:
+            raise ServiceValidationError(
+                "This event has an uncertain calendar write; verify it before retrying"
+            ) from err
+        except (DraftValidationError, PendingEventEditError) as err:
+            raise ServiceValidationError(str(err)) from err
+        if event is None:
+            raise ServiceValidationError(
+                f"Pending event not found: {pending_id}/{event_id}"
+            )
+        return {
+            "pending_id": pending_id,
+            "event_id": event_id,
+            "approved": True,
+            "event": {**event.as_service_dict(), "status": "approved"},
+        }
+
+    async def handle_resolve_pending_event(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+        resolution = call.data["resolution"]
+        try:
+            snapshot = call.data.get("expected_event")
+            expected = None
+            if snapshot is not None:
+                if snapshot.get("id") != event_id or snapshot.get("status") != "write_uncertain":
+                    raise PendingEventResolutionError("Event changed since it was loaded; refresh before resolving")
+                expected = PendingEvent(event_id, EventDraft.from_mapping(snapshot),
+                                        snapshot["status"], snapshot.get(CONF_CALENDAR_ENTITY),
+                                        snapshot.get("write_attempt"),
+                                        snapshot.get("routing_unresolved", False))
+            if expected is None:
+                resolved = await pending_store.async_resolve_uncertain(pending_id, event_id, resolution)
+            else:
+                resolved = await pending_store.async_resolve_uncertain(
+                    pending_id, event_id, resolution, expected_event=expected,
+                )
+        except (DraftValidationError, PendingEventResolutionError) as err:
+            raise ServiceValidationError(str(err)) from err
+        if not resolved:
+            raise ServiceValidationError(
+                f"Pending event not found: {pending_id}/{event_id}"
+            )
+        return {"pending_id": pending_id, "event_id": event_id,
+                "resolution": resolution}
+
+    try:
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_PARSE_TEXT,
+            tracked(handle_parse_text),
+            schema=PARSE_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_IMPORT_TEXT,
+            tracked(handle_import_text),
+            schema=PARSE_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SUBMIT_TEXT,
+            tracked(handle_submit_text, source_submission=True),
+            schema=SUBMIT_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_SUBMIT_IMAGE, tracked(handle_submit_image, source_submission=True),
+            schema=SUBMIT_IMAGE_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_SUBMIT_PDF, tracked(handle_submit_pdf, source_submission=True),
+            schema=SUBMIT_PDF_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_APPROVE_PENDING,
+            tracked(handle_approve_pending),
+            schema=PENDING_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REJECT_PENDING,
+            tracked(handle_reject_pending),
+            schema=PENDING_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_LIST_PENDING, tracked(handle_list_pending),
+            supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_LIST_ACTIVITY, tracked(handle_list_activity),
+            supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_GET_ACTIVITY, tracked(handle_get_activity),
+            schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_RESET_DEDUPLICATION, tracked(handle_reset_deduplication),
+            schema=RESET_DEDUPLICATION_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_REPROCESS_PENDING, tracked(handle_reprocess_pending),
+            schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_GET_PENDING, tracked(handle_get_pending),
+            schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_GET_PENDING_EVENT, tracked(handle_get_pending_event),
+            schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_CHECK_PENDING_EVENT, tracked(handle_check_pending_event),
+            schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_EDIT_PENDING_EVENT, tracked(handle_edit_pending_event),
+            schema=EDIT_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_REJECT_PENDING_EVENT, tracked(handle_reject_pending_event),
+            schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_APPROVE_PENDING_EVENT, tracked(handle_approve_pending_event),
+            schema=PENDING_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_RESOLVE_PENDING_EVENT, tracked(handle_resolve_pending_event),
+            schema=RESOLVE_EVENT_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
+        )
+        pending_store.email_runtime = await async_setup_email_runtime(
+            hass,
+            entry,
+            pending_store,
+            process_email_document,
+        )
+        pending_store.hosted_runtime = await async_setup_hosted_runtime(hass, entry)
+        # Forward last: a failing email configuration cannot strand sensor entities.
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        pending_store.accepting_services = True
+        pending_store.hosted_runtime.resume()
+        kick_notifications()
+        runtime = pending_store.email_runtime
+        if runtime is not None:
+            runtime.on_entry_ready()
+
+    except (Exception, asyncio.CancelledError):
+        # Even a failed or cancelled partial forward must not leave its sensor
+        # entities pointing to a discarded store.
+        pending_store.accepting_services = False
+        pending_store.notification_unsubscribe()
+        await _async_cancel_notification_tasks(pending_store)
+        _unregister_entry_services(hass)
+        await _async_stop_hosted_runtime(pending_store)
+        cleanup_ok = True
+        runtime = getattr(pending_store, "email_runtime", None)
+        if runtime is not None:
+            try:
+                await runtime.async_stop()
+            except Exception:
+                cleanup_ok = False
+                _LOGGER.exception("Failed to stop email runtime during setup rollback")
+        try:
+            if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+                cleanup_ok = False
+                _LOGGER.error("Failed to roll back Daylight sensor platform")
+        except (Exception, asyncio.CancelledError):
+            cleanup_ok = False
+            _LOGGER.exception("Failed to roll back sensor setup")
+        async_remove_review_panel(hass)
+        if cleanup_ok:
+            hass.data[DOMAIN].pop(entry.entry_id, None)
+        else:
+            # Keep the store reachable so the next setup can retry cleanup
+            # before reading a second, potentially stale storage snapshot.
+            pending_store.rollback_pending = True
+        raise
+    return True
+
+
+async def _async_stop_hosted_runtime(store: PendingImportStore) -> None:
+    runtime = getattr(store, "hosted_runtime", None)
+    if runtime is not None:
+        await runtime.async_stop()
+
+
+_NOTIFICATION_CANCEL_GRACE_SECONDS = 1
+
+
+async def _async_cancel_notification_tasks(store: PendingImportStore) -> None:
+    """Request cancellation without allowing a broken provider to block unload."""
+    tasks = tuple(getattr(store, "notification_tasks", ()))
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        _, pending = await asyncio.wait(tasks, timeout=_NOTIFICATION_CANCEL_GRACE_SECONDS)
+        if pending:
+            # Do not expose the entry identifier or notification target.
+            _LOGGER.warning("Daylight notification task did not stop before unload deadline")
+    # Provider cancellation stays bounded, but durable journal transactions
+    # must finish before another store loads or removal deletes the envelope.
+    lock = getattr(store, "notification_delivery_lock", None)
+    if lock is not None:
+        async with lock:
+            pass
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Finish unload atomically from the caller's perspective, even on cancellation."""
+    store = hass.data[DOMAIN][entry.entry_id]
+    store.accepting_services = False
+    hosted = getattr(store, "hosted_runtime", None)
+    if hosted is not None:
+        hosted.pause()
+
+    async def finish_unload() -> bool:
+        await _async_cancel_notification_tasks(store)
+        try:
+            platforms_unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        except BaseException:
+            store.accepting_services = not getattr(
+                store, "calendar_settings_reload_guard", False
+            )
+            if (hosted is not None and store.accepting_services
+                    and not getattr(store, "hosted_settings_reload_guard", False)):
+                hosted.resume()
+            raise
+        if not platforms_unloaded:
+            store.accepting_services = not getattr(
+                store, "calendar_settings_reload_guard", False
+            )
+            if (hosted is not None and store.accepting_services
+                    and not getattr(store, "hosted_settings_reload_guard", False)):
+                hosted.resume()
+            return False
+
+        await _async_stop_hosted_runtime(store)
+        getattr(store, "notification_unsubscribe", lambda: None)()
+        store.on_notifications = None
+        _unregister_entry_services(hass)
+        async_remove_review_panel(hass)
+        email_runtime = getattr(store, "email_runtime", None)
+        if email_runtime is not None:
+            await email_runtime.async_stop()
+        accepted = set(store.active_submissions) | set(getattr(store, "active_service_handlers", ()))
+        if accepted:
+            await asyncio.gather(*accepted, return_exceptions=True)
+        await _async_cancel_notification_tasks(store)
+        store.on_review_ready = None
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        return True
+
+    # Shield the entire sequence, not just gathering handlers: cancellation
+    # after platform unload must not strand a half-torn-down entry.
+    completion = asyncio.create_task(finish_unload())
+    try:
+        return await asyncio.shield(completion)
+    except asyncio.CancelledError:
+        await completion
+        raise
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove persisted data and retire this entry's notification task set."""
+    registry_key = f"{DOMAIN}_notification_tasks"
+    registry = hass.data.get(registry_key)
+    tasks = registry.get(entry.entry_id) if registry is not None else None
+    if tasks is not None:
+        # Ordinarily the preceding unload has already canceled all tasks.
+        # Repeat the bounded request for a cancellation-resistant provider,
+        # but retain ownership until any straggler truly completes.
+        for task in tuple(tasks):
+            task.cancel()
+        if tasks:
+            _, pending = await asyncio.wait(
+                tuple(tasks), timeout=_NOTIFICATION_CANCEL_GRACE_SECONDS,
+            )
+            if pending:
+                _LOGGER.warning("Daylight notification task still running after entry removal")
+
+        def evict_when_idle(_task: asyncio.Task | None = None) -> None:
+            if tasks or registry.get(entry.entry_id) is not tasks:
+                return
+            registry.pop(entry.entry_id, None)
+            if not registry:
+                hass.data.pop(registry_key, None)
+
+        for task in tuple(tasks):
+            task.add_done_callback(evict_when_idle)
+        evict_when_idle()
+
+    await PendingImportStore(hass).async_remove_storage()
+
+
+async def _parse_text_with_ai_task(
+    hass: HomeAssistant,
+    ai_task_entity: str,
+    text: str,
+    *,
+    context: Context | None = None,
+) -> ParseOutcome:
+    """Authorize and parse text with one immutable AI Task selection."""
+    await _async_check_entity_control_permission(hass, ai_task_entity, context)
+    source = TextSourceAdapter().create(text)
+    return await _async_parse_source(hass, source, ai_task_entity)
+
+
+async def _async_parse_source(
+    hass: HomeAssistant,
+    source: SourceDocument,
+    ai_task_entity: str,
+    *,
+    reference_datetime: datetime | None = None,
+) -> ParseOutcome:
+    """Feed a normalized source into the current text parser boundary."""
+    if source.text is None and not source.attachments:
+        raise SourceValidationError(
+            "empty_source",
+            "This source has no text or attachments for the configured parser",
+        )
+    return await parse_source_with_provider(
+        hass,
+        source=source,
+        ai_task_entity=ai_task_entity,
+        **({"reference_datetime": reference_datetime} if reference_datetime is not None else {}),
+    )
+
+
+async def _async_check_entity_control_permission(
+    hass: HomeAssistant,
+    entity_id: str,
+    context: Context | None,
+) -> None:
+    """Enforce Home Assistant entity-control permissions for a user call."""
+    if context is None or context.user_id is None:
+        return
+
+    user = await hass.auth.async_get_user(context.user_id)
+    if user is None:
+        raise UnknownUser(
+            context=context,
+            permission=POLICY_CONTROL,
+            user_id=context.user_id,
+        )
+    if not user.permissions.check_entity(entity_id, POLICY_CONTROL):
+        raise Unauthorized(
+            context=context,
+            permission=POLICY_CONTROL,
+            user_id=context.user_id,
+            perm_category=CAT_ENTITIES,
+        )
+
+
+async def _async_create_calendar_event(
+    hass: HomeAssistant,
+    calendar_entity: str,
+    draft: EventDraft,
+    *,
+    context: Context | None = None,
+) -> None:
+    data: dict[str, Any] = {
+        "entity_id": calendar_entity,
+        "summary": draft.title,
+        CONF_DESCRIPTION: draft.description or "",
+    }
+    if draft.location:
+        data["location"] = draft.location
+
+    if draft.all_day:
+        data["start_date"] = draft.start
+        data["end_date"] = draft.end
+    else:
+        data["start_date_time"] = draft.start
+        data["end_date_time"] = draft.end
+
+    await hass.services.async_call(
+        "calendar", "create_event", data, blocking=True, context=context
+    )

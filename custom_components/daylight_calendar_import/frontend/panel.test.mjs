@@ -1,0 +1,6327 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+class FakeNode {
+  constructor(tag = "fragment") {
+    this.tag = tag;
+    this.children = [];
+    this.attributes = {};
+    this.dataset = {};
+  }
+  append(...children) { this.children.push(...children); }
+  appendChild(child) { this.children.push(child); return child; }
+  prepend(...children) { this.children.unshift(...children); }
+  replaceChildren(...children) { this.children = children; }
+  setAttribute(name, value) { this.attributes[name] = value; }
+  removeAttribute(name) { delete this.attributes[name]; }
+  querySelector(tag) { return this.querySelectorAll(tag)[0] || null; }
+  querySelectorAll(tag) {
+    if (tag.includes(" ")) {
+      const [parent, child] = tag.split(" ");
+      return this.querySelectorAll(parent).flatMap(node => node.querySelectorAll(child));
+    }
+    const nodes = [this, ...this.children.flatMap(child => child.querySelectorAll(tag))];
+    if (tag.startsWith("[") && tag.endsWith("]")) {
+      const attribute = tag.slice(1, -1);
+      return nodes.filter(node => attribute in node.attributes);
+    }
+    return nodes.filter(node =>
+      tag.startsWith(".") ? node.className === tag.slice(1) : node.tag === tag);
+  }
+  get elements() { return {namedItem: name => this.querySelectorAll("input")
+    .concat(this.querySelectorAll("textarea"), this.querySelectorAll("select"))
+    .find(node => node.name === name)}; }
+  focus() { globalThis.focusedNode = this; }
+  addEventListener(name, callback) { this[name] = callback; }
+  dispatchEvent(event) { globalThis.dispatchedEvents.push({node: this, event}); return true; }
+  attachShadow() { this.shadowRoot = new FakeNode("shadow"); return this.shadowRoot; }
+}
+globalThis.HTMLElement = FakeNode;
+globalThis.dispatchedEvents = [];
+globalThis.document = {
+  createElement: (tag) => new FakeNode(tag),
+  createElementNS: (namespace, tag) => {
+    const node = new FakeNode(tag);
+    node.namespace = namespace;
+    return node;
+  },
+  createDocumentFragment: () => new FakeNode(),
+};
+globalThis.customElements = {define: () => {}};
+const {DaylightImportPanel} = await import("./panel.js");
+const find = (node, tag) => node.tag === tag ? node : node.children.map(child => find(child, tag)).find(Boolean);
+const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test("mobile toolbar exposes Home Assistant sidebar navigation", async () => {
+  globalThis.dispatchedEvents = [];
+  const panel = new DaylightImportPanel();
+  panel.narrow = true;
+  const hass = {
+    kioskMode: false,
+    dockedSidebar: "auto",
+    config: {version: "2026.7.4"},
+    localize: key => key === "ui.sidebar.sidebar_toggle" ? "Open sidebar" : key,
+    callWS: async () => ({response: {imports: []}}),
+  };
+  panel.hass = hass;
+  await flush();
+
+  const header = find(panel.shadowRoot, "header");
+  const menu = panel._menuButton;
+  assert.equal(header.className, "topbar");
+  assert.equal(find(header, "h1").textContent, "Daylight Imports");
+  assert.equal(panel._refreshButton.className, "toolbar-refresh");
+  assert.equal(panel._refreshButton.attributes["aria-label"], "Refresh");
+  assert.equal(find(panel._refreshButton, "svg").attributes["aria-hidden"], "true");
+  assert.equal(panel._refreshButton.textContent, "");
+  assert.equal(panel._newImportButton.textContent, "+ New import");
+  assert.equal(menu.tag, "button");
+  assert.equal(menu.hidden, false);
+  assert.equal(menu.attributes["aria-label"], "Open sidebar");
+  assert.equal(find(menu, "svg").attributes["aria-hidden"], "true");
+  assert.equal(find(menu, "svg").namespace, "http://www.w3.org/2000/svg");
+  assert.equal(find(menu, "path").namespace, "http://www.w3.org/2000/svg");
+  assert.equal(find(menu, "path").attributes.d,
+    "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z");
+
+  menu.click();
+  const [{node, event}] = globalThis.dispatchedEvents;
+  assert.equal(node, panel);
+  assert.equal(event.type, "hass-toggle-menu");
+  assert.equal(event.bubbles, true);
+  assert.equal(event.composed, true);
+
+  panel.narrow = false;
+  assert.equal(panel.narrow, false);
+  assert.equal(menu.hidden, true);
+
+  panel.hass = {...hass, dockedSidebar: "always_hidden"};
+  assert.equal(menu.hidden, false);
+
+  panel.hass = {...hass, kioskMode: true, dockedSidebar: "always_hidden"};
+  assert.equal(menu.hidden, true);
+
+  panel.narrow = true;
+  panel.hass = {...hass, auth: {external: {config: {hasSidebar: true}}}};
+  assert.equal(menu.hidden, false);
+  assert.equal("data-own-safe-area" in panel.attributes, true);
+
+  for (const version of ["2026.8.0", "2026.8.1", "2026.8.2", "2026.9.0"]) {
+    panel.hass = {
+      ...hass,
+      config: {version},
+      auth: {external: {config: {hasSidebar: true}}},
+    };
+    assert.equal(menu.hidden, false);
+    assert.equal("data-own-safe-area" in panel.attributes, false);
+  }
+
+  panel.hass = {
+    ...hass,
+    config: {version: "2026.10.0"},
+    auth: {external: {config: {hasSidebar: true}}},
+  };
+  assert.equal(menu.hidden, true);
+
+  const styles = find(panel.shadowRoot, "style").textContent;
+  assert.match(styles, /--safe-area-content-inset-left/);
+  assert.match(styles, /--safe-area-content-inset-right/);
+  assert.match(styles, /\.topbar button:focus-visible \{ outline-color: currentColor; \}/);
+  assert.match(styles, /\.topbar \.menu-button[\s\S]*border: 0/);
+});
+
+test("uncertain recovery requires confirmation, retains errors, and restores review", async () => {
+  const panel = new DaylightImportPanel();
+  const uncertain = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "write_uncertain"};
+  let current = uncertain;
+  let fail = true;
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "list_pending") return {response: {imports: [{id: "import"}]}};
+    if (request.service === "get_pending") return {response: {pending: {id: "import", events: [current]}}};
+    if (request.service === "resolve_pending_event") {
+      if (fail) throw new Error("Could not persist resolution");
+      current = {...uncertain, status: "pending"};
+      return {response: request.service_data};
+    }
+  }};
+  await flush();
+  await panel.showImport("import");
+  assert.equal(panel._content.querySelectorAll("p")
+    .some(node => /Calendar write could not be confirmed/.test(node.textContent)), true);
+  const choice = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.resolution === "not_created");
+  choice.click();
+  assert.equal(globalThis.focusedNode.textContent, "Confirm recovery choice");
+  assert.equal(calls.filter(call => call.service === "resolve_pending_event").length, 0);
+  panel._content.querySelectorAll("button")
+    .find(button => button.textContent === "Cancel recovery").click();
+  assert.equal(globalThis.focusedNode.dataset.resolution, "not_created");
+  choice.click();
+  assert.equal(panel._refreshButton.disabled, true);
+  assert.equal(panel._content.querySelectorAll("button")
+    .find(button => button.textContent === "Recent activity").disabled, true);
+  await panel.runResolution(uncertain, "not_created");
+  assert.match(panel._decisionError, /Could not persist resolution/);
+  assert.equal(globalThis.focusedNode.attributes.role, "alert");
+  assert.equal(panel._detail.events[0].status, "write_uncertain");
+  fail = false;
+  panel._batchResults = [{id: "event", title: "Picnic", outcome: "Approval outcome unknown"}];
+  panel._batchContext = {pendingId: "import", title: "Import", action: "approve"};
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.resolution === "not_created").click();
+  await panel.runResolution(uncertain, "not_created");
+  assert.equal(panel._detail.events[0].status, "pending");
+  assert.equal(panel._decisionError, null);
+  assert.deepEqual(panel._batchResults, []);
+  assert.deepEqual(calls.filter(call => call.service === "resolve_pending_event")
+    .map(call => call.service_data.resolution), ["not_created", "not_created"]);
+});
+
+test("confirmed recovery that cannot reload reports its saved outcome", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "write_uncertain"};
+  let saved = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") {
+      if (saved) throw new Error("Disconnected");
+      return {response: {imports: [{id: "import"}]}};
+    }
+    if (request.service === "get_pending") return {response: {pending: {id: "import", events: [event]}}};
+    saved = true;
+    return {response: request.service_data};
+  }};
+  await flush();
+  await panel.showImport("import");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.resolution === "created").click();
+  await panel.runResolution(event, "created");
+  assert.equal(saved, true);
+  assert.match(panel._status, /Recovery choice saved, but the view could not reload/);
+  assert.equal(panel._resolution, null);
+  assert.equal(panel._selectedId, null);
+  assert.equal(globalThis.focusedNode, panel._refreshButton);
+});
+
+test("manual recurrence activity detail labels and safely renders the retained excerpt", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => request.service === "list_pending"
+    ? {response: {imports: []}}
+    : {response: {activity: {id: "manual-recurrence", status: "no_events", transitions: [],
+      guidance: "Repeating schedules require manual calendar entry.",
+      manual_source_text: "Private class each Thursday <script>unsafe</script>"}}}};
+  await flush();
+  await panel.showActivity("manual-recurrence");
+  assert.ok(panel._content.querySelectorAll("p").some(row => row.textContent ===
+    "Submitted text (first 4,096 characters): Private class each Thursday <script>unsafe</script>"));
+  assert.equal(panel._content.querySelector("script"), null);
+});
+
+test("lost recovery response reconciles a completed import with the inbox", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "write_uncertain", write_attempt: "attempt-a"};
+  let removed = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") {
+      return {response: {imports: removed ? [] : [{id: "import"}]}};
+    }
+    if (request.service === "get_pending") return {response: {pending: {id: "import", events: [event]}}};
+    assert.deepEqual(request.service_data.expected_event, event);
+    removed = true;
+    throw new Error("Disconnected");
+  }};
+  await flush();
+  await panel.showImport("import");
+  panel._content.querySelectorAll("button").find(button => button.dataset.resolution === "created").click();
+  await panel.runResolution(event, "created");
+  assert.equal(panel._selectedId, null);
+  assert.match(panel._status, /Recovery outcome unknown/);
+  await panel.refresh();
+  assert.equal(panel._status, "ready");
+  assert.equal(panel._selectedId, null);
+});
+
+for (const retainedFailureTransition of [true, false]) {
+test(`activity includes durable delivery warning with retained transition ${retainedFailureTransition}`, async () => {
+  const panel = new DaylightImportPanel();
+  const requests = [];
+  let fail = false;
+  panel.hass = {callWS: async request => {
+    requests.push(request.service);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "list_activity") {
+      if (fail) throw new Error("Activity unavailable");
+      return {response: {activity: [{id: "old", source_title: "School.pdf",
+        created_at: "2026-10-01T12:00:00Z", status: "mixed", created_count: 3, rejected_count: 2,
+        notification_delivery_failed: true}]}};
+    }
+    return {response: {activity: {id: "old", source_title: "School.pdf", status: "mixed",
+      created_count: 3, rejected_count: 2,
+      notification_delivery_failed: true,
+      transitions: [{type: "review_ready", at: "2026-10-01T12:00:00Z", event_id: null},
+        {type: "calendar_created", at: "2026-10-01T12:10:00Z", event_id: "event"},
+        ...(retainedFailureTransition ? [{type: "notification_delivery_failed", at: "2026-10-01T12:11:00Z", event_id: null}] : [])]}}};
+  }};
+  await flush();
+  panel._content.querySelectorAll("button").find(button => button.textContent === "Recent activity").click();
+  await flush();
+  assert.equal(find(panel._content, "h2").textContent, "Recent activity");
+  assert.match(find(find(panel._content, "li"), "p").textContent, /Calendar created: 3 · Rejected: 2/);
+  assert.ok(panel._content.querySelectorAll("p").some(row =>
+    row.textContent === "Notification delivery failed; check notification settings"));
+  assert.equal(panel._content.querySelector("button").disabled, false);
+  panel._content.querySelectorAll("button").find(button => button.dataset.activityId === "old").click();
+  await flush();
+  assert.match(panel._content.querySelectorAll("p")[1].textContent, /Calendar created: 3 · Rejected: 2/);
+  assert.match(panel._content.querySelectorAll("li")[1].textContent, /Event ID event/);
+  if (retainedFailureTransition) {
+    assert.match(panel._content.querySelectorAll("li")[2].textContent, /Notification delivery failed; check notification settings/);
+  }
+  assert.ok(panel._content.querySelectorAll("p").some(row =>
+    row.textContent === "Notification delivery failed; check notification settings"));
+  assert.equal(globalThis.focusedNode.textContent, "School.pdf");
+  panel._refreshButton.click();
+  await flush();
+  assert.equal(requests.at(-1), "get_activity");
+  panel._content.querySelectorAll("button").find(button => button.textContent === "Back to recent activity").click();
+  await flush();
+  fail = true;
+  await panel.showActivity();
+  assert.match(find(panel._content, "p").textContent, /Activity unavailable/);
+  fail = false;
+  panel.showReview();
+  await flush();
+  assert.match(find(panel._content, "p").textContent, /No imports awaiting review/);
+});
+}
+
+test("stale activity detail cannot overwrite a newer list", async () => {
+  const panel = new DaylightImportPanel();
+  let releaseDetail;
+  panel.hass = {callWS: request => {
+    if (request.service === "list_pending") return Promise.resolve({response: {imports: []}});
+    if (request.service === "list_activity") return Promise.resolve({response: {activity: [{id: "one", title: "New",
+      status: "review_ready", created_at: "2026-10-01T12:00:00Z"}]}});
+    return new Promise(resolve => {releaseDetail = () => resolve({response: {activity: {
+      id: "one", title: "Old", status: "failed", transitions: [],
+    }}});});
+  }};
+  await flush();
+  await panel.showActivity();
+  const stale = panel.showActivity("one");
+  const current = panel.showActivity();
+  releaseDetail();
+  await Promise.all([stale, current]);
+  assert.equal(panel._activityDetail, null);
+  assert.equal(panel._activityId, null);
+  assert.equal(find(panel._content, "h2").textContent, "Recent activity");
+});
+
+test("refresh keeps its button and announces loading and errors", async () => {
+  const panel = new DaylightImportPanel();
+  const button = find(panel.shadowRoot, "button");
+  let reject;
+  panel.hass = {callWS: () => new Promise((_resolve, fail) => {reject = fail;})};
+  assert.equal(find(panel._announcement, "span").textContent, "Loading imports…");
+  reject(new Error("Permission denied"));
+  await flush();
+  assert.equal(find(panel._announcement, "span").textContent, "Permission denied");
+  assert.equal(find(panel._content, "p").textContent, "Permission denied");
+  assert.equal(find(panel.shadowRoot, "button"), button);
+});
+
+test("detail errors and absent inbox items retain useful keyboard focus", async () => {
+  const panel = new DaylightImportPanel();
+  let fail = false;
+  panel.hass = {callWS: async (message) => {
+    if (message.service === "get_pending") throw new Error("Permission denied");
+    return {response: {imports: fail ? [] : [{id: "one", title: "Picnic", event_count: 1,
+      created_at: "2026-10-01T12:00:00Z"}]}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  assert.equal(globalThis.focusedNode.textContent, "Back to inbox");
+  fail = true;
+  panel.showInbox();
+  await flush();
+  assert.equal(globalThis.focusedNode.attributes["aria-label"], "Refresh");
+});
+
+test("a superseded refresh cannot replace newer data or a newer error", async () => {
+  const panel = new DaylightImportPanel();
+  const requests = [];
+  panel.hass = {callWS: () => new Promise((resolve, reject) => requests.push({resolve, reject}))};
+  const second = panel.refresh();
+  requests[1].resolve({response: {imports: [{title: "Latest", source_kind: "pdf", event_count: 1,
+    created_at: "2026-10-08T17:30:00Z"}]}});
+  await second;
+  requests[0].resolve({response: {imports: []}});
+  await flush();
+  assert.equal(find(panel._content, "h2").children[0].textContent, "Latest");
+
+  const third = panel.refresh();
+  const fourth = panel.refresh();
+  requests[3].reject(new Error("Latest failure"));
+  await fourth;
+  requests[2].resolve({response: {imports: []}});
+  await third;
+  assert.equal(find(panel._content, "p").textContent, "Latest failure");
+});
+
+test("opens detail, renders source and events as text, and returns to inbox", async () => {
+  const panel = new DaylightImportPanel();
+  const requests = [];
+  panel.hass = {callWS: async (message) => {
+    requests.push(message);
+    if (message.service === "get_pending") return {response: {pending: {
+      id: "one", source_title: "Flyer", source_kind: "pdf", source_text: "Meet at noon",
+      warnings: ["Check the time"], duplicate_events: 1,
+      events: [{id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+        all_day: true, status: "pending", calendar_entity: "calendar.family", location: "Park",
+        confidence: 0}],
+    }}};
+    return {response: {imports: [{id: "one", title: "Picnic", event_count: 1,
+      created_at: "2026-10-01T12:00:00Z"}]}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  assert.equal(requests[1].service_data.pending_id, "one");
+  assert.equal(find(panel._content, "h3").textContent, "Picnic");
+  assert.match(find(panel._content, "section").querySelector(".event-date").textContent,
+    /Oct 1, 2026 · All day/);
+  assert.equal(globalThis.focusedNode.tag, "h2");
+  assert.equal(panel._announcement.textContent, undefined);
+  assert.equal(find(panel._content, "p").attributes.role, undefined);
+  assert.equal(find(panel._content, "section").querySelector(".event-status").textContent,
+    "Pending review");
+  assert.equal(find(panel._content, "section").querySelector(".event-calendar").textContent,
+    "Calendar · family");
+  assert.ok(find(panel._content, "section").querySelector(".event-diagnostics")
+    .querySelectorAll("p").some(item => item.textContent === "AI confidence: 0% (estimate)"));
+  panel._content.querySelector("[data-import-back]").click();
+  await flush();
+  assert.equal(find(panel._content, "h2").children[0].textContent, "Picnic");
+  assert.equal(globalThis.focusedNode.textContent, "Picnic");
+});
+
+test("email source context shows title, sender, and received date without raw attachment hashes", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Birthday",
+    start: "2026-12-05T18:00:00-08:00", end: "2026-12-05T20:00:00-08:00",
+    all_day: false, status: "pending", confidence: 1};
+  panel.hass = {
+    locale: {language: "en-US", time_format: "12"},
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => request.service === "list_pending" ?
+      {response: {imports: []}} : {response: {pending: {
+        id: "one",
+        created_at: "2026-10-03T19:00:00+00:00",
+        source_kind: "email",
+        source_title: "Mel's 40th Birthday",
+        source_sender: "Megan Example <megan@example.test>",
+        source_text: "Email attachment: 3491.png (SHA-256: secret-hash)",
+        warnings: [],
+        events: [event],
+      }}},
+  };
+  await flush();
+  await panel.showImport("one");
+
+  const source = panel._content.querySelector(".source");
+  assert.equal(source.tag, "div");
+  assert.equal(source.tabIndex, 0);
+  assert.equal(source.attributes.role, "region");
+  assert.equal(source.attributes["aria-label"], "Email source details");
+  assert.equal(source.children[0].textContent, "Email title: Mel's 40th Birthday");
+  assert.equal(source.children[1].textContent,
+    "Email sender: Megan Example <megan@example.test>");
+  assert.match(source.children[2].textContent, /^Received: .*Oct 3, 2026/);
+  assert.equal(source.children.some(child => /SHA-256/.test(child.textContent || "")), false);
+});
+
+test("detail renders timed events with the Home Assistant time preference", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Soccer Practice",
+    start: "2026-10-07T20:00:00-07:00", end: "2026-10-07T21:00:00-07:00",
+    all_day: false, status: "pending", confidence: 1};
+  panel.hass = {
+    locale: {language: "en-US", time_format: "12"},
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => request.service === "list_pending" ?
+      {response: {imports: []}} : {response: {pending: {id: "one", events: [event]}}},
+  };
+  await flush();
+  await panel.showImport("one");
+  assert.equal(find(panel._content, "section").querySelector(".event-date").textContent.replace(/\s/g, " "),
+    "Oct 7, 2026 · 8–9 PM (PDT)");
+});
+
+test("editor preserves long meeting descriptions and retains a stale edit on failure", async () => {
+  const panel = new DaylightImportPanel();
+  const description = `Zoom: https://zoom.us/j/123 passcode abc\n${"• Préparation: bring cupcakes 🍰\n".repeat(4000)}Final instruction: bring ID.`;
+  assert.ok(description.length > 100000);
+  let event = {id: "event", title: "Meeting", start: "2026-10-01T10:00:00-04:00",
+    end: "2026-10-01T11:00:00-04:00", all_day: false, status: "pending",
+    calendar_entity: "calendar.legacy", confidence: 0.8, description};
+  const sibling = {...event, id: "sibling", title: "Other meeting"};
+  const requests = [];
+  let stale = true;
+  panel.hass = {callWS: async request => {
+    requests.push(request);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one",
+      default_calendar: "calendar.family",
+      allowed_calendars: ["calendar.legacy", "calendar.family"],
+      events: [event, sibling]}}};
+    if (stale) throw {message: "Event changed since it was loaded; refresh before editing"};
+    event = {...event, ...request.service_data.event,
+      calendar_entity: request.service_data.calendar_entity ?? event.calendar_entity};
+    return {response: {pending_id: "one", event}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  const preview = panel._content.querySelectorAll(".event-description")[0];
+  assert.equal(preview.textContent, description);
+  assert.equal(preview.attributes.tabindex, "0");
+  assert.equal(preview.attributes.role, "region");
+  assert.equal(preview.attributes["aria-label"], "Event description");
+  assert.match(find(panel.shadowRoot, "style").textContent,
+    /\.event-description \{[^}]*max-height: 18rem;[^}]*overflow: auto;/);
+  const siblingEdit = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "sibling");
+  const edit = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event" &&
+      button.textContent === "Edit");
+  edit.click();
+  const form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("description").value, description);
+  assert.equal(form.elements.namedItem("start").value, "2026-10-01T10:00");
+  assert.equal(form.elements.namedItem("start").type, "datetime-local");
+  assert.equal(form.elements.namedItem("end").type, "datetime-local");
+  assert.equal(form.querySelectorAll("select").length, 1);
+  const calendar = form.elements.namedItem("calendar_entity");
+  assert.equal(calendar.value, "calendar.legacy");
+  assert.deepEqual(calendar.children.map(option => option.value),
+    ["calendar.legacy", "calendar.family"]);
+  calendar.value = "calendar.family";
+  assert.equal(panel._content.querySelectorAll("button")[0].disabled, true);
+  assert.equal(panel._content.querySelectorAll("button").some(button => button.dataset.eventId === "sibling"), false);
+  siblingEdit.click();
+  assert.equal(panel._editingId, "event");
+  const cancel = form.querySelectorAll("button")[1];
+  cancel.click();
+  assert.equal(globalThis.focusedNode.dataset.eventId, "event");
+  globalThis.focusedNode.click();
+  const activeForm = find(panel._content, "form");
+  activeForm.elements.namedItem("calendar_entity").value = "calendar.family";
+  await panel.saveEdit(event, activeForm);
+  assert.match(find(activeForm, "p").textContent, /refresh before editing/);
+  assert.equal(globalThis.focusedNode, find(activeForm, "p"));
+  assert.equal(panel._content.querySelectorAll("button")[0].disabled, true);
+  assert.equal(panel._editingId, "event");
+  assert.equal(activeForm.elements.namedItem("start").disabled, false);
+  assert.equal(activeForm.elements.namedItem("start").required, true);
+  assert.equal(activeForm.elements.namedItem("start_date").disabled, true);
+  assert.equal(activeForm.elements.namedItem("start_date").required, false);
+  assert.deepEqual(requests.at(-1).service_data.expected_event, event);
+  assert.equal(requests.at(-1).service_data.calendar_entity, "calendar.family");
+  assert.equal(requests.at(-1).service_data.event.description, description);
+  stale = false;
+  let release;
+  const realCallWS = panel._hass.callWS;
+  panel._hass.callWS = request => request.service === "edit_pending_event" ?
+    new Promise(resolve => {release = () => resolve(realCallWS(request));}) : realCallWS(request);
+  const saving = panel.saveEdit(event, activeForm);
+  assert.equal(activeForm.elements.namedItem("description").disabled, true);
+  assert.equal(activeForm.elements.namedItem("calendar_entity").disabled, true);
+  assert.equal(panel._refreshButton.disabled, true);
+  siblingEdit.click();
+  assert.equal(panel._editingId, "event");
+  release();
+  await saving;
+  assert.equal(panel._editingId, null);
+  assert.equal(panel._detail.events[0].description, description);
+  assert.equal(panel._detail.events[0].calendar_entity, "calendar.family");
+  assert.equal(requests.at(-1).service, "get_pending");
+  assert.equal(globalThis.focusedNode.dataset.eventId, "event");
+});
+
+test("editor matches the card default date/time picker and preserves duration", async () => {
+  const panel = new DaylightImportPanel();
+  const timed = {id: "timed", title: "Dinner",
+    start: "2026-12-05T18:00:00-08:00", end: "2026-12-05T20:00:00-08:00",
+    all_day: false, status: "pending", confidence: 0.9};
+  const allDayEvent = {id: "all-day", title: "Trip",
+    start: "2026-12-10", end: "2026-12-13",
+    all_day: true, status: "pending", confidence: 0.8};
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    locale: {language: "en-US", time_format: "12"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") return {response: {pending: {
+        id: "one", events: [timed, allDayEvent],
+      }}};
+      return {response: {
+        pending_id: "one",
+        event: {...timed, ...request.service_data.event},
+      }};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "timed").click();
+  let form = find(panel._content, "form");
+  const start = form.elements.namedItem("start");
+  const end = form.elements.namedItem("end");
+  const startDate = form.elements.namedItem("start_date");
+  const endDate = form.elements.namedItem("end_date");
+  assert.equal(start.type, "datetime-local");
+  assert.equal(end.type, "datetime-local");
+  assert.equal(start.step, "60");
+  assert.equal(end.step, "60");
+  assert.equal(start.value, "2026-12-05T18:00");
+  assert.equal(end.value, "2026-12-05T20:00");
+  assert.equal(start.required, true);
+  assert.equal(end.required, true);
+  assert.equal(start.disabled, false);
+  assert.equal(startDate.type, "date");
+  assert.equal(endDate.type, "date");
+  assert.equal(startDate.required, false);
+  assert.equal(startDate.disabled, true);
+  assert.equal(form.querySelector(".timed-event-fields").hidden, false);
+  assert.equal(form.querySelector(".all-day-event-fields").hidden, true);
+
+  start.value = "2026-12-05T19:30";
+  start.change();
+  assert.equal(end.value, "2026-12-05T21:30");
+
+  const allDay = form.elements.namedItem("all_day");
+  allDay.checked = true;
+  allDay.change();
+  assert.equal(form.querySelector(".timed-event-fields").hidden, true);
+  assert.equal(form.querySelector(".all-day-event-fields").hidden, false);
+  assert.equal(start.disabled, true);
+  assert.equal(start.required, false);
+  assert.equal(startDate.disabled, false);
+  assert.equal(startDate.required, true);
+  form.elements.namedItem("start_date").value = "2026-12-24";
+  form.elements.namedItem("end_date").value = "2026-12-26";
+  await panel.saveEdit(timed, form);
+  const editCall = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(editCall.service_data.event.all_day, true);
+  assert.equal(editCall.service_data.event.start, "2026-12-24");
+  assert.equal(editCall.service_data.event.end, "2026-12-27");
+
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "all-day").click();
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("start_date").value, "2026-12-10");
+  assert.equal(form.elements.namedItem("end_date").value, "2026-12-12");
+  assert.equal(form.elements.namedItem("start").disabled, true);
+  assert.equal(form.elements.namedItem("start_date").disabled, false);
+});
+
+test("all-day toggles carry the currently edited range in both directions", async () => {
+  const panel = new DaylightImportPanel();
+  const timed = {
+    id: "timed-toggle",
+    title: "Dinner",
+    start: "2026-12-05T18:00:00-08:00",
+    end: "2026-12-05T20:00:00-08:00",
+    all_day: false,
+    status: "pending",
+    confidence: 0.9,
+  };
+  const allDayEvent = {
+    id: "all-day-toggle",
+    title: "Trip",
+    start: "2026-12-10",
+    end: "2026-12-13",
+    all_day: true,
+    status: "pending",
+    confidence: 0.8,
+  };
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") {
+        return {response: {pending: {id: "one", events: [timed, allDayEvent]}}};
+      }
+      return {response: {
+        pending_id: "one",
+        event: {
+          ...request.service_data.expected_event,
+          ...request.service_data.event,
+        },
+      }};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "timed-toggle").click();
+  let form = find(panel._content, "form");
+  let start = form.elements.namedItem("start");
+  let end = form.elements.namedItem("end");
+  let allDay = form.elements.namedItem("all_day");
+  start.value = "2026-12-24T19:30";
+  start.change();
+  assert.equal(end.value, "2026-12-24T21:30");
+
+  allDay.checked = true;
+  allDay.change();
+  assert.equal(form.elements.namedItem("start_date").value, "2026-12-24");
+  assert.equal(form.elements.namedItem("end_date").value, "2026-12-24");
+  await panel.saveEdit(timed, form);
+
+  let editCall = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(editCall.service_data.event.all_day, true);
+  assert.equal(editCall.service_data.event.start, "2026-12-24");
+  assert.equal(editCall.service_data.event.end, "2026-12-25");
+
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "all-day-toggle").click();
+  form = find(panel._content, "form");
+  const startDate = form.elements.namedItem("start_date");
+  const endDate = form.elements.namedItem("end_date");
+  startDate.value = "2026-12-24";
+  startDate.change();
+  assert.equal(endDate.value, "2026-12-26");
+
+  allDay = form.elements.namedItem("all_day");
+  allDay.checked = false;
+  allDay.change();
+  start = form.elements.namedItem("start");
+  end = form.elements.namedItem("end");
+  assert.equal(start.value, "2026-12-24T00:00");
+  assert.equal(end.value, "2026-12-27T00:00");
+
+  start.value = "2026-12-25T00:00";
+  start.change();
+  assert.equal(end.value, "2026-12-28T00:00");
+  await panel.saveEdit(allDayEvent, form);
+
+  editCall = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(editCall.service_data.event.all_day, false);
+  assert.equal(editCall.service_data.event.start, "2026-12-25T00:00:00-08:00");
+  assert.equal(editCall.service_data.event.end, "2026-12-28T00:00:00-08:00");
+});
+
+test("invalid active ranges block mode switches instead of exposing stale values", async () => {
+  const panel = new DaylightImportPanel();
+  const timed = {
+    id: "timed-invalid",
+    title: "Timed",
+    start: "2026-12-05T18:00:00-08:00",
+    end: "2026-12-05T20:00:00-08:00",
+    all_day: false,
+    status: "pending",
+    confidence: 1,
+  };
+  const allDayEvent = {
+    id: "all-day-invalid",
+    title: "All day",
+    start: "2026-12-10",
+    end: "2026-12-13",
+    all_day: true,
+    status: "pending",
+    confidence: 1,
+  };
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      if (request.service === "list_pending") return {response: {imports: []}};
+      return {response: {pending: {id: "one", events: [timed, allDayEvent]}}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "timed-invalid").click();
+  let form = find(panel._content, "form");
+  form.elements.namedItem("start").value = "2026-12-05T21:00";
+  form.elements.namedItem("end").value = "2026-12-05T20:00";
+  let allDay = form.elements.namedItem("all_day");
+  allDay.checked = true;
+  allDay.change();
+
+  assert.equal(allDay.checked, false);
+  assert.equal(form.querySelector(".timed-event-fields").hidden, false);
+  assert.equal(form.querySelector(".all-day-event-fields").hidden, true);
+  assert.match(find(form, "p").textContent, /after start/i);
+
+  panel._editingId = null;
+  panel.render();
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "all-day-invalid").click();
+  form = find(panel._content, "form");
+  form.elements.namedItem("start_date").value = "2026-12-26";
+  form.elements.namedItem("end_date").value = "2026-12-24";
+  allDay = form.elements.namedItem("all_day");
+  allDay.checked = false;
+  allDay.change();
+
+  assert.equal(allDay.checked, true);
+  assert.equal(form.querySelector(".timed-event-fields").hidden, true);
+  assert.equal(form.querySelector(".all-day-event-fields").hidden, false);
+  assert.match(find(form, "p").textContent, /fix the start and end dates/i);
+});
+
+test("timed editor preserves original offsets and follows the Home Assistant zone after edits", async () => {
+  const panel = new DaylightImportPanel();
+  let current = {id: "event", title: "DST test",
+    start: "2026-03-08T01:30:00-08:00", end: "2026-03-08T03:30:00-07:00",
+    all_day: false, status: "pending", confidence: 1};
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") return {response: {pending: {id: "one", events: [current]}}};
+      current = {...current, ...request.service_data.event};
+      return {response: {pending_id: "one", event: current}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event").click();
+  let form = find(panel._content, "form");
+  await panel.saveEdit(current, form);
+  let editCall = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(editCall.service_data.event.start, "2026-03-08T01:30:00-08:00");
+  assert.equal(editCall.service_data.event.end, "2026-03-08T03:30:00-07:00");
+
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event").click();
+  form = find(panel._content, "form");
+  form.elements.namedItem("start").value = "2026-03-08T04:30";
+  form.elements.namedItem("end").value = "2026-03-08T05:30";
+  await panel.saveEdit(current, form);
+  editCall = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(editCall.service_data.event.start, "2026-03-08T04:30:00-07:00");
+  assert.equal(editCall.service_data.event.end, "2026-03-08T05:30:00-07:00");
+});
+
+test("fixed-offset events preserve the entire range model during duration sync", async () => {
+  const panel = new DaylightImportPanel();
+  let current = {
+    id: "fixed",
+    title: "Fixed offset across DST",
+    start: "2026-03-07T10:00:00-08:00",
+    end: "2026-03-09T10:00:00-08:00",
+    all_day: false,
+    status: "pending",
+    confidence: 1,
+  };
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") {
+        return {response: {pending: {id: "one", events: [current]}}};
+      }
+      current = {...current, ...request.service_data.event};
+      return {response: {pending_id: "one", event: current}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "fixed").click();
+  const form = find(panel._content, "form");
+  const start = form.elements.namedItem("start");
+  const end = form.elements.namedItem("end");
+  start.value = "2026-03-09T10:00";
+  start.change();
+  assert.equal(end.value, "2026-03-11T10:00");
+
+  await panel.saveEdit(current, form);
+  const call = calls.findLast(request => request.service === "edit_pending_event");
+  assert.equal(call.service_data.event.start, "2026-03-09T10:00:00-08:00");
+  assert.equal(call.service_data.event.end, "2026-03-11T10:00:00-08:00");
+  assert.equal(
+    new Date(call.service_data.event.end) - new Date(call.service_data.event.start),
+    48 * 60 * 60 * 1000,
+  );
+});
+
+test("duration sync preserves the generated occurrence inside a fall-back fold", async () => {
+  const panel = new DaylightImportPanel();
+  let current = {
+    id: "event",
+    title: "Fold event",
+    start: "2026-11-01T01:30:00-07:00",
+    end: "2026-11-01T01:30:00-08:00",
+    all_day: false,
+    status: "pending",
+    confidence: 1,
+  };
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") {
+        return {response: {pending: {id: "one", events: [current]}}};
+      }
+      current = {...current, ...request.service_data.event};
+      return {response: {pending_id: "one", event: current}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event").click();
+
+  const form = find(panel._content, "form");
+  const start = form.elements.namedItem("start");
+  const end = form.elements.namedItem("end");
+  assert.equal(start.value, "2026-11-01T01:30");
+  assert.equal(end.value, "2026-11-01T01:30");
+
+  start.value = "2026-11-01T00:30";
+  start.change();
+  assert.equal(end.value, "2026-11-01T01:30");
+
+  const allDay = form.elements.namedItem("all_day");
+  allDay.checked = true;
+  allDay.change();
+  assert.equal(form.elements.namedItem("start_date").value, "2026-11-01");
+  assert.equal(form.elements.namedItem("end_date").value, "2026-11-01");
+  allDay.checked = false;
+  allDay.change();
+  assert.equal(start.value, "2026-11-01T00:30");
+  assert.equal(end.value, "2026-11-01T01:30");
+
+  await panel.saveEdit(current, form);
+
+  const editCall = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(editCall.service_data.event.start, "2026-11-01T00:30:00-07:00");
+  assert.equal(editCall.service_data.event.end, "2026-11-01T01:30:00-07:00");
+  assert.equal(
+    new Date(editCall.service_data.event.end).getTime() -
+      new Date(editCall.service_data.event.start).getTime(),
+    60 * 60 * 1000,
+  );
+});
+
+test("editor rejects nonexistent local DST times before sending a save request", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "DST gap",
+    start: "2026-03-08T01:30:00-08:00", end: "2026-03-08T03:30:00-07:00",
+    all_day: false, status: "pending", confidence: 1};
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      return {response: {pending: {id: "one", events: [event]}}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event").click();
+  const form = find(panel._content, "form");
+  form.elements.namedItem("start").value = "2026-03-08T02:30";
+  form.elements.namedItem("end").value = "2026-03-08T04:30";
+
+  await panel.saveEdit(event, form);
+
+  assert.equal(
+    calls.filter(call => call.service === "edit_pending_event").length,
+    0,
+  );
+  const error = find(form, "p");
+  assert.match(error.textContent, /does not exist/);
+  assert.equal(error.attributes.role, "alert");
+  assert.equal(globalThis.focusedNode, error);
+  assert.equal(panel._saving, false);
+
+  form.elements.namedItem("start").value = "2026-03-08T04:30";
+  form.elements.namedItem("end").value = "2026-03-08T05:30";
+  const retry = panel.saveEdit(event, form);
+  assert.equal(form.querySelector(".error"), null);
+  await retry;
+});
+
+test("focus falls back to the detail heading if the saved event disappears", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Meeting", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  let saved = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one",
+      events: saved ? [{...event, id: "sibling"}] : [event]}}};
+    saved = true;
+    return {response: {pending_id: "one", event}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event" &&
+      button.textContent === "Edit").click();
+  await panel.saveEdit(event, find(panel._content, "form"));
+  assert.equal(globalThis.focusedNode.tag, "h2");
+});
+
+test("a successful save with a failed detail reload offers refresh and restores focus", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Meeting", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  let reads = 0;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") {
+      if (++reads === 2) throw {message: "Offline"};
+      return {response: {pending: {id: "one", events: [event]}}};
+    }
+    return {response: {pending_id: "one", event}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "event" &&
+      button.textContent === "Edit").click();
+  await panel.saveEdit(event, find(panel._content, "form"));
+  assert.match(find(panel._content, "p").textContent, /saved, but the detail could not be reloaded: Offline/);
+  assert.equal(globalThis.focusedNode.textContent, "Back to inbox");
+});
+
+test("approval requires explicit confirmation and returns to the inbox", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events: [event]}}};
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "check_pending_event") return {response: {pending_id: "one", event_id: "event", matches: [], observed_calendars: []}};
+    return {response: {pending_id: "one", event_id: "event", approved: true}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  const approve = find(panel._content, "section").querySelectorAll("button")
+    .find(button => button.dataset.action === "approve" && button.dataset.eventId === "event");
+  approve.click();
+  assert.equal(globalThis.focusedNode.textContent, "Cancel");
+  assert.equal(calls.filter(call => call.service === "approve_pending_event").length, 0);
+  find(panel._content, "section").querySelectorAll("button")[1].click();
+  assert.equal(globalThis.focusedNode.dataset.action, "approve");
+  globalThis.focusedNode.click();
+  const confirm = find(panel._content, "section").querySelector("button");
+  assert.match(confirm.textContent, /Confirm approve/);
+  await flush(); // Automatic advisory observations finish before confirmation.
+  await panel.runDecision(event, "approve");
+  assert.equal(calls.at(-2).service, "approve_pending_event");
+  assert.deepEqual(calls.at(-2).service_data.expected_event, event);
+  assert.equal(panel._selectedId, null);
+  assert.equal(find(panel._announcement, "span").textContent, "Event approved");
+  assert.equal(globalThis.focusedNode, panel._refreshButton);
+});
+
+test("rejected decision keeps the import visible with the backend error", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  let reads = 0;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") {
+      reads++;
+      return {response: {pending: {id: "one", events: [event]}}};
+    }
+    throw {message: "Event changed since it was loaded; refresh before deciding"};
+  }};
+  await flush();
+  await panel.showImport("one");
+  find(panel._content, "section").querySelectorAll("button")
+    .find(button => button.textContent === "Reject").click();
+  await panel.runDecision(event, "reject");
+  assert.equal(reads, 2);
+  assert.match(find(panel._content, "p").textContent, /refresh before deciding/);
+  assert.equal(globalThis.focusedNode.attributes.role, "alert");
+  find(panel._content, "section").querySelectorAll("button")
+    .find(button => button.textContent === "Edit").click();
+  assert.equal(panel._decisionError, null);
+});
+
+test("bulk approval reports each result and leaves failed events in review", async () => {
+  const panel = new DaylightImportPanel();
+  const first = {id: "first", title: "Practice", start: "2026-10-01",
+    end: "2026-10-02", all_day: true, status: "pending", confidence: 0};
+  const second = {...first, id: "second"};
+  const calls = [];
+  let remaining = [first, second];
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "list_pending") return {response: {imports: [{id: "one"}]}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events: remaining}}};
+    if (request.service === "check_pending_event") return {response: {pending_id: "one", event_id: request.service_data.event_id, matches: [], observed_calendars: []}};
+    if (request.service === "approve_pending_event" && request.service_data.event_id === "second") {
+      throw {message: "Calendar write uncertain; verify before retrying"};
+    }
+    remaining = [second];
+    return {response: {pending_id: "one", event_id: "first", approved: true}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  const bulk = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.batchAction === "approve");
+  bulk.click();
+  assert.equal(globalThis.focusedNode.textContent, "Cancel bulk review");
+  assert.equal(calls.filter(call => call.service === "approve_pending_event").length, 0);
+  assert.equal(panel._content.querySelectorAll("button")
+    .some(button => button.textContent === "Edit"), false);
+  await flush(); // Automatic advisory observations finish before confirmation.
+  await panel.runBatch("approve");
+  const decisions = calls.filter(call => call.service === "approve_pending_event");
+  assert.deepEqual(decisions.map(call => call.service_data.event_id), ["first", "second"]);
+  assert.deepEqual(decisions.map(call => call.service_data.expected_event), [first, second]);
+  assert.deepEqual(panel._batchResults, [
+    {id: "first", title: "Practice", range: "2026-10-01", outcome: "success"},
+    {id: "second", title: "Practice", range: "2026-10-01",
+      outcome: "Approval outcome unknown; check the calendar before retrying. Calendar write uncertain; verify before retrying"},
+  ]);
+  assert.equal(panel._detail.events[0].id, "second");
+  assert.equal(globalThis.focusedNode.className, "batch-results");
+  assert.match(panel._content.querySelector(".batch-results").querySelectorAll("p")[0].textContent,
+    /event ID first/);
+  assert.match(panel._content.querySelector(".batch-results").querySelectorAll("p")[1].textContent,
+    /event ID second/);
+  assert.match(panel._content.querySelector(".batch-results").querySelector("h2").textContent,
+    /Bulk approve results for Import/);
+  panel.showInbox();
+  await flush();
+  assert.equal(panel._batchResults.length, 0);
+});
+
+test("bulk confirmation can be canceled without calling a review action", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "one", title: "One", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request.service);
+    return request.service === "get_pending" ? {response: {pending: {id: "import",
+      events: [event, {...event, id: "two", title: "Two"}]}}} : {response: {imports: []}};
+  }};
+  await flush();
+  await panel.showImport("import");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.batchAction === "reject").click();
+  panel._content.querySelectorAll("button")
+    .find(button => button.textContent === "Cancel bulk review").click();
+  assert.equal(panel._batchAction, null);
+  assert.equal(globalThis.focusedNode.dataset.batchAction, "reject");
+  assert.deepEqual(calls, ["list_pending", "get_pending"]);
+});
+
+test("view navigation exposes the current page and remains keyboard reachable", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => request.service === "list_pending" ?
+    {response: {imports: []}} : {response: {activity: []}}};
+  await flush();
+  const navigation = find(panel._content, "nav");
+  assert.equal(navigation.attributes["aria-label"], "Daylight views");
+  assert.equal(navigation.querySelectorAll("button")[0].attributes["aria-current"], "page");
+  assert.equal(navigation.querySelectorAll("button")[1].disabled, false);
+  navigation.querySelectorAll("button")[1].click();
+  await flush();
+  assert.equal(find(panel._content, "nav").querySelectorAll("button")[1].attributes["aria-current"], "page");
+  assert.equal(globalThis.focusedNode.textContent, "Review inbox");
+  find(panel._content, "nav").querySelectorAll("button")[0].click();
+  await flush();
+  assert.equal(find(panel._content, "nav").querySelectorAll("button")[0].attributes["aria-current"], "page");
+  assert.equal(globalThis.focusedNode.attributes["aria-label"], "Refresh");
+});
+
+test("primary navigation stays above status and content in every view", async () => {
+  const panel = new DaylightImportPanel();
+  const hass = {
+    user: {is_admin: true},
+    callWS: async request => {
+      if (request.type === "call_service" && request.service === "list_pending") return {response: {imports: [
+        {id: "one", title: "Birthday", created_at: "2026-10-05T21:51:00Z",
+          source_kind: "email", event_count: 1},
+      ]}};
+      if (request.type === "call_service" && request.service === "list_activity") return {response: {activity: [
+        {id: "two", title: "Soccer", status: "created", created_at: "2026-10-04T20:00:00Z"},
+      ]}};
+      if (request.type === "daylight_calendar_import/settings/get") return {
+        entry_id: "abc", ai_task_entity: "ai_task.google", calendar_entity: "calendar.family",
+        calendar_entities: ["calendar.family"], conflict_calendar_entities: ["calendar.family"],
+      };
+      throw new Error("Unexpected request: " + request.service);
+    },
+  };
+  const navigation = panel._navigation;
+  const announcement = panel._announcement;
+  const viewBody = panel._viewContent;
+  const checkTop = expected => {
+    // All three elements stay mounted in this order; only viewBody changes.
+    assert.deepEqual(panel._content.children, [navigation, announcement, viewBody]);
+    assert.equal(navigation.tag, "nav");
+    assert.equal(navigation.attributes["aria-label"], "Daylight views");
+    assert.notEqual(navigation.className, "actions");
+    assert.ok(viewBody.children.length > 0);
+    assert.equal(navigation.querySelectorAll("button")
+      .find(button => button.attributes["aria-current"] === "page").textContent, expected);
+  };
+  panel.hass = hass;
+  await flush();
+  checkTop("Review inbox");
+  assert.equal(find(panel._announcement, "span").textContent, "Inbox loaded");
+  const loadingActivity = panel.showActivity();
+  checkTop("Recent activity");
+  assert.equal(find(panel._announcement, "span").textContent, "Loading activity…");
+  await loadingActivity;
+  checkTop("Recent activity");
+  assert.equal(find(panel._announcement, "span").textContent, "Activity loaded");
+  const loadingSettings = panel.showSettings();
+  checkTop("Settings");
+  assert.equal(find(panel._announcement, "span").textContent, "Loading settings…");
+  await loadingSettings;
+  checkTop("Settings");
+  assert.equal(find(panel._content, "nav").querySelectorAll("button")[2].disabled, true);
+  await panel.showReview();
+  checkTop("Review inbox");
+});
+
+test("mobile buttons include padding in their full width and return focus stays put", async () => {
+  const panel = new DaylightImportPanel();
+  assert.match(find(panel.shadowRoot, "style").textContent, /button \{ box-sizing: border-box;/);
+  panel.hass = {callWS: async request => request.service === "list_pending" ?
+    {response: {imports: []}} : {response: {activity: []}}};
+  await flush();
+  await panel.showActivity();
+  let release;
+  panel.hass = {callWS: () => new Promise(resolve => {release = resolve;})};
+  const returning = panel.showReview();
+  assert.equal(globalThis.focusedNode, panel._refreshButton);
+  const other = find(panel._content, "nav").querySelectorAll("button")[1];
+  assert.equal(other.disabled, false);
+  other.focus();
+  panel.shadowRoot.activeElement = other;
+  release({response: {imports: []}});
+  await returning;
+  assert.equal(globalThis.focusedNode.textContent, "Recent activity");
+  assert.notEqual(globalThis.focusedNode, other);
+  assert.equal(find(panel._content, "nav").querySelectorAll("button")[1], globalThis.focusedNode);
+});
+
+test("failed source activity shows actionable retry guidance", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => request.service === "list_pending" ?
+    {response: {imports: []}} : request.service === "list_activity" ?
+      {response: {activity: [{id: "failed", status: "failed", title: "Submission",
+        created_at: "2026-10-01T12:00:00Z"}]}} :
+      {response: {activity: {id: "failed", status: "failed", title: "Submission",
+        guidance: "Check the configured AI Task and submit the source again.", transitions: []}}}};
+  await flush();
+  await panel.showActivity();
+  await panel.showActivity("failed");
+  assert.equal(panel._content.querySelectorAll("p").some(node =>
+    node.textContent.includes("submit the source again")), true);
+});
+
+
+test("activity renders email discovery processing duplicate and failure labels", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "list_activity") {
+      return {response: {activity: [
+        {id: "discover", title: "Email", status: "discovered",
+          created_at: "2026-10-03T12:00:00Z"},
+        {id: "processing", title: "School concert", status: "processing",
+          created_at: "2026-10-03T12:01:00Z"},
+        {id: "duplicate", title: "School concert", status: "duplicate",
+          created_at: "2026-10-03T12:02:00Z"},
+        {id: "failed", title: "Email", status: "failed",
+          created_at: "2026-10-03T12:03:00Z"},
+      ]}};
+    }
+    return {response: {activity: {
+      id: "discover", title: "Email", status: "discovered",
+      transitions: [
+        {type: "received", at: "2026-10-03T11:59:00Z", event_id: null},
+        {type: "discovered", at: "2026-10-03T12:00:00Z", event_id: null},
+        {type: "processing", at: "2026-10-03T12:00:01Z", event_id: null},
+        {type: "failed", at: "2026-10-03T12:00:02Z", event_id: null},
+      ],
+    }}};
+  }};
+  await flush();
+  await panel.showActivity();
+
+  const text = panel._content.querySelectorAll("p").map(node => node.textContent).join("\n");
+  assert.match(text, /Discovered/);
+  assert.match(text, /Processing/);
+  assert.match(text, /Duplicate/);
+  assert.match(text, /Failed/);
+
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.activityId === "discover").click();
+  await flush();
+  const detail = panel._content.querySelectorAll("li").map(node => node.textContent).join("\n");
+  assert.match(detail, /Discovered/);
+  assert.match(detail, /Processing/);
+  assert.match(detail, /Failed/);
+});
+
+
+test("admin can manage AI and calendars from native settings tabs", async () => {
+  const calls = [];
+  let current = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {
+      enabled: false,
+      host: "",
+      port: 993,
+      username: "",
+      password_configured: false,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.work": {
+        entity_id: "calendar.work", state: "off",
+        attributes: {friendly_name: "Work", supported_features: 1},
+      },
+      "calendar.read_only": {
+        entity_id: "calendar.read_only", state: "off",
+        attributes: {friendly_name: "Read only", supported_features: 0},
+      },
+    },
+    callWS: async message => {
+      calls.push(message);
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return current;
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        current = {
+          ...current,
+          ...Object.fromEntries(
+            ["ai_task_entity", "calendar_entity", "calendar_entities"]
+              .filter(key => message[key] !== undefined)
+              .map(key => [key, message[key]]),
+          ),
+        };
+        return current;
+      }
+      throw new Error(`Unexpected call: ${message.type}`);
+    },
+  };
+
+  const panel = new DaylightImportPanel();
+  panel.hass = hass;
+  await flush();
+  const settingsButton = panel._content.querySelectorAll("button")
+    .find(button => button.textContent === "Settings");
+  assert.ok(settingsButton);
+  settingsButton.click();
+  await flush();
+
+  assert.equal(find(panel._content, "h2").textContent, "General");
+  assert.equal(panel._content.querySelectorAll("nav")[0].querySelectorAll("button")[2]
+    .attributes["aria-current"], "page");
+  const generalForm = find(panel._content, "form");
+  const aiSelect = generalForm.elements.namedItem("ai_task_entity");
+  assert.equal(aiSelect.value, "ai_task.openai");
+  assert.deepEqual(aiSelect.children.map(option => option.value), [
+    "ai_task.google", "ai_task.openai",
+  ]);
+  aiSelect.value = "ai_task.google";
+  generalForm.submit({preventDefault() {}});
+  await flush();
+  assert.equal(current.ai_task_entity, "ai_task.google");
+  assert.equal(panel._settingsError, null);
+  assert.equal(panel._settings.calendar_entity, "calendar.family");
+  assert.deepEqual(panel._settings.calendar_entities, ["calendar.family", "calendar.work"]);
+  assert.equal(calls.at(-1).type, "daylight_calendar_import/settings/core/update");
+
+  const settingsTabs = panel._content.querySelector(".settings-tabs");
+  settingsTabs.querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+  assert.equal(find(panel._content, "h2").textContent, "Calendars");
+  const calendarForm = find(panel._content, "form");
+  const defaultSelect = calendarForm.elements.namedItem("calendar_entity");
+  assert.equal(defaultSelect.value, "calendar.family");
+  assert.equal(
+    defaultSelect.children.some(option => option.value === "calendar.read_only"),
+    false,
+  );
+  defaultSelect.value = "calendar.work";
+  for (const input of calendarForm.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.work";
+  }
+  calendarForm.submit({preventDefault() {}});
+  await flush();
+  assert.equal(current.calendar_entity, "calendar.work");
+  assert.deepEqual(current.calendar_entities, ["calendar.work"]);
+  assert.equal(current.ai_task_entity, "ai_task.google");
+  assert.equal(panel._settingsError, null);
+  assert.equal(find(panel._content, "h2").textContent, "Calendars");
+});
+
+test("non-admin panel does not expose native settings navigation", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: false},
+    callWS: async () => ({response: {imports: []}}),
+  };
+  await flush();
+
+  assert.equal(
+    panel._content.querySelectorAll("button")
+      .some(button => button.textContent === "Settings"),
+    false,
+  );
+});
+
+
+test("settings save failures focus an alert that is programmatically focusable", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {
+      enabled: false,
+      host: "",
+      port: 993,
+      username: "",
+      password_configured: false,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        throw new Error("Save rejected");
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  const form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+
+  const alert = panel._content.querySelector(".error");
+  assert.equal(alert.attributes.role, "alert");
+  assert.equal(alert.tabIndex, -1);
+  assert.equal(globalThis.focusedNode, alert);
+});
+
+test("settings calendar labels can shrink and wrap on narrow panels", () => {
+  const panel = new DaylightImportPanel();
+  const styles = find(panel.shadowRoot, "style").textContent;
+  assert.match(styles, /\.settings-card fieldset \{[\s\S]*?min-width: 0/);
+  assert.match(styles,
+    /\.settings-card fieldset label span \{[\s\S]*?min-width: 0;[\s\S]*?overflow-wrap: anywhere;/);
+});
+
+
+test("settings forms freeze every editable control while a save is pending", async () => {
+  let resolveSave;
+  const savePending = new Promise(resolve => { resolveSave = resolve; });
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {
+      enabled: false,
+      host: "",
+      port: 993,
+      username: "",
+      password_configured: false,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.work": {
+        entity_id: "calendar.work", state: "off",
+        attributes: {friendly_name: "Work", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "daylight_calendar_import/settings/core/update") return savePending;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  const form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  const saving = panel.saveGeneralSettings(form);
+  await flush();
+
+  const busyForm = find(panel._content, "form");
+  assert.equal(busyForm.attributes["aria-busy"], "true");
+  assert.equal(busyForm.elements.namedItem("ai_task_entity").disabled, true);
+  assert.equal(find(busyForm, "button").disabled, true);
+  assert.equal(
+    panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+      .every(button => button.disabled === true),
+    true,
+  );
+
+  resolveSave({...snapshot, ai_task_entity: "ai_task.google"});
+  await saving;
+
+  const savedForm = find(panel._content, "form");
+  assert.notEqual(savedForm.attributes["aria-busy"], "true");
+  assert.notEqual(savedForm.elements.namedItem("ai_task_entity").disabled, true);
+});
+
+test("calendar settings freeze select and checkboxes while saving", async () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {
+    states: {
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.work": {
+        entity_id: "calendar.work", state: "off",
+        attributes: {friendly_name: "Work", supported_features: 1},
+      },
+    },
+  };
+  panel._settings = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {},
+  };
+  panel._settingsTab = "calendars";
+  panel._settingsSaving = true;
+  panel._status = "ready";
+  panel._view = "settings";
+  panel.render();
+
+  const form = find(panel._content, "form");
+  assert.equal(form.attributes["aria-busy"], "true");
+  assert.equal(form.elements.namedItem("calendar_entity").disabled, true);
+  assert.equal(
+    form.querySelectorAll("input")
+      .filter(input => input.type === "checkbox")
+      .every(input => input.disabled === true),
+    true,
+  );
+  assert.equal(find(form, "button").disabled, true);
+});
+
+test("reload_failed refreshes persisted settings and keeps restart warning", async () => {
+  let persisted = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {
+      enabled: false,
+      host: "",
+      port: 993,
+      username: "",
+      password_configured: false,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  let failReload = true;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.work": {
+        entity_id: "calendar.work", state: "off",
+        attributes: {friendly_name: "Work", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return persisted;
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        persisted = {...persisted, ai_task_entity: message.ai_task_entity};
+        if (failReload) {
+          failReload = false;
+          throw {
+            code: "reload_failed",
+            message: "Settings were saved, but Daylight could not reload. Restart Home Assistant.",
+          };
+        }
+        return persisted;
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+
+  assert.equal(panel._settings.ai_task_entity, "ai_task.google");
+  assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
+  assert.equal(panel._settingsDrafts.general, null);
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("ai_task_entity").value, "ai_task.google");
+  assert.equal(
+    panel._content.querySelectorAll("p")
+      .some(node => /Restart Home Assistant/.test(node.textContent)),
+    true,
+  );
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+  assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
+  assert.equal(
+    panel._content.querySelectorAll("p")
+      .some(node => /Restart Home Assistant/.test(node.textContent)),
+    true,
+  );
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  form = find(panel._content, "form");
+  await panel.saveGeneralSettings(form);
+  assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
+});
+
+
+test("settings pending save exposes and focuses a busy status", async () => {
+  let resolveSave;
+  const pending = new Promise(resolve => { resolveSave = resolve; });
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "daylight_calendar_import/settings/core/update") return pending;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  const form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  const saving = panel.saveGeneralSettings(form);
+  await flush();
+
+  const status = panel._content.querySelector("[data-settings-saving]");
+  assert.ok(status);
+  assert.equal(status.attributes.role, "status");
+  assert.equal(status.tabIndex, -1);
+  assert.equal(globalThis.focusedNode, status);
+
+  resolveSave({...snapshot, ai_task_entity: "ai_task.google"});
+  await saving;
+});
+
+test("reload_failed keeps submitted patch when reconciliation also fails", async () => {
+  let getCount = 0;
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        getCount += 1;
+        if (getCount === 1) return snapshot;
+        throw new Error("Transient settings refresh failure");
+      }
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        throw {
+          code: "reload_failed",
+          message: "Settings were saved, but Daylight could not reload. Restart Home Assistant.",
+        };
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+
+  assert.equal(panel._settings.ai_task_entity, "ai_task.google");
+  assert.equal(panel._settingsDrafts.general, null);
+  assert.match(panel._settingsError, /Transient settings refresh failure/);
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("ai_task_entity").value, "ai_task.google");
+});
+
+test("new save error receives focus ahead of an older reload warning", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let updateCount = 0;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        return {...snapshot, ai_task_entity: "ai_task.google"};
+      }
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        updateCount += 1;
+        if (updateCount === 1) {
+          throw {
+            code: "reload_failed",
+            message: "Settings were saved, but Daylight could not reload. Restart Home Assistant.",
+          };
+        }
+        throw {code: "invalid_format", message: "Save rejected"};
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+  assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
+
+  form = find(panel._content, "form");
+  await panel.saveGeneralSettings(form);
+
+  const currentError = panel._content.querySelector("[data-settings-save-error]");
+  const oldWarning = panel._content.querySelector("[data-settings-reload-warning]");
+  assert.ok(currentError);
+  assert.ok(oldWarning);
+  assert.equal(globalThis.focusedNode, currentError);
+});
+
+test("successful changed save clears restart warning but no-op save preserves it", async () => {
+  let current = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let updateCount = 0;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return current;
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        updateCount += 1;
+        current = {...current, ai_task_entity: message.ai_task_entity};
+        if (updateCount === 1) {
+          throw {
+            code: "reload_failed",
+            message: "Settings were saved, but Daylight could not reload. Restart Home Assistant.",
+          };
+        }
+        return current;
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+  assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
+
+  form = find(panel._content, "form");
+  await panel.saveGeneralSettings(form);
+  assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
+
+  form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.openai";
+  await panel.saveGeneralSettings(form);
+  assert.equal(panel._settingsReloadWarning, null);
+});
+
+
+test("initial settings load immediately focuses and announces loading state", async () => {
+  let resolveSettings;
+  const pending = new Promise(resolve => { resolveSettings = resolve; });
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel._hass = {
+    user: {is_admin: true},
+    states: {},
+    callWS: async message => {
+      if (message.type === "daylight_calendar_import/settings/get") return pending;
+      throw new Error("Unexpected request");
+    },
+  };
+  panel._announcement.replaceChildren(Object.assign(new FakeNode("span"), {
+    textContent: "Inbox loaded",
+  }));
+
+  const loading = panel.showSettings();
+  const status = panel._content.querySelector("[data-settings-loading]");
+  assert.ok(status);
+  assert.equal(status.attributes.role, "status");
+  assert.equal(status.tabIndex, -1);
+  assert.equal(globalThis.focusedNode, status);
+  assert.equal(panel._announcement.children[0].textContent, "Loading settings…");
+
+  resolveSettings(snapshot);
+  await loading;
+
+  assert.deepEqual(panel._announcement.children, []);
+  assert.equal(find(panel._content, "h2").textContent, "General");
+});
+
+test("settings failure clears an earlier save announcement", async () => {
+  let updateCount = 0;
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        updateCount += 1;
+        if (updateCount === 1) {
+          return {...snapshot, ai_task_entity: "ai_task.google"};
+        }
+        throw new Error("Save rejected");
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+  assert.equal(panel._announcement.children[0].textContent, "General settings saved");
+
+  form = find(panel._content, "form");
+  await panel.saveGeneralSettings(form);
+
+  assert.deepEqual(panel._announcement.children, []);
+  assert.match(panel._settingsError, /Save rejected/);
+});
+
+test("calendar validation focuses current error ahead of restart warning", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.work": {
+        entity_id: "calendar.work", state: "off",
+        attributes: {friendly_name: "Work", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("calendars");
+  panel._settingsReloadWarning =
+    "Settings were saved, but Daylight could not reload. Restart Home Assistant.";
+  panel._announcement.replaceChildren(Object.assign(new FakeNode("span"), {
+    textContent: "Calendar settings saved",
+  }));
+  panel.render();
+
+  const form = find(panel._content, "form");
+  form.elements.namedItem("calendar_entity").value = "calendar.family";
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.work";
+  }
+  await panel.saveCalendarSettings(form);
+
+  const currentError = panel._content.querySelector("[data-settings-save-error]");
+  const oldWarning = panel._content.querySelector("[data-settings-reload-warning]");
+  assert.ok(currentError);
+  assert.ok(oldWarning);
+  assert.match(currentError.textContent, /default calendar must also be selected/);
+  assert.equal(globalThis.focusedNode, currentError);
+  assert.deepEqual(panel._announcement.children, []);
+});
+
+
+test("cached settings entry clears stale announcements without reloading", async () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {}};
+  panel._settings = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {},
+  };
+  panel._announcement.replaceChildren(Object.assign(new FakeNode("span"), {
+    textContent: "Inbox loaded",
+  }));
+
+  await panel.showSettings();
+
+  assert.deepEqual(panel._announcement.children, []);
+  assert.equal(find(panel._content, "h2").textContent, "General");
+  assert.equal(globalThis.focusedNode, find(panel._content, "h2"));
+});
+
+
+test("ambiguous connection loss reconciles a persisted settings patch", async () => {
+  let current = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let getCount = 0;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        getCount += 1;
+        return current;
+      }
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        current = {...current, ai_task_entity: message.ai_task_entity};
+        throw 3; // home-assistant-js-websocket ERR_CONNECTION_LOST
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  const form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+
+  assert.equal(getCount, 2);
+  assert.equal(panel._settings.ai_task_entity, "ai_task.google");
+  assert.equal(panel._settingsDrafts.general, null);
+  assert.equal(panel._settingsError, null);
+  assert.match(panel._settingsReloadWarning, /could not confirm that the integration reloaded/i);
+  assert.equal(panel._announcement.children[0].textContent, "General settings saved");
+  assert.equal(
+    globalThis.focusedNode,
+    panel._content.querySelector("[data-settings-reload-warning]"),
+  );
+});
+
+test("ambiguous connection loss keeps draft when server confirms no write", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.work": {
+        entity_id: "calendar.work", state: "off",
+        attributes: {friendly_name: "Work", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "daylight_calendar_import/settings/core/update") throw 3;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+
+  assert.equal(panel._settings.ai_task_entity, "ai_task.openai");
+  assert.deepEqual(panel._settingsDrafts.general, {ai_task_entity: "ai_task.google"});
+  assert.match(panel._settingsError, /Could not save general settings/);
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+  form = find(panel._content, "form");
+  form.elements.namedItem("calendar_entity").value = "calendar.family";
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.work";
+  }
+  await panel.saveCalendarSettings(form);
+  assert.ok(panel._settingsDrafts.calendars);
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("ai_task_entity").value, "ai_task.google");
+  assert.deepEqual(panel._settingsDrafts.general, {ai_task_entity: "ai_task.google"});
+});
+
+test("ambiguous connection loss retains draft when reconciliation also fails", async () => {
+  let getCount = 0;
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        getCount += 1;
+        if (getCount === 1) return snapshot;
+        throw 3;
+      }
+      if (message.type === "daylight_calendar_import/settings/core/update") throw 3;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+
+  assert.deepEqual(panel._settingsDrafts.general, {ai_task_entity: "ai_task.google"});
+  assert.match(panel._settingsError, /could not confirm whether the change was saved/i);
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("ai_task_entity").value, "ai_task.google");
+});
+
+test("coded Core save errors are definitive and skip reconciliation", async () => {
+  let getCount = 0;
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        getCount += 1;
+        return snapshot;
+      }
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        throw {code: "invalid_format", message: "Rejected by Home Assistant"};
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  const form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+
+  assert.equal(getCount, 1);
+  assert.match(panel._settingsError, /Rejected by Home Assistant/);
+  assert.deepEqual(panel._settingsDrafts.general, {ai_task_entity: "ai_task.google"});
+});
+
+
+test("successful save in one settings tab preserves another tab's unconfirmed draft", async () => {
+  let current = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let generalFailed = false;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.work": {
+        entity_id: "calendar.work", state: "off",
+        attributes: {friendly_name: "Work", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return current;
+      if (message.type === "daylight_calendar_import/settings/core/update") {
+        if (message.ai_task_entity !== undefined && !generalFailed) {
+          generalFailed = true;
+          throw 3;
+        }
+        current = {
+          ...current,
+          ...Object.fromEntries(
+            ["ai_task_entity", "calendar_entity", "calendar_entities"]
+              .filter(key => message[key] !== undefined)
+              .map(key => [key, message[key]]),
+          ),
+        };
+        return current;
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+  assert.deepEqual(panel._settingsDrafts.general, {ai_task_entity: "ai_task.google"});
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+  form = find(panel._content, "form");
+  form.elements.namedItem("calendar_entity").value = "calendar.work";
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.work";
+  }
+  await panel.saveCalendarSettings(form);
+
+  assert.equal(panel._settingsDrafts.calendars, null);
+  assert.deepEqual(panel._settingsDrafts.general, {ai_task_entity: "ai_task.google"});
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("ai_task_entity").value, "ai_task.google");
+});
+
+
+test("unsaved General selection survives settings tab switches", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  const ai = form.elements.namedItem("ai_task_entity");
+  ai.value = "ai_task.google";
+  ai.change();
+
+  assert.deepEqual(panel._settingsDrafts.general, {ai_task_entity: "ai_task.google"});
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("ai_task_entity").value, "ai_task.google");
+});
+
+test("unsaved Calendar selections survive settings tab switches", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.work": {
+        entity_id: "calendar.work", state: "off",
+        attributes: {friendly_name: "Work", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("calendars");
+
+  let form = find(panel._content, "form");
+  const defaultSelect = form.elements.namedItem("calendar_entity");
+  defaultSelect.value = "calendar.work";
+  defaultSelect.change();
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.work";
+    input.change();
+  }
+
+  assert.deepEqual(panel._settingsDrafts.calendars, {
+    calendar_entity: "calendar.work",
+    calendar_entities: ["calendar.work"],
+  });
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_entity").value, "calendar.work");
+  assert.deepEqual(
+    form.querySelectorAll("input")
+      .filter(input => input.checked)
+      .map(input => input.value),
+    ["calendar.work"],
+  );
+});
+
+test("settings refresh preserves unmatched local drafts", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "ai_task.google": {
+        entity_id: "ai_task.google", state: "idle",
+        attributes: {friendly_name: "Google", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  const ai = form.elements.namedItem("ai_task_entity");
+  ai.value = "ai_task.google";
+  ai.change();
+  await panel.showSettings("general", true);
+
+  assert.deepEqual(panel._settingsDrafts.general, {ai_task_entity: "ai_task.google"});
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("ai_task_entity").value, "ai_task.google");
+});
+
+test("unavailable writable calendar is preserved without becoming a new default option", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family", "calendar.work"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.work": {
+        entity_id: "calendar.work", state: "unavailable",
+        attributes: {friendly_name: "Work", supported_features: 1},
+      },
+      "calendar.new": {
+        entity_id: "calendar.new", state: "off",
+        attributes: {friendly_name: "New", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("calendars");
+
+  const form = find(panel._content, "form");
+  const defaultSelect = form.elements.namedItem("calendar_entity");
+  assert.equal(
+    defaultSelect.children.some(option => option.value === "calendar.work"),
+    false,
+  );
+  assert.equal(
+    defaultSelect.children.some(option => option.value === "calendar.new"),
+    true,
+  );
+  const workCheckbox = form.querySelectorAll("input")
+    .find(input => input.value === "calendar.work");
+  assert.ok(workCheckbox);
+  assert.equal(workCheckbox.checked, true);
+});
+
+test("unavailable current default remains preservable in the default picker", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "unavailable",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.new": {
+        entity_id: "calendar.new", state: "off",
+        attributes: {friendly_name: "New", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("calendars");
+
+  const form = find(panel._content, "form");
+  const defaultSelect = form.elements.namedItem("calendar_entity");
+  assert.equal(defaultSelect.value, "calendar.family");
+  assert.equal(
+    defaultSelect.children.some(option => option.value === "calendar.family"),
+    true,
+  );
+  assert.equal(
+    defaultSelect.children.some(option => option.value === "calendar.new"),
+    true,
+  );
+});
+
+
+test("unsaved AI draft remains visible if the selected entity becomes unavailable", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  const states = {
+    "ai_task.openai": {
+      entity_id: "ai_task.openai", state: "idle",
+      attributes: {friendly_name: "OpenAI", supported_features: 1},
+    },
+    "ai_task.google": {
+      entity_id: "ai_task.google", state: "idle",
+      attributes: {friendly_name: "Google", supported_features: 1},
+    },
+    "calendar.family": {
+      entity_id: "calendar.family", state: "off",
+      attributes: {friendly_name: "Family", supported_features: 1},
+    },
+  };
+  panel.hass = {
+    user: {is_admin: true},
+    states,
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings();
+
+  let form = find(panel._content, "form");
+  const ai = form.elements.namedItem("ai_task_entity");
+  ai.value = "ai_task.google";
+  ai.change();
+
+  states["ai_task.google"] = {
+    ...states["ai_task.google"],
+    state: "unavailable",
+  };
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Calendars").click();
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+
+  form = find(panel._content, "form");
+  const restored = form.elements.namedItem("ai_task_entity");
+  assert.equal(restored.value, "ai_task.google");
+  assert.equal(
+    restored.children.some(option => option.value === "ai_task.google"),
+    true,
+  );
+});
+
+
+test("admin can configure and disable Direct IMAP from native Email settings", async () => {
+  const calls = [];
+  let current = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {
+      enabled: true,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      calls.push(message);
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return current;
+      if (message.type === "daylight_calendar_import/settings/email/update") {
+        current = {
+          ...current,
+          notifications: {enabled: false, target: null, classes: []},
+          email: {
+            ...current.email,
+            enabled: message.enabled,
+            ...(message.enabled ? {
+              host: message.host,
+              port: message.port,
+              username: message.username,
+              password_configured:
+                current.email.password_configured || Boolean(message.password),
+              mailbox: message.mailbox,
+              verify_ssl: message.verify_ssl,
+            } : {}),
+          },
+        };
+        return current;
+      }
+      throw new Error(`Unexpected call: ${message.type}`);
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  assert.equal(find(panel._content, "h2").textContent, "Email");
+  assert.equal(
+    panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+      .some(button => button.textContent === "Email"),
+    true,
+  );
+
+  let form = find(panel._content, "form");
+  let fields = form.elements;
+  assert.equal(fields.namedItem("email_password").value, "");
+  assert.match(fields.namedItem("email_password").placeholder, /Configured/);
+  assert.equal(find(form, "fieldset").disabled, false);
+
+  fields.namedItem("email_host").value = "imap.new.test";
+  fields.namedItem("email_port").value = "1993";
+  fields.namedItem("email_username").value = "new@example.test";
+  fields.namedItem("email_mailbox").value = "Calendar";
+  fields.namedItem("email_verify_ssl").checked = false;
+  await panel.saveEmailSettingsForm(form);
+
+  const saved = calls.filter(call =>
+    call.type === "daylight_calendar_import/settings/email/update").at(-1);
+  assert.deepEqual(saved, {
+    type: "daylight_calendar_import/settings/email/update",
+    entry_id: "entry-1",
+    enabled: true,
+    host: "imap.new.test",
+    port: 1993,
+    username: "new@example.test",
+    password: "",
+    mailbox: "Calendar",
+    verify_ssl: false,
+    sender_allowlist: [],
+  });
+  assert.equal(panel._settings.email.host, "imap.new.test");
+  assert.equal(panel._settingsDrafts.email, null);
+
+  form = find(panel._content, "form");
+  fields = form.elements;
+  const enabled = fields.namedItem("email_enabled");
+  enabled.checked = false;
+  enabled.change();
+  assert.equal(find(form, "fieldset").disabled, true);
+  await panel.saveEmailSettingsForm(form);
+
+  const disabled = calls.filter(call =>
+    call.type === "daylight_calendar_import/settings/email/update").at(-1);
+  assert.deepEqual(disabled, {
+    type: "daylight_calendar_import/settings/email/update",
+    entry_id: "entry-1",
+    enabled: false,
+  });
+  assert.equal(panel._settings.email.enabled, false);
+  assert.equal(panel._settingsDrafts.email, null);
+});
+
+test("Email validation failure preserves enabled submitted values and replacement password", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {
+      enabled: false,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "daylight_calendar_import/settings/email/update") {
+        throw {
+          code: "invalid_auth",
+          message: "The IMAP server rejected the supplied credentials.",
+        };
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  let form = find(panel._content, "form");
+  let fields = form.elements;
+  fields.namedItem("email_enabled").checked = true;
+  fields.namedItem("email_enabled").change();
+  fields.namedItem("email_host").value = "imap.retry.test";
+  fields.namedItem("email_host").input();
+  fields.namedItem("email_port").value = "1993";
+  fields.namedItem("email_port").input();
+  fields.namedItem("email_username").value = "retry@example.test";
+  fields.namedItem("email_username").input();
+  fields.namedItem("email_password").value = "new-secret";
+  fields.namedItem("email_password").input();
+  fields.namedItem("email_mailbox").value = "Calendar";
+  fields.namedItem("email_mailbox").input();
+  fields.namedItem("email_verify_ssl").checked = false;
+  fields.namedItem("email_verify_ssl").change();
+
+  await panel.saveEmailSettingsForm(form);
+
+  assert.match(panel._settingsError, /rejected/);
+  assert.ok(panel._settingsDrafts.email);
+  form = find(panel._content, "form");
+  fields = form.elements;
+  assert.equal(fields.namedItem("email_enabled").checked, true);
+  assert.equal(find(form, "fieldset").disabled, false);
+  assert.equal(fields.namedItem("email_host").value, "imap.retry.test");
+  assert.equal(fields.namedItem("email_port").value, 1993);
+  assert.equal(fields.namedItem("email_username").value, "retry@example.test");
+  assert.equal(fields.namedItem("email_password").value, "new-secret");
+  assert.equal(fields.namedItem("email_mailbox").value, "Calendar");
+  assert.equal(fields.namedItem("email_verify_ssl").checked, false);
+  assert.equal(
+    globalThis.focusedNode,
+    panel._content.querySelector("[data-settings-save-error]"),
+  );
+});
+
+test("unsaved Email edits survive tab switches and settings refresh", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {
+      enabled: false,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  let form = find(panel._content, "form");
+  let fields = form.elements;
+  fields.namedItem("email_enabled").checked = true;
+  fields.namedItem("email_enabled").change();
+  fields.namedItem("email_host").value = "imap.unsaved.test";
+  fields.namedItem("email_host").input();
+  fields.namedItem("email_password").value = "unsaved-secret";
+  fields.namedItem("email_password").input();
+
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Email").click();
+
+  form = find(panel._content, "form");
+  fields = form.elements;
+  assert.equal(fields.namedItem("email_enabled").checked, true);
+  assert.equal(fields.namedItem("email_host").value, "imap.unsaved.test");
+  assert.equal(fields.namedItem("email_password").value, "unsaved-secret");
+
+  await panel.showSettings("email", true);
+  form = find(panel._content, "form");
+  fields = form.elements;
+  assert.equal(fields.namedItem("email_enabled").checked, true);
+  assert.equal(fields.namedItem("email_host").value, "imap.unsaved.test");
+  assert.equal(fields.namedItem("email_password").value, "unsaved-secret");
+});
+
+test("Email reload failure reflects persisted settings and clears replacement password draft", async () => {
+  let persisted = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {
+      enabled: true,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: false,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  let updateAttempted = false;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return persisted;
+      if (message.type === "daylight_calendar_import/settings/email/update") {
+        updateAttempted = true;
+        persisted = {
+          ...persisted,
+          notifications: {enabled: false, target: null, classes: []},
+          email: {
+            enabled: true,
+            host: message.host,
+            port: message.port,
+            username: message.username,
+            password_configured: true,
+            mailbox: message.mailbox,
+            verify_ssl: message.verify_ssl,
+          },
+        };
+        throw {
+          code: "reload_failed",
+          message: "Settings were saved, but Daylight could not reload. Restart Home Assistant.",
+        };
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("email_host").value = "imap.saved.test";
+  form.elements.namedItem("email_password").value = "saved-secret";
+  await panel.saveEmailSettingsForm(form);
+
+  assert.equal(updateAttempted, true);
+  assert.equal(panel._settings.email.host, "imap.saved.test");
+  assert.equal(panel._settings.email.password_configured, true);
+  assert.equal(panel._settingsDrafts.email, null);
+  assert.match(panel._settingsReloadWarning, /Restart Home Assistant/);
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("email_password").value, "");
+});
+
+test("ambiguous Email password replacement remains retryable when prior password existed", async () => {
+  let getCount = 0;
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {
+      enabled: true,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  let reconciled = snapshot;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        getCount += 1;
+        return getCount === 1 ? snapshot : reconciled;
+      }
+      if (message.type === "daylight_calendar_import/settings/email/update") {
+        reconciled = {
+          ...snapshot,
+          notifications: {enabled: false, target: null, classes: []},
+          email: {
+            ...snapshot.email,
+            host: message.host,
+            username: message.username,
+          },
+        };
+        throw 3;
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("email_host").value = "imap.maybe.test";
+  form.elements.namedItem("email_username").value = "maybe@example.test";
+  form.elements.namedItem("email_password").value = "replacement-secret";
+  await panel.saveEmailSettingsForm(form);
+
+  assert.equal(getCount, 2);
+  assert.match(panel._settingsError, /Could not save Direct IMAP settings/);
+  assert.ok(panel._settingsDrafts.email);
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("email_host").value, "imap.maybe.test");
+  assert.equal(form.elements.namedItem("email_password").value, "replacement-secret");
+});
+
+test("Email controls and settings subnav freeze while save is pending", async () => {
+  let resolveSave;
+  const pending = new Promise(resolve => { resolveSave = resolve; });
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {
+      enabled: true,
+      host: "imap.example.test",
+      port: 993,
+      username: "user@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "daylight_calendar_import/settings/email/update") return pending;
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  const form = find(panel._content, "form");
+  const saving = panel.saveEmailSettingsForm(form);
+  await flush();
+
+  const busyForm = find(panel._content, "form");
+  assert.equal(busyForm.attributes["aria-busy"], "true");
+  assert.equal(
+    busyForm.querySelectorAll("input").every(input => input.disabled === true),
+    true,
+  );
+  assert.equal(find(busyForm, "button").disabled, true);
+  assert.equal(
+    panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+      .every(button => button.disabled === true),
+    true,
+  );
+
+  resolveSave(snapshot);
+  await saving;
+});
+
+
+test("ambiguous IMAP disable confirms from enabled state only", async () => {
+  let getCount = 0;
+  const initial = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {
+      enabled: true,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const reconciled = {
+    ...initial,
+    notifications: {enabled: false, target: null, classes: []},
+    email: {...initial.email, enabled: false},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        getCount += 1;
+        return getCount === 1 ? initial : reconciled;
+      }
+      if (message.type === "daylight_calendar_import/settings/email/update") {
+        throw 3;
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  const form = find(panel._content, "form");
+  const fields = form.elements;
+  fields.namedItem("email_host").value = "imap.unsent.test";
+  fields.namedItem("email_host").input();
+  fields.namedItem("email_enabled").checked = false;
+  fields.namedItem("email_enabled").change();
+  await panel.saveEmailSettingsForm(form);
+
+  assert.equal(getCount, 2);
+  assert.equal(panel._settings.email.enabled, false);
+  assert.equal(panel._settingsDrafts.email, null);
+  assert.equal(panel._settingsError, null);
+  assert.match(panel._settingsReloadWarning, /could not confirm that the integration reloaded/i);
+});
+
+
+test("leaving Settings scrubs replacement passwords but keeps non-secret Email edits", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {
+      enabled: true,
+      host: "imap.old.test",
+      port: 993,
+      username: "old@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "call_service") {
+        return message.service === "list_activity" ?
+          {response: {activity: []}} :
+          {response: {imports: []}};
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  let form = find(panel._content, "form");
+  form.elements.namedItem("email_host").value = "imap.unsaved.test";
+  form.elements.namedItem("email_host").input();
+  form.elements.namedItem("email_password").value = "activity-secret";
+  form.elements.namedItem("email_password").input();
+
+  await panel.showActivity();
+
+  assert.equal(panel._settingsDrafts.email.host, "imap.unsaved.test");
+  assert.equal(panel._settingsDrafts.email.password, "");
+
+  await panel.showSettings("email");
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("email_host").value, "imap.unsaved.test");
+  assert.equal(form.elements.namedItem("email_password").value, "");
+
+  form.elements.namedItem("email_password").value = "review-secret";
+  form.elements.namedItem("email_password").input();
+  await panel.showReview();
+
+  assert.equal(panel._settingsDrafts.email.host, "imap.unsaved.test");
+  assert.equal(panel._settingsDrafts.email.password, "");
+
+  await panel.showSettings("email");
+  form = find(panel._content, "form");
+  const renderedPassword = form.elements.namedItem("email_password");
+  renderedPassword.value = "disconnect-secret";
+  renderedPassword.input();
+  panel.disconnectedCallback();
+
+  assert.equal(renderedPassword.value, "");
+  assert.equal(panel._settingsDrafts.email.host, "imap.unsaved.test");
+  assert.equal(panel._settingsDrafts.email.password, "");
+});
+
+test("leaving Settings drops an Email draft when password was the only edit", async () => {
+  const snapshot = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {
+      enabled: true,
+      host: "imap.example.test",
+      port: 993,
+      username: "user@example.test",
+      password_configured: true,
+      mailbox: "INBOX",
+      verify_ssl: true,
+    },
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "ai_task.openai": {
+        entity_id: "ai_task.openai", state: "idle",
+        attributes: {friendly_name: "OpenAI", supported_features: 1},
+      },
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      if (message.type === "call_service") return {response: {activity: []}};
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+
+  const form = find(panel._content, "form");
+  form.elements.namedItem("email_password").value = "abandoned-secret";
+  form.elements.namedItem("email_password").input();
+  assert.ok(panel._settingsDrafts.email);
+
+  await panel.showActivity();
+
+  assert.equal(panel._settingsDrafts.email, null);
+});
+
+test("routing tab saves aliases and read-only conflict calendar scope separately", async () => {
+  let current = {
+    entry_id: "entry-1",
+    ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"],
+    calendar_aliases: {},
+    conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const calls = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true},
+    states: {
+      "calendar.family": {
+        entity_id: "calendar.family", state: "off",
+        attributes: {friendly_name: "Family", supported_features: 1},
+      },
+      "calendar.busy": {
+        entity_id: "calendar.busy", state: "off",
+        attributes: {friendly_name: "Busy", supported_features: 0},
+      },
+    },
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return current;
+      if (message.type === "daylight_calendar_import/settings/calendar_intelligence/update") {
+        calls.push(message);
+        current = {...current, calendar_aliases: message.calendar_aliases,
+          conflict_calendar_entities: message.conflict_calendar_entities};
+        return current;
+      }
+      throw new Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value = "Kids = calendar.family";
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.busy";
+  }
+  await panel.saveRoutingSettings(form);
+  assert.deepEqual(calls[0], {
+    type: "daylight_calendar_import/settings/calendar_intelligence/update",
+    entry_id: "entry-1",
+    calendar_aliases: {Kids: "calendar.family"},
+    conflict_calendar_entities: ["calendar.busy"],
+  });
+  assert.deepEqual(panel._settings.calendar_aliases, {Kids: "calendar.family"});
+  assert.equal(panel._settingsDrafts.routing, null);
+});
+
+test("routing tab rejects aliases pointing to read-only calendars without saving", async () => {
+  const snapshot = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  const messages = [];
+  panel.hass = {
+    user: {is_admin: true}, states: {},
+    callWS: async message => {
+      messages.push(message.type);
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") return snapshot;
+      throw new Error("Unexpected update");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value = "Secret = calendar.private";
+  await panel.saveRoutingSettings(form);
+  assert.match(form.querySelector(".error").textContent, /writable calendar/);
+  assert.equal(messages.includes("daylight_calendar_import/settings/calendar_intelligence/update"), false);
+});
+
+test("routing aliases with equals and astral Unicode names are accepted by client", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {"Pickup=A": "calendar.family"},
+    conflict_calendar_entities: [],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let sent;
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+        sent = message;
+        current = {...current, calendar_aliases: message.calendar_aliases,
+          conflict_calendar_entities: message.conflict_calendar_entities};
+        return current;
+      }
+      throw Error("Unexpected call");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  assert.match(form.elements.namedItem("calendar_aliases").value, /Pickup=A/);
+  form.elements.namedItem("calendar_aliases").value =
+    `Pickup=A = calendar.family\n${"🎉".repeat(33)} = calendar.family`;
+  await panel.saveRoutingSettings(form);
+  assert.ok(sent);
+  assert.deepEqual(Object.keys(sent.calendar_aliases), ["Pickup=A", "🎉".repeat(33)]);
+});
+
+test("routing preserves unfinished text and conflict selection across tabs", async () => {
+  const snapshot = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.personal": {entity_id: "calendar.personal", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return snapshot;
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const textarea = form.elements.namedItem("calendar_aliases");
+  textarea.value = "Unfinished = ";
+  textarea.input();
+  for (const input of form.querySelectorAll("input")) {
+    if (input.value === "calendar.personal") {
+      input.checked = true;
+      input.change();
+    }
+  }
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Routing").click();
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value, "Unfinished = ");
+  assert.equal(form.querySelectorAll("input")
+    .find(input => input.value === "calendar.personal").checked, true);
+});
+
+test("routing lost response conservatively retains canonicalized alias draft", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+        current = {...current, calendar_aliases: {kids: "calendar.family"}};
+        throw Error("response lost after persistence");
+      }
+      throw Error("Unexpected call");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value = " Kids = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.deepEqual(panel._settingsDrafts.routing.calendar_aliases, {" Kids": "calendar.family"});
+  assert.ok(panel._settingsError);
+  assert.equal(panel._routingRawDraft.aliasesText, " Kids = calendar.family");
+  assert.deepEqual(panel._settings.calendar_aliases, {kids: "calendar.family"});
+});
+
+test("routing textarea is disabled while settings save is awaiting response", async () => {
+  let finish;
+  const pending = new Promise(resolve => {finish = resolve;});
+  const snapshot = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return snapshot;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) return pending;
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  find(panel._content, "textarea").value = "Kids = calendar.family";
+  const started = panel.saveRoutingSettings(find(panel._content, "form"));
+  assert.equal(find(panel._content, "textarea").disabled, true);
+  finish(snapshot);
+  await started;
+});
+
+test("routing save patches only changed settings fields and preserves special keys", async () => {
+  const snapshot = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: Object.fromEntries([["__proto__", "calendar.family"]]),
+    conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const calls = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off", attributes: {supported_features: 1}},
+    "calendar.readonly": {entity_id: "calendar.readonly", state: "off", attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return snapshot;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      calls.push(message);
+      return {...snapshot, ...message};
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  assert.match(form.elements.namedItem("calendar_aliases").value, /__proto__/);
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.readonly";
+  }
+  await panel.saveRoutingSettings(form);
+  assert.deepEqual(calls[0].conflict_calendar_entities, ["calendar.readonly"]);
+  assert.equal(Object.hasOwn(calls[0], "calendar_aliases"), false);
+
+  panel._settings = snapshot;
+  await panel.showSettings("routing");
+  form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value =
+    "__proto__ = calendar.family\nKids = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.equal(Object.hasOwn(calls[1], "conflict_calendar_entities"), false);
+  assert.equal(Object.hasOwn(calls[1].calendar_aliases, "__proto__"), true);
+  assert.equal(calls[1].calendar_aliases.__proto__, "calendar.family");
+});
+
+test("routing lost response does not guess the server Unicode normalization", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+        current = {...current, calendar_aliases: {"kids events": "calendar.family"}};
+        throw Error("response lost after persistence");
+      }
+      throw Error("Unexpected call");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value =
+    " Kids   Events = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.deepEqual(panel._settingsDrafts.routing.calendar_aliases,
+    {" Kids   Events": "calendar.family"});
+  assert.ok(panel._settingsError);
+  assert.deepEqual(panel._settings.calendar_aliases, {"kids events": "calendar.family"});
+});
+
+
+test("routing field scoping treats FEFF and Python-casefold differences as real edits", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {"a b": "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const sent = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent.push(message);
+      current = {...current, calendar_aliases: message.calendar_aliases};
+      return current;
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value = "a\uFEFFb = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].calendar_aliases, {"a\uFEFFb": "calendar.family"});
+
+  current = {...current, calendar_aliases: {"ἀι": "calendar.family"}};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  form.elements.namedItem("calendar_aliases").value = "ᾀ = calendar.family";
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent[1].calendar_aliases, {"ᾀ": "calendar.family"});
+});
+
+test("routing refresh clears a saved raw draft but retains unfinished text", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let textarea = find(panel._content, "textarea");
+  textarea.value = "Kids = calendar.family";
+  textarea.input();
+  assert.ok(panel._routingRawDraft);
+  current = {...current, calendar_aliases: {Kids: "calendar.family"}};
+  await panel.showSettings("routing", true);
+  assert.equal(panel._routingRawDraft, null);
+  assert.equal(panel._settingsDrafts.routing, null);
+
+  textarea = find(panel._content, "textarea");
+  textarea.value = "Unfinished = ";
+  textarea.input();
+  await panel.showSettings("routing", true);
+  assert.equal(panel._routingRawDraft.aliasesText, "Unfinished = ");
+  assert.equal(find(panel._content, "textarea").value, "Unfinished = ");
+});
+
+test("routing no-op save clears stale definitive error", async () => {
+  const current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let updates = 0;
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) updates++;
+    return current;
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  panel._settingsError = "Previous save rejected";
+  await panel.saveRoutingSettings(find(panel._content, "form"));
+  assert.equal(panel._settingsError, null);
+  assert.equal(updates, 0);
+});
+
+
+test("routing preserves FEFF-prefixed persisted alias when only conflicts change", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {"\uFEFFKids": "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let sent;
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent = message;
+      current = {...current, ...message};
+      return current;
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value,
+    "\uFEFFKids = calendar.family");
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value === "calendar.external";
+  }
+  await panel.saveRoutingSettings(form);
+  assert.equal(Object.hasOwn(sent, "calendar_aliases"), false);
+  assert.deepEqual(current.calendar_aliases, {"\uFEFFKids": "calendar.family"});
+});
+
+test("routing refresh keeps an alias-only edit but adopts concurrent conflict changes", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const sent = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent.push(message);
+      current = {...current, ...message};
+      return current;
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const aliasField = form.elements.namedItem("calendar_aliases");
+  aliasField.value = "Kids = calendar.family";
+  aliasField.input();
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+  assert.equal(panel._routingRawDraft.conflictsDirty, false);
+  current = {...current, conflict_calendar_entities: ["calendar.external"]};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  assert.equal(form.querySelectorAll("input").find(
+    input => input.value === "calendar.external").checked, true);
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].calendar_aliases, {Kids: "calendar.family"});
+  assert.equal(Object.hasOwn(sent[0], "conflict_calendar_entities"), false);
+});
+
+test("routing refresh keeps conflict-only edits but adopts concurrent alias changes", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {Old: "calendar.family"}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let sent;
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent = message;
+      current = {...current, ...message};
+      return current;
+    }
+    throw Error("Unexpected call");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const external = form.querySelectorAll("input").find(
+    input => input.value === "calendar.external");
+  external.checked = true;
+  external.change();
+  assert.equal(panel._routingRawDraft.aliasesDirty, false);
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+  current = {...current, calendar_aliases: {New: "calendar.family"}};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value, "New = calendar.family");
+  await panel.saveRoutingSettings(form);
+  assert.equal(Object.hasOwn(sent, "calendar_aliases"), false);
+  assert.deepEqual(new Set(sent.conflict_calendar_entities),
+    new Set(["calendar.family", "calendar.external"]));
+});
+
+
+test("routing reverted alias edit adopts newer remote aliases on refresh", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {Kids: "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const sent = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+        sent.push(message);
+        current = {...current, ...message};
+        return current;
+      }
+      throw Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  let input = form.elements.namedItem("calendar_aliases");
+  input.value = "Different = calendar.family";
+  input.input();
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+  input.value = "Kids = calendar.family";
+  input.input();
+  assert.equal(panel._routingRawDraft.aliasesDirty, false);
+
+  current = {...current, calendar_aliases: {Remote: "calendar.family"}};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value,
+    "Remote = calendar.family");
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 0);
+  assert.equal(panel._routingRawDraft, null);
+});
+
+test("routing reverted conflict selection adopts newer remote scope on refresh", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const sent = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      sent.push(message);
+      return {...current, ...message};
+    }
+    throw Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const extra = form.querySelectorAll("input").find(
+    input => input.value === "calendar.external");
+  extra.checked = true;
+  extra.change();
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+  extra.checked = false;
+  extra.change();
+  assert.equal(panel._routingRawDraft.conflictsDirty, false);
+
+  current = {...current, conflict_calendar_entities: ["calendar.external"]};
+  await panel.showSettings("routing", true);
+  form = find(panel._content, "form");
+  const refreshed = form.querySelectorAll("input").find(
+    input => input.value === "calendar.external");
+  assert.equal(refreshed.checked, true);
+  await panel.saveRoutingSettings(form);
+  assert.equal(sent.length, 0);
+});
+
+test("invalid routing alias text stays dirty even after an edit is reverted", async () => {
+  const current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      throw Error("Unexpected request");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  let field = find(panel._content, "textarea");
+  field.value = "Kids = calendar.family";
+  field.input();
+  field.value = "Incomplete = ";
+  field.input();
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+  await panel.showSettings("routing", true);
+  field = find(panel._content, "textarea");
+  assert.equal(field.value, "Incomplete = ");
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+});
+
+
+test("routing failed conflict-only save rebases untouched aliases from concurrent update", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {Old: "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let attempts = 0;
+  const payloads = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      payloads.push(message);
+      if (++attempts === 1) {
+        current = {...current, calendar_aliases: {Remote: "calendar.family"}};
+        throw new Error("Response lost before write");
+      }
+      current = {...current, ...message};
+      return current;
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const extra = form.querySelectorAll("input").find(
+    input => input.value === "calendar.external");
+  extra.checked = true;
+  extra.change();
+  assert.equal(panel._routingRawDraft.aliasesDirty, false);
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+  await panel.saveRoutingSettings(form);
+  assert.ok(panel._settingsError);
+  assert.equal(panel._routingRawDraft.aliasesText, "Remote = calendar.family");
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value,
+    "Remote = calendar.family");
+  await panel.saveRoutingSettings(form);
+  assert.equal(payloads.length, 2);
+  assert.equal(Object.hasOwn(payloads[1], "calendar_aliases"), false);
+  assert.deepEqual(new Set(payloads[1].conflict_calendar_entities),
+    new Set(["calendar.family", "calendar.external"]));
+  assert.deepEqual(current.calendar_aliases, {Remote: "calendar.family"});
+});
+
+test("routing failed alias-only save rebases untouched conflict scope before retry", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {},
+    conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  let attempts = 0;
+  const payloads = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      payloads.push(message);
+      if (++attempts === 1) {
+        current = {...current, conflict_calendar_entities: ["calendar.external"]};
+        throw new Error("Connection dropped before write");
+      }
+      current = {...current, ...message};
+      return current;
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const field = form.elements.namedItem("calendar_aliases");
+  field.value = "Kids = calendar.family";
+  field.input();
+  assert.equal(panel._routingRawDraft.conflictsDirty, false);
+  await panel.saveRoutingSettings(form);
+  assert.ok(panel._settingsError);
+  assert.deepEqual(panel._routingRawDraft.conflictCalendarEntities, ["calendar.external"]);
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+
+  form = find(panel._content, "form");
+  assert.equal(form.querySelectorAll("input").find(
+    input => input.value === "calendar.external").checked, true);
+  await panel.saveRoutingSettings(form);
+  assert.equal(payloads.length, 2);
+  assert.deepEqual(payloads[1].calendar_aliases, {Kids: "calendar.family"});
+  assert.equal(Object.hasOwn(payloads[1], "conflict_calendar_entities"), false);
+  assert.deepEqual(current.conflict_calendar_entities, ["calendar.external"]);
+});
+
+
+test("saving General rebases untouched routing aliases from the returned snapshot", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {Old: "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const routingUpdates = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "ai_task.openai": {entity_id: "ai_task.openai", state: "idle",
+      attributes: {friendly_name: "OpenAI", supported_features: 1}},
+    "ai_task.google": {entity_id: "ai_task.google", state: "idle",
+      attributes: {friendly_name: "Google", supported_features: 1}},
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/core/update")) {
+      current = {...current, ai_task_entity: message.ai_task_entity,
+        calendar_aliases: {Remote: "calendar.family"}};
+      return current;
+    }
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      routingUpdates.push(message);
+      current = {...current, ...message};
+      return current;
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let form = find(panel._content, "form");
+  const extra = form.querySelectorAll("input").find(x => x.value === "calendar.external");
+  extra.checked = true;
+  extra.change();
+  assert.equal(panel._routingRawDraft.aliasesDirty, false);
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+
+  await panel.showSettings("general");
+  form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+  assert.equal(panel._routingRawDraft.aliasesText, "Remote = calendar.family");
+  assert.equal(panel._routingRawDraft.conflictsDirty, true);
+
+  await panel.showSettings("routing");
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_aliases").value, "Remote = calendar.family");
+  await panel.saveRoutingSettings(form);
+  assert.equal(routingUpdates.length, 1);
+  assert.equal(Object.hasOwn(routingUpdates[0], "calendar_aliases"), false);
+  assert.deepEqual(current.calendar_aliases, {Remote: "calendar.family"});
+});
+
+test("ambiguous General save rebases untouched routing conflict selection", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const routingUpdates = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "ai_task.openai": {entity_id: "ai_task.openai", state: "idle",
+      attributes: {supported_features: 1}},
+    "ai_task.google": {entity_id: "ai_task.google", state: "idle",
+      attributes: {supported_features: 1}},
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/core/update")) {
+      current = {...current, conflict_calendar_entities: ["calendar.external"]};
+      throw new Error("Network disconnected before General settings persisted");
+    }
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      routingUpdates.push(message);
+      current = {...current, ...message};
+      return current;
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  let field = find(panel._content, "textarea");
+  field.value = "Kids = calendar.family";
+  field.input();
+  assert.equal(panel._routingRawDraft.conflictsDirty, false);
+
+  await panel.showSettings("general");
+  let form = find(panel._content, "form");
+  form.elements.namedItem("ai_task_entity").value = "ai_task.google";
+  await panel.saveGeneralSettings(form);
+  assert.ok(panel._settingsError);
+  assert.deepEqual(panel._routingRawDraft.conflictCalendarEntities,
+    ["calendar.external"]);
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+
+  await panel.showSettings("routing");
+  form = find(panel._content, "form");
+  assert.equal(form.querySelectorAll("input").find(x =>
+    x.value === "calendar.external").checked, true);
+  await panel.saveRoutingSettings(form);
+  assert.equal(routingUpdates.length, 1);
+  assert.deepEqual(routingUpdates[0].calendar_aliases, {Kids: "calendar.family"});
+  assert.equal(Object.hasOwn(routingUpdates[0], "conflict_calendar_entities"), false);
+});
+
+test("successful Email save also rebases an unfinished routing draft", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const routingUpdates = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/email/update")) {
+      current = {...current, calendar_aliases: {Remote: "calendar.family"}};
+      return current;
+    }
+    if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+      routingUpdates.push(message);
+      current = {...current, ...message};
+      return current;
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  const external = find(panel._content, "form").querySelectorAll("input")
+    .find(x => x.value === "calendar.external");
+  external.checked = true;
+  external.change();
+
+  await panel.showSettings("email");
+  await panel.saveEmailSettingsForm(find(panel._content, "form"));
+  assert.equal(panel._routingRawDraft.aliasesText, "Remote = calendar.family");
+
+  await panel.showSettings("routing");
+  await panel.saveRoutingSettings(find(panel._content, "form"));
+  assert.equal(routingUpdates.length, 1);
+  assert.equal(Object.hasOwn(routingUpdates[0], "calendar_aliases"), false);
+  assert.deepEqual(current.calendar_aliases, {Remote: "calendar.family"});
+});
+
+test("Email save-error recovery also rebases untouched routing selections", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "calendar.family": {entity_id: "calendar.family", state: "off",
+      attributes: {supported_features: 1}},
+    "calendar.external": {entity_id: "calendar.external", state: "off",
+      attributes: {supported_features: 0}},
+  }, callWS: async message => {
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type.endsWith("/settings/get")) return current;
+    if (message.type.endsWith("/settings/email/update")) {
+      current = {...current, conflict_calendar_entities: ["calendar.external"]};
+      throw new Error("Email save response unavailable");
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showSettings("routing");
+  const field = find(panel._content, "textarea");
+  field.value = "Kids = calendar.family";
+  field.input();
+
+  await panel.showSettings("email");
+  await panel.saveEmailSettingsForm(find(panel._content, "form"));
+  assert.deepEqual(panel._routingRawDraft.conflictCalendarEntities,
+    ["calendar.external"]);
+  assert.equal(panel._routingRawDraft.aliasesDirty, true);
+});
+
+
+test("unresolved calendar route requires a new explicit calendar choice", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Practice", start: "2026-10-11",
+    end: "2026-10-12", all_day: true, confidence: 0.9,
+    calendar_entity: "calendar.family", routing_unresolved: true, status: "pending"};
+  panel._detail = {id: "pending", default_calendar: "calendar.family",
+    allowed_calendars: ["calendar.family"], events: [event]};
+  const form = panel.editForm(event);
+  const selector = form.elements.namedItem("calendar_entity");
+  assert.equal(selector.value, "");
+  assert.equal(selector.required, true);
+  let writes = 0;
+  panel._hass = {config: {time_zone: "America/Los_Angeles"},
+    callWS: async () => { writes++; return {}; }};
+  await panel.saveEdit(event, form);
+  assert.equal(writes, 0);
+  assert.match(panel._editError, /Select and confirm a destination/);
+  selector.value = "calendar.family";
+  // The selected fallback is now an explicit decision, not merely a prefill.
+  assert.equal(selector.value, "calendar.family");
+});
+
+
+test("unresolved routing disables bulk approval but not rejection", () => {
+  const panel = new DaylightImportPanel();
+  panel._status = "ready";
+  panel._selectedId = "import";
+  const fields = {start: "2026-10-11", end: "2026-10-12", all_day: true,
+    status: "pending", confidence: 0.9, calendar_entity: "calendar.family"};
+  panel._detail = {id: "import", source_kind: "manual_text", source_text: "Practice",
+    events: [{...fields, id: "first", title: "A", routing_unresolved: true},
+      {...fields, id: "second", title: "B"}]};
+  panel.render();
+  const approve = panel._content.querySelectorAll("button").find(
+    button => button.dataset.batchAction === "approve");
+  const reject = panel._content.querySelectorAll("button").find(
+    button => button.dataset.batchAction === "reject");
+  assert.equal(approve.disabled, true);
+  assert.equal(reject.disabled, undefined);
+});
+
+
+test("routing settings reject an oversized conflict scope before saving", async () => {
+  const configured = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.test",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: false, host: "", port: 993, username: "",
+      password_configured: false, mailbox: "INBOX", verify_ssl: true},
+  };
+  const states = Object.fromEntries(Array.from({length: 16}, (_, i) =>
+    [`calendar.observed_${i}`, {
+      entity_id: `calendar.observed_${i}`, state: "off",
+      attributes: {friendly_name: `Room ${i}`, supported_features: 0},
+    }]));
+  const requests = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true}, states,
+    callWS: async request => {
+      requests.push(request);
+      if (request.type === "call_service") return {response: {imports: []}};
+      if (request.type === "daylight_calendar_import/settings/get") return configured;
+      throw new Error("Oversized scope must never be submitted");
+    },
+  };
+  await flush();
+  await panel.showSettings("routing");
+  const form = find(panel._content, "form");
+  for (const input of form.querySelectorAll("input")) {
+    input.checked = input.value.startsWith("calendar.observed_");
+  }
+  await panel.saveRoutingSettings(form);
+  assert.match(form.querySelector(".error").textContent, /at most 15 conflict calendars/);
+  assert.equal(requests.some(request => request.type.includes("/update")), false);
+});
+
+test("conflict intervals show all-day dates and HA-preferred timed overlap context", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {locale: {language: "en-US", time_format: "24"},
+    config: {time_zone: "America/Los_Angeles"}};
+  const section = document.createElement("section");
+  const match = {kind: "conflict", existing_title: "<private title>",
+    calendar_entity: "calendar.family", existing_start: "2026-11-01",
+    existing_end: "2026-11-03", existing_all_day: true,
+    overlap_start: "2026-11-01T01:30:00-07:00", overlap_end: "2026-11-01T01:45:00-08:00"};
+  panel.renderCalendarCheckDetails(section, {status: "ready", matches: [match]});
+  const item = section.querySelector("li");
+  assert.equal(item.textContent, "Scheduling conflict: <private title> (calendar.family)");
+  assert.deepEqual(item.querySelectorAll("p").map(node => node.textContent), [
+    "Existing event: 2026-11-01 – 2026-11-02 (all day)",
+    "Overlaps: Nov 1, 2026 · 01:30 (PDT) – 01:45 (PST)",
+  ]);
+  panel._hass.locale.time_format = "12";
+  panel.renderCalendarCheckDetails(section, {status: "ready", matches: [{...match,
+    existing_start: "2026-11-01T01:00:00-07:00", existing_end: "2026-11-01T02:00:00-08:00",
+    existing_all_day: false}]});
+  assert.deepEqual(section.querySelector("li").querySelectorAll("p").map(node => node.textContent), [
+    "Existing event: Nov 1, 2026 · 1 AM (PDT) – 2 AM (PST)",
+    "Overlaps: Nov 1, 2026 · 1:30 AM (PDT) – 1:45 AM (PST)",
+  ]);
+  panel._hass.locale.time_format = "24";
+  panel._hass.config.time_zone = "Pacific/Kiritimati";
+  panel.renderCalendarCheckDetails(section, {status: "ready", matches: [{...match,
+    existing_start: "9999-12-31T09:00:00+00:00", existing_end: "9999-12-31T11:00:00+00:00",
+    existing_all_day: false,
+    overlap_start: "9999-12-31T09:00:00+00:00", overlap_end: "9999-12-31T11:00:00+00:00"}]});
+  assert.deepEqual(section.querySelector("li").querySelectorAll("p").map(node => node.textContent), [
+    "Existing event: Dec 31, 9999 · 09:00–11:00 (UTC)",
+    "Overlaps: Dec 31, 9999 · 09:00–11:00 (UTC)",
+  ]);
+});
+
+test("on-demand calendar check renders classified matches without changing review state", async () => {
+  const event = {id: "event-1", title: "School", start: "2026-10-12",
+    end: "2026-10-13", all_day: true, status: "pending", calendar_entity: "calendar.family"};
+  const requests = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    requests.push(request);
+    if (request.service === "list_pending") return {response: {imports: [{id: "import-1"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "import-1", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return {response: {
+      pending_id: "import-1", event_id: "event-1",
+      observed_calendars: ["calendar.family"],
+      matches: [{kind: "exact_duplicate", calendar_entity: "calendar.family",
+        existing_title: "School"}, {kind: "conflict",
+        calendar_entity: "calendar.family", existing_title: "Dentist"}]}};
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("import-1");
+  const button = panel._content.querySelectorAll("button").find(
+    item => item.dataset.calendarCheckEventId === "event-1");
+  assert.equal(button.textContent, "Check calendars");
+  assert.equal(requests.some(item => item.service === "check_pending_event"), false);
+  await panel.checkCalendarEvent(event);
+  const results = panel._content.querySelector(".calendar-matches");
+  assert.ok(results);
+  assert.deepEqual(results.querySelectorAll("li").map(item => item.textContent), [
+    "Exact duplicate: School (calendar.family)",
+    "Scheduling conflict: Dentist (calendar.family)",
+  ]);
+  assert.equal(panel._detail.events[0].status, "pending");
+  assert.deepEqual(requests.find(item => item.service === "check_pending_event").service_data,
+    {pending_id: "import-1", event_id: "event-1", expected_event: event});
+});
+
+test("failed and stale calendar checks never masquerade as current results", async () => {
+  const event = {id: "event-1", title: "A", start: "2026-10-12",
+    end: "2026-10-13", all_day: true, status: "pending"};
+  let release;
+  let failed = true;
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "import-1"}]}};
+    if (request.service === "get_pending") return {response: {
+      pending: {id: "import-1", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") {
+      if (failed) throw new Error("Provider unavailable");
+      return new Promise(resolve => {release = resolve;});
+    }
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("import-1");
+  await panel.checkCalendarEvent(event);
+  const error = panel._content.querySelector(".calendar-matches").querySelector(".error");
+  assert.match(error.textContent, /Calendar check incomplete: Provider unavailable/);
+  assert.equal(error.attributes.role, "alert");
+  failed = false;
+  const check = panel.checkCalendarEvent(event);
+  const loading = panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "event-1");
+  assert.equal(loading.disabled, undefined);
+  assert.equal(loading.attributes["aria-disabled"], "true");
+  panel._detail = {...panel._detail, events: [{...event, title: "Edited"}]};
+  panel.render();
+  release({response: {pending_id: "import-1", event_id: "event-1",
+    matches: [], observed_calendars: ["calendar.family"]}});
+  await check;
+  assert.equal(panel._content.querySelector(".calendar-matches"), null);
+});
+
+test("keyboard calendar checks preserve button focus and announce the result", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending", calendar_entity: "calendar.family"};
+  let resolveCheck;
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return new Promise(resolve => {
+      resolveCheck = resolve;
+    });
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  const button = panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1");
+  panel.shadowRoot.activeElement = button; // Simulate focus in the shadow root.
+  const pending = panel.checkCalendarEvent(event);
+  const loadingButton = panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1");
+  assert.equal(globalThis.focusedNode, loadingButton);
+  assert.equal(loadingButton.attributes["aria-disabled"], "true");
+  assert.equal(loadingButton.attributes["aria-busy"], "true");
+  assert.match(panel._announcement.children[0].textContent, /Checking selected calendars/);
+  panel.shadowRoot.activeElement = loadingButton;
+  resolveCheck({response: {pending_id: "imp", event_id: "e1",
+    matches: [{kind: "possible_duplicate", calendar_entity: "calendar.family",
+      existing_title: "Dinner"}], observed_calendars: ["calendar.family"]}});
+  await pending;
+  assert.equal(globalThis.focusedNode, panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1"));
+  assert.equal(globalThis.focusedNode.attributes["aria-disabled"], undefined);
+  assert.equal(globalThis.focusedNode.attributes["aria-busy"], undefined);
+  assert.match(panel._announcement.children[0].textContent, /found 1 match/);
+  assert.equal(panel._content.querySelector(".calendar-matches").attributes.role, "region");
+});
+
+test("calendar check completion never replaces an in-progress edit", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending"};
+  let resolveCheck;
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return new Promise(resolve => {
+      resolveCheck = resolve;
+    });
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  const pending = panel.checkCalendarEvent(event);
+  const edit = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "e1" &&
+      button.textContent === "Edit");
+  edit.click();
+  const form = find(panel._content, "form");
+  form.elements.namedItem("title").value = "Important unsaved edit";
+  resolveCheck({response: {pending_id: "imp", event_id: "e1",
+    matches: [], observed_calendars: ["calendar.family"]}});
+  await pending;
+  assert.equal(find(panel._content, "form"), form);
+  assert.equal(form.elements.namedItem("title").value, "Important unsaved edit");
+  assert.equal(panel._calendarCheck, null);
+});
+
+test("calendar check completion doesn't steal focus after moving elsewhere", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending"};
+  let resolveCheck;
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return new Promise(resolve => {
+      resolveCheck = resolve;
+    });
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  const button = panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1");
+  panel.shadowRoot.activeElement = button;
+  const pending = panel.checkCalendarEvent(event);
+  const back = panel._content.querySelectorAll("button")
+    .find(item => item.textContent === "Back to inbox");
+  panel.shadowRoot.activeElement = back;
+  globalThis.focusedNode = back;
+  resolveCheck({response: {pending_id: "imp", event_id: "e1",
+    matches: [], observed_calendars: ["calendar.family"]}});
+  await pending;
+  assert.equal(globalThis.focusedNode, back);
+  assert.equal(panel._content.querySelectorAll("button").includes(back), true);
+  assert.match(panel._announcement.children[0].textContent, /no matches/);
+});
+
+test("inbox refresh invalidates a pending calendar check and allows a fresh check", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending"};
+  const checks = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return new Promise(resolve => {
+      checks.push(resolve);
+    });
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  const original = panel.checkCalendarEvent(event);
+  assert.equal(panel._calendarCheck.status, "loading");
+  await panel.refresh();
+  assert.equal(panel._calendarCheck, null);
+  const button = panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1");
+  assert.equal(button.attributes["aria-disabled"], undefined);
+
+  await panel.checkCalendarEvent(event);
+  assert.equal(checks.length, 1, "refresh cannot release an outstanding transport");
+  assert.equal(panel._calendarCheck.status, "error");
+  assert.match(panel._calendarCheck.message, /previous calendar check is still running/);
+  checks[0]({response: {pending_id: "imp", event_id: "e1",
+    matches: [{kind: "conflict", calendar_entity: "calendar.family",
+      existing_title: "Stale result"}], observed_calendars: ["calendar.family"]}});
+  await original;
+  assert.equal(panel._calendarCheck.status, "error");
+  assert.equal(panel._content.querySelector(".calendar-matches")
+    .querySelectorAll("li").length, 0);
+  const freshCheck = panel.checkCalendarEvent(event);
+  assert.equal(checks.length, 2);
+  checks[1]({response: {pending_id: "imp", event_id: "e1",
+    matches: [], observed_calendars: ["calendar.family"]}});
+  await freshCheck;
+  assert.equal(panel._calendarCheck.status, "ready");
+  assert.match(panel._announcement.children[0].textContent, /no matches/);
+  assert.equal(panel._content.querySelectorAll("button")
+    .find(item => item.dataset.calendarCheckEventId === "e1")
+    .attributes["aria-disabled"], undefined);
+});
+
+test("calendar checks work with real-browser-style NodeLists without find", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending"};
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") return {response: {
+      pending_id: "imp", event_id: "e1", matches: [],
+      observed_calendars: ["calendar.family"]}};
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  const originalQuery = panel._content.querySelectorAll.bind(panel._content);
+  // Simulate a real NodeList: iterable with length and indexed access but no find.
+  panel._content.querySelectorAll = selector => {
+    const nodes = originalQuery(selector);
+    if (selector !== "button") return nodes;
+    return Object.assign(
+      {length: nodes.length, [Symbol.iterator]: function* () {yield* nodes;}},
+      Object.fromEntries(nodes.map((node, index) => [index, node])),
+    );
+  };
+  const button = originalQuery("button").find(item => item.dataset.calendarCheckEventId === "e1");
+  panel.shadowRoot.activeElement = button;
+  await panel.checkCalendarEvent(event);
+  assert.equal(panel._calendarCheck.status, "ready");
+  assert.match(panel._announcement.children[0].textContent, /no matches/);
+  assert.equal(globalThis.focusedNode.dataset.calendarCheckEventId, "e1");
+  assert.equal(globalThis.focusedNode.attributes["aria-busy"], undefined);
+});
+
+test("calendar observation errors appear once in the results and live announcement", async () => {
+  const event = {id: "e1", title: "Dinner", start: "2026-10-12", end: "2026-10-13",
+    all_day: true, status: "pending"};
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "imp"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "imp", source_kind: "manual_text", events: [event]}}};
+    if (request.service === "check_pending_event") {
+      throw new Error("Calendar check incomplete: Calendar observation is unavailable");
+    }
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("imp");
+  await panel.checkCalendarEvent(event);
+  const message = "Calendar check incomplete: Calendar observation is unavailable";
+  assert.equal(panel._content.querySelector(".calendar-matches").querySelector(".error").textContent,
+    message);
+  assert.equal(panel._announcement.children[0].textContent, message);
+});
+
+test("checks across multiple events are single-flight and re-enable all controls", async () => {
+  const a = {id: "event-a", title: "School", start: "2026-10-12",
+    end: "2026-10-13", all_day: true, status: "pending"};
+  const b = {...a, id: "event-b", title: "Soccer"};
+  const resolves = [];
+  const requests = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "import"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "import", source_kind: "manual_text", events: [a, b]}}};
+    if (request.service === "check_pending_event") {
+      requests.push(request);
+      return new Promise(resolve => resolves.push(resolve));
+    }
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("import");
+  const control = id => panel._content.querySelectorAll("button")
+    .find(button => button.dataset.calendarCheckEventId === id);
+  const pendingA = panel.checkCalendarEvent(a);
+  assert.equal(requests.length, 1);
+  assert.equal(control("event-a").attributes["aria-disabled"], "true");
+  assert.equal(control("event-a").attributes["aria-busy"], "true");
+  assert.equal(control("event-b").attributes["aria-disabled"], "true");
+  assert.equal(control("event-b").attributes["aria-busy"], undefined);
+  // Both direct invocation and user interaction must reject duplicate work.
+  control("event-b").click();
+  await panel.checkCalendarEvent(b);
+  await panel.checkCalendarEvent(a);
+  assert.equal(requests.length, 1);
+  resolves[0]({response: {pending_id: "import", event_id: "event-a",
+    observed_calendars: ["calendar.family"], matches: [{
+      kind: "exact_duplicate", calendar_entity: "calendar.family", existing_title: "School",
+    }]}});
+  await pendingA;
+  assert.equal(panel._calendarCheck.event, a);
+  assert.equal(panel._calendarCheck.status, "ready");
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("li").textContent,
+    /Exact duplicate: School/);
+  assert.equal(control("event-a").attributes["aria-disabled"], undefined);
+  assert.equal(control("event-b").attributes["aria-disabled"], undefined);
+
+  const pendingB = panel.checkCalendarEvent(b);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].service_data.event_id, "event-b");
+  resolves[1]({response: {pending_id: "import", event_id: "event-b",
+    observed_calendars: ["calendar.family"], matches: []}});
+  await pendingB;
+  assert.equal(panel._calendarCheck.event, b);
+  assert.equal(panel._calendarCheck.status, "ready");
+  assert.equal(control("event-a").attributes["aria-disabled"], undefined);
+  assert.equal(control("event-b").attributes["aria-disabled"], undefined);
+  assert.match(panel._announcement.children[0].textContent, /no matches/);
+});
+
+test("failed calendar checks re-enable other events for retry", async () => {
+  const a = {id: "a", title: "Event A", start: "2026-10-12",
+    end: "2026-10-13", all_day: true, status: "pending"};
+  const b = {...a, id: "b", title: "Event B"};
+  let rejectRead;
+  let attempts = 0;
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "one"}]}};
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "one", source_kind: "manual_text", events: [a, b]}}};
+    if (request.service === "check_pending_event") {
+      attempts++;
+      if (attempts === 1) return new Promise((_resolve, reject) => {rejectRead = reject;});
+      return {response: {pending_id: "one", event_id: "b",
+        observed_calendars: ["calendar.family"], matches: []}};
+    }
+    throw new Error("Unexpected service");
+  }};
+  await flush();
+  await panel.showImport("one");
+  const first = panel.checkCalendarEvent(a);
+  rejectRead(new Error("Calendar check incomplete: Temporarily unavailable"));
+  await first;
+  assert.equal(panel._calendarCheck.status, "error");
+  const secondButton = panel._content.querySelectorAll("button")
+    .find(button => button.dataset.calendarCheckEventId === "b");
+  assert.equal(secondButton.attributes["aria-disabled"], undefined);
+  await panel.checkCalendarEvent(b);
+  assert.equal(attempts, 2);
+  assert.equal(panel._calendarCheck.status, "ready");
+});
+
+
+test("bulk approval never infers write certainty from preflight-looking error text", async () => {
+  const panel = new DaylightImportPanel();
+  const first = {id: "first", title: "Practice", start: "2026-10-01",
+    end: "2026-10-02", all_day: true, status: "pending", confidence: 0};
+  const second = {...first, id: "second"};
+  let remaining = [first, second];
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: [{id: "one"}]}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events: remaining}}};
+    if (request.service === "approve_pending_event") {
+      if (request.service_data.event_id === "first") {
+        remaining = [second];
+        return {response: {pending_id: "one", event_id: "first", approved: true}};
+      }
+      throw {message: "Approval rejected before calendar write: " +
+        "Exact duplicate already exists on the destination calendar"};
+    }
+    throw new Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.batchAction === "approve").click();
+  await flush(); // Automatic advisory observations finish before confirmation.
+  await panel.runBatch("approve");
+  assert.equal(panel._batchResults[0].outcome, "success");
+  assert.equal(panel._batchResults[1].outcome,
+    "Approval outcome unknown; check the calendar before retrying. " +
+    "Approval rejected before calendar write: " +
+    "Exact duplicate already exists on the destination calendar");
+  assert.match(panel._batchResults[1].outcome, /outcome unknown/i);
+  assert.equal(panel._detail.events.length, 1);
+  assert.equal(panel._detail.events[0].id, "second");
+});
+
+
+test("provider echoes preflight marker after write; bulk approval stays uncertain", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "post-write", title: "Approval rejected before calendar write: " +
+    "tricky provider text", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", confidence: 0};
+  const first = {...event, id: "first", title: "Unrelated safe event"};
+  const written = {...event, status: "write_uncertain", write_attempt: "attempt-123"};
+  let current = [first, event];
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") {
+      return {response: {imports: [{id: "pending-1"}]}};
+    }
+    if (request.service === "get_pending") {
+      return {response: {pending: {id: "pending-1", events: current}}};
+    }
+    if (request.service === "approve_pending_event") {
+      if (request.service_data.event_id === "first") {
+        current = [event];
+        return {response: {pending_id: "pending-1", event_id: "first", approved: true}};
+      }
+      current = [written]; // The durable checkpoint committed before provider failure.
+      throw {message: `Calendar provider failed: ${event.title}`};
+    }
+    throw Error("Unexpected request");
+  }};
+  await flush();
+  await panel.showImport("pending-1");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.batchAction === "approve").click();
+  await flush(); // Automatic advisory observations finish before confirmation.
+  await panel.runBatch("approve");
+
+  assert.equal(panel._batchResults.length, 2);
+  assert.equal(panel._batchResults[0].outcome, "success");
+  assert.match(panel._batchResults[1].outcome, /^Approval outcome unknown;/);
+  assert.match(panel._batchResults[1].outcome, /Approval rejected before calendar write:/);
+  assert.equal(panel._detail.events[0].status, "write_uncertain");
+  assert.equal(panel._detail.events[0].write_attempt, "attempt-123");
+});
+
+
+test("date/time assumptions are displayed under their own review event", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "pending";
+  const fields = {start: "2026-10-11", end: "2026-10-12",
+    all_day: true, status: "pending", confidence: 0.9,
+    calendar_entity: "calendar.family"};
+  panel._detail = {
+    id: "pending", source_kind: "manual_text", source_text: "Family schedule",
+    events: [
+      {...fields, id: "event-a", title: "Explicit date"},
+      {...fields, id: "event-b", title: "Relative date",
+        date_time_assumptions: ["Sunday was resolved using the reference date"]},
+    ],
+  };
+  panel.render();
+  const cards = panel._content.querySelectorAll(".detail-event");
+  assert.equal(cards.length, 2);
+  const content = card => card.querySelectorAll("p").map(item => item.textContent).join(" ");
+  assert.doesNotMatch(content(cards[0]), /Date\/time assumption/);
+  assert.match(content(cards[1]), /Date\/time assumption: Sunday was resolved/);
+});
+
+test("Email allowlist keeps quoted commas within one RFC-valid address", async () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {}};
+  panel._settings = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: true, host: "imap.example.test", port: 993,
+      username: "mail@example.test", password_configured: true,
+      mailbox: "INBOX", verify_ssl: true, sender_allowlist: []},
+  };
+  panel._view = "settings";
+  panel._settingsTab = "email";
+  panel._status = "ready";
+  panel.render();
+  const form = find(panel._content, "form");
+  const textarea = form.elements.namedItem("email_sender_allowlist");
+  textarea.value = '"last,first"@example.com\nAnother@Example.com';
+  const draft = panel._emailDraftFromForm(form);
+  assert.deepEqual(draft.sender_allowlist,
+    ['"last,first"@example.com', "Another@Example.com"]);
+  textarea.value = "Alice@example.com\r\nBob@example.com";
+  assert.deepEqual(panel._emailDraftFromForm(form).sender_allowlist,
+    ["Alice@example.com", "Bob@example.com"]);
+});
+
+test("ambiguous IMAP allowlist save reconciles casefolded and deduplicated addresses", async () => {
+  let saved = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {enabled: true, host: "imap.example.test", port: 993,
+      username: "user@example.test", password_configured: false,
+      mailbox: "INBOX", verify_ssl: true, sender_allowlist: []},
+  };
+  let readCount = 0;
+  let submitted;
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    user: {is_admin: true}, states: {},
+    callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type === "daylight_calendar_import/settings/get") {
+        readCount++;
+        return saved;
+      }
+      if (message.type === "daylight_calendar_import/settings/email/update") {
+        submitted = message.sender_allowlist;
+        saved = {...saved, email: {...saved.email,
+          sender_allowlist: ['a@example.test', '"last,first"@example.com'],
+          password_configured: true}};
+        // Simulate a committed save whose WebSocket response was lost.
+        throw 3;
+      }
+      throw Error("Unexpected settings request");
+    },
+  };
+  await flush();
+  await panel.showSettings("email");
+  const form = find(panel._content, "form");
+  form.elements.namedItem("email_sender_allowlist").value =
+    'A@Example.test\na@example.test\n"last,first"@Example.com';
+  form.elements.namedItem("email_password").value = "new-app-password";
+  await panel.saveEmailSettingsForm(form);
+  assert.deepEqual(submitted,
+    ["A@Example.test", "a@example.test", '"last,first"@Example.com']);
+  assert.equal(readCount, 2);
+  assert.equal(panel._settingsError, null);
+  assert.equal(panel._settingsDrafts.email, null);
+  assert.equal(find(panel._content, "form").elements.namedItem("email_password").value, "");
+  assert.match(panel._settingsReloadWarning, /could not confirm/i);
+  assert.equal(find(panel._content, "form").elements
+    .namedItem("email_sender_allowlist").value,
+    'a@example.test\n"last,first"@example.com');
+});
+
+
+test("Notifications settings offer notify entity choices and keep an offline saved target", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {
+    "notify.phone": {entity_id: "notify.phone", state: "idle",
+      attributes: {friendly_name: "Phone"}},
+    "notify.unavailable": {entity_id: "notify.unavailable", state: "unavailable",
+      attributes: {friendly_name: "Offline"}},
+  }};
+  panel._settings = {entry_id: "entry-1", ai_task_entity: "ai_task.test",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: "notify.offline", classes: []},
+    email: {}};
+  const form = find(panel.notificationSettingsView(), "form");
+  const target = form.elements.namedItem("notification_target");
+  assert.equal(target.tag, "select");
+  assert.deepEqual(target.children.map(option => option.value),
+    ["", "notify.offline", "notify.phone"]);
+  assert.equal(target.value, "notify.offline");
+  assert.ok(!target.children.some(option => option.value === "notify.unavailable"));
+});
+
+test("Notifications settings require a category before enabling", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {
+    "notify.phone": {entity_id: "notify.phone", state: "idle",
+      attributes: {friendly_name: "Phone"}},
+  }};
+  panel._settings = {entry_id: "entry-1", ai_task_entity: "ai_task.test",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []}, email: {}};
+  panel._settingsTab = "notifications";
+  panel._view = "settings";
+  panel._status = "ready";
+  panel.render();
+  const form = find(panel._content, "form");
+  form.elements.namedItem("notification_enabled").checked = true;
+  form.elements.namedItem("notification_target").value = "notify.phone";
+  form.submit({preventDefault() {}});
+  assert.match(panel._settingsError, /at least one notification type/);
+});
+
+test("Notification draft retains its baseline when a refreshed policy changes", () => {
+  const panel = new DaylightImportPanel();
+  const prior = {enabled: true, target: "notify.phone", classes: ["review_ready"]};
+  panel._settings = {notifications: prior};
+  const draft = {enabled: true, target: "notify.other", classes: ["review_ready"]};
+  panel._setSettingsDraft("notifications", {notifications: draft});
+  panel._applySettingsSnapshot({notifications: {
+    enabled: true, target: "notify.phone", classes: ["parse_failed"],
+  }});
+  assert.deepEqual(panel._notificationDraftBaseline, prior);
+  assert.deepEqual(panel._settingsDrafts.notifications.notifications, draft);
+});
+
+
+test("Notifications chooser retains a drafted target if its entity disappears", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {}};
+  panel._settings = {entry_id: "entry-1",
+    notifications: {enabled: false, target: "notify.saved", classes: []},
+    email: {}};
+  const draft = {enabled: false, target: "notify.drafted", classes: []};
+  panel._setSettingsDraft("notifications", {notifications: draft});
+  const select = panel.notificationSettingsView().querySelector("select");
+  assert.deepEqual(select.children.map(item => item.value),
+    ["", "notify.drafted", "notify.saved"]);
+  assert.equal(select.value, "notify.drafted");
+});
+
+test("Notification refresh clears an obsolete optimistic baseline when drafts match", () => {
+  const panel = new DaylightImportPanel();
+  const original = {enabled: true, target: "notify.original", classes: ["review_ready"]};
+  const drafted = {enabled: true, target: "notify.updated", classes: ["review_ready"]};
+  panel._settings = {notifications: original};
+  panel._setSettingsDraft("notifications", {notifications: drafted});
+  panel._applySettingsSnapshot({notifications: drafted});
+  assert.equal(panel._settingsDrafts.notifications, null);
+  assert.equal(panel._notificationDraftBaseline, null);
+  panel._setSettingsDraft("notifications", {notifications: original});
+  assert.deepEqual(panel._notificationDraftBaseline, drafted);
+});
+
+test("Notification settings never advertise unsupported lifecycle notification types", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {}};
+  panel._settings = {entry_id: "entry-1",
+    notifications: {enabled: false, target: null, classes: []}, email: {}};
+  const checkboxes = panel.notificationSettingsView().querySelectorAll("input")
+    .filter(input => input.name?.startsWith("notify_"));
+  assert.deepEqual(checkboxes.map(x => x.value), ["review_ready", "calendar_created", "calendar_create_failed", "calendar_write_uncertain", "parse_failed", "conflict_detected"]);
+});
+
+
+test("notification conflict keeps unsaved choices when refresh is offline", async () => {
+  const panel = new DaylightImportPanel();
+  const prior = {enabled: true, target: "notify.old", classes: ["review_ready"]};
+  const drafted = {enabled: true, target: "notify.new", classes: ["review_ready"]};
+  panel._hass = {
+    user: {is_admin: true},
+    states: {},
+    callWS: async () => { throw new Error("Connection unavailable"); },
+  };
+  panel._settings = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.test",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    notifications: prior, email: {},
+  };
+  panel._settingsTab = "notifications";
+  panel._view = "settings";
+  panel._status = "ready";
+  panel._setSettingsDraft("notifications", {notifications: drafted});
+  const baseline = panel._notificationDraftBaseline;
+  await panel._saveSettings(
+    "notifications", {notifications: drafted},
+    async () => { throw {code: "notifications_changed", message: "Concurrent edit"}; },
+    "Saved", "Could not save notifications",
+  );
+  assert.deepEqual(panel._settingsDrafts.notifications.notifications, drafted);
+  assert.deepEqual(panel._notificationDraftBaseline, baseline);
+  assert.match(panel._settingsError, /unsaved choices are retained/);
+  assert.equal(panel._notificationConflictNeedsRebase, true);
+  const remote = {enabled: true, target: "notify.concurrent", classes: ["review_ready"]};
+  panel._applySettingsSnapshot({...panel._settings, notifications: remote});
+  assert.equal(panel._settingsDrafts.notifications, null);
+  assert.equal(panel._notificationDraftBaseline, null);
+  assert.equal(panel._notificationConflictNeedsRebase, false);
+  assert.deepEqual(panel._settings.notifications, remote);
+  assert.match(panel._settingsError, /discarded/);
+  // Re-entering the choice is an explicit new edit based on the visible
+  // remote configuration, never an implicit full-policy overwrite.
+  panel._setSettingsDraft("notifications", {notifications: drafted});
+  assert.deepEqual(panel._notificationDraftBaseline, remote);
+});
+
+test("notification conflict prevents retry until remote policy has been refreshed", async () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {}};
+  panel._settings = {entry_id: "entry-1", notifications: {
+    enabled: true, target: "notify.old", classes: ["review_ready"],
+  }, email: {}};
+  panel._settingsTab = "notifications";
+  panel._view = "settings";
+  panel._status = "ready";
+  panel._notificationConflictNeedsRebase = true;
+  panel._settingsDrafts.notifications = {notifications: {
+    enabled: true, target: "notify.new", classes: ["review_ready"],
+  }};
+  panel.render();
+  const form = find(panel._content, "form");
+  form.submit({preventDefault() {}});
+  assert.match(panel._settingsError, /Refresh notification settings/);
+});
+
+
+test("notification settings retain selected classes through unrelated edits", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {
+    "notify.phone": {entity_id: "notify.phone", state: "idle", attributes: {}},
+  }};
+  panel._settings = {entry_id: "entry-1",
+    notifications: {enabled: false, target: "notify.phone", classes: ["conflict_detected"]},
+    email: {}};
+  const form = find(panel.notificationSettingsView(), "form");
+  form.elements.namedItem("notification_target").change();
+  assert.deepEqual(panel._settingsDrafts.notifications, null);
+  // Selecting another class must not erase existing selections.
+  form.elements.namedItem("notify_review_ready").checked = true;
+  form.change();
+  assert.deepEqual(panel._settingsDrafts.notifications.notifications.classes,
+    ["review_ready", "conflict_detected"]);
+  form.elements.namedItem("notify_review_ready").checked = false;
+  form.change();
+  assert.equal(panel._settingsDrafts.notifications, null);
+});
+
+
+test("enabling review-ready keeps previously saved hidden classes in the submitted policy", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {
+    "notify.phone": {entity_id: "notify.phone", state: "idle", attributes: {}},
+  }};
+  panel._settings = {entry_id: "entry-1",
+    notifications: {enabled: false, target: "notify.phone", classes: ["conflict_detected"]},
+    email: {}};
+  const form = find(panel.notificationSettingsView(), "form");
+  form.elements.namedItem("notification_enabled").checked = true;
+  form.elements.namedItem("notify_review_ready").checked = true;
+  form.change();
+  assert.deepEqual(panel._settingsDrafts.notifications.notifications, {
+    enabled: true, target: "notify.phone", classes: ["review_ready", "conflict_detected"],
+  });
+});
+
+
+test("calendar-created opt-in can be selected and deselected independently", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {
+    "notify.phone": {entity_id: "notify.phone", state: "idle", attributes: {}},
+  }};
+  panel._settings = {entry_id: "entry-1", notifications: {
+    enabled: true, target: "notify.phone", classes: ["calendar_created", "parse_failed"],
+  }, email: {}};
+  const form = find(panel.notificationSettingsView(), "form");
+  assert.equal(form.elements.namedItem("notify_review_ready").checked, false);
+  assert.equal(form.elements.namedItem("notify_calendar_created").checked, true);
+  form.elements.namedItem("notify_calendar_created").checked = false;
+  form.change();
+  assert.deepEqual(panel._settingsDrafts.notifications.notifications.classes, ["parse_failed"]);
+  form.elements.namedItem("notify_calendar_created").checked = true;
+  form.change();
+  assert.equal(panel._settingsDrafts.notifications, null);
+});
+
+test("source-failure opt-in can be selected and deselected independently", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {
+    "notify.phone": {entity_id: "notify.phone", state: "idle", attributes: {}},
+  }};
+  panel._settings = {entry_id: "entry-1", notifications: {
+    enabled: true, target: "notify.phone", classes: ["parse_failed", "review_ready"],
+  }, email: {}};
+  const form = find(panel.notificationSettingsView(), "form");
+  assert.equal(form.elements.namedItem("notify_calendar_created").checked, false);
+  assert.equal(form.elements.namedItem("notify_parse_failed").checked, true);
+  form.elements.namedItem("notify_parse_failed").checked = false;
+  form.change();
+  assert.deepEqual(panel._settingsDrafts.notifications.notifications.classes, ["review_ready"]);
+  form.elements.namedItem("notify_parse_failed").checked = true;
+  form.change();
+  assert.equal(panel._settingsDrafts.notifications, null);
+});
+
+test("conflict opt-in can be selected and deselected independently", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {user: {is_admin: true}, states: {
+    "notify.phone": {entity_id: "notify.phone", state: "idle", attributes: {}},
+  }};
+  panel._settings = {entry_id: "entry-1", notifications: {
+    enabled: true, target: "notify.phone", classes: ["conflict_detected", "review_ready"],
+  }, email: {}};
+  const form = find(panel.notificationSettingsView(), "form");
+  assert.equal(form.elements.namedItem("notify_calendar_created").checked, false);
+  assert.equal(form.elements.namedItem("notify_conflict_detected").checked, true);
+  form.elements.namedItem("notify_conflict_detected").checked = false;
+  form.change();
+  assert.deepEqual(panel._settingsDrafts.notifications.notifications.classes, ["review_ready"]);
+  form.elements.namedItem("notify_conflict_detected").checked = true;
+  form.change();
+  assert.equal(panel._settingsDrafts.notifications, null);
+});
+
+test("manual paste remains available without email and preserves its DOM across views", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async () => ({response: {imports: []}})};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  const manual = panel._manualSubmission;
+  assert.equal(manual.element.hidden, false);
+  manual.text.value = "Calendar: Family\nDinner tomorrow 6pm";
+  await panel.refresh();
+  assert.equal(panel._manualSubmission, manual);
+  assert.equal(manual.text.value, "Calendar: Family\nDinner tomorrow 6pm");
+  panel._view = "activity";
+  panel.render();
+  assert.equal(manual.element.hidden, true);
+  panel._view = "new";
+  panel._selectedId = "pending-1";
+  panel.render();
+  assert.equal(manual.element.hidden, true);
+  panel._selectedId = null;
+  panel.render();
+  assert.equal(manual.element.hidden, false);
+  assert.equal(manual.text.value, "Calendar: Family\nDinner tomorrow 6pm");
+});
+
+test("manual paste refreshes pending summaries without approving any events", async () => {
+  const calls = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    calls.push(request.service);
+    return request.service === "submit_text" ? {response: {
+      pending: {id: "pending-1", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }} : {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  panel._manualSubmission.text.value = "Dinner tomorrow 6pm";
+  await panel._manualSubmission.form.submit({preventDefault() {}});
+  await flush();
+  assert.deepEqual(calls, ["list_pending", "submit_text", "list_pending", "get_pending"]);
+  assert.match(panel._manualSubmission.status.textContent, /ready for review/);
+  assert.equal(panel._manualSubmission.element.hidden, false);
+});
+
+test("file intake works without email and preserves native input through rerenders", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async () => ({response: {imports: []}})};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("file");
+  const upload = panel._fileSubmission;
+  assert.equal(upload.element.hidden, false);
+  const file = new File(["%PDF-1.4"], "events.pdf", {type: "application/pdf"});
+  upload.file.files = [file];
+  upload.text.value = "Calendar: Family";
+  await upload.file.change();
+  await panel.refresh();
+  assert.equal(panel._fileSubmission, upload);
+  assert.equal(upload.file.files[0], file);
+  assert.equal(upload.text.value, "Calendar: Family");
+  panel._view = "activity";
+  panel.render();
+  assert.equal(upload.element.hidden, true);
+  panel._view = "new";
+  panel._selectedId = "pending-1";
+  panel.render();
+  assert.equal(upload.element.hidden, true);
+  panel._selectedId = null;
+  panel.render();
+  assert.equal(upload.element.hidden, false);
+  assert.equal(upload.file.files[0], file);
+});
+
+test("panel file intake refreshes reviews without writing any calendar events", async () => {
+  const calls = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    fetchWithAuth: async () => ({status: 200, json: async () => ({file_id: "a".repeat(32)})}),
+    callWS: async request => {
+      calls.push(request.service);
+      return request.service === "submit_pdf" ? {response: {
+        pending: {id: "pending-1", events: [{}]}, duplicate: false,
+        duplicate_source: false, duplicate_events: 0, warnings: [],
+      }} : {response: {imports: []}};
+    },
+  };
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("file");
+  panel._fileSubmission.file.files = [new File(["%PDF-1.4"], "events.pdf")];
+  await panel._fileSubmission.form.submit({preventDefault() {}});
+  await flush();
+  assert.deepEqual(calls, ["list_pending", "submit_pdf", "list_pending", "get_pending"]);
+  assert.match(panel._fileSubmission.status.textContent, /ready for review/);
+});
+
+test("submission feedback routes both forms to the exact review/activity record without approval", async () => {
+  const panel = new DaylightImportPanel();
+  const actions = [];
+  panel.showImport = async id => {actions.push({view: "review", id});};
+  panel.showActivity = async id => {actions.push({view: "activity", id});};
+  const response = {pending: {id: "draft-1", events: [{}]}, activity_id: "lifecycle-1",
+    duplicate: false, duplicate_source: false, duplicate_events: 0, warnings: []};
+  for (const form of [panel._manualSubmission, panel._fileSubmission]) {
+    form.feedback.result(response);
+    await form.feedback.actions.children[0].click();
+    await form.feedback.actions.children[1].click();
+    form.feedback.error({code: "timeout", message: "Timed out"});
+    await form.feedback.actions.children[0].click();
+  }
+  assert.deepEqual(actions, [
+    {view: "review", id: "draft-1"}, {view: "activity", id: "lifecycle-1"}, {view: "activity", id: null},
+    {view: "review", id: "draft-1"}, {view: "activity", id: "lifecycle-1"}, {view: "activity", id: null},
+  ]);
+});
+
+test("manual paste stays busy while reconciling the inbox", async () => {
+  const panel = new DaylightImportPanel();
+  const calls = [];
+  let completeRefresh;
+  let submitted = false;
+  panel.hass = {callWS: async request => {
+    calls.push(request.service);
+    if (request.service === "submit_text") {
+      submitted = true;
+      return {response: {pending: {id: "pending-1", events: [{}]}, duplicate: false,
+        duplicate_source: false, duplicate_events: 0, warnings: []}};
+    }
+    if (request.service === "get_pending") return {response: {pending: {
+      id: "pending-1", source_title: "Dinner", source_kind: "manual_text", events: [
+        {id: "e1", title: "Dinner", status: "pending", start: "2026-10-01", end: "2026-10-02", all_day: true},
+      ],
+    }}};
+    if (submitted) return new Promise(resolve => { completeRefresh = resolve; });
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  const manual = panel._manualSubmission;
+  manual.text.value = "Dinner tomorrow 6pm";
+  const submit = manual.form.submit({preventDefault() {}});
+  await flush();
+  assert.equal(manual.busy, true);
+  assert.equal(manual.button.disabled, true);
+  assert.equal(manual.text.disabled, true);
+  assert.match(manual.status.textContent, /ready for review/);
+  await manual.form.submit({preventDefault() {}});
+  assert.deepEqual(calls, ["list_pending", "submit_text", "list_pending"]);
+  completeRefresh({response: {imports: [{id: "pending-1"}]}});
+  await submit;
+  assert.equal(manual.busy, false);
+  assert.equal(manual.button.disabled, false);
+  assert.equal(manual.text.disabled, false);
+  assert.equal(panel._items[0].id, "pending-1");
+  assert.doesNotMatch(manual.status.textContent, /Refresh the review inbox/);
+});
+
+test("manual paste preserves stored success when inbox reconciliation fails", async () => {
+  const panel = new DaylightImportPanel();
+  let submitted = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "submit_text") {
+      submitted = true;
+      return {response: {pending: {id: "pending-1", events: [{}]}, duplicate: false,
+        duplicate_source: false, duplicate_events: 0, warnings: []}};
+    }
+    if (submitted) throw new Error("Inbox unavailable");
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  const manual = panel._manualSubmission;
+  manual.text.value = "Dinner tomorrow 6pm";
+  await manual.form.submit({preventDefault() {}});
+  assert.match(manual.status.textContent, /ready for review/);
+  assert.match(manual.status.textContent, /Refresh the review inbox to see the latest imports/);
+  assert.equal(panel._status, "Inbox unavailable");
+  assert.equal(manual.busy, false);
+  assert.equal(manual.text.value, "Dinner tomorrow 6pm");
+});
+
+test("superseded manual paste reconciliation does not report an inbox failure", async () => {
+  const panel = new DaylightImportPanel();
+  let completeRefresh;
+  let submitted = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "submit_text") {
+      submitted = true;
+      return {response: {pending: {id: "pending-1", events: [{}]}, duplicate: false,
+        duplicate_source: false, duplicate_events: 0, warnings: []}};
+    }
+    if (submitted) return new Promise(resolve => { completeRefresh = resolve; });
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  const manual = panel._manualSubmission;
+  manual.text.value = "Dinner tomorrow 6pm";
+  const submit = manual.form.submit({preventDefault() {}});
+  await flush();
+  panel._view = "settings";
+  panel._generation += 1;
+  panel._status = "Settings unavailable";
+  completeRefresh({response: {imports: []}});
+  await submit;
+  assert.equal(panel._status, "Settings unavailable");
+  assert.match(manual.status.textContent, /ready for review/);
+  assert.doesNotMatch(manual.status.textContent, /Refresh the review inbox/);
+  assert.equal(manual.busy, false);
+});
+
+test("panel file intake waits for refresh and retains acknowledged success when refresh fails", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {
+    fetchWithAuth: async () => ({status: 200, json: async () => ({file_id: "a".repeat(32)})}),
+    callWS: async request => request.service === "submit_pdf" ? {response: {
+      pending: {id: "pending-1", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }} : {response: {imports: []}},
+  };
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("file");
+  let finish;
+  panel.refresh = () => new Promise(resolve => { finish = resolve; });
+  panel._fileSubmission.file.files = [new File(["%PDF-1.4"], "events.pdf")];
+  const running = panel._fileSubmission.form.submit({preventDefault() {}});
+  await flush();
+  assert.equal(panel._fileSubmission.busy, true);
+  finish(false);
+  await running;
+  assert.equal(panel._fileSubmission.busy, false);
+  assert.match(panel._fileSubmission.status.textContent, /ready for review/);
+  assert.match(panel._fileSubmission.status.textContent, /Refresh the review inbox/);
+});
+
+test("manual text retry reconciles a previously stored import after losing its response", async () => {
+  for (const failRefresh of [false, true]) {
+    const panel = new DaylightImportPanel();
+    const requests = [];
+    let submits = 0;
+    let completeRefresh;
+    panel.hass = {callWS: async request => {
+      requests.push(request);
+      if (request.service === "submit_text") {
+        submits++;
+        if (submits === 1) throw new Error("Connection lost");
+        return {response: {pending: null, duplicate: true, duplicate_source: true,
+          duplicate_events: 0, warnings: []}};
+      }
+      if (submits) return new Promise((resolve, reject) => {
+        completeRefresh = () => failRefresh ? reject(new Error("Inbox unavailable")) :
+          resolve({response: {imports: [{id: "stored-before-disconnect"}]}});
+      });
+      return {response: {imports: []}};
+    }};
+    await flush();
+    panel.showNewImport();
+    panel.selectImportMethod("text");
+    const manual = panel._manualSubmission;
+    manual.text.value = "Dinner tomorrow 6pm";
+    await manual.form.submit({preventDefault() {}});
+    assert.match(manual.status.textContent, /Connection lost/);
+    const retry = manual.form.submit({preventDefault() {}});
+    await flush();
+    assert.equal(manual.busy, true);
+    assert.equal(manual.button.disabled, true);
+    assert.deepEqual(requests.map(request => request.service),
+      ["list_pending", "submit_text", "submit_text", "list_pending"]);
+    assert.equal(requests[1].service_data.source_id, requests[2].service_data.source_id);
+    completeRefresh();
+    await retry;
+    assert.equal(manual.busy, false);
+    assert.match(manual.status.textContent, /source was already submitted/);
+    if (failRefresh) {
+      assert.match(manual.status.textContent, /Refresh the review inbox/);
+      assert.equal(panel._status, "Inbox unavailable");
+    } else {
+      assert.equal(panel._items[0].id, "stored-before-disconnect");
+      assert.doesNotMatch(manual.status.textContent, /Refresh the review inbox/);
+    }
+  }
+});
+
+test("file retry reconciles a stored review after a lost response returns duplicate source", async () => {
+  const panel = new DaylightImportPanel();
+  const calls = [];
+  let submitted = false;
+  let attempts = 0;
+  const sourceIds = [];
+  let finishRefresh;
+  panel.hass = {
+    fetchWithAuth: async () => ({status: 200, json: async () => ({file_id: (++attempts).toString(16).padStart(32, "0")})}),
+    callWS: async request => {
+      calls.push(request.service);
+      if (request.service === "submit_pdf") {
+        sourceIds.push(request.service_data.source_id);
+        submitted = true;
+        if (sourceIds.length === 1) throw new Error("WebSocket connection lost");
+        return {response: {pending: null, duplicate: true, duplicate_source: true,
+          duplicate_events: 0, warnings: [], status: "duplicate", activity_id: null}};
+      }
+      if (submitted) return new Promise(resolve => { finishRefresh = resolve; });
+      return {response: {imports: []}};
+    },
+  };
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("file");
+  const upload = panel._fileSubmission;
+  upload.file.files = [new File(["%PDF-1.4"], "events.pdf")];
+  await upload.form.submit({preventDefault() {}});
+  assert.match(upload.status.textContent, /connection lost/);
+  assert.equal(panel._items.length, 0);
+  const retry = upload.form.submit({preventDefault() {}});
+  await flush();
+  assert.equal(upload.busy, true);
+  assert.equal(sourceIds[0], sourceIds[1]);
+  assert.deepEqual(calls, ["list_pending", "submit_pdf", "submit_pdf", "list_pending"]);
+  finishRefresh({response: {imports: [{id: "pending-original"}]}});
+  await retry;
+  assert.equal(upload.busy, false);
+  assert.equal(panel._items[0].id, "pending-original");
+  assert.doesNotMatch(upload.status.textContent, /Refresh the review inbox/);
+});
+
+
+test("mobile inbox keeps manual import behind the primary action even with IMAP disabled", async () => {
+  const panel = new DaylightImportPanel();
+  panel.narrow = true;
+  panel._settings = {email: {enabled: false}};
+  panel.hass = {callWS: async () => ({response: {imports: []}})};
+  await flush();
+  assert.equal(panel._manualSubmission.element.hidden, true);
+  assert.equal(panel._fileSubmission.element.hidden, true);
+  assert.equal(panel._newImportButton.disabled, false);
+  panel._newImportButton.click();
+  assert.equal(panel._view, "new");
+  assert.equal(panel._navigation.hidden, true);
+  assert.equal(panel._refreshButton.hidden, true);
+  assert.equal(panel._content.querySelectorAll(".import-choice").length, 2);
+  panel.selectImportMethod("text");
+  assert.equal(panel._manualSubmission.element.hidden, false);
+  assert.equal(panel._fileSubmission.element.hidden, true);
+  panel.selectImportMethod("file");
+  assert.equal(panel._manualSubmission.element.hidden, true);
+  assert.equal(panel._fileSubmission.element.hidden, false);
+  assert.equal(panel._manualSubmission.button.textContent, "Import events");
+  assert.equal(panel._fileSubmission.button.textContent, "Import file");
+});
+
+
+test("New import is accessible from inbox, activity and settings without an extra tab", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, callWS: async request =>
+    request.service === "list_pending" ? {response: {imports: []}} :
+      {response: {activities: []}}};
+  await flush();
+  panel.showNewImport();
+  assert.equal(panel._view, "new");
+  assert.equal(panel._navigation.hidden, true);
+  assert.equal(panel._newImportButton.disabled, true);
+  await panel.leaveNewImport();
+  assert.equal(panel._view, "inbox");
+  assert.equal(panel._navigation.hidden, false);
+
+  panel._view = "activity";
+  panel._activityId = null;
+  panel.render();
+  panel.showNewImport();
+  await panel.leaveNewImport();
+  assert.equal(panel._view, "activity");
+
+  panel._view = "settings";
+  panel._settings = {entry_id: "entry"};
+  panel._settingsTab = "email";
+  panel.render();
+  panel.showSettings = async tab => { panel._view = "settings"; panel._settingsTab = tab; };
+  panel.showNewImport();
+  await panel.leaveNewImport();
+  assert.equal(panel._view, "settings");
+  assert.equal(panel._settingsTab, "email");
+});
+
+test("successful new text import opens review directly without any calendar write", async () => {
+  const panel = new DaylightImportPanel();
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request.service);
+    if (request.service === "submit_text") return {response: {
+      pending: {id: "review-123", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }};
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  const reviews = [];
+  panel.showImport = async id => { reviews.push(id); panel._status = "ready"; panel.render(); };
+  panel._manualSubmission.text.value = "School picnic tomorrow";
+  await panel._manualSubmission.form.submit({preventDefault() {}});
+  assert.deepEqual(reviews, ["review-123"]);
+  assert.deepEqual(calls, ["list_pending", "submit_text", "list_pending"]);
+  assert.equal(panel._view, "inbox");
+  assert.equal(panel._manualSubmission.element.hidden, true);
+  assert.equal(panel._manualSubmission.text.value, "School picnic tomorrow");
+});
+
+test("successful submission re-enables the global New import action after handoff", async () => {
+  const panel = new DaylightImportPanel();
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request.service);
+    if (request.service === "submit_text") return {response: {
+      pending: {id: "new-review", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }};
+    if (request.service === "get_pending") return {response: {
+      pending: {id: "new-review", events: [], source_title: "Picnic", source_kind: "manual_text"},
+    }};
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  panel._manualSubmission.text.value = "Picnic tomorrow at noon";
+  await panel._manualSubmission.form.submit({preventDefault() {}});
+  assert.equal(panel._view, "inbox");
+  assert.equal(panel._selectedId, "new-review");
+  assert.equal(panel._status, "ready");
+  assert.equal(panel._newImportButton.disabled, false);
+  assert.equal(panel._manualSubmission.busy, false);
+  panel._newImportButton.click();
+  assert.equal(panel._view, "new");
+  assert.deepEqual(calls, ["list_pending", "submit_text", "list_pending", "get_pending"]);
+});
+
+test("navigation superseding a slow automatic review does not reopen the intake screen", async () => {
+  const panel = new DaylightImportPanel();
+  let resolveDetail;
+  let resolveAfterSubmit;
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request.service);
+    if (request.service === "submit_text") return {response: {
+      pending: {id: "review-one", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }};
+    if (request.service === "get_pending") return new Promise(resolve => {resolveDetail = resolve;});
+    if (request.service === "list_activity") return new Promise(resolve => {resolveAfterSubmit = resolve;});
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  panel._manualSubmission.text.value = "Soccer at noon";
+  const submitting = panel._manualSubmission.form.submit({preventDefault() {}});
+  await flush();
+  assert.equal(panel._selectedId, "review-one");
+  const activity = panel.showActivity();
+  await flush();
+  assert.equal(panel._view, "activity");
+  resolveDetail({response: {pending: {
+    id: "review-one", events: [], source_title: "Soccer", source_kind: "manual_text",
+  }}});
+  resolveAfterSubmit({response: {activity: []}});
+  await Promise.all([submitting, activity]);
+  assert.equal(panel._view, "activity");
+  assert.equal(panel._status, "ready");
+  assert.equal(panel._newImportButton.disabled, false);
+  assert.equal(panel._manualSubmission.status.textContent.includes("Could not open"), false);
+  assert.deepEqual(calls, ["list_pending", "submit_text", "list_pending", "get_pending", "list_activity"]);
+});
+
+test("failed automatic review restores focus to retained manual success feedback", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => {
+    if (request.service === "submit_text") return {response: {
+      pending: {id: "pending-focus", events: [{}]}, duplicate: false,
+      duplicate_source: false, duplicate_events: 0, warnings: [],
+    }};
+    if (request.service === "get_pending") throw new Error("Detail unavailable");
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  const manual = panel._manualSubmission;
+  manual.text.value = "School play Friday";
+  await manual.form.submit({preventDefault() {}});
+  assert.equal(panel._view, "new");
+  assert.equal(panel._selectedId, null);
+  assert.equal(manual.element.hidden, false);
+  assert.equal(globalThis.focusedNode, manual.status);
+  assert.match(manual.status.textContent, /ready for review/);
+  assert.match(manual.status.textContent, /Refresh the review inbox/);
+  assert.equal(manual.feedback.actions.children[0].textContent, "Review events");
+});
+
+test("Review events recovery leaves the intake view when inbox refresh failed", async () => {
+  const panel = new DaylightImportPanel();
+  let submitted = false;
+  panel.hass = {callWS: async request => {
+    if (request.service === "submit_text") {
+      submitted = true;
+      return {response: {
+        pending: {id: "review-recovered", events: [{}]}, duplicate: false,
+        duplicate_source: false, duplicate_events: 0, warnings: [],
+      }};
+    }
+    if (request.service === "get_pending") return {response: {
+      pending: {id: "review-recovered", events: [], source_title: "Dinner", source_kind: "manual_text"},
+    }};
+    if (submitted) throw new Error("Inbox unavailable");
+    return {response: {imports: []}};
+  }};
+  await flush();
+  panel.showNewImport();
+  panel.selectImportMethod("text");
+  panel._manualSubmission.text.value = "Dinner";
+  await panel._manualSubmission.form.submit({preventDefault() {}});
+  assert.equal(panel._view, "new");
+  assert.match(panel._manualSubmission.status.textContent, /ready for review/);
+  await panel._manualSubmission.feedback.actions.children[0].click();
+  assert.equal(panel._view, "inbox");
+  assert.equal(panel._selectedId, "review-recovered");
+  assert.equal(panel._status, "ready");
+});
+
+test("Back from New import retains keyboard focus while activity loads", async () => {
+  const panel = new DaylightImportPanel();
+  let resolveActivity;
+  panel.hass = {callWS: async request => request.service === "list_activity" ?
+    new Promise(resolve => {resolveActivity = resolve;}) : {response: {imports: []}}};
+  await flush();
+  panel._view = "activity";
+  panel.render();
+  panel.showNewImport();
+  const back = panel._content.querySelector(".import-back");
+  back.focus();
+  const returning = panel.leaveNewImport();
+  assert.equal(panel._view, "activity");
+  assert.equal(globalThis.focusedNode, panel._refreshButton);
+  resolveActivity({response: {activity: []}});
+  await returning;
+  assert.equal(panel._view, "activity");
+  assert.equal(panel._status, "ready");
+});
+
+test("approval observes independently configured calendars before enabling confirmation", async () => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending", calendar_entity: "calendar.family"};
+  const calls = [];
+  let release;
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events: [event]}}};
+    if (request.service === "check_pending_event") {
+      await new Promise(resolve => {release = resolve;});
+      return {response: {pending_id: "one", event_id: "event",
+        observed_calendars: ["calendar.family", "calendar.work"],
+        matches: [{kind: "conflict", calendar_entity: "calendar.work", existing_title: "Dentist"}]}};
+    }
+    return {response: {pending_id: "one", event_id: "event", approved: true}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button").find(button => button.dataset.action === "approve").click();
+  assert.equal(panel._content.querySelector(".actions button").disabled, true);
+  assert.equal(globalThis.focusedNode.textContent, "Cancel");
+  await panel.runDecision(event, "approve");
+  assert.equal(calls.some(request => request.service === "approve_pending_event"), false);
+  assert.deepEqual(calls.at(-1).service_data.expected_event, event);
+  release();
+  await flush();
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("li").textContent,
+    /Scheduling conflict: Dentist \(calendar.work\)/);
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+  assert.equal(calls.some(request => request.service === "approve_pending_event"), false);
+  await panel.runDecision(event, "approve");
+  assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 1);
+});
+
+test("bulk observations are serial, disclose incomplete checks, and remain advisory", async () => {
+  const panel = new DaylightImportPanel();
+  const first = {id: "first", title: "Practice", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending"};
+  const events = [first, {...first, id: "second"}];
+  const calls = [];
+  const releases = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events}}};
+    if (request.service === "check_pending_event") {
+      await new Promise(resolve => releases.push(resolve));
+      if (request.service_data.event_id === "first") throw {message: "Calendar check incomplete: Permission denied"};
+      return {response: {pending_id: "one", event_id: "second", matches: [], observed_calendars: ["calendar.family"]}};
+    }
+    return {response: {pending_id: "one", event_id: request.service_data.event_id, approved: true}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button").find(button => button.dataset.batchAction === "approve").click();
+  await panel.runBatch("approve");
+  assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 0);
+  assert.equal(releases.length, 1);
+  releases[0]();
+  await flush();
+  assert.equal(releases.length, 2);
+  assert.equal(panel._content.querySelector(".actions button").disabled, true);
+  releases[1]();
+  await flush();
+  const sections = panel._content.querySelectorAll(".calendar-matches");
+  assert.match(sections[0].querySelector("p").textContent, /Calendar check incomplete: Permission denied/);
+  assert.match(sections[1].querySelector("p").textContent, /No matches found/);
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+  assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 0);
+  await panel.runBatch("approve");
+  assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 2);
+});
+
+test("canceling automatic observation discards stale results and stops bulk reads", async () => {
+  const panel = new DaylightImportPanel();
+  const first = {id: "first", title: "Practice", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending"};
+  const events = [first, {...first, id: "second"}];
+  const calls = [];
+  let release;
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events}}};
+    await new Promise(resolve => {release = resolve;});
+    return {response: {pending_id: "one", event_id: "first", matches: [], observed_calendars: []}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button").find(button => button.dataset.batchAction === "approve").click();
+  panel._content.querySelectorAll("button").find(button => button.textContent === "Cancel bulk review").click();
+  panel._content.querySelectorAll("button").find(button => button.textContent === "Edit").click();
+  const form = panel._content.querySelector("form");
+  release();
+  await flush();
+  assert.equal(panel._content.querySelector("form"), form);
+  assert.equal(panel._content.querySelector(".calendar-matches"), null);
+  assert.equal(calls.filter(request => request.service === "check_pending_event").length, 1);
+  assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 0);
+});
+
+
+test("never-settling approval checks expire without unlocking the outstanding transport", async t => {
+  const panel = new DaylightImportPanel();
+  const event = {id: "event", title: "Picnic", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending"};
+  let release;
+  let checks = 0;
+  const calls = [];
+  panel.hass = {callWS: async request => {
+    calls.push(request);
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events: [event]}}};
+    if (request.service === "check_pending_event") {
+      if (++checks === 1) await new Promise(resolve => {release = resolve;});
+      return {response: {pending_id: "one", event_id: "event", matches: [], observed_calendars: []}};
+    }
+    return {response: {pending_id: "one", event_id: "event", approved: true}};
+  }};
+  await flush();
+  await panel.showImport("one");
+  t.mock.timers.enable({apis: ["setTimeout"]});
+  const approve = () => panel._content.querySelectorAll("button").find(button => button.dataset.action === "approve").click();
+  const cancel = () => panel._content.querySelectorAll("button").find(button => button.textContent === "Cancel").click();
+  approve();
+  assert.equal(panel._content.querySelector(".actions button").disabled, true);
+  t.mock.timers.tick(29_999);
+  await flush();
+  assert.equal(panel._content.querySelector(".actions button").disabled, true);
+  t.mock.timers.tick(1);
+  await flush();
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("p").textContent, /timed out/);
+  cancel();
+  approve();
+  await flush();
+  assert.equal(checks, 1, "timing out or canceling the UI cannot multiply backend work");
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("p").textContent, /still running/);
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+  assert.equal(calls.some(request => request.service === "approve_pending_event"), false);
+  release();
+  await flush();
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("p").textContent, /still running/);
+  cancel();
+  approve();
+  await flush();
+  assert.equal(checks, 2, "the actual request settlement permits a fresh observation");
+  assert.match(panel._content.querySelector(".calendar-matches").querySelector("p").textContent, /No matches found/);
+  await panel.runDecision(event, "approve");
+  assert.equal(calls.filter(request => request.service === "approve_pending_event").length, 1);
+});
+
+test("canceling slow bulk checks keeps retries and manual reads single-flight", async () => {
+  const panel = new DaylightImportPanel();
+  const first = {id: "first", title: "Practice", start: "2026-10-01", end: "2026-10-02",
+    all_day: true, status: "pending"};
+  const events = [first, {...first, id: "second"}];
+  let checks = 0;
+  let release;
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {imports: []}};
+    if (request.service === "get_pending") return {response: {pending: {id: "one", events}}};
+    if (request.service === "check_pending_event") {
+      if (++checks === 1) await new Promise(resolve => {release = resolve;});
+      return {response: {pending_id: "one", event_id: request.service_data.event_id,
+        matches: [], observed_calendars: []}};
+    }
+    throw Error("Unexpected write");
+  }};
+  await flush();
+  await panel.showImport("one");
+  const approve = () => panel._content.querySelectorAll("button").find(button => button.dataset.batchAction === "approve").click();
+  const cancel = () => panel._content.querySelectorAll("button").find(button => button.textContent === "Cancel bulk review").click();
+  approve();
+  cancel();
+  approve();
+  await flush();
+  assert.equal(checks, 1);
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+  assert.equal(panel._content.querySelectorAll(".calendar-matches").length, 2);
+  for (const result of panel._content.querySelectorAll(".calendar-matches")) {
+    assert.match(result.querySelector("p").textContent, /still running/);
+  }
+  cancel();
+  await panel.checkCalendarEvent(first);
+  assert.equal(checks, 1, "manual checks share the outstanding transport lock");
+  release();
+  await flush();
+  approve();
+  await flush();
+  assert.equal(checks, 3, "a fresh bulk review reads each event after settlement");
+  assert.equal(panel._content.querySelector(".actions button").disabled, false);
+});
+
+
+test("review editor can select the second occurrence of the fall-back hour", async () => {
+  const panel = new DaylightImportPanel();
+  let current = {
+    id: "fold", title: "Overnight event", all_day: false, status: "pending",
+    start: "2026-11-01T01:30:00-07:00",
+    end: "2026-11-01T01:45:00-07:00", confidence: 1,
+  };
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") {
+        return {response: {pending: {id: "one", events: [current]}}};
+      }
+      current = {...current, ...request.service_data.event};
+      return {response: {pending_id: "one", event: current}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "fold").click();
+  const form = find(panel._content, "form");
+  const startFold = form.elements.namedItem("start_occurrence");
+  const endFold = form.elements.namedItem("end_occurrence");
+  assert.equal(startFold.hidden, false);
+  assert.equal(endFold.hidden, false);
+  assert.equal(startFold.value, "2026-11-01T01:30:00-07:00");
+  assert.deepEqual(startFold.children.map(option => option.textContent), [
+    "First occurrence (UTC-07:00)", "Second occurrence (UTC-08:00)",
+  ]);
+
+  startFold.value = "2026-11-01T01:30:00-08:00";
+  endFold.value = "2026-11-01T01:45:00-08:00";
+  await panel.saveEdit(current, form);
+  const saved = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(saved.service_data.event.start, "2026-11-01T01:30:00-08:00");
+  assert.equal(saved.service_data.event.end, "2026-11-01T01:45:00-08:00");
+  assert.equal(new Date(saved.service_data.event.end) - new Date(saved.service_data.event.start), 15 * 60000);
+});
+
+
+test("fold selector follows edited wall time and disappears outside the repeated hour", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "Europe/Berlin"}};
+  const original = {
+    id: "one", title: "Late event", all_day: false, status: "pending", confidence: 1,
+    start: "2026-10-25T01:30:00+02:00",
+    end: "2026-10-25T03:30:00+01:00",
+  };
+  const form = panel.editForm(original);
+  const start = form.elements.namedItem("start");
+  assert.equal(form.elements.namedItem("start_occurrence"), undefined);
+  start.value = "2026-10-25T02:30";
+  start.change();
+  const firstOrSecond = form.elements.namedItem("start_occurrence");
+  assert.equal(firstOrSecond.hidden, false);
+  assert.equal(firstOrSecond.children[0].textContent, "First occurrence (UTC+02:00)");
+  assert.equal(firstOrSecond.children[1].textContent, "Second occurrence (UTC+01:00)");
+  start.value = "2026-10-25T03:30";
+  start.change();
+  assert.equal(form.elements.namedItem("start_occurrence"), undefined);
+
+  const fixed = panel.editForm({
+    ...original, start: "2026-10-25T02:15:00-04:00",
+    end: "2026-10-25T02:45:00-04:00",
+  });
+  assert.equal(fixed.elements.namedItem("start_occurrence"), undefined);
+});
+
+
+test("fall-back occurrence selection survives switching to all day and back", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "America/Los_Angeles"}};
+  const form = panel.editForm({
+    id: "one", title: "Fall event", all_day: false, status: "pending", confidence: 1,
+    start: "2026-11-01T01:30:00-07:00", end: "2026-11-01T01:45:00-07:00",
+  });
+  const startFold = form.elements.namedItem("start_occurrence");
+  const endFold = form.elements.namedItem("end_occurrence");
+  startFold.value = "2026-11-01T01:30:00-08:00";
+  endFold.value = "2026-11-01T01:45:00-08:00";
+  const allDay = form.elements.namedItem("all_day");
+  allDay.checked = true;
+  allDay.change();
+  assert.equal(startFold.hidden, true);
+  assert.equal(endFold.hidden, true);
+  allDay.checked = false;
+  allDay.change();
+  assert.equal(startFold.hidden, false);
+  assert.equal(endFold.hidden, false);
+  assert.equal(startFold.value, "2026-11-01T01:30:00-08:00");
+  assert.equal(endFold.value, "2026-11-01T01:45:00-08:00");
+});
+
+
+test("hosted settings load only in their native tab and clear approval on navigation or session loss", async () => {
+  const calls = [];
+  const general = {entry_id: "entry-1", ai_task_entity: "ai_task.openai", calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"], notifications: {enabled: false, target: null, classes: []}, email: {}};
+  const hosted = {entry_id: "entry-1", configured: true, automatic_lifecycle: false, api_origin: "https://api.example.test",
+    account_origin: "https://account.example.test", account_url: null, state: "disconnected",
+    credential_status: null, credential_expires_at: null};
+  const pairing = {user_code: "ABCD1234EFGH", verification_uri: "https://account.example.test/connect",
+    expires_at: "2026-12-01T00:10:00Z", poll_interval_seconds: 5};
+  const hass = {user: {id: "owner", is_admin: true}, connection: {connected: true}, states: {}, callWS: async message => {
+    calls.push(message);
+    if (message.type === "daylight_calendar_import/settings/get") return general;
+    if (message.type === "daylight_calendar_import/hosted/get") return hosted;
+    if (message.type === "daylight_calendar_import/hosted/action") return {...hosted, state: "pairing_pending", pairing};
+    return {response: {imports: []}};
+  }};
+  const panel = new DaylightImportPanel(); panel.hass = hass; await flush();
+  await panel.showSettings();
+  assert.equal(calls.some(call => call.type.includes("/hosted/")), false);
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Daylight Cloud").click();
+  await flush();
+  assert.equal(panel._settingsTab, "hosted");
+  assert.equal(calls.filter(call => call.type === "daylight_calendar_import/hosted/get").length, 1);
+  assert.equal(find(panel._content, "h2").textContent, "Daylight connection");
+  await panel._hostedSettings.submit("connect", {processing_consent: true, installation_label: "Home"});
+  await flush();
+  assert.equal(panel._hostedSettings.pairing.user_code, pairing.user_code);
+  assert.equal(panel._settingsSaving, false);
+  assert.equal(panel._settings.pairing, undefined);
+  panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "General").click();
+  assert.equal(panel._hostedSettings.pairing, null);
+  await panel.showSettings("hosted"); await flush();
+  assert.equal(panel._hostedSettings.pairing, null);
+  await panel._hostedSettings.submit("connect", {processing_consent: true, installation_label: "Home"});
+  panel.hass = {...hass, user: {id: "other", is_admin: true}};
+  assert.equal(panel._hostedSettings.pairing, null);
+  assert.equal(panel._hostedSettings.snapshot, null);
+  await panel.showReview();
+  assert.equal(panel._view, "inbox");
+  assert.equal(panel._hostedSettings.loaded, false);
+  panel.disconnectedCallback();
+  assert.equal(panel._hostedSettings.pairing, null);
+});
+
+
+test("late hosted responses cannot resurrect a pairing after panel disconnection", async () => {
+  const general = {entry_id: "entry-1", ai_task_entity: "ai_task.openai", calendar_entity: "calendar.family",
+    calendar_entities: ["calendar.family"], notifications: {enabled: false, target: null, classes: []}, email: {}};
+  const hosted = {entry_id: "entry-1", configured: true, automatic_lifecycle: false, api_origin: "https://api.example.test",
+    account_origin: "https://account.example.test", account_url: null, state: "disconnected",
+    credential_status: null, credential_expires_at: null};
+  let finish;
+  const calls = [];
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {id: "owner", is_admin: true}, states: {}, callWS: async message => {
+    calls.push(message);
+    if (message.type === "daylight_calendar_import/settings/get") return general;
+    if (message.type === "daylight_calendar_import/hosted/get") return hosted;
+    if (message.type === "daylight_calendar_import/hosted/action") return new Promise(resolve => { finish = resolve; });
+    return {response: {imports: []}};
+  }};
+  await flush(); await panel.showSettings("hosted"); await flush();
+  const operation = panel._hostedSettings.submit("connect", {processing_consent: true, installation_label: "Home"});
+  await flush();
+  assert.equal(panel._settingsSaving, true);
+  panel.disconnectedCallback();
+  finish({...hosted, pairing: {user_code: "ABCD1234EFGH", verification_uri: "https://account.example.test/connect",
+    expires_at: "2026-12-01T00:10:00Z", poll_interval_seconds: 5}});
+  await operation; await flush();
+  assert.equal(panel._hostedSettings.pairing, null);
+  assert.equal(panel._hostedSettings.snapshot, null);
+  assert.equal(panel._settingsSaving, false);
+  assert.equal(calls.filter(call => call.type === "daylight_calendar_import/hosted/get").length, 1);
+  panel.connectedCallback(); await flush();
+  assert.equal(calls.filter(call => call.type === "daylight_calendar_import/hosted/get").length, 2);
+  assert.equal(panel._hostedSettings.pairing, null);
+});
+
+
+test("multi-event imports show source-level progress and expandable event previews", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {locale: {language: "en-US"}, config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "source-one";
+  panel._detail = {
+    id: "source-one", source_title: "Red Ribbon Week", source_kind: "pdf",
+    source_text: "Newsletter",
+    events: [
+      {id: "red", title: "Wear Red Day", start: "2026-10-26", end: "2026-10-27",
+        all_day: true, status: "pending", date_time_assumptions: ["Year inferred"]},
+      {id: "pajamas", title: "Pajama Day", start: "2026-10-27", end: "2026-10-28",
+        all_day: true, status: "pending"},
+      {id: "socks", title: "Silly Socks Day", start: "2026-10-28", end: "2026-10-29",
+        all_day: true, status: "write_uncertain"},
+    ],
+  };
+  panel.render();
+  const group = panel._content.querySelector(".event-group");
+  assert.equal(group.attributes.role, "region");
+  assert.equal(group.attributes["aria-label"], "Events from this import");
+  assert.equal(panel._content.querySelector(".import-overview").querySelector("p").textContent,
+    "3 events in this import · 2 awaiting review");
+  assert.equal(panel._content.querySelector(".source-details").children[0].textContent, "View source details");
+  const folds = group.querySelectorAll(".event-fold");
+  assert.equal(folds.length, 3);
+  assert.equal(folds[0].open, false);
+  assert.equal(folds[0].querySelector(".event-fold-summary").querySelector("h3").textContent,
+    "Wear Red Day");
+  assert.match(folds[0].querySelector(".event-fold-summary").querySelector(".event-date").textContent,
+    /Oct 26, 2026 · All day/);
+  assert.match(folds[0].querySelector(".event-fold-alert").textContent, /Review date interpretation/);
+  assert.match(folds[2].querySelector(".event-fold-alert").textContent, /Needs calendar confirmation/);
+  assert.equal(group.querySelectorAll("button").filter(button => button.dataset.batchAction).length, 2);
+  folds[0].open = true;
+  folds[0].toggle();
+  panel.render();
+  assert.equal(panel._content.querySelectorAll(".event-fold")[0].open, true);
+  assert.equal(panel._content.querySelectorAll(".event-fold")[1].open, false);
+  panel._decision = {id: "pajamas", action: "reject"};
+  panel.render();
+  assert.equal(panel._content.querySelectorAll(".event-fold")[1].open, true,
+    "active confirmation cannot be hidden in a closed preview");
+});
+
+test("single event review stays fully expanded without grouping controls", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "UTC"}};
+  panel._status = "ready";
+  panel._selectedId = "solo";
+  panel._detail = {id: "solo", source_kind: "manual_text", source_text: "Dinner",
+    events: [{id: "dinner", title: "Dinner", status: "pending",
+      start: "2026-10-26", end: "2026-10-27", all_day: true}]};
+  panel.render();
+  assert.equal(panel._content.querySelectorAll(".event-fold").length, 0);
+  assert.equal(panel._content.querySelector(".detail-event").querySelector("h3").textContent,
+    "Dinner");
+  assert.equal(panel._content.querySelectorAll("button").filter(button => button.dataset.batchAction).length, 0);
+});
+
+test("review cards display the calendar year on all-day dates and both ends of New Year ranges", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {locale: {language: "en-US"}, config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "review";
+  for (const [start, end, expected] of [
+    ["2026-10-26", "2026-10-27", "Mon, Oct 26, 2026 · All day"],
+    ["2026-12-31", "2027-01-02",
+      "Thu, Dec 31, 2026 – Fri, Jan 1, 2027 · All day"],
+    ["2032-04-15", "2032-04-16", "Thu, Apr 15, 2032 · All day"],
+  ]) {
+    panel._detail = {id: "review", source_kind: "manual_text", source_text: "School schedule",
+      events: [{id: "event", title: "School event", status: "pending",
+        all_day: true, start, end}]};
+    panel.render();
+    assert.equal(panel._content.querySelector(".event-date").textContent, expected);
+  }
+});

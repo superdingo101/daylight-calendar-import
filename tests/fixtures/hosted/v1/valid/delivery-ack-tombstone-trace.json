@@ -1,0 +1,35 @@
+{
+  "description": "Confirmed ACK remains idempotent strictly before source_expires_at after source bytes removed",
+  "delivery_id": "delivery_00000000000000000001",
+  "source_expires_at": "2026-10-15T16:00:00Z",
+  "steps": [
+    {
+      "op": "ack_confirmed",
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
+      "status": 200,
+      "acknowledged_at": "2026-10-08T16:01:00Z"
+    },
+    {
+      "op": "delete_source_bytes",
+      "at": "2026-10-09T16:00:00Z"
+    },
+    {
+      "op": "retry_ack",
+      "at": "2026-10-10T16:00:00Z",
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
+      "status": 200,
+      "acknowledged_at": "2026-10-08T16:01:00Z"
+    },
+    {
+      "op": "expire_tombstone",
+      "at": "2026-10-15T16:00:00Z"
+    },
+    {
+      "op": "retry_ack",
+      "at": "2026-10-16T16:00:00Z",
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
+      "status": 404,
+      "code": "not_found"
+    }
+  ]
+}

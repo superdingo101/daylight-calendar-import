@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/delivery-source.schema.json",
+  "title": "Daylight H3 delivery source payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "received_at",
+    "attachments",
+    "metadata"
+  ],
+  "properties": {
+    "kind": {
+      "const": "email"
+    },
+    "received_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "text": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 1000000
+    },
+    "attachments": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "$ref": "https://docs.daylightcalendar.com/schemas/hosted/v1/delivery-attachment.schema.json"
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sender": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "attachments": {
+          "minItems": 1
+        }
+      }
+    }
+  ]
+}

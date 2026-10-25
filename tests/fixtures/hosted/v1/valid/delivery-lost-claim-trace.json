@@ -1,0 +1,76 @@
+{
+  "description": "Lost claim response leaves a bounded unseen lease; a later new claim receives a fresh token after expiry. No exact page replay.",
+  "enqueued_at": "2026-10-08T16:00:00Z",
+  "claims": [
+    {
+      "at": "2026-10-08T16:00:00Z",
+      "request": {
+        "schema_version": 1,
+        "limit": 1
+      },
+      "response": {
+        "schema_version": 1,
+        "deliveries": [
+          {
+            "delivery_id": "delivery_00000000000000000001",
+            "source_id": "source_000000000000000000000001",
+            "lease_token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
+            "lease_expires_at": "2026-10-08T16:02:00Z",
+            "source_expires_at": "2026-10-15T16:00:00Z",
+            "source": {
+              "kind": "email",
+              "received_at": "2026-10-08T15:00:00Z",
+              "title": "School picture day",
+              "text": "Picture day on October 15, 2026 at 9am",
+              "attachments": [],
+              "metadata": {
+                "sender": "teacher@example.test"
+              }
+            }
+          }
+        ]
+      },
+      "response_lost": true
+    },
+    {
+      "at": "2026-10-08T16:01:00Z",
+      "request": {
+        "schema_version": 1,
+        "limit": 1
+      },
+      "response": {
+        "schema_version": 1,
+        "deliveries": []
+      }
+    },
+    {
+      "at": "2026-10-08T16:02:00Z",
+      "request": {
+        "schema_version": 1,
+        "limit": 1
+      },
+      "response": {
+        "schema_version": 1,
+        "deliveries": [
+          {
+            "delivery_id": "delivery_00000000000000000001",
+            "source_id": "source_000000000000000000000001",
+            "lease_token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
+            "lease_expires_at": "2026-10-08T16:04:00Z",
+            "source_expires_at": "2026-10-15T16:00:00Z",
+            "source": {
+              "kind": "email",
+              "received_at": "2026-10-08T15:00:00Z",
+              "title": "School picture day",
+              "text": "Picture day on October 15, 2026 at 9am",
+              "attachments": [],
+              "metadata": {
+                "sender": "teacher@example.test"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "source": {
+    "id": "source-pdf-1",
+    "kind": "pdf",
+    "received_at": "2026-09-28T17:05:00-07:00",
+    "title": "October newsletter",
+    "text": "October school newsletter; preserve instructions associated with each dated event.",
+    "attachments": [
+      {
+        "id": "newsletter",
+        "filename": "october-newsletter.pdf",
+        "media_type": "application/pdf",
+        "size_bytes": 842001,
+        "sha256": null
+      }
+    ],
+    "metadata": {
+      "page_count": 6
+    },
+    "upstream_source_id": null
+  },
+  "reference_datetime": "2026-09-28T17:05:00-07:00",
+  "time_zone": "America/Los_Angeles"
+}

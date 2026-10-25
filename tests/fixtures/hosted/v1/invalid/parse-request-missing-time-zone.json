@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "source": {
+    "id": "source-text-invalid",
+    "kind": "manual_text",
+    "received_at": "2026-09-28T20:00:00-04:00",
+    "title": null,
+    "text": "Meeting tomorrow at 4 PM.",
+    "attachments": [],
+    "metadata": {},
+    "upstream_source_id": null
+  },
+  "reference_datetime": "2026-09-28T20:00:00-04:00"
+}

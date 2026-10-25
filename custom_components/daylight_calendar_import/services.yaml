@@ -1,0 +1,317 @@
+parse_text:
+  name: Parse text
+  description: Extract validated calendar event drafts without creating events.
+  fields:
+    text:
+      name: Text
+      description: Unstructured text containing zero or more calendar events.
+      required: true
+      selector:
+        text:
+          multiline: true
+
+import_text:
+  name: Import text
+  description: Extract validated event drafts and create them on the configured calendar.
+  fields:
+    text:
+      name: Text
+      description: Unstructured text containing zero or more calendar events.
+      required: true
+      selector:
+        text:
+          multiline: true
+
+submit_text:
+  name: Submit text for review
+  description: Extract validated event drafts, deduplicate them, and store new events for later approval or rejection.
+  fields:
+    text:
+      name: Text
+      description: Unstructured text containing zero or more calendar events.
+      required: true
+      selector:
+        text:
+          multiline: true
+    source_id:
+      name: Source ID
+      description: Optional stable upstream identifier used to skip a source that is already pending or handled.
+      required: false
+      selector:
+        text:
+    reimport_duplicates:
+      name: Re-import duplicates for review
+      description: Explicitly queue existing events again for manual review. Use a fresh source ID. Calendar duplicate checks still apply at approval.
+      selector:
+        boolean:
+
+submit_image:
+  name: Submit image for review
+  description: Upload an image, extract event drafts with an attachment-capable AI Task entity, and queue them for review. The uploaded file and temporary media copy are removed after processing.
+  fields:
+    file_id:
+      name: Image upload
+      description: PNG, JPEG, or WebP image (10 MiB maximum).
+      required: true
+      selector:
+        file:
+          accept: image/png,image/jpeg,image/webp
+    text:
+      name: Text
+      description: Optional context to interpret together with the image.
+      selector:
+        text:
+          multiline: true
+    source_id:
+      name: Source ID
+      description: Optional stable upstream identifier for deduplication.
+      selector:
+        text:
+    reimport_duplicates:
+      name: Re-import duplicates for review
+      description: Explicitly queue existing events again for manual review. Use a fresh source ID. Calendar duplicate checks still apply at approval.
+      selector:
+        boolean:
+
+submit_pdf:
+  name: Submit PDF for review
+  description: Extract PDF text locally when available; otherwise pass the PDF to an attachment-capable AI Task entity. Uploaded files and temporary media copies are removed after processing.
+  fields:
+    file_id:
+      name: PDF upload
+      description: PDF file (10 MiB maximum, 30 pages maximum).
+      required: true
+      selector:
+        file:
+          accept: application/pdf
+    text:
+      name: Text
+      description: Optional context used together with the PDF.
+      selector:
+        text:
+          multiline: true
+    source_id:
+      name: Source ID
+      description: Optional stable upstream identifier for deduplication.
+      selector:
+        text:
+    reimport_duplicates:
+      name: Re-import duplicates for review
+      description: Explicitly queue existing events again for manual review. Use a fresh source ID. Calendar duplicate checks still apply at approval.
+      selector:
+        boolean:
+
+approve_pending:
+  name: Approve pending import
+  description: Create pending events after routing confirmation and a fresh destination-calendar exact-duplicate check before each write. Authenticated callers need read and control access to each destination; platform-trusted userless calls retain automation support. Unavailable destinations, missing read access or exact duplicates block the current write; earlier batch events may already have succeeded. Unresolved routing blocks the batch before any write.
+  fields:
+    pending_id:
+      name: Pending import ID
+      description: Stable ID returned when the pending import was created.
+      required: true
+      selector:
+        text:
+
+reject_pending:
+  name: Reject pending import
+  description: Remove a pending import without creating calendar events. Resolve uncertain writes first.
+  fields:
+    pending_id:
+      name: Pending import ID
+      description: Stable ID returned when the pending import was created.
+      required: true
+      selector:
+        text:
+
+list_pending:
+  name: List pending imports
+  description: Return a summary of pending imports without their source text. Requires control of the configured AI Task and calendar entities.
+
+list_activity:
+  name: List recent activity
+  description: Return bounded recent import lifecycle summaries without source text. Requires control of the configured AI Task and calendar entities.
+
+get_activity:
+  name: Get import activity
+  description: Return an import's bounded lifecycle transitions, including after review completes. Requires control of the configured AI Task and calendar entities.
+  fields:
+    pending_id:
+      name: Import ID
+      required: true
+      selector:
+        text:
+
+get_pending:
+  name: Get pending import
+  description: Return the source text and event drafts for a pending import. Requires control of the configured AI Task and calendar entities.
+  fields:
+    pending_id:
+      name: Pending import ID
+      description: Stable ID returned when the pending import was created.
+      required: true
+      selector:
+        text:
+
+get_pending_event:
+  name: Get pending event
+  description: Return one draft by its stable event ID. Requires control of the configured AI Task and calendar entities.
+  fields:
+    pending_id:
+      name: Pending import ID
+      description: Stable ID of the parent import.
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      description: Stable ID of an event within the import.
+      required: true
+      selector:
+        text:
+
+check_pending_event:
+  name: Check pending event against calendars
+  description: Read calendars for duplicates and conflicts without writing. Requires CONTROL permission for the configured AI Task and all writable calendars, plus READ permission for every observed calendar. Unavailable or oversized observations fail, and results are rejected if the pending event changes during the check.
+  fields:
+    pending_id:
+      name: Pending import ID
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      required: true
+      selector:
+        text:
+    expected_event:
+      name: Previously loaded event
+      description: Optional draft snapshot from get_pending_event; reject if it changes.
+      selector:
+        object:
+
+edit_pending_event:
+  name: Edit pending event
+  description: Replace a pending draft or select its allowed destination calendar while keeping its event ID. An uncertain calendar write must be resolved before editing.
+  fields:
+    pending_id:
+      name: Pending import ID
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      required: true
+      selector:
+        text:
+    event:
+      name: Replacement event
+      description: Complete draft with title, ISO start/end, all_day, and optional location, description, and confidence.
+      required: true
+      selector:
+        object:
+    expected_event:
+      name: Previously loaded event
+      description: Optional complete event snapshot returned by get_pending; reject the edit if it changed since loading.
+      selector:
+        object:
+    calendar_entity:
+      name: Destination calendar
+      description: Optional writable calendar from the integration's allowed calendars.
+      selector:
+        entity:
+          domain: calendar
+
+reject_pending_event:
+  name: Reject pending event
+  description: Reject one event while keeping other events in the pending import. An uncertain calendar write must be resolved separately.
+  fields:
+    pending_id:
+      name: Pending import ID
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      required: true
+      selector:
+        text:
+    expected_event:
+      name: Previously loaded event
+      description: Optional event snapshot; reject the action if the event changed since review.
+      selector:
+        object:
+
+approve_pending_event:
+  name: Approve pending event
+  description: Create one draft with durable checkpoints after checking its destination calendar for exact duplicates. Authenticated callers need both read and control access to the destination; missing read access, exact duplicates and unavailable observations block approval before a write. Resolve unknown or conflicting routing hints first.
+  fields:
+    pending_id:
+      name: Pending import ID
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      required: true
+      selector:
+        text:
+    expected_event:
+      name: Previously loaded event
+      description: Optional event snapshot; reject the action if the event changed since review.
+      selector:
+        object:
+
+resolve_pending_event:
+  name: Resolve uncertain calendar write
+  description: After checking the calendar, confirm whether an uncertain event was created, was not created and may be retried, or should be discarded.
+  fields:
+    pending_id:
+      name: Pending import ID
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      required: true
+      selector:
+        text:
+    resolution:
+      name: Verified outcome
+      required: true
+      selector:
+        select:
+          options:
+            - created
+            - not_created
+            - discard
+    expected_event:
+      name: Previously loaded uncertain event
+      description: Optional event snapshot; reject the resolution if the uncertain write changed since review.
+      selector:
+        object:
+
+reprocess_pending:
+  name: Reprocess retained source
+  description: Reparse retained manual text and append only novel drafts to an unchanged, entirely pending import. Existing drafts and all dedupe history are preserved. Original email/upload material and handled or uncertain imports cannot be reprocessed. Requires an authenticated user with control access to the AI Task and all allowed calendars.
+  fields:
+    pending_id:
+      name: Pending import ID
+      description: ID of the manual-text import still awaiting review.
+      required: true
+      selector:
+        text:
+
+reset_deduplication:
+  name: Reset one deduplication identity
+  description: Explicitly forget exactly one handled source or event fingerprint. Supply either source_id or event, never both. Pending, uncertain, or processing targets are refused. Other history and pending work remain unchanged; no calendar event is created or deleted. Requires authenticated control access to the AI Task and every allowed calendar.
+  fields:
+    source_id:
+      name: Source ID
+      description: Original stable upstream identifier whose handled source fingerprint should be forgotten. Omit event when using this field.
+      selector:
+        text:
+    event:
+      name: Event draft
+      description: Full validated event draft whose handled event fingerprint should be forgotten. Omit source_id when using this field.
+      selector:
+        object:

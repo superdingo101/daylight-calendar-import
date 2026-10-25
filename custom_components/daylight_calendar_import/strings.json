@@ -1,0 +1,65 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Daylight Calendar Import",
+        "description": "Choose an AI Task entity, a default calendar, and the calendars allowed for reviewed events.",
+        "data": {
+          "ai_task_entity": "AI Task entity",
+          "calendar_entity": "Default calendar",
+          "calendar_entities": "Allowed calendars"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Daylight Calendar Import is already configured."
+    },
+    "error": {
+      "default_not_allowed": "The default calendar must be included in the allowed calendars."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Daylight Calendar Import options",
+        "description": "Choose the AI Task entity used to extract events, the default and allowed calendars, and optional self-hosted Direct IMAP ingestion.",
+        "data": {
+          "ai_task_entity": "AI Task entity",
+          "calendar_entity": "Default calendar for new imports",
+          "calendar_entities": "Allowed calendars",
+          "email_enabled": "Enable Direct IMAP email ingestion"
+        }
+      },
+      "email": {
+        "title": "Direct IMAP",
+        "description": "\u26a0\ufe0f **Mailbox privacy:** Daylight can read the full contents and supported attachments of every unread, undeleted message in the configured mailbox. We strongly recommend using a dedicated email address or folder used only for calendar imports. [Learn more about mailbox access and privacy]({privacy_url})\n\nConnect a mailbox for Daylight to poll every five minutes. Messages are marked seen only after durable local handling.",
+        "data": {
+          "email_host": "IMAP host",
+          "email_port": "IMAP port",
+          "email_username": "Username",
+          "email_password": "Password or app password",
+          "email_mailbox": "Mailbox",
+          "email_verify_ssl": "Verify TLS certificate"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "The IMAP server rejected the username or password.",
+      "invalid_mailbox": "The configured mailbox could not be selected or explicitly disallows the required \\Seen flag change.",
+      "invalid_email_config": "The email configuration is invalid.",
+      "cannot_connect": "Unable to connect to the IMAP server.",
+      "default_not_allowed": "The default calendar must be included in the allowed calendars.",
+      "reload_failed": "Settings were saved, but Daylight could not reload. Restart Home Assistant before relying on the new settings."
+    }
+  },
+  "issues": {
+    "storage_recovery": {
+      "title": "Daylight import storage needs repair",
+      "description": "Daylight could not safely load its local import storage and will not start new import, approval or notification work. The original data is preserved. With Home Assistant stopped, back up the `.storage/daylight_calendar_import.pending_imports` file and any matching `.corrupt.*` file, then restore a known-good backup or repair the original file. Restart Home Assistant or reload Daylight afterward. Keep uncertain writes blocked until you have checked the destination calendar. Do not delete the file or resend sources as a recovery shortcut; this can duplicate calendar events. After a downgrade, restore a compatible integration version. [Recovery guidance]({documentation_url})"
+    },
+    "hosted_lifecycle": {
+      "title": "Daylight connection needs attention",
+      "description": "Automatic connection maintenance needs attention: approval may have expired, an exchange or renewal may be uncertain, or retries reached a safe limit. Open Daylight settings > Daylight Cloud, check and recover the existing connection, and use the owner account portal if reconciliation is required. Automatic maintenance cannot create a new connection or repeat uncertain credential issuance."
+    }
+  }
+}

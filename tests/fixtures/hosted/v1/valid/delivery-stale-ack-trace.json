@@ -1,0 +1,61 @@
+{
+  "description": "Only active, unexpired claim may ack; retries of confirmed lease are idempotent",
+  "delivery_id": "delivery_00000000000000000001",
+  "source_id": "source_000000000000000000000001",
+  "steps": [
+    {
+      "op": "claim",
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
+      "status": 200,
+      "source": {
+        "kind": "email",
+        "received_at": "2026-10-08T15:00:00Z",
+        "title": "School picture day",
+        "text": "Picture day on October 15, 2026 at 9am",
+        "attachments": [],
+        "metadata": {
+          "sender": "teacher@example.test"
+        }
+      }
+    },
+    {
+      "op": "expire",
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456"
+    },
+    {
+      "op": "claim",
+      "token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
+      "status": 200,
+      "source": {
+        "kind": "email",
+        "received_at": "2026-10-08T15:00:00Z",
+        "title": "School picture day",
+        "text": "Picture day on October 15, 2026 at 9am",
+        "attachments": [],
+        "metadata": {
+          "sender": "teacher@example.test"
+        }
+      }
+    },
+    {
+      "op": "ack",
+      "token": "leaseToken_ABCDEFGHIJKLMNOPQRSTUVWXYZabcde123456",
+      "status": 409,
+      "code": "lease_not_current"
+    },
+    {
+      "op": "ack",
+      "token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
+      "status": 200,
+      "result": "acknowledged",
+      "acknowledged_at": "2026-10-08T16:01:00Z"
+    },
+    {
+      "op": "ack",
+      "token": "leaseToken_ZYXWVUTSRQPONMLKJIHGFEDCBA987654321",
+      "status": 200,
+      "result": "acknowledged",
+      "acknowledged_at": "2026-10-08T16:01:00Z"
+    }
+  ]
+}

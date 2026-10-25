@@ -1,0 +1,15 @@
+{
+  "id": "dates-ambiguous-numeric",
+  "source_text": "Book club meets 04/05 at 7pm. Date convention, year, and end time have not been announced.",
+  "reference_datetime": "2026-10-14T12:00:00-07:00",
+  "time_zone": "America/Los_Angeles",
+  "provider_response": {
+    "unsupported_recurrence": false,
+    "events": []
+  },
+  "expected": {
+    "events": [],
+    "warnings": [],
+    "event_assumptions": []
+  }
+}

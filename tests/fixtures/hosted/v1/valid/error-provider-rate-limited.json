@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "request_id": "req-123",
+  "error": {
+    "code": "provider_rate_limited",
+    "message": "Managed parser is temporarily rate limited.",
+    "retryable": true
+  }
+}

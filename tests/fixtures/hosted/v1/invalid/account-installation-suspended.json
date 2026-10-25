@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "account_id": "account_ABCDEFGHIJKLMNOP",
+  "installation_id": "installation_ABCDEFGHIJKL",
+  "account_status": "suspended",
+  "capabilities": {
+    "managed_ai": true,
+    "email_intake": false,
+    "source_delivery": false
+  },
+  "credential_expires_at": "2027-01-17T12:00:00Z",
+  "forwarding_address": null,
+  "account_url": "https://accounts.example.test/account",
+  "credential_status": "current"
+}

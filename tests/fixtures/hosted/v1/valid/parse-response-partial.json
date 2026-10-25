@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "events": [
+    {
+      "draft": {
+        "title": "Science night",
+        "start": "2026-11-05T18:00:00-08:00",
+        "end": "2026-11-05T20:00:00-08:00",
+        "all_day": false,
+        "location": "School gym",
+        "description": null,
+        "confidence": 0.94
+      },
+      "warnings": [
+        {
+          "code": "provider_low_confidence",
+          "message": "One source detail was ambiguous.",
+          "field": null
+        }
+      ]
+    }
+  ],
+  "rejected": [
+    {
+      "index": 1,
+      "reason_code": "invalid_time_range",
+      "message": "End time was not after start time.",
+      "raw_summary": "Second candidate from source"
+    }
+  ],
+  "warnings": [
+    {
+      "code": "source_partial_parse",
+      "message": "One candidate was rejected.",
+      "field": null
+    }
+  ],
+  "provider_metadata": null
+}

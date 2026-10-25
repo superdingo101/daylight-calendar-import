@@ -1,0 +1,38 @@
+{
+  "id": "dates-dst-spring-forward",
+  "source_text": "Clock-change support shift: March 8, 2026, from 01:30 PST (-08:00) to 03:30 PDT (-07:00).",
+  "reference_datetime": "2026-03-07T12:00:00-08:00",
+  "time_zone": "America/Los_Angeles",
+  "provider_response": {
+    "unsupported_recurrence": false,
+    "events": [
+      {
+        "title": "Clock-change support shift",
+        "start": "2026-03-08T01:30:00-08:00",
+        "end": "2026-03-08T03:30:00-07:00",
+        "all_day": false,
+        "location": null,
+        "description": null,
+        "confidence": 0.95,
+        "assumptions": []
+      }
+    ]
+  },
+  "expected": {
+    "events": [
+      {
+        "title": "Clock-change support shift",
+        "start": "2026-03-08T01:30:00-08:00",
+        "end": "2026-03-08T03:30:00-07:00",
+        "all_day": false,
+        "location": null,
+        "description": null,
+        "confidence": 0.95
+      }
+    ],
+    "warnings": [],
+    "event_assumptions": [
+      []
+    ]
+  }
+}

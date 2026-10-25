@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": {
+    "id": "source-text-1",
+    "kind": "manual_text",
+    "received_at": "2026-09-28T20:00:00-04:00",
+    "title": "School carnival note",
+    "text": "Spring Carnival is May 18, 2027 from 5 PM to 8 PM at Jefferson Elementary.",
+    "attachments": [],
+    "metadata": {},
+    "upstream_source_id": null
+  },
+  "reference_datetime": "2026-09-28T20:00:00-04:00",
+  "time_zone": "America/New_York"
+}

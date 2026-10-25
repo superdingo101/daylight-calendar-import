@@ -1,0 +1,180 @@
+name: Bounded mutation testing
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: mutation-bounded-${{ github.event.pull_request.number }}-${{ ((github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'mutation-comprehensive') && github.run_id || 'required' }}
+  cancel-in-progress: true
+jobs:
+  plan:
+    if: (github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'mutation-comprehensive'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      base: ${{ steps.plan.outputs.base }}
+      head: ${{ github.event.pull_request.head.sha }}
+      execution_image: ${{ steps.runtime.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Select immutable mutation runtime
+        id: runtime
+        env:
+          EXECUTION_IMAGE: python:3.14.8-bookworm@sha256:7ee7e4d4fb42c3ad45b8fdc473b64ec69c3cf6e80ae5d52f6fa55f77fac29027
+        run: echo "image=$EXECUTION_IMAGE" >> "$GITHUB_OUTPUT"
+      - name: Classify before dependency installation
+        id: preview
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          FORCE_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'mutation-comprehensive') }}
+        run: |
+          flags=()
+          if [[ "$FORCE_FULL" == true ]]; then flags+=(--comprehensive); fi
+          python3 -m scripts.mutation_pr_gate preview --base "$PR_BASE" --head "$PR_HEAD" "${flags[@]}"
+      - uses: actions/setup-python@v6
+        if: steps.preview.outputs.needs_coverage == 'true'
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+      - if: steps.preview.outputs.needs_coverage == 'true'
+        run: python -m pip install --upgrade pip
+      - if: steps.preview.outputs.needs_coverage == 'true'
+        run: pip install -r requirements_test.txt
+      - name: Measure bounded execution plan
+        id: plan
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          FORCE_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'mutation-comprehensive') }}
+        run: |
+          flags=()
+          if [[ "$FORCE_FULL" == true ]]; then flags+=(--comprehensive); fi
+          python -m scripts.mutation_pr_gate plan --base "$PR_BASE" --head "$PR_HEAD" "${flags[@]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bounded-impact-plan
+          path: mutation-impact-plan.json
+          if-no-files-found: warn
+          overwrite: true
+  scoped:
+    needs: plan
+    if: needs.plan.outputs.mode == 'scoped'
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.plan.outputs.execution_image }}
+    env:
+      MUTATION_EXECUTION_IMAGE: ${{ needs.plan.outputs.execution_image }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: [base, head]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.head }}
+      - name: Preserve current driver outside source checkout
+        run: |
+          mkdir -p "$RUNNER_TEMP/mutation-driver"
+          cp -r scripts "$RUNNER_TEMP/mutation-driver/"
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ matrix.revision == 'base' && needs.plan.outputs.base || needs.plan.outputs.head }}
+      - name: Trust the checked-out workspace inside the container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/download-artifact@v4
+        with:
+          name: bounded-impact-plan
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.0"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements_test.txt
+      - name: Execute exact cold bounded scope
+        env:
+          REVISION: ${{ matrix.revision }}
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$RUNNER_TEMP/mutation-driver"
+          trap 'python "$RUNNER_TEMP/mutation-driver/scripts/pr_mutation.py" restore' EXIT
+          rm -rf mutants
+          python "$RUNNER_TEMP/mutation-driver/scripts/mutation_pr_gate.py" prepare --revision "$REVISION"
+          mutmut run
+          mutmut export-cicd-stats
+          python "$RUNNER_TEMP/mutation-driver/scripts/export_mutation_survivors.py"
+          python "$RUNNER_TEMP/mutation-driver/scripts/pr_mutation.py" restore
+          python "$RUNNER_TEMP/mutation-driver/scripts/mutation_pr_gate.py" record --revision "$REVISION"
+          trap - EXIT
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bounded-${{ matrix.revision }}
+          path: |
+            bounded-${{ matrix.revision }}.json
+            mutation-survivors.txt
+            mutation-survivor-names.txt
+            mutation-survivor-report.txt
+          if-no-files-found: warn
+          overwrite: true
+  comprehensive:
+    needs: plan
+    if: needs.plan.outputs.mode == 'comprehensive-sharded'
+    uses: ./.github/workflows/mutation-sharded.yml
+    with:
+      target_sha: ${{ needs.plan.outputs.head }}
+  mutation:
+    name: ${{ ((github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'mutation-comprehensive') && 'Mutation score' || 'Unrelated label (no mutation validation)' }}
+    if: ${{ always() && ((github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'mutation-comprehensive') }}
+    needs: [plan, scoped, comprehensive]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Require complete chosen validation tier
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          MODE: ${{ needs.plan.outputs.mode }}
+          SCOPED_RESULT: ${{ needs.scoped.result }}
+          FULL_RESULT: ${{ needs.comprehensive.result }}
+        run: |
+          set -euo pipefail
+          test "$PLAN_RESULT" = success
+          case "$MODE" in
+            skip) echo "No mutation-relevant changes; normal tests remain required." ;;
+            scoped) test "$SCOPED_RESULT" = success ;;
+            comprehensive-sharded) test "$FULL_RESULT" = success ;;
+            *) echo "Unknown mutation tier"; exit 1 ;;
+          esac
+      - uses: actions/download-artifact@v4
+        if: needs.plan.outputs.mode == 'scoped'
+        with:
+          name: bounded-base
+          path: bounded-results/base
+      - uses: actions/download-artifact@v4
+        if: needs.plan.outputs.mode == 'scoped'
+        with:
+          name: bounded-head
+          path: bounded-results/head
+      - name: Enforce floor and same-scope comparison
+        if: needs.plan.outputs.mode == 'scoped'
+        run: python3 -m scripts.mutation_pr_gate enforce --base-result bounded-results/base/bounded-base.json --head-result bounded-results/head/bounded-head.json
+      - uses: actions/upload-artifact@v4
+        if: always() && needs.plan.outputs.mode == 'scoped'
+        with:
+          name: bounded-comparison
+          path: bounded-comparison.json
+          if-no-files-found: warn
+          overwrite: true
