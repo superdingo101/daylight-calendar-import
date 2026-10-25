@@ -61,6 +61,7 @@ class HostedAutomationPolicy:
 
     def _eligible(self, checkpoint: Any) -> bool:
         return (checkpoint.processing_consent and checkpoint.local_disconnect == "none"
+                and checkpoint.reconnect is None
                 and checkpoint.service_binding == self._service)
 
     def plan(self, state: HostedConnectionResult) -> AutomationPlan | None:

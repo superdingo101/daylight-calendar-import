@@ -624,3 +624,19 @@ async def test_live_pairing_attention_check_is_scheduled_at_expiry_before_retry_
     await store.async_checkpoint(old, replace(old, current=None, pairing_verifier="v" * 43, pairing=attempt))
     await policy.async_note_failure(RECOVER, HostedTransportError("rate_limited", retryable=True, retry_after=300))
     assert policy.plan(RECOVER).due_at == datetime(2026, 10, 24, 0, 1, tzinfo=UTC)
+
+
+async def test_saved_reconnect_intent_never_authorizes_automatic_work(automatic):
+    from custom_components.daylight_calendar_import.hosted_credentials import (
+        ReconnectIntent,
+    )
+    policy, store, controller = automatic
+    old = store.snapshot
+    intent = ReconnectIntent(CURRENT.account_id, CURRENT.installation_id, "none", "pending-v2-local-only")
+    await store.async_checkpoint(old, replace(old, reconnect=intent, pairing_verifier="v" * 43))
+    for state in (RECOVER, ACTIVE, HostedConnectionResult("pairing_pending")):
+        assert policy.plan(state) is None
+        assert await policy.async_step(state) is None
+        await policy.async_note_verified(state)
+    assert store.snapshot.automation is None
+    assert not controller.mock_calls
