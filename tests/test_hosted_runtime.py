@@ -439,3 +439,16 @@ async def test_hosted_load_budget_preserves_local_entry_availability(hass, monke
     assert r.snapshot()["state"] == "storage_repair"
     assert r._controller is None and not r.busy
     assert "private" not in str(r.snapshot())
+
+
+async def test_cancelled_controller_replaces_previous_authority_with_recovery(runtime):
+    r, _store = runtime
+    controller = AsyncMock()
+    controller.async_reconcile.side_effect = asyncio.CancelledError()
+    r._controller = controller
+    r._state = HostedConnectionResult("connected", "current", "2026-12-01T00:00:00Z")
+    with pytest.raises(asyncio.CancelledError):
+        await r._perform("reconcile", {})
+    assert r.snapshot()["state"] == "recovery_required"
+    assert r.snapshot()["credential_status"] is None
+    assert r.snapshot()["credential_expires_at"] is None
