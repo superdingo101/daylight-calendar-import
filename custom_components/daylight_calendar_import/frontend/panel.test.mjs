@@ -392,7 +392,7 @@ test("opens detail, renders source and events as text, and returns to inbox", as
   assert.equal(requests[1].service_data.pending_id, "one");
   assert.equal(find(panel._content, "h3").textContent, "Picnic");
   assert.match(find(panel._content, "section").querySelector(".event-date").textContent,
-    /Oct 1 · All day/);
+    /Oct 1, 2026 · All day/);
   assert.equal(globalThis.focusedNode.tag, "h2");
   assert.equal(panel._announcement.textContent, undefined);
   assert.equal(find(panel._content, "p").attributes.role, undefined);
@@ -6163,4 +6163,24 @@ test("fall-back occurrence selection survives switching to all day and back", ()
   assert.equal(endFold.hidden, false);
   assert.equal(startFold.value, "2026-11-01T01:30:00-08:00");
   assert.equal(endFold.value, "2026-11-01T01:45:00-08:00");
+});
+
+
+test("review cards display the calendar year on all-day dates and both ends of New Year ranges", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {locale: {language: "en-US"}, config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "review";
+  for (const [start, end, expected] of [
+    ["2026-10-26", "2026-10-27", "Mon, Oct 26, 2026 · All day"],
+    ["2026-12-31", "2027-01-02",
+      "Thu, Dec 31, 2026 – Fri, Jan 1, 2027 · All day"],
+    ["2032-04-15", "2032-04-16", "Thu, Apr 15, 2032 · All day"],
+  ]) {
+    panel._detail = {id: "review", source_kind: "manual_text", source_text: "School schedule",
+      events: [{id: "event", title: "School event", status: "pending",
+        all_day: true, start, end}]};
+    panel.render();
+    assert.equal(panel._content.querySelector(".event-date").textContent, expected);
+  }
 });

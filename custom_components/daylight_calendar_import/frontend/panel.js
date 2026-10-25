@@ -306,7 +306,7 @@ function reviewRange(event, hass) {
   const end = new Date(exclusiveEnd.getTime() - 86400000);
   try {
     const formatter = new Intl.DateTimeFormat(hass?.locale?.language || undefined,
-      {weekday: "short", month: "short", day: "numeric", timeZone: "UTC"});
+      {weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC"});
     const first = formatter.format(start);
     return (event.start === end.toISOString().slice(0, 10) ?
       first : first + " – " + formatter.format(end)) + " · All day";
