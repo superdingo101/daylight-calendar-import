@@ -260,6 +260,7 @@ test("mobile and desktop review menus do not reflow event actions or hide calend
     const panel = document.querySelector("daylight-import-panel");
     panel._hass.states["calendar.family"] = {attributes: {friendly_name: "Family"}};
     panel._hass.states["calendar.work"] = {attributes: {friendly_name: "Work"}};
+    fixture.pending.default_calendar = "calendar.family";
     const base = fixture.pending.events[0];
     fixture.pending.events = [
       {...base, calendar_entity: null},
