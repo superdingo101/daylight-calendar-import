@@ -6166,6 +6166,66 @@ test("fall-back occurrence selection survives switching to all day and back", ()
 });
 
 
+test("multi-event imports show source-level progress and expandable event previews", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {locale: {language: "en-US"}, config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "source-one";
+  panel._detail = {
+    id: "source-one", source_title: "Red Ribbon Week", source_kind: "pdf",
+    source_text: "Newsletter",
+    events: [
+      {id: "red", title: "Wear Red Day", start: "2026-10-26", end: "2026-10-27",
+        all_day: true, status: "pending", date_time_assumptions: ["Year inferred"]},
+      {id: "pajamas", title: "Pajama Day", start: "2026-10-27", end: "2026-10-28",
+        all_day: true, status: "pending"},
+      {id: "socks", title: "Silly Socks Day", start: "2026-10-28", end: "2026-10-29",
+        all_day: true, status: "write_uncertain"},
+    ],
+  };
+  panel.render();
+  const group = panel._content.querySelector(".event-group");
+  assert.equal(group.attributes.role, "region");
+  assert.equal(group.attributes["aria-label"], "Events from this import");
+  assert.equal(panel._content.querySelector(".import-overview").querySelector("p").textContent,
+    "3 events in this import · 2 awaiting review");
+  assert.equal(panel._content.querySelector(".source-details").children[0].textContent, "View source details");
+  const folds = group.querySelectorAll(".event-fold");
+  assert.equal(folds.length, 3);
+  assert.equal(folds[0].open, false);
+  assert.equal(folds[0].querySelector(".event-fold-summary").querySelector("h3").textContent,
+    "Wear Red Day");
+  assert.match(folds[0].querySelector(".event-fold-summary").querySelector(".event-date").textContent,
+    /Oct 26, 2026 · All day/);
+  assert.match(folds[0].querySelector(".event-fold-alert").textContent, /Review date interpretation/);
+  assert.match(folds[2].querySelector(".event-fold-alert").textContent, /Needs calendar confirmation/);
+  assert.equal(group.querySelectorAll("button").filter(button => button.dataset.batchAction).length, 2);
+  folds[0].open = true;
+  folds[0].toggle();
+  panel.render();
+  assert.equal(panel._content.querySelectorAll(".event-fold")[0].open, true);
+  assert.equal(panel._content.querySelectorAll(".event-fold")[1].open, false);
+  panel._decision = {id: "pajamas", action: "reject"};
+  panel.render();
+  assert.equal(panel._content.querySelectorAll(".event-fold")[1].open, true,
+    "active confirmation cannot be hidden in a closed preview");
+});
+
+test("single event review stays fully expanded without grouping controls", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "UTC"}};
+  panel._status = "ready";
+  panel._selectedId = "solo";
+  panel._detail = {id: "solo", source_kind: "manual_text", source_text: "Dinner",
+    events: [{id: "dinner", title: "Dinner", status: "pending",
+      start: "2026-10-26", end: "2026-10-27", all_day: true}]};
+  panel.render();
+  assert.equal(panel._content.querySelectorAll(".event-fold").length, 0);
+  assert.equal(panel._content.querySelector(".detail-event").querySelector("h3").textContent,
+    "Dinner");
+  assert.equal(panel._content.querySelectorAll("button").filter(button => button.dataset.batchAction).length, 0);
+});
+
 test("review cards display the calendar year on all-day dates and both ends of New Year ranges", () => {
   const panel = new DaylightImportPanel();
   panel._hass = {locale: {language: "en-US"}, config: {time_zone: "America/Los_Angeles"}};

@@ -126,6 +126,26 @@ const css = `
   .event-more[open] summary { width: fit-content; }
   .event-more button { margin: 4px 8px 4px 0; }
   .event-description { margin: 0; line-height: 1.5; }
+  .import-overview { margin: 14px 0; padding: 14px 16px; border-radius: 12px; background: var(--secondary-background-color, var(--card-background-color)); }
+  .import-overview p { margin: 0; color: var(--secondary-text-color); }
+  .source-details { margin: 12px 0 20px; color: var(--secondary-text-color); }
+  .source-details summary { cursor: pointer; min-height: 40px; padding: 8px 0; }
+  .source-details .source { margin: 6px 0 14px; color: var(--primary-text-color); }
+  .event-group-heading { margin: 18px 0 4px; }
+  .event-group .actions { margin: 10px 0 18px; }
+  .event-group .actions [data-batch-action="approve"] { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 600; }
+  .event-group .detail-event { margin: 12px 0; }
+  .event-fold { min-width: 0; }
+  .event-fold > summary { list-style: none; display: flex; gap: 10px; align-items: center; min-height: 58px; cursor: pointer; }
+  .event-fold > summary::-webkit-details-marker { display: none; }
+  .event-fold > summary::before { content: "▸"; color: var(--secondary-text-color); flex: none; }
+  .event-fold[open] > summary::before { content: "▾"; }
+  .event-fold-summary { flex: 1; min-width: 0; display: grid; gap: 3px; }
+  .event-fold-summary h3 { margin: 0; }
+  .event-fold-summary .event-date { font-weight: 400; }
+  .event-fold-alert { color: var(--warning-color, var(--primary-text-color)); font-size: .82rem; }
+  .event-fold-body { margin-top: 10px; display: grid; gap: 10px; }
+  .event-fold-body .event-meta { display: none; }
   @media (max-width: 480px) {
     .detail-event { padding: 14px; }
     .event-controls .event-primary { margin-left: auto; }
@@ -634,6 +654,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._batchAction = null;
     this._batchResults = [];
     this._batchContext = null;
+    // Folded source-event previews are view-local; never share expansion across imports.
+    this._expandedEventIds = new Set();
     this._view = "inbox";
     this._newImportMode = null;
     this._newImportOrigin = null;
@@ -1911,6 +1933,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._editingId || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
     const generation = ++this._generation;
+    if (id !== this._selectedId) this._expandedEventIds.clear();
     if (id !== this._selectedId) this._openEventMenuId = null;
     this._selectedId = id;
     this._detail = null;
@@ -1953,6 +1976,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._selectedId = null;
     this._detail = null;
     this._openEventMenuId = null;
+    this._expandedEventIds.clear();
     void this.refresh();
   }
 
@@ -2661,10 +2685,17 @@ export class DaylightImportPanel extends HTMLElement {
         error.setAttribute("role", "alert");
         content.append(error);
       }
-      content.append(element("p", `Source: ${detail.source_kind || "Text"}`));
-      for (const warning of detail.warnings || []) content.append(element("p", `Warning: ${warning}`));
+      const ready = detail.events.filter(event => event.status === "pending");
+      const overview = element("div", "", "import-overview");
+      const total = detail.events.length;
+      overview.append(element("p",
+        `${total} ${total === 1 ? "event" : "events"} in this import · ${ready.length} awaiting review`));
+      content.append(overview);
+      for (const warning of detail.warnings || []) content.append(element("p", "Warning: " + warning, "event-note"));
       if (detail.duplicate_events) content.append(element("p", `${detail.duplicate_events} duplicates skipped`));
-      content.append(element("h2", "Source context"));
+      const sourceDetails = element("details", "", "source-details");
+      sourceDetails.append(element("summary", "View source details"));
+      sourceDetails.append(element("p", "Source: " + (detail.source_kind || "Text")));
       if (detail.source_kind === "email") {
         const source = element("div", "", "source");
         source.tabIndex = 0;
@@ -2675,16 +2706,20 @@ export class DaylightImportPanel extends HTMLElement {
           element("p", `Email sender: ${detail.source_sender || "Unknown sender"}`),
           element("p", `Received: ${activityTime(detail.created_at, this._hass)}`),
         );
-        content.append(source);
+        sourceDetails.append(source);
       } else {
         const source = element("p", detail.source_text || "No source text available.", "source");
         source.tabIndex = 0;
         source.setAttribute("role", "region");
         source.setAttribute("aria-label", "Source text");
-        content.append(source);
+        sourceDetails.append(source);
       }
-      content.append(element("h2", "Events"));
-      const ready = detail.events.filter(event => event.status === "pending");
+      content.append(sourceDetails);
+      const eventGroup = element("div", "", "event-group");
+      eventGroup.setAttribute("role", "region");
+      eventGroup.setAttribute("aria-label", "Events from this import");
+      eventGroup.append(element("h2", "Events from this import", "event-group-heading"));
+      content.append(eventGroup);
       if (ready.length > 1 && !this._editingId && !this._decision && !this._resolution) {
         const bulk = element("div", "", "actions");
         if (this._batchAction) {
@@ -2729,34 +2764,67 @@ export class DaylightImportPanel extends HTMLElement {
             bulk.append(button);
           }
         }
-        content.append(bulk);
+        eventGroup.append(bulk);
       }
       for (const event of detail.events) {
         const card = element("section", "", "detail-event");
         if (this._editingId === event.id) {
           card.append(this.editForm(event));
-          content.append(card);
+          eventGroup.append(card);
           continue;
+        }
+        // Several extracted events share one source. Show short rows until
+        // expanded, but force advisory checks and active decisions into view.
+        let surface = card;
+        const grouped = detail.events.length > 1;
+        if (grouped) {
+          const fold = element("details", "", "event-fold");
+          const summary = element("summary", "", "event-fold-heading");
+          const summaryText = element("div", "", "event-fold-summary");
+          summaryText.append(
+            element("h3", event.title || "Untitled event"),
+            element("p", reviewRange(event, this._hass), "event-date"));
+          if (event.routing_unresolved || event.date_time_assumptions?.length ||
+              event.status === "write_uncertain") {
+            summaryText.append(element("span",
+              event.status === "write_uncertain" ? "Needs calendar confirmation" :
+                event.routing_unresolved ? "Destination needs attention" :
+                  "Review date interpretation", "event-fold-alert"));
+          }
+          summary.append(summaryText, element("span", reviewStatus(event.status), "event-status"));
+          const foldBody = element("div", "", "event-fold-body");
+          fold.open = this._expandedEventIds.has(event.id) ||
+            this._decision?.id === event.id || this._resolution?.id === event.id ||
+            this._calendarCheck?.event === event ||
+            (this._approvalObservation?.detail === detail &&
+              this._approvalObservation.results.has(event));
+          fold.addEventListener("toggle", () => {
+            if (fold.open) this._expandedEventIds.add(event.id);
+            else this._expandedEventIds.delete(event.id);
+          });
+          fold.append(summary, foldBody);
+          card.append(fold);
+          surface = foldBody;
         }
         const meta = element("div", "", "event-meta");
         meta.append(element("p", reviewRange(event, this._hass), "event-date"));
         meta.append(element("span", reviewStatus(event.status), "event-status"));
-        card.append(meta, element("h3", event.title || "Untitled event"));
+        if (!grouped) surface.append(meta, element("h3", event.title || "Untitled event"));
         if (event.description) {
           const description = element("p", event.description, "event-description");
           description.setAttribute("tabindex", "0");
           description.setAttribute("role", "region");
           description.setAttribute("aria-label", "Event description");
-          card.append(description);
+          surface.append(description);
         }
-        card.append(element("p", "Calendar · " + reviewCalendarName(event, this._hass), "event-calendar"));
-        if (event.location) card.append(element("p", "Location · " + event.location, "event-location"));
+        surface.append(element("p", "Calendar · " + reviewCalendarName(event, this._hass), "event-calendar"));
+        if (event.location) surface.append(element("p", "Location · " + event.location, "event-location"));
         if (event.routing_unresolved) {
-          card.append(element("p", "Choose a destination calendar before approving this event.", "error"));
+          surface.append(element("p", "Choose a destination calendar before approving this event.", "error"));
         }
         if (event.date_time_assumptions?.length) {
           const yearInferred = event.date_time_assumptions.some(note => /year/i.test(note));
-          card.append(element("p", yearInferred ?
+          surface.append(element("p", yearInferred ?
             "Year inferred — verify the date" : "Date interpretation needs review", "event-note"));
         }
         if (event.date_time_assumptions?.length || typeof event.confidence === "number" ||
@@ -2771,7 +2839,7 @@ export class DaylightImportPanel extends HTMLElement {
             diagnostics.append(element("p", "AI confidence: " +
               Math.round(event.confidence * 100) + "% (estimate)"));
           }
-          card.append(diagnostics);
+          surface.append(diagnostics);
         }
         const approvalResult = this._approvalObservation?.detail === detail &&
           this._approvalObservation.decision === this._decision &&
@@ -2782,15 +2850,15 @@ export class DaylightImportPanel extends HTMLElement {
           section.setAttribute("role", "region");
           section.setAttribute("aria-label", "Calendar check results");
           this.renderCalendarCheckDetails(section, approvalResult || this._calendarCheck);
-          card.append(section);
+          surface.append(section);
         }
         if (event.status === "write_uncertain") {
-          card.append(element("p", "Calendar write could not be confirmed. Check the destination calendar before choosing an outcome. Retrying without checking may create a duplicate."));
+          surface.append(element("p", "Calendar write could not be confirmed. Check the destination calendar before choosing an outcome. Retrying without checking may create a duplicate."));
           if (this._resolution?.id === event.id) {
             const actions = element("div", "", "actions");
             const labels = {created: "It was created", not_created: "It was not created — return to review",
               discard: "Discard without a calendar event"};
-            card.append(element("p", `Confirm: ${labels[this._resolution.choice]}?`));
+            surface.append(element("p", `Confirm: ${labels[this._resolution.choice]}?`));
             const confirm = element("button", "Confirm recovery choice");
             confirm.type = "button";
             confirm.addEventListener("click", () => void this.runResolution(event, this._resolution.choice));
@@ -2805,7 +2873,7 @@ export class DaylightImportPanel extends HTMLElement {
                 .find(button => button.dataset.eventId === event.id && button.dataset.resolution === choice)?.focus();
             });
             actions.append(confirm, cancel);
-            card.append(actions);
+            surface.append(actions);
           } else if (!this._editingId && !this._decision && !this._batchAction && !this._resolution) {
             const choices = [{value: "created", label: "It was created"},
               {value: "not_created", label: "It was not created — return to review"},
@@ -2822,7 +2890,7 @@ export class DaylightImportPanel extends HTMLElement {
                 this.render();
                 this._content.querySelector(".actions button")?.focus();
               });
-              card.append(button);
+              surface.append(button);
             }
           }
         }
@@ -2885,7 +2953,7 @@ export class DaylightImportPanel extends HTMLElement {
                 button.dataset.action === action) || this._refreshButton).focus();
           });
           actions.append(confirm, cancel);
-          card.append(actions);
+          surface.append(actions);
         }
         if (["pending", "write_uncertain"].includes(event.status) &&
             !this._editingId && !this._decision && !this._batchAction && !this._resolution) {
@@ -2907,8 +2975,8 @@ export class DaylightImportPanel extends HTMLElement {
           more.append(check);
         }
         if (more.children.length > 1) controls.append(more);
-        if (controls.children.length) card.append(controls);
-        content.append(card);
+        if (controls.children.length) surface.append(controls);
+        eventGroup.append(card);
       }
     } else if (this._items.length === 0) {
       content.append(element("p", "No imports awaiting review.", "status"));
