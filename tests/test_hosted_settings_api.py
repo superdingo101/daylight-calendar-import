@@ -502,3 +502,26 @@ async def test_reconnect_fields_cannot_be_used_on_unrelated_actions():
     r = fake_runtime(hass, cfg)
     result = await invoke(api.websocket_hosted_action, hass, {"entry_id": cfg.entry_id, "action": "reconcile", "confirm_reconnect": True})
     assert result.errors[0][1] == "invalid_hosted_action" and not r.async_action.called
+
+
+async def test_pristine_native_reconnect_keeps_first_connection_usable(hass, hass_ws_client, settings_runtime, monkeypatch):
+    monkeypatch.setattr(_ImmediatePrivateStore, "_async_load", _REAL_LOAD)
+    monkeypatch.setattr(_ImmediatePrivateStore, "_async_write_data", _REAL_WRITE)
+    cfg = settings_runtime.entry
+    client = await hass_ws_client(hass)
+    configured = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE)
+    assert configured["state"] == "disconnected"
+    runtime = hass.data[DOMAIN][cfg.entry_id].hosted_runtime
+    before = runtime._controller._store.snapshot
+    started = AsyncMock(return_value={"pairing_id": "pairing_fresh_1234567890", "user_code": "ABCD1234EFGH", "verification_uri": "https://account.example.test/connect", "expires_at": "2099-01-01T00:10:00Z", "poll_interval_seconds": 5})
+    monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_transport.HostedLifecycleTransport.start_pairing", started)
+    result = await success(client, api.WS_HOSTED_ACTION, entry_id=cfg.entry_id, action="reconnect", processing_consent=True, installation_label="Home", confirm_reconnect=True)
+    assert result["state"] == "first_connection_required"
+    assert runtime._controller._store.snapshot is before and before.service_binding is None
+    started.assert_not_called()
+    assert (await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE))["state"] == "first_connection_required"
+    from datetime import UTC, datetime, timedelta
+    started.return_value["expires_at"] = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
+    first = await success(client, api.WS_HOSTED_ACTION, entry_id=cfg.entry_id, action="connect", processing_consent=True, installation_label="Home")
+    assert first["state"] == "pairing_pending" and first["pairing"]["user_code"] == "ABCD1234EFGH"
+    started.assert_awaited_once()

@@ -265,6 +265,9 @@ class HostedLifecycleController:
                 return HostedConnectionResult("consent_required")
             if checkpoint.candidate is not None:
                 return HostedConnectionResult("reconciliation_required")
+            if (checkpoint.service_binding is None and not checkpoint.processing_consent
+                    and checkpoint.local_disconnect == "none"):
+                return HostedConnectionResult("first_connection_required")
             self._require_service(checkpoint)
             prior = checkpoint.current.namespace if checkpoint.current is not None else None
             receipt = await self._namespace_receipt(prior)

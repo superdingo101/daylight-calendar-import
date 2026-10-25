@@ -56,6 +56,10 @@ test.beforeEach(async ({page}) => {
         return structuredClone(fixture.state);
       }
       if (call.type.endsWith("/action")) {
+        if (call.action === "reconnect" && fixture.pristine) {
+          fixture.state = {...fixture.state, state: "first_connection_required"};
+          return structuredClone(fixture.state);
+        }
         if (["connect", "reconnect"].includes(call.action)) {
           fixture.state = {...fixture.state, state: call.action === "reconnect" ? "reconnect_pending" : "pairing_pending"};
           if (fixture.hold) await new Promise(resolve => { fixture.release = resolve; });
@@ -221,4 +225,19 @@ test("reconnect needs renewed consent, replacement confirmation and fresh transi
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toHaveCount(0);
   await expect(page.getByRole("button", {name: "Check pairing approval", exact: true})).toBeEnabled();
   expect((await actions(page)).map(call => call.action)).toEqual(["reconnect"]);
+});
+
+
+test("pristine reconnect remains read-only and leads to first connection without reconfiguration", async ({page}) => {
+  await page.evaluate(() => { window.hostedFixture.pristine = true; });
+  await openCloud(page);
+  await page.getByRole("checkbox", {name: "I renew my consent to cloud processing for this new owner-approved connection.", exact: true}).check();
+  await page.getByRole("checkbox", {name: "I understand that owner approval may replace this installation. Existing imports and calendar events will be kept.", exact: true}).check();
+  await page.getByRole("button", {name: "Start owner-approved reconnect", exact: true}).click();
+  await expect(page.getByText("This installation has no saved connection yet.", {exact: false})).toBeVisible();
+  await expect(page.getByRole("button", {name: "Start owner-approved reconnect", exact: true})).toHaveCount(0);
+  await consent(page).check();
+  await page.getByRole("button", {name: "Start new connection", exact: true}).click();
+  await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toBeVisible();
+  expect((await actions(page)).map(call => call.action)).toEqual(["reconnect", "connect"]);
 });

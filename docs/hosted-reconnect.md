@@ -69,3 +69,9 @@ repair. The owner must inspect actual remote state in the account portal.
 
 This primitive is not M2 operational evidence. Native admin-only reconnect
 controls and actual deployed owner/HA lifecycle rehearsal remain separate work.
+
+A pristine, never-bound checkpoint requesting reconnect is a read-only
+`first_connection_required` outcome. This does not assign service provenance,
+obtain a receipt, clear a stop marker or make a network request. The caller must
+use first connection with renewed affirmative consent. Unbound legacy recovery
+or stop markers still require service reconciliation and are never relabelled.

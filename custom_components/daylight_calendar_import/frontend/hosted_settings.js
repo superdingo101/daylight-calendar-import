@@ -119,6 +119,7 @@ export async function runHostedAction(hass, entryId, action, input = {}) {
 
 const EXPLANATIONS = {
   not_configured: "Configure the trusted Daylight service before connecting.",
+  first_connection_required: "This installation has no saved connection yet. Use Start new connection below to create its first owner-approved connection.",
   configuration_repair: "The saved service configuration needs repair. Check both HTTPS origins.",
   storage_repair: "Private connection storage needs repair. Preserve the original file and repair storage before continuing.",
   service_repair: "The saved connection belongs to a different or unknown service. Owner and service reconciliation is required; changing origins does not move credentials.",
@@ -469,7 +470,7 @@ export class HostedConnectionSettings {
       actions.append(button);
     }
     section.append(actions);
-    if (["disconnected", "fresh_pairing_required", "consent_required"].includes(state.state) ||
+    if (["disconnected", "first_connection_required", "fresh_pairing_required", "consent_required"].includes(state.state) ||
         ["pairing_pending", "pairing_wait", "pairing_retry"].includes(state.state) && this.pairing === null) {
       const connection = document.createElement("form");
       connection.setAttribute("data-hosted-connect", "");
@@ -495,33 +496,36 @@ export class HostedConnectionSettings {
       });
       section.append(connection);
     }
-    const reconnect = document.createElement("form");
-    reconnect.setAttribute("data-hosted-reconnect", "");
-    reconnect.append(node("h3", "Reconnect with owner approval"), node("p", "Use a fresh approval to repair or replace this installation. The account portal verifies ownership and the current installation. Existing imports and calendar events are kept. Connections with cloud delivery history require separate owner repair.", "settings-help"));
-    const reconnectLabel = node("label", "New installation name");
-    const reconnectName = document.createElement("input");
-    reconnectName.name = "reconnect_label";
-    reconnectName.value = "Home Assistant";
-    reconnectName.required = true;
-    reconnectName.maxLength = 128;
-    reconnectName.disabled = this.busy || blocked;
-    reconnectLabel.append(reconnectName);
-    const reconnectConsent = checkbox("reconnect_consent", "I renew my consent to cloud processing for this new owner-approved connection.");
-    const reconnectConfirmation = checkbox("confirm_reconnect", "I understand that owner approval may replace this installation. Existing imports and calendar events will be kept.");
-    reconnectConsent.input.disabled = reconnectConfirmation.input.disabled = this.busy || blocked;
-    const repair = node("button", "Start owner-approved reconnect");
-    repair.type = "submit";
-    repair.disabled = true;
-    const canReconnect = () => { repair.disabled = this.busy || blocked || state.state === "operation_finishing" || !reconnectConsent.input.checked || !reconnectConfirmation.input.checked; };
-    reconnectConsent.input.addEventListener("change", canReconnect);
-    reconnectConfirmation.input.addEventListener("change", canReconnect);
-    reconnect.append(reconnectLabel, reconnectConsent.label, reconnectConfirmation.label, repair);
-    reconnect.addEventListener("submit", event => {
-      event.preventDefault();
-      if (!reconnectConsent.input.checked || !reconnectConfirmation.input.checked) return;
-      void this.submit("reconnect", {processing_consent: true, installation_label: reconnectName.value, confirm_reconnect: true});
-    });
-    section.append(reconnect);
+    if (state.state !== "first_connection_required") {
+      const reconnect = document.createElement("form");
+      reconnect.setAttribute("data-hosted-reconnect", "");
+      reconnect.append(node("h3", "Reconnect with owner approval"), node("p", "Use a fresh approval to repair or replace this installation. The account portal verifies ownership and the current installation. Existing imports and calendar events are kept. Connections with cloud delivery history require separate owner repair.", "settings-help"));
+      const reconnectLabel = node("label", "New installation name");
+      const reconnectName = document.createElement("input");
+      reconnectName.name = "reconnect_label";
+      reconnectName.value = "Home Assistant";
+      reconnectName.required = true;
+      reconnectName.maxLength = 128;
+      reconnectName.disabled = this.busy || blocked;
+      reconnectLabel.append(reconnectName);
+      const reconnectConsent = checkbox("reconnect_consent", "I renew my consent to cloud processing for this new owner-approved connection.");
+      const reconnectConfirmation = checkbox("confirm_reconnect", "I understand that owner approval may replace this installation. Existing imports and calendar events will be kept.");
+      reconnectConsent.input.disabled = reconnectConfirmation.input.disabled = this.busy || blocked;
+      const repair = node("button", "Start owner-approved reconnect");
+      repair.type = "submit";
+      repair.disabled = true;
+      const canReconnect = () => { repair.disabled = this.busy || blocked || state.state === "operation_finishing" || !reconnectConsent.input.checked || !reconnectConfirmation.input.checked; };
+      reconnectConsent.input.addEventListener("change", canReconnect);
+      reconnectConfirmation.input.addEventListener("change", canReconnect);
+      reconnect.append(reconnectLabel, reconnectConsent.label, reconnectConfirmation.label, repair);
+      reconnect.addEventListener("submit", event => {
+        event.preventDefault();
+        if (!reconnectConsent.input.checked || !reconnectConfirmation.input.checked) return;
+        void this.submit("reconnect", {processing_consent: true, installation_label: reconnectName.value, confirm_reconnect: true});
+      });
+      section.append(reconnect);
+
+    }
 
     const disconnect = document.createElement("form");
     disconnect.setAttribute("data-hosted-disconnect", "");

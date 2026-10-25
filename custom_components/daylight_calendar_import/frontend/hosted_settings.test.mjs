@@ -519,3 +519,20 @@ test("owner-approved reconnect requires fresh consent and confirmation and clear
     await assert.rejects(() => runHostedAction({callWS: () => { throw Error("No request"); }}, "entry-1", "reconnect", {processing_consent: true, installation_label: "Home", confirm_reconnect}), /Confirm/);
   }
 });
+
+
+test("pristine reconnect result routes directly to a usable first connection form", async () => {
+  const context = setup();
+  await context.settings.load("entry-1");
+  context.setHandler(async message => message.action === "reconnect" ? {...snapshot, state: "first_connection_required"} : {...snapshot, state: "pairing_pending", pairing});
+  await context.settings.submit("reconnect", {processing_consent: true, installation_label: "Home", confirm_reconnect: true});
+  assert.equal(context.settings.snapshot.state, "first_connection_required");
+  assert.equal(context.settings.element.querySelector("[data-hosted-reconnect]"), null);
+  const first = context.settings.element.querySelector("[data-hosted-connect]");
+  assert.ok(first);
+  const consent = first.elements.namedItem("processing_consent");
+  consent.checked = true; consent.change();
+  first.submit(event()); await flush();
+  assert.equal(context.calls.at(-1).action, "connect");
+  assert.equal(context.settings.pairing.user_code, pairing.user_code);
+});

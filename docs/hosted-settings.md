@@ -90,3 +90,9 @@ account or namespace selector. General snapshots expose only safe fixed state;
 one-time instructions appear only in that explicit response and clear on view or
 session loss. Restart reports `reconnect_pending` and keeps manual recovery
 available without recreating or exchanging an uncertain attempt.
+
+If reconnect is requested before this entry has ever saved a connection, it
+returns `first_connection_required` without writing intent or sending a request.
+The UI directs the administrator to **Start new connection**, with fresh consent,
+without changing service origins or entering a blocking service-repair state.
+An unbound legacy stop or existing recovery material remains fail-closed.
