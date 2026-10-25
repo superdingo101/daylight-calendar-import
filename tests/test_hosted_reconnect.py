@@ -8,8 +8,12 @@ import pytest
 from homeassistant.helpers.storage import Store
 
 from custom_components.daylight_calendar_import.hosted_credentials import (
+    AutomationAttempt,
+    AutomationState,
+    CandidateCredential,
     CredentialCheckpoint,
     HostedCredentialStore,
+    PairingAttempt,
     ReconnectIntent,
     _decode,
     _ImmediatePrivateStore,
@@ -449,3 +453,55 @@ async def test_cancelled_intent_waiter_does_not_send_before_owned_disk_write_set
     assert loaded.snapshot.pairing is None
     assert (await recovered.async_reconcile()).state == "fresh_pairing_required"
     transport.start_pairing.assert_not_called()
+
+
+@pytest.mark.parametrize("case, invalid, expected", [
+    ("candidate_confirmation_limit", lambda: CandidateCredential(
+        CANDIDATE.installation_id, CANDIDATE.token, CANDIDATE.expires_at,
+        CANDIDATE.confirmation_expires_at, 3,
+    ), "invalid confirmation budget"),
+    ("pairing_poll_interval", lambda: PairingAttempt(
+        PAIRING_ID, "2026-10-24T00:10:00Z", 4, "2026-10-24T00:00:00Z",
+    ), "invalid pairing recovery metadata"),
+    ("automatic_attempt_limit", lambda: AutomationAttempt(
+        "a" * 64, 33, "2026-10-24T00:00:00Z",
+    ), "invalid automatic attempt budget"),
+    ("automatic_state_type", lambda: AutomationState(status=object()), "invalid automatic state"),
+    ("automatic_state_envelope", lambda: AutomationState.decode([]), "invalid automatic state"),
+    ("automatic_state_record", lambda: AutomationState.decode({
+        "status": [], "pairing": None, "candidate": None, "rotation": None,
+    }), "invalid automatic budget"),
+    ("partial_prior_namespace", lambda: intent(prior_account_id=None), "incomplete prior namespace"),
+    ("prior_disconnect_marker", lambda: intent(prior_disconnect="unknown"), "invalid prior disconnect marker"),
+    ("unknown_local_journal", lambda: intent(journal_contract="future"), "unsupported namespace contract"),
+    ("service_binding_type", lambda: CredentialCheckpoint(service_binding=object()), "invalid service binding"),
+    ("automatic_without_consent", lambda: CredentialCheckpoint(
+        automation=AutomationState(),
+    ), "automatic budgets require processing consent"),
+    ("invalid_reconnect_authority", lambda: CredentialCheckpoint(
+        reconnect=intent(),
+    ), "invalid reconnect intent"),
+    ("changed_prior_stop", lambda: CredentialCheckpoint(
+        service_binding=SERVICE, processing_consent=True, current=CURRENT,
+        pairing_verifier="v" * 43, reconnect=intent(prior_disconnect="confirmed"),
+    ), "reconnect changed prior namespace or stop"),
+    ("invalid_disconnect_marker", lambda: CredentialCheckpoint(
+        local_disconnect="future",
+    ), "invalid local disconnect state"),
+    ("confirmed_retains_current", lambda: CredentialCheckpoint(
+        local_disconnect="confirmed", processing_consent=True, current=CURRENT,
+    ), "confirmed disconnect retains credential material"),
+    ("pairing_without_verifier", lambda: CredentialCheckpoint(
+        processing_consent=True, pairing=PairingAttempt(
+            PAIRING_ID, "2026-10-24T00:10:00Z", 5, "2026-10-24T00:00:00Z",
+        ),
+    ), "pairing metadata requires a verifier"),
+    ("rotation_without_current", lambda: CredentialCheckpoint(
+        processing_consent=True, rotation_not_before="2026-10-24T00:00:00Z",
+    ), "rotation intent requires a current credential"),
+], ids=lambda item: item if isinstance(item, str) else None)
+def test_durable_hosted_metadata_rejects_invalid_states_with_specific_repair_reason(case, invalid, expected):
+    """Invalid recovery state must fail with its precise invariant, never a generic error."""
+    with pytest.raises(ValueError) as failure:
+        invalid()
+    assert str(failure.value) == expected, case
