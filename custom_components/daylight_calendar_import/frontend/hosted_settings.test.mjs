@@ -478,3 +478,20 @@ test("live approval survives transient polling retries but clears on attention a
   assert.equal(settings.snapshot.state, "automatic_attention_required");
   assert.equal(settings.pairing, null);
 });
+
+
+test("changed automatic status restores the input focused inside the owning shadow root", async () => {
+  const context = subscribedContext();
+  const {settings, subscriptions, setHandler} = context;
+  await settings.load("entry-1"); await flush();
+  const input = settings.element.querySelector("[data-hosted-configure]").elements.namedItem("api_origin");
+  input.value = "https://draft-api.example.test";
+  settings.element.getRootNode = () => ({activeElement: input});
+  document.activeElement = {tag: "daylight-import-panel"};
+  setHandler(async () => ({...automaticSnapshot, state: "service_unavailable"}));
+  subscriptions[0].callback({entry_id: "entry-1"}); await flush();
+  const replacement = settings.element.querySelector("[data-hosted-configure]").elements.namedItem("api_origin");
+  assert.equal(replacement.value, input.value);
+  assert.equal(replacement.focused, true);
+  document.activeElement = null;
+});
