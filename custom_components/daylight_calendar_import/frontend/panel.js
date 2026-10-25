@@ -138,6 +138,8 @@ const css = `
     box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
   }
   .event-more:not([open]) .event-more-menu { display: none; }
+  /* Recovery-only cards have no Edit/Approve buttons and the overflow sits left. */
+  .event-more:first-child .event-more-menu { right: auto; left: 0; }
   .event-more-menu button { margin: 0; width: 100%; text-align: left; }
   .event-controls { position: relative; }
 
