@@ -477,6 +477,9 @@ async def test_rotation_uncertainty_plan_is_exact_and_requires_attention(automat
     assert plan.phase == "rotation"
     assert plan.limit == 6
     assert plan.due_at == datetime(2026, 10, 24, tzinfo=UTC)
+    from custom_components.daylight_calendar_import.hosted_automation import _scope
+
+    assert plan.scope == _scope("rotation", CURRENT.token)
     assert plan.attention is True
     result = await policy.async_step(ACTIVE)
     assert result.state == "automatic_attention_required"
@@ -505,3 +508,42 @@ async def test_verified_status_rejects_missing_current_and_noncurrent_result(aut
     old = store.snapshot
     await store.async_checkpoint(old, replace(old, current=None))
     assert policy._verified_status(store.snapshot, ACTIVE) is None
+
+
+@pytest.mark.parametrize("state", [
+    HostedConnectionResult("connected"),
+    HostedConnectionResult("recovery_required", "current", CURRENT.expires_at),
+])
+async def test_rotation_requires_both_verified_status_and_eligible_state(automatic, state):
+    policy, _store, controller = automatic
+    plan = policy.plan(state)
+    assert plan.phase == "status"
+    assert plan.action == "reconcile"
+    await policy.async_step(state)
+    controller.async_reconcile.assert_awaited_once()
+    controller.async_rotate.assert_not_awaited()
+
+
+async def test_reservation_includes_positive_jitter_before_remote_work(automatic, hass):
+    policy, _store, controller = automatic
+    now = datetime.now(UTC)
+
+    async def inspect_reservation():
+        record = (await reload(hass)).snapshot.automation.status
+        assert datetime.fromisoformat(record.not_before) == now + timedelta(seconds=16)
+        return ACTIVE
+
+    controller.async_reconcile.side_effect = inspect_reservation
+    await policy.async_step(RECOVER)
+    controller.async_reconcile.assert_awaited_once()
+
+
+async def test_verified_overlap_records_restart_safe_status_cooldown(automatic, hass):
+    from custom_components.daylight_calendar_import.hosted_automation import _scope
+
+    policy, _store, _controller = automatic
+    await policy.async_note_verified(replace(ACTIVE, credential_status="overlap"))
+    record = (await reload(hass)).snapshot.automation.status
+    assert record.scope == _scope("status", CURRENT.token)
+    assert record.attempts == 0
+    assert datetime.fromisoformat(record.not_before) == datetime.now(UTC) + timedelta(minutes=5)
