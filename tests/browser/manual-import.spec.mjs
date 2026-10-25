@@ -78,9 +78,9 @@ test("empty paste/file validation and keyboard submission, loading, and review n
   await expect(text).toBeHidden();
 });
 
-for (const [filename, service, mimeType] of [
-  ["media-screenshot.png", "submit_image", "image/png"],
-  ["media-multipage-text.pdf", "submit_pdf", "application/pdf"],
+for (const [filename, service, mimeType, uploadedName] of [
+  ["media-screenshot.png", "submit_image", "image/png", "daylight-upload.png"],
+  ["media-multipage-text.pdf", "submit_pdf", "application/pdf", "daylight-upload.pdf"],
 ]) {
   test(`native file input uploads ${filename} and opens review`, async ({page}) => {
     await openImport(page, "file");
@@ -96,7 +96,7 @@ for (const [filename, service, mimeType] of [
     await expect.poll(() => page.evaluate(() => window.fixture.uploads.length)).toBe(1);
     const [received] = await page.evaluate(() => window.fixture.uploads);
     const bytes = await readFile(new URL(`../fixtures/extraction/assets/${filename}`, import.meta.url));
-    expect(received.headers).toContain(`filename="${filename}"`);
+    expect(received.headers).toContain(`filename="${uploadedName}"`);
     expect(received.headers).toContain(mimeType);
     expect(received.size).toBe(bytes.length);
     expect(received.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
@@ -222,4 +222,33 @@ test("automatic calendar observations precede explicit advisory approval", async
   await confirm.click();
   await expect(page.getByText("No imports awaiting review.")).toBeVisible();
   expect(await page.evaluate(() => window.fixture.calls.filter(call => call.service === "approve_pending_event").length)).toBe(1);
+});
+
+test("multi-event import is compact, source-grouped, and expands individual controls", async ({page}) => {
+  await page.evaluate(() => {
+    const base = window.fixture.pending.events[0];
+    window.fixture.pending.events = [
+      base,
+      {...base, id: "event-2", title: "Wear Red Day", start: "2026-10-26",
+        end: "2026-10-27", all_day: true, status: "pending",
+        date_time_assumptions: ["Year assumed 2026"]},
+    ];
+  });
+  await openImport(page, "text");
+  await textForm(page).getByRole("textbox").fill(source);
+  await textForm(page).getByRole("button", {name: "Import events", exact: true}).click();
+  await expect(page.getByText("2 events in this import · 2 awaiting review")).toBeVisible();
+  await expect(page.getByRole("region", {name: "Events from this import"})).toBeVisible();
+  await expect(page.getByRole("button", {name: "Approve all 2"})).toBeVisible();
+  await expect(page.getByRole("button", {name: "Reject all 2"})).toBeVisible();
+  const folds = page.locator(".event-fold");
+  await expect(folds).toHaveCount(2);
+  await expect(folds.nth(1)).not.toHaveAttribute("open");
+  await expect(page.getByRole("button", {name: "Approve Wear Red Day"})).toBeHidden();
+  await folds.nth(1).locator("summary").first().click();
+  await expect(page.getByRole("button", {name: "Approve Wear Red Day"})).toBeVisible();
+  await expect(page.getByText("Year inferred — verify the date")).toBeVisible();
+  await page.getByRole("button", {name: "Refresh"}).click();
+  await expect(page.getByRole("button", {name: "Approve Wear Red Day"})).toBeVisible();
+  await expect(page.getByRole("button", {name: "Approve School picnic"})).toBeHidden();
 });
