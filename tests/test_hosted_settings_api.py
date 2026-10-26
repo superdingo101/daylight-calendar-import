@@ -21,6 +21,7 @@ from custom_components.daylight_calendar_import.hosted_lifecycle import (
 )
 from custom_components.daylight_calendar_import.hosted_runtime import (
     CONF_HOSTED_SERVICE,
+    CONF_HOSTED_AUTOMATIC,
     HostedRuntimeError,
 )
 from custom_components.daylight_calendar_import.hosted_transport import (
@@ -160,7 +161,7 @@ async def test_runtime_error_is_fixed_and_no_configuration_mutation_is_retried()
 
 
 async def test_configure_validates_and_same_service_is_noop():
-    cfg = entry(options={CONF_HOSTED_SERVICE: SERVICE})
+    cfg = entry(options={CONF_HOSTED_SERVICE: SERVICE, CONF_HOSTED_AUTOMATIC: True})
     hass = hass_for(cfg)
     fake_runtime(hass, cfg)
     result = await invoke(api.websocket_hosted_configure, hass, {"entry_id": cfg.entry_id, **SERVICE})
