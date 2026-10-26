@@ -482,7 +482,8 @@ export class HostedConnectionSettings {
     diagnostics.open = this.diagnosticsOpen;
     diagnostics.append(node("summary", "Troubleshooting & developer settings"));
     diagnostics.addEventListener("toggle", () => { this.diagnosticsOpen = diagnostics.open; });
-    advanced.append(management, diagnostics);
+    if (state.configured) advanced.append(management);
+    advanced.append(diagnostics);
     if (state.credential_status === "overlap") section.append(node("p", "This is an overlap credential. Ordinary access may remain available until expiry; lifecycle changes need owner repair."));
     if (this.busy) section.append(node("p", "Connection operation in progress…"));
 
@@ -513,7 +514,10 @@ export class HostedConnectionSettings {
       });
     });
     diagnostics.append(configuration);
-    if (!state.configured) advanced.open = true;
+    if (!state.configured) {
+      advanced.open = true;
+      diagnostics.open = true;
+    }
     if (!state.configured) return;
 
     // The former default was opt-out. Do not silently change an existing
