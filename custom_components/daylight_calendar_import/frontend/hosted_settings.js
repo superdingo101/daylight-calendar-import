@@ -162,6 +162,8 @@ export class HostedConnectionSettings {
     this.guidedSteps = 0;
     this.advancedOpen = false;
     this.confirmation = null;
+    this.managementOpen = false;
+    this.diagnosticsOpen = false;
     this.guidedReconnect = false;
     this.onBusy = onBusy;
     this.element = node("section", "", "settings-card");
@@ -230,6 +232,8 @@ export class HostedConnectionSettings {
     this.guidedSteps = 0;
     this.advancedOpen = false;
     this.confirmation = null;
+    this.managementOpen = false;
+    this.diagnosticsOpen = false;
     this.guidedReconnect = false;
     this.generation++;
     this.entryId = null;
@@ -471,9 +475,13 @@ export class HostedConnectionSettings {
     advanced.addEventListener("toggle", () => { this.advancedOpen = advanced.open; });
     section.append(advanced);
     const management = node("details");
+    management.open = this.managementOpen || this.confirmation !== null;
     management.append(node("summary", "Manage connection"));
+    management.addEventListener("toggle", () => { this.managementOpen = management.open; });
     const diagnostics = node("details");
+    diagnostics.open = this.diagnosticsOpen;
     diagnostics.append(node("summary", "Troubleshooting & developer settings"));
+    diagnostics.addEventListener("toggle", () => { this.diagnosticsOpen = diagnostics.open; });
     advanced.append(management, diagnostics);
     if (state.credential_status === "overlap") section.append(node("p", "This is an overlap credential. Ordinary access may remain available until expiry; lifecycle changes need owner repair."));
     if (this.busy) section.append(node("p", "Connection operation in progress…"));
@@ -611,6 +619,7 @@ export class HostedConnectionSettings {
       start.addEventListener("click", () => {
         if (!name.value.trim() || name.value.length > 128) return;
         this.confirmation = {kind: "reconnect", label: name.value};
+        this.managementOpen = true;
         this.render();
       });
       reconnect.append(label, start);
@@ -627,6 +636,7 @@ export class HostedConnectionSettings {
       stop.disabled = this.busy;
       stop.addEventListener("click", () => {
         this.confirmation = {kind: "disconnect"};
+        this.managementOpen = true;
         this.render();
       });
       disconnect.append(stop);
