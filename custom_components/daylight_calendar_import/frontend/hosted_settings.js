@@ -154,7 +154,7 @@ function checkbox(name, text) {
 }
 
 export class HostedConnectionSettings {
-  constructor({getHass, onBusy = () => {}, schedule = setTimeout, cancel = clearTimeout}) {
+  constructor({getHass, onBusy = () => {}, schedule = (callback, delay) => setTimeout(callback, delay), cancel = timer => clearTimeout(timer)}) {
     this.getHass = getHass;
     this.schedule = schedule;
     this.cancel = cancel;
