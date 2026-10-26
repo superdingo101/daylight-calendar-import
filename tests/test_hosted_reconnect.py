@@ -520,3 +520,18 @@ async def test_unbound_pristine_reconnect_is_read_only_without_relabelling_legac
             await start(c)
     assert store.snapshot is before
     assert not transport.mock_calls and not adapter.mock_calls
+
+
+async def test_safe_progress_tracks_saved_reconnect_across_restart_and_promotion(reconnect, hass, freezer):
+    c, _store, transport, adapter = reconnect
+    assert c.reconnect_in_progress is False
+    await start(c)
+    c, _store = await restarted(hass, transport, adapter)
+    assert c.reconnect_in_progress is True
+    freezer.tick(5)
+    assert (await c.async_poll_pairing()).state == "candidate_saved"
+    c, _store = await restarted(hass, transport, adapter)
+    assert c.reconnect_in_progress is True
+    assert (await c.async_reconcile()).state == "connected"
+    assert c.reconnect_in_progress is False
+    transport.exchange.assert_awaited_once()

@@ -131,3 +131,20 @@ When background maintenance is enabled, the page uses the existing subscription
 for ordinary connections. Owner-approved reconnect remains page-driven because
 the background policy deliberately excludes replacement checkpoints. Guided
 checks preserve in-progress form drafts, focus and text selection.
+
+
+### Returning to an owner-approved reconnect
+
+The admin snapshot exposes only a boolean `reconnect_in_progress`, derived from
+saved reconnect intent. It contains no approval code, verifier, token, or identity.
+Reopening settings after navigation, a browser reconnection, or an HA restart
+resumes bounded polling and candidate verification for that existing intent even
+when background maintenance is enabled. It never starts a new pairing or repeats
+an uncertain exchange. Background maintenance still excludes reconnect intents;
+the lifecycle controller enforces approval, local receipts, deadlines, and
+single-exchange checkpoints for every page-initiated action.
+
+Approval codes remain transient. If a code is no longer visible, an already
+approved attempt can still finish. Otherwise use a privately saved code or wait
+for expiry and choose Reconnect under Manage connection. Expiry is classified by
+the controller, rather than freezing the page indefinitely in a waiting state.

@@ -368,3 +368,35 @@ test("automatic checks keep Advanced drafts and caret while approval is pending"
   await expect(replacement).toBeFocused();
   expect(await replacement.evaluate(input => [input.selectionStart, input.selectionEnd])).toEqual([2, 8]);
 });
+
+
+for (const resumeState of ["pairing_wait", "candidate_saved", "reconnect_pending"]) {
+  test(`returning to saved reconnect ${resumeState} finishes with no recovery clicks`, async ({page}) => {
+    await page.clock.install();
+    await openCloud(page);
+    await sections(page).getByRole("button", {name: "General", exact: true}).click();
+    await page.evaluate(state => {
+      const fixture = window.hostedFixture;
+      fixture.state = {...fixture.state, automatic_lifecycle: true, reconnect_in_progress: true, state};
+      const panel = document.querySelector("daylight-import-panel");
+      const previous = panel._hass.callWS;
+      panel.hass = {...panel._hass, callWS: async call => {
+        if (call.action === "poll") fixture.state.state = "candidate_saved";
+        if (call.action === "reconcile") fixture.state = {...fixture.state, reconnect_in_progress: false, state: "connected", credential_status: "current"};
+        return previous(call);
+      }};
+    }, resumeState);
+    await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
+    await expect(page.getByText("Approval code: " + CODE, {exact: true})).toHaveCount(0);
+    await expect(page.getByRole("button", {name: "Start new connection", exact: true})).toHaveCount(0);
+    if (resumeState !== "candidate_saved") {
+      await expect(page.getByText(/Already approved/)).toBeVisible();
+      await page.clock.fastForward(30000);
+      await expect.poll(async () => (await actions(page)).map(call => call.action)).toContain("poll");
+    }
+    await page.clock.fastForward(1000);
+    await expect(page.getByText("Your Home Assistant is securely connected to Daylight.", {exact: true})).toBeVisible();
+    expect((await actions(page)).map(call => call.action)).toEqual(resumeState === "candidate_saved" ? ["reconcile"] : ["poll", "reconcile"]);
+    await assertNoStoredSecrets(page);
+  });
+}
