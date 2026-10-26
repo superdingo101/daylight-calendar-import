@@ -59,7 +59,7 @@ async def test_real_socket_connect_candidate_recovery_disconnect_and_restart(has
     freezer.move_to("2026-10-24T00:00:00Z")
     initial = await success(client, api.WS_HOSTED_GET)
     assert initial["configured"] is False and initial["state"] == "not_configured"
-    configured = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE)
+    configured = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE, automatic_lifecycle=False)
     assert configured["state"] == "disconnected"
     started = AsyncMock(return_value={"pairing_id": "pairing_1234567890", "user_code": "ABCD1234EFGH",
         "verification_uri": "https://account.example.test/connect", "expires_at": "2026-10-24T00:10:00Z", "poll_interval_seconds": 5})
@@ -320,7 +320,7 @@ async def test_real_admin_subscription_only_invalidates_safe_entry_and_unsubscri
     assert (await success(client, api.WS_HOSTED_GET))["entry_id"] == cfg.entry_id
 
 
-async def test_real_optin_saves_boolean_without_acquiring_consent(hass, hass_ws_client, settings_runtime, monkeypatch):
+async def test_real_default_maintenance_without_acquiring_consent(hass, hass_ws_client, settings_runtime, monkeypatch):
     from custom_components.daylight_calendar_import.hosted_runtime import (
         CONF_HOSTED_AUTOMATIC,
     )
@@ -328,16 +328,19 @@ async def test_real_optin_saves_boolean_without_acquiring_consent(hass, hass_ws_
     client = await hass_ws_client(hass)
     request = AsyncMock(side_effect=AssertionError("No consent means no network"))
     monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_transport.HostedLifecycleTransport._request", request)
-    result = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE, automatic_lifecycle=True)
+    result = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE)
     assert result["automatic_lifecycle"] is True and result["state"] == "disconnected"
     assert cfg.options[CONF_HOSTED_AUTOMATIC] is True
     r = hass.data[DOMAIN][cfg.entry_id].hosted_runtime
     assert r._cancel_timer is None
     same = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE, automatic_lifecycle=True)
     assert same == result and hass.data[DOMAIN][cfg.entry_id].hosted_runtime is r
-    # Older clients cannot silently keep a previously enabled opt-in.
-    disabled = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE)
+    # Older clients may explicitly retain a previously stored opt-out; it is
+    # not overwritten until an administrator deliberately enables maintenance.
+    disabled = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE, automatic_lifecycle=False)
     assert disabled["automatic_lifecycle"] is False
+    restored = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE)
+    assert restored["automatic_lifecycle"] is True
     request.assert_not_called()
 
 
