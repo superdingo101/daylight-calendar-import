@@ -448,6 +448,14 @@ export class HostedConnectionSettings {
     }
   }
 
+  _renderPreservingDraft() {
+    // Confirmation-only rerenders must not discard unsaved service origins,
+    // replacement labels or keyboard focus. No network action is performed.
+    const draft = this.snapshot ? this._captureDraft() : null;
+    this.render();
+    if (draft) this._restoreDraft(draft);
+  }
+
   render() {
     const section = this.element;
     const title = node("h2", "Daylight connection");
@@ -629,7 +637,7 @@ export class HostedConnectionSettings {
         if (!name.value.trim() || name.value.length > 128) return;
         this.confirmation = {kind: "reconnect", label: name.value};
         this.managementOpen = true;
-        this.render();
+        this._renderPreservingDraft();
       };
       start.addEventListener("click", showConfirmation);
       reconnect.addEventListener("submit", event => {
@@ -651,7 +659,7 @@ export class HostedConnectionSettings {
       stop.addEventListener("click", () => {
         this.confirmation = {kind: "disconnect"};
         this.managementOpen = true;
-        this.render();
+        this._renderPreservingDraft();
       });
       disconnect.append(stop);
       management.append(disconnect);
@@ -670,7 +678,7 @@ export class HostedConnectionSettings {
       const buttons = node("div", "", "actions");
       const cancel = node("button", "Cancel");
       cancel.type = "button";
-      cancel.addEventListener("click", () => { this.confirmation = null; this.render(); });
+      cancel.addEventListener("click", () => { this.confirmation = null; this._renderPreservingDraft(); });
       const confirm = node("button", reconnection ? "Agree & reconnect" : "Confirm disconnect");
       confirm.type = "button";
       confirm.disabled = this.busy;
