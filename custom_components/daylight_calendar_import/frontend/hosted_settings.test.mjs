@@ -196,6 +196,12 @@ test("owner repair and overlap retain only safe explicit actions and verified ac
   }
 });
 
+test("reconciliation-required state exposes explicit safe recovery", async () => {
+  const {settings} = setup({...snapshot, state: "reconciliation_required"});
+  await settings.load("entry-1");
+  assert.ok(findButton(settings.element, "Check and recover connection"));
+});
+
 test("pairing instructions survive a pending manual poll but disappear on clear", async () => {
   const {settings, setHandler} = setup(); await settings.load("entry-1");
   setHandler(async () => ({...snapshot, state: "pairing_pending", pairing}));
@@ -347,9 +353,12 @@ function subscribedContext(response = automaticSnapshot) {
 }
 
 test("new service settings enable bounded background maintenance without a checkbox", async () => {
-  const context = setup();
+  const missing = {...snapshot, configured: false, api_origin: null, account_origin: null, state: "not_configured"};
+  const context = setup(missing);
   await context.settings.load("entry-1");
   const form = context.settings.element.querySelector("[data-hosted-configure]");
+  form.elements.namedItem("api_origin").value = snapshot.api_origin;
+  form.elements.namedItem("account_origin").value = snapshot.account_origin;
   assert.equal(form.elements.namedItem("automatic_lifecycle"), undefined);
   context.setHandler(async () => automaticSnapshot);
   form.submit(event()); await flush();
@@ -363,8 +372,13 @@ test("existing legacy opt-outs require deliberate one-time upgrade", async () =>
   const upgrade = findButton(context.settings.element, "Enable automatic renewals");
   assert.ok(upgrade);
   assert.equal(context.calls.length, 1);
+  const form = context.settings.element.querySelector("[data-hosted-configure]");
+  context.setHandler(async () => state);
+  form.submit(event()); await flush();
+  assert.equal(context.calls.at(-1).automatic_lifecycle, false);
+  assert.equal(context.settings.snapshot.automatic_lifecycle, false);
   context.setHandler(async () => ({...state, automatic_lifecycle: true}));
-  upgrade.click(); await flush();
+  findButton(context.settings.element, "Enable automatic renewals").click(); await flush();
   assert.equal(context.calls.at(-1).automatic_lifecycle, true);
   assert.equal(findButton(context.settings.element, "Enable automatic renewals"), undefined);
 });
@@ -526,7 +540,7 @@ test("owner-approved reconnect uses deliberate short confirmation without checkb
   const form = settings.element.querySelector("[data-hosted-reconnect]");
   assert.equal(form.elements.namedItem("reconnect_consent"), undefined);
   assert.equal(form.elements.namedItem("confirm_reconnect"), undefined);
-  findButton(form, "Reconnect").click();
+  form.submit(event()); // Pressing Enter must be prevented from navigating.
   assert.equal(calls.length, 1);
   assert.ok(settings.element.querySelector("[data-hosted-confirmation]"));
   findButton(settings.element, "Cancel").click();
@@ -573,6 +587,21 @@ function guidedSetup(state = snapshot) {
   fixture.timers = timers;
   return fixture;
 }
+
+test("guided polling preserves confirmation until the connection meaningfully changes", async () => {
+  const h = guidedSetup({...snapshot, state: "pairing_pending"});
+  await h.settings.load("entry-1");
+  findButton(h.settings.element, "Reconnect").click();
+  assert.equal(h.settings.confirmation.kind, "reconnect");
+  h.setHandler(async () => ({...snapshot, state: "pairing_wait"}));
+  await h.tick();
+  assert.equal(h.settings.confirmation.kind, "reconnect");
+  assert.ok(findButton(h.settings.element, "Agree & reconnect"));
+  h.setHandler(async () => ({...snapshot, state: "candidate_saved"}));
+  await h.tick();
+  assert.equal(h.settings.confirmation, null);
+  h.settings.stop();
+});
 
 test("guided connection polls at the advertised interval then verifies without maintenance opt-in", async () => {
   const h = guidedSetup(); await h.settings.load("entry-1");
