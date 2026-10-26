@@ -248,6 +248,30 @@ test("pristine reconnect remains read-only and leads to first connection without
 });
 
 
+test("mobile consent checkbox aligns with its text and the account link has breathing room", async ({page}) => {
+  await openCloud(page);
+  const consentBox = consent(page);
+  const position = await consentBox.evaluate(input => {
+    const left = input.getBoundingClientRect();
+    const text = input.closest("label").querySelector("span").getBoundingClientRect();
+    return {checkboxRight: left.right, textLeft: text.left,
+      checkboxTop: left.top, textTop: text.top};
+  });
+  expect(position.checkboxRight).toBeLessThan(position.textLeft);
+  expect(Math.abs(position.checkboxTop - position.textTop)).toBeLessThan(22);
+  await page.evaluate(async () => {
+    window.hostedFixture.state = {...window.hostedFixture.state, state: "connected",
+      automatic_lifecycle: true, credential_status: "current", credential_expires_at: "2027-01-01T00:00:00Z",
+      account_url: "https://account.example.test/account"};
+    const panel = document.querySelector("daylight-import-panel");
+    await panel._hostedSettings.load("entry-1");
+  });
+  const portal = page.getByRole("link", {name: "Open account portal", exact: true});
+  await expect(portal).toBeVisible();
+  expect(await portal.evaluate(a => parseFloat(getComputedStyle(a).marginTop))).toBeGreaterThanOrEqual(16);
+  await expect(page.getByRole("checkbox", {name: "Automatically maintain this connection"})).toHaveCount(0);
+});
+
 test("guided approval completes automatically with advanced controls collapsed", async ({page}) => {
   await page.clock.install();
   await openCloud(page);
