@@ -59,7 +59,8 @@ test.beforeEach(async ({page}) => {
         const automatic = Object.hasOwn(call, "automatic_lifecycle")
           ? call.automatic_lifecycle
           : firstSetup ? true : fixture.state.automatic_lifecycle;
-        fixture.state = {...fixture.state, configured: true, state: "disconnected",
+        fixture.state = {...fixture.state, configured: true,
+          state: ["not_configured", "configuration_repair"].includes(fixture.state.state) ? "disconnected" : fixture.state.state,
           api_origin: call.api_origin, account_origin: call.account_origin,
           automatic_lifecycle: automatic};
         return structuredClone(fixture.state);
