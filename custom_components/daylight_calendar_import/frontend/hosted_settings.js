@@ -590,50 +590,79 @@ export class HostedConnectionSettings {
       });
       section.append(connection);
     }
-    if (state.state !== "first_connection_required") {
+    // Owner approval is still required on the portal. A focused, deliberate
+    // confirmation supplies the API booleans without a permanent consent form.
+    if (state.state !== "first_connection_required" && state.state !== "not_configured") {
       const reconnect = document.createElement("form");
       reconnect.setAttribute("data-hosted-reconnect", "");
-      reconnect.append(node("h3", "Reconnect with owner approval"), node("p", "Use a fresh approval to repair or replace this installation. The account portal verifies ownership and the current installation. Existing imports and calendar events are kept. Connections with cloud delivery history require separate owner repair.", "settings-help"));
-      const reconnectLabel = node("label", "New installation name");
-      const reconnectName = document.createElement("input");
-      reconnectName.name = "reconnect_label";
-      reconnectName.value = "Home Assistant";
-      reconnectName.required = true;
-      reconnectName.maxLength = 128;
-      reconnectName.disabled = this.busy || blocked;
-      reconnectLabel.append(reconnectName);
-      const reconnectConsent = checkbox("reconnect_consent", "I renew my consent to cloud processing for this new owner-approved connection.");
-      const reconnectConfirmation = checkbox("confirm_reconnect", "I understand that owner approval may replace this installation. Existing imports and calendar events will be kept.");
-      reconnectConsent.input.disabled = reconnectConfirmation.input.disabled = this.busy || blocked;
-      const repair = node("button", "Start owner-approved reconnect");
-      repair.type = "submit";
-      repair.disabled = true;
-      const canReconnect = () => { repair.disabled = this.busy || blocked || state.state === "operation_finishing" || !reconnectConsent.input.checked || !reconnectConfirmation.input.checked; };
-      reconnectConsent.input.addEventListener("change", canReconnect);
-      reconnectConfirmation.input.addEventListener("change", canReconnect);
-      reconnect.append(reconnectLabel, reconnectConsent.label, reconnectConfirmation.label, repair);
-      reconnect.addEventListener("submit", event => {
-        event.preventDefault();
-        if (!reconnectConsent.input.checked || !reconnectConfirmation.input.checked) return;
-        void this.submit("reconnect", {processing_consent: true, installation_label: reconnectName.value, confirm_reconnect: true});
+      reconnect.append(node("h3", "Reconnect Home Assistant"),
+        node("p", "Repair or replace this connection using your Daylight account. Local imports and calendar events remain on this device.", "settings-help"));
+      const label = node("label", "Installation name");
+      const name = document.createElement("input");
+      name.name = "reconnect_label";
+      name.value = "Home Assistant";
+      name.required = true;
+      name.maxLength = 128;
+      name.disabled = this.busy || blocked;
+      label.append(name);
+      const start = node("button", "Reconnect");
+      start.type = "button";
+      start.disabled = this.busy || blocked || state.state === "operation_finishing";
+      start.addEventListener("click", () => {
+        if (!name.value.trim() || name.value.length > 128) return;
+        this.confirmation = {kind: "reconnect", label: name.value};
+        this.render();
       });
-      advanced.append(reconnect);
-
+      reconnect.append(label, start);
+      management.append(reconnect);
     }
 
-    const disconnect = document.createElement("form");
-    disconnect.setAttribute("data-hosted-disconnect", "");
-    const confirmation = checkbox("confirm_disconnect", "Stop hosted work on this installation and request remote disconnection.");
-    confirmation.input.disabled = this.busy;
-    const stop = node("button", "Disconnect");
-    stop.type = "submit";
-    stop.disabled = true;
-    confirmation.input.addEventListener("change", () => { stop.disabled = this.busy || !confirmation.input.checked; });
-    disconnect.append(confirmation.label, stop);
-    disconnect.addEventListener("submit", event => {
-      event.preventDefault();
-      if (confirmation.input.checked === true) void this.submit("disconnect", {confirm_disconnect: true});
-    });
-    advanced.append(disconnect);
+    if (!["disconnected", "first_connection_required", "not_configured"].includes(state.state)) {
+      const disconnect = node("div");
+      disconnect.setAttribute("data-hosted-disconnect", "");
+      disconnect.append(node("h3", "Disconnect Home Assistant"),
+        node("p", "Stop this installation's cloud connection. Local imports and calendars remain unchanged.", "settings-help"));
+      const stop = node("button", "Disconnect");
+      stop.type = "button";
+      stop.disabled = this.busy;
+      stop.addEventListener("click", () => {
+        this.confirmation = {kind: "disconnect"};
+        this.render();
+      });
+      disconnect.append(stop);
+      management.append(disconnect);
+    }
+
+    if (this.confirmation && ["reconnect", "disconnect"].includes(this.confirmation.kind)) {
+      const reconnection = this.confirmation.kind === "reconnect";
+      const confirmation = node("div", "", "hosted-confirmation");
+      confirmation.setAttribute("data-hosted-confirmation", this.confirmation.kind);
+      confirmation.setAttribute("role", "group");
+      confirmation.setAttribute("aria-label", reconnection ? "Confirm reconnection" : "Confirm disconnection");
+      confirmation.append(node("h3", reconnection ? "Reconnect Home Assistant?" : "Disconnect Home Assistant?"));
+      confirmation.append(node("p", reconnection
+        ? "You agree to let Daylight Cloud process selected source content. Approve this new installation through your Daylight account. It may replace the current connection; your local imports and calendar events are kept."
+        : "This will stop hosted work and request revocation of this installation's cloud credentials. Local imports and calendar events are kept."));
+      const buttons = node("div", "", "actions");
+      const cancel = node("button", "Cancel");
+      cancel.type = "button";
+      cancel.addEventListener("click", () => { this.confirmation = null; this.render(); });
+      const confirm = node("button", reconnection ? "Agree & reconnect" : "Confirm disconnect");
+      confirm.type = "button";
+      confirm.disabled = this.busy;
+      confirm.addEventListener("click", () => {
+        if (!this.confirmation) return;
+        if (reconnection) {
+          const label = this.confirmation.label;
+          if (!label || label.length > 128) return;
+          void this.submit("reconnect", {processing_consent: true, installation_label: label, confirm_reconnect: true});
+        } else {
+          void this.submit("disconnect", {confirm_disconnect: true});
+        }
+      });
+      buttons.append(cancel, confirm);
+      confirmation.append(buttons);
+      management.append(confirmation);
+    }
   }
 }
