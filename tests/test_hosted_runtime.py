@@ -51,7 +51,7 @@ async def test_no_configuration_never_constructs_store_or_activates_network(hass
     monkeypatch.setattr("custom_components.daylight_calendar_import.hosted_runtime.HostedCredentialStore", constructor)
     r = await async_setup_hosted_runtime(hass, entry())
     assert r.snapshot() == {
-        "entry_id": "hosted-entry", "configured": False, "automatic_lifecycle": False, "api_origin": None,
+        "entry_id": "hosted-entry", "configured": False, "automatic_lifecycle": False, "reconnect_in_progress": False, "api_origin": None,
         "account_origin": None, "state": "not_configured", "account_url": None,
         "credential_status": None, "credential_expires_at": None,
     }
@@ -304,7 +304,7 @@ async def test_loaded_runtime_wires_entry_store_session_and_trusted_origins(hass
     store.async_load.return_value = CredentialCheckpoint()
     session = object()
     seen = {}
-    controller = object()
+    controller = SimpleNamespace(reconnect_in_progress=False)
 
     def store_factory(*args):
         seen["store_args"] = args
@@ -452,3 +452,11 @@ async def test_cancelled_controller_replaces_previous_authority_with_recovery(ru
     assert r.snapshot()["state"] == "recovery_required"
     assert r.snapshot()["credential_status"] is None
     assert r.snapshot()["credential_expires_at"] is None
+
+
+async def test_snapshot_reports_safe_saved_reconnect_progress(runtime):
+    r, _store = runtime
+    r._controller = SimpleNamespace(reconnect_in_progress=True)
+    assert r.snapshot()["reconnect_in_progress"] is True
+    r._controller.reconnect_in_progress = False
+    assert r.snapshot()["reconnect_in_progress"] is False

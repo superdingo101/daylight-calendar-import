@@ -677,8 +677,8 @@ test("expired codes and retry budgets stop guided work; backend maintenance owns
   const h = guidedSetup(); await h.settings.load("entry-1");
   h.setHandler(async () => ({...snapshot, state: "pairing_pending", pairing: {...pairing, expires_at: "2020-01-01T00:00:00Z"}}));
   await h.settings.submit("connect", {processing_consent: true, installation_label: "Test"});
-  assert.equal(h.settings.pairing, null); assert.equal(h.timers.size, 0);
-  assert.match(h.settings.error, /expired/);
+  assert.equal(h.settings.pairing, null); assert.equal(h.timers.size, 1);
+  assert.equal(h.settings.error, null);
   h.settings.error = null; h.settings.snapshot = {...snapshot, state: "pairing_pending"};
   h.settings.guidedSteps = 124; h.settings._guide(); assert.equal(h.timers.size, 0);
   h.settings.guidedSteps = 0; h.settings.snapshot.automatic_lifecycle = true;
@@ -715,6 +715,37 @@ test("owner-approved reconnect completes on the page even with background mainte
     assert.equal(h.settings.snapshot.state, "connected");
     assert.equal(h.timers.size, 0);
     assert.deepEqual(h.calls.slice(restored ? 1 : 2).map(call => call.action), ["poll", "reconcile"]);
+    h.settings.stop();
+  }
+});
+
+
+test("saved reconnect progress resumes polling and verification after reopening at every phase", async () => {
+  for (const state of ["pairing_pending", "pairing_wait", "pairing_retry", "candidate_saved", "recovery_required"]) {
+    const h = guidedSetup({...snapshot, automatic_lifecycle: true, reconnect_in_progress: true, state});
+    await h.settings.load("entry-1");
+    assert.equal(h.settings.pairing, null);
+    assert.equal(h.timers.size, 1);
+    h.setHandler(async request => ({...snapshot, automatic_lifecycle: true,
+      reconnect_in_progress: request.action === "poll", state: request.action === "poll" ? "candidate_saved" : "connected"}));
+    await h.tick();
+    if (h.settings.snapshot.state === "candidate_saved") await h.tick();
+    assert.equal(h.settings.snapshot.state, "connected");
+    assert.equal(h.settings.guidedReconnect, false);
+    assert.equal(h.timers.size, 0);
+    assert.deepEqual(h.calls.slice(1).map(call => call.action),
+      ["candidate_saved", "recovery_required"].includes(state) ? ["reconcile"] : ["poll", "reconcile"]);
+    h.settings.stop();
+  }
+});
+
+test("saved reconnect flag is boolean and terminal states never resume issuance", async () => {
+  assert.throws(() => validateHostedState({...snapshot, reconnect_in_progress: "yes"}));
+  for (const state of ["fresh_pairing_required", "reconciliation_required", "disconnected", "operation_finishing"]) {
+    const h = guidedSetup({...snapshot, automatic_lifecycle: true, reconnect_in_progress: true, state});
+    await h.settings.load("entry-1");
+    assert.equal(h.timers.size, 0);
+    assert.equal(h.calls.length, 1);
     h.settings.stop();
   }
 });

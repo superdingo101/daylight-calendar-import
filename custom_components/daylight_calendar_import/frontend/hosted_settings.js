@@ -48,10 +48,12 @@ function trustedAccountLink(value, accountOrigin) {
 
 export function validateHostedState(result, {entryId, pairing = false} = {}) {
   const hasPairing = result !== null && typeof result === "object" && Object.hasOwn(result, "pairing");
-  const keys = hasPairing && pairing ? [...STATE_KEYS, "pairing"] : STATE_KEYS;
+  const progressKeys = Object.hasOwn(result || {}, "reconnect_in_progress") ? ["reconnect_in_progress"] : [];
+  const keys = hasPairing && pairing ? [...STATE_KEYS, ...progressKeys, "pairing"] : [...STATE_KEYS, ...progressKeys];
   if (!closed(result, keys) || typeof result.entry_id !== "string" ||
       result.entry_id.length < 1 || result.entry_id.length > 128 ||
       entryId !== undefined && result.entry_id !== entryId ||
+      progressKeys.length > 0 && typeof result.reconnect_in_progress !== "boolean" ||
       typeof result.configured !== "boolean" || typeof result.automatic_lifecycle !== "boolean" ||
       ![null, "current", "overlap"].includes(result.credential_status) ||
       result.credential_expires_at !== null && !deadline(result.credential_expires_at) ||
@@ -132,7 +134,7 @@ const EXPLANATIONS = {
   service_repair: "The saved connection belongs to a different or unknown service. Owner and service reconciliation is required; changing origins does not move credentials.",
   service_unavailable: "Daylight could not be reached. Check status when the service is available.",
   operation_finishing: "A previous operation is still finishing. Use Check and recover connection after it settles.",
-  reconnect_pending: "A fresh owner-approved reconnect is in progress. Approve the new attempt in the account portal, then check approval and recover it explicitly. Previous credentials and local stop remain preserved until verification.",
+  reconnect_pending: "A fresh owner-approved reconnect is in progress. Approve the new attempt in the account portal, then return here to finish automatically. Previous credentials and local stop remain preserved until verification.",
   recovery_required: "Verifying your saved connection…",
   repair_required: "This installation needs owner attention. Open the account portal and reconcile the existing installation.",
   reconciliation_required: "An existing installation needs explicit owner and journal reconciliation before a new connection.",
@@ -144,7 +146,7 @@ const EXPLANATIONS = {
   pairing_pending: "Approve this connection in your Daylight account. This page will finish connecting automatically.",
   pairing_wait: "Waiting for your approval. We will check again automatically.",
   pairing_retry: "Approval checking was interrupted. This approval attempt is still live; automatic checks will resume after the retry delay.",
-  fresh_pairing_required: "A fresh pairing and owner approval are required. Start a new connection deliberately.",
+  fresh_pairing_required: "This approval attempt can no longer finish. Open Manage connection and choose Reconnect for a fresh code and owner approval.",
   rotation_wait: "A previous renewal may still be pending. Wait before issuing another renewal, then check status.",
   automatic_attention_required: "Automatic maintenance needs attention. Approval may have expired, an exchange or renewal may be uncertain, or retries reached a safe limit. Check and recover this connection, then use the owner account portal if reconciliation is required.",
   consent_required: "Cloud processing requires your explicit consent.",
@@ -339,7 +341,8 @@ export class HostedConnectionSettings {
     // The server remains authoritative for polling deadlines and uncertain exchanges.
     if (this.error || this.busy || !this.snapshot) return;
     const state = this.snapshot.state;
-    if (state === "reconnect_pending") this.guidedReconnect = true;
+    if (typeof this.snapshot.reconnect_in_progress === "boolean") this.guidedReconnect = this.snapshot.reconnect_in_progress;
+    else if (state === "reconnect_pending") this.guidedReconnect = true;
     if (this.snapshot.automatic_lifecycle && !this.guidedReconnect) return;
     const polling = ["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"].includes(state);
     const verifying = ["candidate_saved", "recovery_required"].includes(state);
@@ -350,10 +353,8 @@ export class HostedConnectionSettings {
       return;
     }
     if (this.pairing && Date.parse(this.pairing.expires_at) <= Date.now()) {
+      // Let the controller classify expiry (including approval already exchanged).
       this.pairing = null;
-      this.error = "This connection code expired. Check connection status before starting again.";
-      this.render();
-      return;
     }
     const generation = this.generation;
     this.timer = this.schedule(() => {
@@ -411,6 +412,7 @@ export class HostedConnectionSettings {
       const draft = this._captureDraft();
       this.snapshot = result;
       this._subscribe();
+      if (!unchanged || this.timer === null) this._guide();
       if (!unchanged) {
         this.render();
         this._restoreDraft(draft);
@@ -564,6 +566,9 @@ export class HostedConnectionSettings {
       accountLink.className = "hosted-account-link";
       section.append(accountLink);
     } else section.append(node("p", "Use the owner account portal for installation reconciliation. Pairing instructions provide the approval link when starting a connection.", "settings-help"));
+    if (!this.pairing && ["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"].includes(state.state)) {
+      section.append(node("p", "Already approved? Keep this page open to finish automatically. If you still need to approve, use the code you saved privately. Codes are not restored after leaving this page; if yours is unavailable, wait for this attempt to expire, then reconnect for a fresh code.", "settings-help"));
+    }
     if (this.pairing) {
       const instructions = node("div");
       instructions.setAttribute("data-hosted-pairing", "");

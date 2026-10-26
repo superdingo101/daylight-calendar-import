@@ -69,6 +69,11 @@ class HostedLifecycleController:
         self._reconciler = reconciler
         self._lock = asyncio.Lock()
 
+    @property
+    def reconnect_in_progress(self) -> bool:
+        """Expose saved intent without disclosing credentials or pairing secrets."""
+        return self._store.snapshot.reconnect is not None
+
     def _require_service(self, checkpoint: Any) -> None:
         if checkpoint.service_binding != self._transport.service_binding:
             raise HostedTransportError("service_reconciliation_required")
