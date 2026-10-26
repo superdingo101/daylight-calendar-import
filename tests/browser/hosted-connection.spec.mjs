@@ -53,8 +53,15 @@ test.beforeEach(async ({page}) => {
       fixture.calls.push(structuredClone(call));
       if (call.type.endsWith("/get")) return structuredClone(fixture.state);
       if (call.type.endsWith("/configure")) {
-        fixture.state = {...fixture.state, api_origin: call.api_origin, account_origin: call.account_origin,
-          automatic_lifecycle: call.automatic_lifecycle};
+        // Simulate the backend's first-time-only default. A configuration
+        // repair reports configured:false despite already saved preferences.
+        const firstSetup = fixture.state.state === "not_configured";
+        const automatic = Object.hasOwn(call, "automatic_lifecycle")
+          ? call.automatic_lifecycle
+          : firstSetup ? true : fixture.state.automatic_lifecycle;
+        fixture.state = {...fixture.state, configured: true, state: "disconnected",
+          api_origin: call.api_origin, account_origin: call.account_origin,
+          automatic_lifecycle: automatic};
         return structuredClone(fixture.state);
       }
       if (call.type.endsWith("/action")) {
@@ -219,10 +226,26 @@ test("a legacy connection keeps its opt-out until the one-time renewal upgrade",
   await page.getByText("Advanced settings & troubleshooting", {exact: true}).click();
   await page.getByText("Troubleshooting & developer settings", {exact: true}).click();
   await page.getByRole("button", {name: "Save service configuration", exact: true}).click();
-  await expect.poll(() => page.evaluate(() => window.hostedFixture.calls.filter(c => c.type.endsWith("/configure")).at(-1).automatic_lifecycle)).toBe(false);
+  await expect.poll(() => page.evaluate(() => window.hostedFixture.calls.some(c => c.type.endsWith("/configure")))).toBe(true);
+  expect(await page.evaluate(() => Object.hasOwn(window.hostedFixture.calls.filter(c => c.type.endsWith("/configure")).at(-1), "automatic_lifecycle"))).toBe(false);
   await page.getByRole("button", {name: "Enable automatic renewals", exact: true}).click();
   await expect.poll(() => page.evaluate(() => window.hostedFixture.state.automatic_lifecycle)).toBe(true);
   await expect(page.getByRole("button", {name: "Enable automatic renewals", exact: true})).toHaveCount(0);
+});
+
+test("repairing saved origins cannot silently override a legacy maintenance opt-out", async ({page}) => {
+  await page.evaluate(() => {
+    window.hostedFixture.state = {...window.hostedFixture.state, state: "configuration_repair",
+      configured: false, api_origin: null, account_origin: null, automatic_lifecycle: false};
+  });
+  await page.getByRole("navigation", {name: "Daylight views"}).getByRole("button", {name: "Settings", exact: true}).click();
+  await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
+  await page.getByLabel("API origin", {exact: true}).fill("https://api.example.test");
+  await page.getByLabel("Account origin", {exact: true}).fill("https://account.example.test");
+  await page.getByRole("button", {name: "Save service configuration", exact: true}).click();
+  await expect.poll(() => page.evaluate(() => window.hostedFixture.state.configured)).toBe(true);
+  expect(await page.evaluate(() => window.hostedFixture.state.automatic_lifecycle)).toBe(false);
+  expect(await page.evaluate(() => Object.hasOwn(window.hostedFixture.calls.find(c => c.type.endsWith("/configure")), "automatic_lifecycle"))).toBe(false);
 });
 
 test("reconnect uses concise confirmation and fresh transient owner approval", async ({page}) => {
@@ -242,6 +265,8 @@ test("reconnect uses concise confirmation and fresh transient owner approval", a
   await expect(nameField).toHaveValue("Kitchen");
   await expect(page.getByLabel("API origin", {exact: true})).toHaveValue("https://unsaved.example.test");
   await page.getByRole("button", {name: "Reconnect", exact: true}).click();
+  await expect(nameField).toBeDisabled();
+  await expect(page.getByText("Installation name: Kitchen", {exact: true})).toBeVisible();
   await page.getByRole("button", {name: "Agree & reconnect", exact: true}).click();
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toBeVisible();
   await expect(page.getByRole("button", {name: "Check pairing approval", exact: true})).toBeEnabled();
