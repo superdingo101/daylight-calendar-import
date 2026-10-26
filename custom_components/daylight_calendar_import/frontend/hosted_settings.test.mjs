@@ -70,7 +70,7 @@ test("hosted client sends only explicit closed requests and never secrets", asyn
   assert.deepEqual(calls, [
     {type: "daylight_calendar_import/hosted/get"},
     {type: "daylight_calendar_import/hosted/get", entry_id: "entry-1"},
-    {type: "daylight_calendar_import/hosted/configure", entry_id: "entry-1", api_origin: snapshot.api_origin, account_origin: snapshot.account_origin, automatic_lifecycle: true},
+    {type: "daylight_calendar_import/hosted/configure", entry_id: "entry-1", api_origin: snapshot.api_origin, account_origin: snapshot.account_origin},
     {type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "connect", processing_consent: true, installation_label: "Home"},
     {type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "disconnect", confirm_disconnect: true},
   ]);
@@ -362,9 +362,26 @@ test("new service settings enable bounded background maintenance without a check
   assert.equal(form.elements.namedItem("automatic_lifecycle"), undefined);
   context.setHandler(async () => automaticSnapshot);
   form.submit(event()); await flush();
-  assert.equal(context.calls.at(-1).automatic_lifecycle, true);
+  assert.equal(Object.hasOwn(context.calls.at(-1), "automatic_lifecycle"), false);
   assert.equal(context.settings.element.querySelector("[data-hosted-configure]").elements.namedItem("automatic_lifecycle"), undefined);
 });
+test("configuration repair preserves an existing opt-out despite configured:false", async () => {
+  const repairing = {...snapshot, configured: false, api_origin: null, account_origin: null,
+    automatic_lifecycle: false, state: "configuration_repair"};
+  const context = setup(repairing);
+  await context.settings.load("entry-1");
+  const form = context.settings.element.querySelector("[data-hosted-configure]");
+  form.elements.namedItem("api_origin").value = snapshot.api_origin;
+  form.elements.namedItem("account_origin").value = snapshot.account_origin;
+  context.setHandler(async request => {
+    assert.equal(Object.hasOwn(request, "automatic_lifecycle"), false);
+    return {...snapshot, state: "disconnected"};
+  });
+  form.submit(event()); await flush();
+  assert.equal(context.settings.snapshot.automatic_lifecycle, false);
+  assert.equal(context.calls.length, 2);
+});
+
 test("existing legacy opt-outs require deliberate one-time upgrade", async () => {
   const state = {...snapshot, state: "connected", credential_status: "current"};
   const context = setup(state);
@@ -375,7 +392,7 @@ test("existing legacy opt-outs require deliberate one-time upgrade", async () =>
   const form = context.settings.element.querySelector("[data-hosted-configure]");
   context.setHandler(async () => state);
   form.submit(event()); await flush();
-  assert.equal(context.calls.at(-1).automatic_lifecycle, false);
+  assert.equal(Object.hasOwn(context.calls.at(-1), "automatic_lifecycle"), false);
   assert.equal(context.settings.snapshot.automatic_lifecycle, false);
   context.setHandler(async () => ({...state, automatic_lifecycle: true}));
   findButton(context.settings.element, "Enable automatic renewals").click(); await flush();
@@ -488,7 +505,7 @@ test("automatic status updates preserve unsaved origins without rebuilding uncha
   assert.equal(changed.elements.namedItem("api_origin").value, "https://new-api.example.test");
   changed.submit(event()); await flush();
   assert.equal(context.calls.at(-1).api_origin, "https://new-api.example.test");
-  assert.equal(context.calls.at(-1).automatic_lifecycle, true);
+  assert.equal(Object.hasOwn(context.calls.at(-1), "automatic_lifecycle"), false);
 });
 
 
@@ -546,9 +563,12 @@ test("owner-approved reconnect uses deliberate short confirmation without checkb
   assert.equal(calls.length, 1);
   assert.ok(settings.element.querySelector("[data-hosted-confirmation]"));
   assert.equal(settings.element.querySelector("[data-hosted-reconnect]").elements.namedItem("reconnect_label").value, "Kitchen");
+  assert.equal(settings.element.querySelector("[data-hosted-reconnect]").elements.namedItem("reconnect_label").disabled, true);
+  assert.ok(texts(settings.element).includes("Installation name: Kitchen"));
   findButton(settings.element, "Cancel").click();
   assert.equal(calls.length, 1);
   assert.equal(settings.element.querySelector("[data-hosted-reconnect]").elements.namedItem("reconnect_label").value, "Kitchen");
+  assert.equal(settings.element.querySelector("[data-hosted-reconnect]").elements.namedItem("reconnect_label").disabled, false);
   assert.equal(settings.element.querySelector("[data-hosted-configure]").elements.namedItem("api_origin").value, "https://draft.example.test");
   findButton(settings.element, "Reconnect").click();
   setHandler(async () => ({...snapshot, state: "reconnect_pending", pairing}));
