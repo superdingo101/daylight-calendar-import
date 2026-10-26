@@ -11,6 +11,7 @@ const openCloud = async page => {
   await expect(page.getByRole("heading", {name: "Daylight connection", exact: true})).toBeVisible();
   await expect(page.getByLabel("Installation name", {exact: true})).toBeVisible();
   await page.getByText("Advanced settings & troubleshooting", {exact: true}).click();
+  await page.getByText("Troubleshooting & developer settings", {exact: true}).click();
 };
 const consent = page => page.getByRole("checkbox", {name: "I agree to send selected source content to Daylight for cloud processing.", exact: true});
 const assertNoStoredSecrets = async page => {
@@ -111,10 +112,12 @@ test("native connection needs consent and confirmation, with transient approval 
   await expect(page.getByRole("button", {name: "Start new connection", exact: true})).toBeDisabled();
 
   await page.getByText("Advanced settings & troubleshooting", {exact: true}).click();
+  await page.getByText("Manage connection", {exact: true}).click();
   const disconnect = page.getByRole("button", {name: "Disconnect", exact: true});
-  await expect(disconnect).toBeDisabled();
-  await page.getByRole("checkbox", {name: "Stop hosted work on this installation and request remote disconnection.", exact: true}).check();
   await disconnect.click();
+  await expect(page.getByText("Disconnect Home Assistant?", {exact: true})).toBeVisible();
+  expect((await actions(page)).length).toBe(1);
+  await page.getByRole("button", {name: "Confirm disconnect", exact: true}).click();
   await expect(page.getByText("Hosted work is stopped locally. Remote disconnection is unconfirmed; reconcile it in the account portal.", {exact: true})).toBeVisible();
   expect(await actions(page)).toEqual([
     {type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "connect",
@@ -164,9 +167,10 @@ test("settled operation recovery is explicit and does not replay creation or ren
   await page.getByRole("navigation", {name: "Daylight views"}).getByRole("button", {name: "Settings", exact: true}).click();
   await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
   await page.getByText("Advanced settings & troubleshooting", {exact: true}).click();
+  await page.getByText("Troubleshooting & developer settings", {exact: true}).click();
   const recover = page.getByRole("button", {name: "Check and recover connection", exact: true});
   await expect(recover).toBeEnabled();
-  await expect(page.getByRole("button", {name: "Renew credentials", exact: true})).toBeDisabled();
+  await expect(page.getByRole("button", {name: "Renew credentials", exact: true})).toHaveCount(0);
   expect(await actions(page)).toEqual([]);
   await recover.click();
   await expect(consent(page)).not.toBeChecked();
@@ -174,20 +178,17 @@ test("settled operation recovery is explicit and does not replay creation or ren
 });
 
 
-test("opt-in maintenance refreshes safe status and clears transient approval", async ({page}) => {
+test("new configuration defaults to background maintenance and retains drafts during safe updates", async ({page}) => {
   await openCloud(page);
-  const automatic = page.getByRole("checkbox", {name: "Automatically maintain this connection", exact: true});
-  await expect(automatic).not.toBeChecked();
-  await automatic.check();
+  await expect(page.getByRole("checkbox", {name: "Automatically maintain this connection"})).toHaveCount(0);
   await page.getByRole("button", {name: "Save service configuration", exact: true}).click();
-  await expect(automatic).toBeChecked();
+  await expect.poll(() => page.evaluate(() => window.hostedFixture.state.automatic_lifecycle)).toBe(true);
   await expect.poll(() => page.evaluate(() => typeof window.hostedFixture.subscriber)).toBe("function");
   expect(await actions(page)).toEqual([]);
   await consent(page).check();
   await page.getByRole("button", {name: "Start new connection", exact: true}).click();
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toBeVisible();
   await page.getByLabel("API origin", {exact: true}).fill("https://draft-api.example.test");
-  await automatic.uncheck();
   await page.getByLabel("API origin", {exact: true}).focus();
   await page.evaluate(() => {
     window.hostedFixture.state.state = "pairing_retry";
@@ -196,7 +197,6 @@ test("opt-in maintenance refreshes safe status and clears transient approval", a
   await expect(page.getByText("Approval checking was interrupted.", {exact: false})).toBeVisible();
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toBeVisible();
   await expect(page.getByLabel("API origin", {exact: true})).toHaveValue("https://draft-api.example.test");
-  await expect(automatic).not.toBeChecked();
   await expect(page.getByLabel("API origin", {exact: true})).toBeFocused();
   await page.evaluate(() => {
     const fixture = window.hostedFixture;
@@ -210,16 +210,17 @@ test("opt-in maintenance refreshes safe status and clears transient approval", a
   await expect.poll(() => page.evaluate(() => window.hostedFixture.subscriber)).toBe(null);
 });
 
-
-test("reconnect needs renewed consent, replacement confirmation and fresh transient owner approval", async ({page}) => {
+test("reconnect uses concise confirmation and fresh transient owner approval", async ({page}) => {
   await openCloud(page);
-  const reconnect = page.getByRole("button", {name: "Start owner-approved reconnect", exact: true});
-  await expect(reconnect).toBeDisabled();
-  await page.getByRole("checkbox", {name: "I renew my consent to cloud processing for this new owner-approved connection.", exact: true}).check();
-  await expect(reconnect).toBeDisabled();
-  await page.getByRole("checkbox", {name: "I understand that owner approval may replace this installation. Existing imports and calendar events will be kept.", exact: true}).check();
-  await expect(reconnect).toBeEnabled();
-  await reconnect.click();
+  await page.getByText("Manage connection", {exact: true}).click();
+  await expect(page.getByRole("checkbox", {name: "I renew my consent"})).toHaveCount(0);
+  await page.getByRole("button", {name: "Reconnect", exact: true}).click();
+  await expect(page.getByText("Reconnect Home Assistant?", {exact: true})).toBeVisible();
+  expect(await actions(page)).toEqual([]);
+  await page.getByRole("button", {name: "Cancel", exact: true}).click();
+  expect(await actions(page)).toEqual([]);
+  await page.getByRole("button", {name: "Reconnect", exact: true}).click();
+  await page.getByRole("button", {name: "Agree & reconnect", exact: true}).click();
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toBeVisible();
   await expect(page.getByRole("button", {name: "Check pairing approval", exact: true})).toBeEnabled();
   expect(await actions(page)).toEqual([{type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "reconnect", processing_consent: true, installation_label: "Home Assistant", confirm_reconnect: true}]);
@@ -227,19 +228,19 @@ test("reconnect needs renewed consent, replacement confirmation and fresh transi
   await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toHaveCount(0);
   await page.getByText("Advanced settings & troubleshooting", {exact: true}).click();
+  await page.getByText("Troubleshooting & developer settings", {exact: true}).click();
   await expect(page.getByRole("button", {name: "Check pairing approval", exact: true})).toBeEnabled();
   expect((await actions(page)).map(call => call.action)).toEqual(["reconnect"]);
 });
 
-
 test("pristine reconnect remains read-only and leads to first connection without reconfiguration", async ({page}) => {
   await page.evaluate(() => { window.hostedFixture.pristine = true; });
   await openCloud(page);
-  await page.getByRole("checkbox", {name: "I renew my consent to cloud processing for this new owner-approved connection.", exact: true}).check();
-  await page.getByRole("checkbox", {name: "I understand that owner approval may replace this installation. Existing imports and calendar events will be kept.", exact: true}).check();
-  await page.getByRole("button", {name: "Start owner-approved reconnect", exact: true}).click();
+  await page.getByText("Manage connection", {exact: true}).click();
+  await page.getByRole("button", {name: "Reconnect", exact: true}).click();
+  await page.getByRole("button", {name: "Agree & reconnect", exact: true}).click();
   await expect(page.getByText("Connect Home Assistant to your Daylight account.", {exact: false})).toBeVisible();
-  await expect(page.getByRole("button", {name: "Start owner-approved reconnect", exact: true})).toHaveCount(0);
+  await expect(page.getByRole("button", {name: "Reconnect", exact: true})).toHaveCount(0);
   await consent(page).check();
   await page.getByRole("button", {name: "Start new connection", exact: true}).click();
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toBeVisible();
@@ -283,6 +284,7 @@ test("automatic checks keep Advanced drafts and caret while approval is pending"
   const origin = page.getByLabel("API origin", {exact: true});
   await origin.fill("https://draft-api.example.test");
   await origin.focus();
+  await page.getByText("Manage connection", {exact: true}).click();
   const replacement = page.getByLabel("New installation name", {exact: true});
   await replacement.fill("Replacement draft");
   await replacement.focus();
