@@ -75,7 +75,7 @@ async def websocket_hosted_get(hass: HomeAssistant, connection: Any, msg: dict[s
     vol.Required("entry_id"): cv.string,
     vol.Required("api_origin"): vol.All(str, vol.Length(min=1, max=2048)),
     vol.Required("account_origin"): vol.All(str, vol.Length(min=1, max=2048)),
-    vol.Optional("automatic_lifecycle", default=False): bool,
+    vol.Optional("automatic_lifecycle", default=True): bool,
 })
 @websocket_api.async_response
 async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
@@ -91,7 +91,7 @@ async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: 
             if runtime.busy:
                 raise HostedRuntimeError("hosted_busy")
             canonical = asdict(service)
-            automatic = msg.get("automatic_lifecycle", False)
+            automatic = msg.get("automatic_lifecycle", True)
             if (entry.options.get(CONF_HOSTED_SERVICE) == canonical
                     and (entry.options.get(CONF_HOSTED_AUTOMATIC) is True) == automatic):
                 result = runtime.snapshot()
