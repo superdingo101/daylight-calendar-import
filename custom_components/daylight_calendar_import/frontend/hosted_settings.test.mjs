@@ -56,7 +56,7 @@ test("hosted client sends only explicit closed requests and never secrets", asyn
   assert.deepEqual(calls, [
     {type: "daylight_calendar_import/hosted/get"},
     {type: "daylight_calendar_import/hosted/get", entry_id: "entry-1"},
-    {type: "daylight_calendar_import/hosted/configure", entry_id: "entry-1", api_origin: snapshot.api_origin, account_origin: snapshot.account_origin, automatic_lifecycle: false},
+    {type: "daylight_calendar_import/hosted/configure", entry_id: "entry-1", api_origin: snapshot.api_origin, account_origin: snapshot.account_origin, automatic_lifecycle: true},
     {type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "connect", processing_consent: true, installation_label: "Home"},
     {type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "disconnect", confirm_disconnect: true},
   ]);
@@ -133,10 +133,10 @@ test("connection UI needs explicit consent and disconnect confirmation, with no 
   assert.equal(approve.rel, "noopener noreferrer");
   assert.equal(calls.length, 2);
   const disconnect = settings.element.querySelector("[data-hosted-disconnect]");
-  disconnect.submit(event()); await flush();
+  findButton(disconnect, "Disconnect").click();
   assert.equal(calls.length, 2);
-  const confirm = disconnect.elements.namedItem("confirm_disconnect");
-  confirm.checked = true; confirm.change(); disconnect.submit(event()); await flush();
+  assert.equal(settings.confirmation.kind, "disconnect");
+  findButton(settings.element, "Confirm disconnect").click(); await flush();
   assert.equal(calls[2].action, "disconnect");
   assert.equal(calls[2].confirm_disconnect, true);
   assert.equal(settings.pairing, null);
@@ -153,7 +153,7 @@ test("configuration and actions share admission and sanitize uncertain failures"
   assert.equal(settings.busy, true);
   finish({...snapshot, state: "connected", credential_status: "current"}); await action;
   assert.deepEqual(busy, [true, false]);
-  assert.equal(findButton(settings.element, "Renew credentials").disabled, false);
+  assert.equal(findButton(settings.element, "Renew credentials"), undefined);
   setHandler(async () => { throw new Error("secret token and verifier"); });
   await settings.submit("rotate");
   assert.equal(texts(settings.element).some(text => /secret token/.test(text)), false);
@@ -169,7 +169,7 @@ test("owner repair and overlap retain only safe explicit actions and verified ac
   const {settings, setHandler} = setup({...snapshot, state: "repair_required", credential_status: "overlap",
     credential_expires_at: "2026-12-01T00:00:00Z", account_url: "https://account.example.test/account"});
   await settings.load("entry-1");
-  assert.equal(findButton(settings.element, "Renew credentials").disabled, true);
+  assert.equal(findButton(settings.element, "Renew credentials"), undefined);
   assert.equal(settings.element.querySelector("[data-hosted-connect]"), null);
   const portal = settings.element.querySelectorAll("a").find(anchor => anchor.textContent === "Open account portal");
   assert.equal(portal.href, "https://account.example.test/account");
@@ -177,7 +177,7 @@ test("owner repair and overlap retain only safe explicit actions and verified ac
   for (const state of ["storage_repair", "configuration_repair", "service_repair", "operation_finishing", "remote_disconnect_unconfirmed", "new_future_state"]) {
     setHandler(async () => ({...snapshot, state})); await settings.load("entry-1");
     assert.equal(settings.element.querySelector("[data-hosted-connect]"), null);
-    assert.equal(findButton(settings.element, "Renew credentials").disabled, true);
+    assert.equal(findButton(settings.element, "Renew credentials"), undefined);
     assert.equal(settings.element.querySelector("[data-hosted-disconnect]") !== null, true);
   }
 });
@@ -284,8 +284,8 @@ test("a settled previous operation has an explicit recovery control without muta
   await settings.load("entry-1");
   const check = findButton(settings.element, "Check and recover connection");
   assert.equal(check.disabled, false);
-  assert.equal(findButton(settings.element, "Check pairing approval").disabled, true);
-  assert.equal(findButton(settings.element, "Renew credentials").disabled, true);
+  assert.equal(findButton(settings.element, "Check pairing approval"), undefined);
+  assert.equal(findButton(settings.element, "Renew credentials"), undefined);
   assert.equal(calls.length, 1);
   check.click(); await flush();
   assert.equal(calls.length, 2);
@@ -332,17 +332,27 @@ function subscribedContext(response = automaticSnapshot) {
   return {...context, subscriptions};
 }
 
-test("automatic maintenance checkbox is explicit and saved with trusted origins", async () => {
+test("new service settings enable bounded background maintenance without a checkbox", async () => {
   const context = setup();
   await context.settings.load("entry-1");
   const form = context.settings.element.querySelector("[data-hosted-configure]");
-  const checkbox = form.elements.namedItem("automatic_lifecycle");
-  assert.equal(checkbox.checked, false);
-  checkbox.checked = true;
+  assert.equal(form.elements.namedItem("automatic_lifecycle"), undefined);
   context.setHandler(async () => automaticSnapshot);
   form.submit(event()); await flush();
   assert.equal(context.calls.at(-1).automatic_lifecycle, true);
-  assert.equal(context.settings.element.querySelector("[data-hosted-configure]").elements.namedItem("automatic_lifecycle").checked, true);
+  assert.equal(context.settings.element.querySelector("[data-hosted-configure]").elements.namedItem("automatic_lifecycle"), undefined);
+});
+test("existing legacy opt-outs require deliberate one-time upgrade", async () => {
+  const state = {...snapshot, state: "connected", credential_status: "current"};
+  const context = setup(state);
+  await context.settings.load("entry-1");
+  const upgrade = findButton(context.settings.element, "Enable automatic renewals");
+  assert.ok(upgrade);
+  assert.equal(context.calls.length, 1);
+  context.setHandler(async () => ({...state, automatic_lifecycle: true}));
+  upgrade.click(); await flush();
+  assert.equal(context.calls.at(-1).automatic_lifecycle, true);
+  assert.equal(findButton(context.settings.element, "Enable automatic renewals"), undefined);
 });
 
 test("admin subscription fetches fresh safe state and retains only current pending approval", async () => {
@@ -436,23 +446,21 @@ test("busy outage renders and late responses preserve only the same-session reco
 });
 
 
-test("automatic status updates preserve unsaved origins and opt-out without rebuilding unchanged forms", async () => {
+test("automatic status updates preserve unsaved origins without rebuilding unchanged forms", async () => {
   const context = subscribedContext();
   const {settings, subscriptions, setHandler} = context;
   await settings.load("entry-1"); await flush();
   const form = settings.element.querySelector("[data-hosted-configure]");
   form.elements.namedItem("api_origin").value = "https://new-api.example.test";
-  form.elements.namedItem("automatic_lifecycle").checked = false;
   subscriptions[0].callback({entry_id: "entry-1"}); await flush();
   assert.equal(settings.element.querySelector("[data-hosted-configure]"), form);
   setHandler(async () => ({...automaticSnapshot, state: "service_unavailable"}));
   subscriptions[0].callback({entry_id: "entry-1"}); await flush();
   const changed = settings.element.querySelector("[data-hosted-configure]");
   assert.equal(changed.elements.namedItem("api_origin").value, "https://new-api.example.test");
-  assert.equal(changed.elements.namedItem("automatic_lifecycle").checked, false);
   changed.submit(event()); await flush();
   assert.equal(context.calls.at(-1).api_origin, "https://new-api.example.test");
-  assert.equal(context.calls.at(-1).automatic_lifecycle, false);
+  assert.equal(context.calls.at(-1).automatic_lifecycle, true);
 });
 
 
@@ -497,20 +505,21 @@ test("changed automatic status restores the input focused inside the owning shad
 });
 
 
-test("owner-approved reconnect requires fresh consent and confirmation and clears codes on view loss", async () => {
+test("owner-approved reconnect uses deliberate short confirmation without checkbox forms", async () => {
   const context = setup({...snapshot, state: "repair_required"});
   const {settings, calls, setHandler} = context;
   await settings.load("entry-1");
   const form = settings.element.querySelector("[data-hosted-reconnect]");
-  const consent = form.elements.namedItem("reconnect_consent");
-  const confirmation = form.elements.namedItem("confirm_reconnect");
-  const button = findButton(form, "Start owner-approved reconnect");
-  assert.equal(button.disabled, true);
-  form.submit(event()); await flush(); assert.equal(calls.length, 1);
-  consent.checked = true; consent.change(); assert.equal(button.disabled, true);
-  confirmation.checked = true; confirmation.change(); assert.equal(button.disabled, false);
+  assert.equal(form.elements.namedItem("reconnect_consent"), undefined);
+  assert.equal(form.elements.namedItem("confirm_reconnect"), undefined);
+  findButton(form, "Reconnect").click();
+  assert.equal(calls.length, 1);
+  assert.ok(settings.element.querySelector("[data-hosted-confirmation]"));
+  findButton(settings.element, "Cancel").click();
+  assert.equal(calls.length, 1);
+  findButton(settings.element, "Reconnect").click();
   setHandler(async () => ({...snapshot, state: "reconnect_pending", pairing}));
-  form.submit(event()); await flush();
+  findButton(settings.element, "Agree & reconnect").click(); await flush();
   assert.deepEqual(calls.at(-1), {type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "reconnect", processing_consent: true, installation_label: "Home Assistant", confirm_reconnect: true});
   assert.equal(settings.pairing.user_code, pairing.user_code);
   assert.equal(findButton(settings.element, "Check pairing approval").disabled, false);
@@ -519,7 +528,6 @@ test("owner-approved reconnect requires fresh consent and confirmation and clear
     await assert.rejects(() => runHostedAction({callWS: () => { throw Error("No request"); }}, "entry-1", "reconnect", {processing_consent: true, installation_label: "Home", confirm_reconnect}), /Confirm/);
   }
 });
-
 
 test("pristine reconnect result routes directly to a usable first connection form", async () => {
   const context = setup();
@@ -617,15 +625,12 @@ test("guided checks preserve draft service origins, replacement fields and focus
   globalThis.document.activeElement = field;
   const name = h.settings.element.querySelectorAll("input").find(input => input.name === "reconnect_label");
   name.value = "Replacement draft";
-  const confirmation = h.settings.element.querySelectorAll("input").find(input => input.name === "confirm_reconnect");
-  confirmation.checked = true;
   h.setHandler(async () => ({...snapshot, state: "pairing_pending"}));
   await h.tick();
   field = h.settings.element.querySelectorAll("input").find(input => input.name === "api_origin");
   assert.equal(field.value, "https://draft.example.test");
   assert.equal(field.focused, true);
   assert.equal(h.settings.element.querySelectorAll("input").find(input => input.name === "reconnect_label").value, "Replacement draft");
-  assert.equal(h.settings.element.querySelectorAll("input").find(input => input.name === "confirm_reconnect").checked, true);
   globalThis.document.activeElement = null;
   h.settings.stop();
 });
