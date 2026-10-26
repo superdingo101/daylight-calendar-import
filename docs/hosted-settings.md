@@ -5,13 +5,16 @@ in the Daylight panel. Local/BYO and Direct IMAP remain independent. This does
 not select a hosted parser, activate the private service or enable delivery.
 
 Configure the reviewed API and account HTTPS origins explicitly. Configuration
-records no processing consent. With automatic maintenance off (the default),
-it makes no hosted request. The optional **Automatically maintain this connection**
-checkbox enables [bounded maintenance](hosted-automatic-maintenance.md) only for
-already-consented saved material. A changed service
-never relabels private credentials; saved provenance must still match before any
-saved material can be sent. Failed configuration reload keeps the old owner
-closed until restart/repair, including a platform unload failure.
+records no processing consent. New service configurations default to
+[bounded maintenance](hosted-automatic-maintenance.md). The checkbox was removed:
+automatic status verification, approval polling and safe renewal are normal
+connection behavior, not a second processing consent. Maintenance only acts on
+previously consented, service-bound material; it cannot start a connection,
+select a parser or send imported content. A saved legacy opt-out stays off until
+the administrator deliberately uses **Enable automatic renewals** on an existing
+connected installation. This one-time upgrade avoids silently changing an old
+credential's stored policy. A changed service never relabels private credentials;
+failed configuration reload keeps the old owner closed until restart/repair.
 
 To start a first connection, name the installation and affirm the cloud-processing
 consent checkbox. Only this explicit operation can return approval instructions.
@@ -29,11 +32,12 @@ to settle, then explicitly **Check and recover connection**. It can initialize
 the replacement controller once the shared task set is empty; ordinary status
 refresh never loads or replays a remote mutation.
 
-The separate authenticated account URL is displayed only after validated status.
-The native client does not invent a portal path or accept cross-origin links.
-**Renew credentials** is an explicit single operation; candidate recovery remains
-separate by default. Optional automatic maintenance performs bounded polling,
-recovery and renewal, stopping for attention instead of replaying uncertain issuance.
+The separate authenticated account URL is displayed only after validated status,
+with spacing after the Advanced disclosure. The native client does not invent a
+portal path or accept cross-origin links. Normal renewal uses bounded
+background maintenance. Manual recovery/renewal actions appear in the
+Troubleshooting & developer settings subsection only for states where they
+are relevant, and never replay uncertain issuance.
 
 **Disconnect** requires explicit confirmation. It durably stops local hosted work
 before attempting remote revocation, retaining unconfirmed state on ambiguity.
@@ -68,10 +72,15 @@ lifetime. These automated checks do not replace M2's protected live rehearsal.
 
 ## Owner-approved reconnect
 
-The separate **Reconnect with owner approval** form requires renewed processing
-consent and explicit replacement confirmation. It starts a fresh verifier-bound
-pairing; approve the new code in the existing account portal, where the owner
-reviews the actual installation and completes recent account verification. Then
+**Manage connection → Reconnect** opens a concise confirmation that explicitly
+describes fresh processing consent, owner approval, replacement risk and retention
+of local imports. Choosing **Agree & reconnect** sends both required API
+confirmations. Cancelling never sends a lifecycle request. Disconnect uses a
+separate **Confirm disconnect** step with the same non-replay safeguards. There
+are no permanent reconnection or disconnect checkboxes. The reconnection action
+starts a fresh verifier-bound pairing; approve the new code in the existing
+account portal, where the owner reviews the actual installation and completes
+recent account verification. Then
 use **Check pairing approval** and **Check and recover connection** deliberately.
 Repair polling and confirmation are never scheduled automatically.
 
@@ -99,10 +108,15 @@ An unbound legacy stop or existing recovery material remains fail-closed.
 
 ## Guided connection page
 
-The settings page keeps service origins, ongoing maintenance opt-in, renewal,
-owner-approved replacement and disconnection under **Advanced settings &
-troubleshooting**. A new installation still requires explicit processing consent
-and a name before starting a connection. The portal requires its separate emailed
+The settings page separates the compact connection status from **Advanced
+settings & troubleshooting**. Its **Manage connection** subsection exposes
+replacement and disconnection via short confirmation steps. Its **Troubleshooting
+& developer settings** subsection keeps trusted service origins and relevant
+manual recovery actions hidden until needed. New connections retain one explicit
+processing-consent checkbox, displayed inline to the left of its text even on
+mobile. Renewal and approval checks are not shown for an already verified,
+healthy connection. A new installation still requires explicit processing
+consent and a name before starting a connection. The portal requires its separate emailed
 verification code after the 12-character HA connection code.
 
 While the administrator keeps the page open, it checks approval at the advertised

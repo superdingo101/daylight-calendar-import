@@ -1,4 +1,4 @@
-/** Admin-only guided connection; durable background maintenance stays opt-in. */
+/** Admin-only guided connection; bounded maintenance requires saved consent. */
 
 const PREFIX = "daylight_calendar_import/hosted/";
 const STATE_KEYS = ["entry_id", "configured", "automatic_lifecycle", "api_origin", "account_origin", "account_url", "state", "credential_status", "credential_expires_at"];
@@ -86,12 +86,19 @@ export async function loadHostedState(hass, entryId) {
   return validateHostedState(await hass.callWS({type: `${PREFIX}get`, ...(entryId ? {entry_id: entryId} : {})}), {entryId});
 }
 
-export async function configureHostedService(hass, entryId, apiOrigin, accountOrigin, automatic = false) {
+export async function configureHostedService(hass, entryId, apiOrigin, accountOrigin, automatic) {
   if (!trustedHostedOrigin(apiOrigin) || !trustedHostedOrigin(accountOrigin)) {
     throw new Error("Enter complete HTTPS service origins, without paths or credentials.");
   }
+  // Omitted: the backend enables maintenance only for genuine first setup,
+  // preserving a previous opt-out even when saved origins need repair.
+  // Explicit true: the administrator chose the one-time renewal upgrade.
+  if (automatic !== undefined && typeof automatic !== "boolean") {
+    throw new Error("Unexpected Daylight maintenance setting.");
+  }
   return validateHostedState(await hass.callWS({
-    type: `${PREFIX}configure`, entry_id: entryId, api_origin: apiOrigin, account_origin: accountOrigin, automatic_lifecycle: automatic,
+    type: `${PREFIX}configure`, entry_id: entryId, api_origin: apiOrigin, account_origin: accountOrigin,
+    ...(automatic === undefined ? {} : {automatic_lifecycle: automatic}),
   }), {entryId});
 }
 
@@ -144,7 +151,7 @@ const EXPLANATIONS = {
 };
 
 function checkbox(name, text) {
-  const label = node("label");
+  const label = node("label", "", "hosted-checkbox");
   const input = document.createElement("input");
   input.type = "checkbox";
   input.name = name;
@@ -161,6 +168,9 @@ export class HostedConnectionSettings {
     this.timer = null;
     this.guidedSteps = 0;
     this.advancedOpen = false;
+    this.confirmation = null;
+    this.managementOpen = false;
+    this.diagnosticsOpen = false;
     this.guidedReconnect = false;
     this.onBusy = onBusy;
     this.element = node("section", "", "settings-card");
@@ -228,6 +238,9 @@ export class HostedConnectionSettings {
     this._cancelGuidance();
     this.guidedSteps = 0;
     this.advancedOpen = false;
+    this.confirmation = null;
+    this.managementOpen = false;
+    this.diagnosticsOpen = false;
     this.guidedReconnect = false;
     this.generation++;
     this.entryId = null;
@@ -267,6 +280,8 @@ export class HostedConnectionSettings {
   async submit(action, input = {}, {preserveDraft = false} = {}) {
     if (!this.syncSession() || this.busy || !this.snapshot) return;
     const draft = preserveDraft ? this._captureDraft() : null;
+    const previousState = this.snapshot.state;
+    if (!preserveDraft) this.confirmation = null;
     this._cancelGuidance();
     if (["connect", "reconnect"].includes(action)) {
       this.guidedSteps = 0;
@@ -285,11 +300,15 @@ export class HostedConnectionSettings {
     if (draft) this._restoreDraft(draft);
     try {
       const result = action === "configure" ?
-        await configureHostedService(this.getHass(), entryId, input.api_origin, input.account_origin, input.automatic_lifecycle === true) :
+        await configureHostedService(this.getHass(), entryId, input.api_origin, input.account_origin,
+          input.enable_automatic === true ? true : undefined) :
         await runHostedAction(this.getHass(), entryId, action, input);
       if (!this.syncSession() || generation !== this.generation) return;
       const {pairing, ...snapshot} = result;
       this.snapshot = snapshot;
+      const pending = ["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"];
+      if (preserveDraft && this.confirmation && snapshot.state !== previousState &&
+          !(pending.includes(previousState) && pending.includes(snapshot.state))) this.confirmation = null;
       if (["connect", "reconnect"].includes(action) && pairing) this.pairing = pairing;
       else if (action === "poll" && ["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"].includes(snapshot.state)) this.pairing = previousPairing;
     } catch {
@@ -436,6 +455,14 @@ export class HostedConnectionSettings {
     }
   }
 
+  _renderPreservingDraft() {
+    // Confirmation-only rerenders must not discard unsaved service origins,
+    // replacement labels or keyboard focus. No network action is performed.
+    const draft = this.snapshot ? this._captureDraft() : null;
+    this.render();
+    if (draft) this._restoreDraft(draft);
+  }
+
   render() {
     const section = this.element;
     const title = node("h2", "Daylight connection");
@@ -467,6 +494,16 @@ export class HostedConnectionSettings {
     advanced.append(node("summary", "Advanced settings & troubleshooting"));
     advanced.addEventListener("toggle", () => { this.advancedOpen = advanced.open; });
     section.append(advanced);
+    const management = node("details");
+    management.open = this.managementOpen || this.confirmation !== null;
+    management.append(node("summary", "Manage connection"));
+    management.addEventListener("toggle", () => { this.managementOpen = management.open; });
+    const diagnostics = node("details");
+    diagnostics.open = this.diagnosticsOpen;
+    diagnostics.append(node("summary", "Troubleshooting & developer settings"));
+    diagnostics.addEventListener("toggle", () => { this.diagnosticsOpen = diagnostics.open; });
+    if (state.configured) advanced.append(management);
+    advanced.append(diagnostics);
     if (state.credential_status === "overlap") section.append(node("p", "This is an overlap credential. Ordinary access may remain available until expiry; lifecycle changes need owner repair."));
     if (this.busy) section.append(node("p", "Connection operation in progress…"));
 
@@ -485,10 +522,6 @@ export class HostedConnectionSettings {
       label.append(input);
       configuration.append(label);
     }
-    const automatic = checkbox("automatic_lifecycle", "Automatically maintain this connection");
-    automatic.input.checked = state.automatic_lifecycle;
-    automatic.input.disabled = this.busy;
-    configuration.append(automatic.label, node("p", "After you grant connection consent, automatically check approval, recover saved credentials and renew before expiry using bounded retries. This does not enable source delivery or cloud parsing.", "settings-help"));
     const save = node("button", "Save service configuration");
     save.type = "submit";
     save.disabled = this.busy;
@@ -498,12 +531,29 @@ export class HostedConnectionSettings {
       void this.submit("configure", {
         api_origin: configuration.elements.namedItem("api_origin").value,
         account_origin: configuration.elements.namedItem("account_origin").value,
-        automatic_lifecycle: automatic.input.checked,
       });
     });
-    advanced.append(configuration);
-    if (!state.configured) advanced.open = true;
+    diagnostics.append(configuration);
+    if (!state.configured) {
+      advanced.open = true;
+      diagnostics.open = true;
+    }
     if (!state.configured) return;
+
+    // The former default was opt-out. Do not silently change an existing
+    // credential's persisted policy: offer a one-time upgrade instead.
+    if (!state.automatic_lifecycle && state.credential_status === "current" && state.state === "connected") {
+      const migrate = node("div", "", "hosted-maintenance-upgrade");
+      migrate.append(node("p", "Automatic credential renewal is not enabled for this earlier connection."));
+      const enable = node("button", "Enable automatic renewals");
+      enable.type = "button";
+      enable.disabled = this.busy;
+      enable.addEventListener("click", () => void this.submit("configure", {
+        api_origin: state.api_origin, account_origin: state.account_origin, enable_automatic: true,
+      }));
+      migrate.append(enable);
+      section.append(migrate);
+    }
 
     if (state.account_url) {
       const accountLink = node("a", "Open account portal");
@@ -511,6 +561,7 @@ export class HostedConnectionSettings {
       accountLink.target = "_blank";
       accountLink.rel = "noopener noreferrer";
       accountLink.referrerPolicy = "no-referrer";
+      accountLink.className = "hosted-account-link";
       section.append(accountLink);
     } else section.append(node("p", "Use the owner account portal for installation reconciliation. Pairing instructions provide the approval link when starting a connection.", "settings-help"));
     if (this.pairing) {
@@ -527,7 +578,15 @@ export class HostedConnectionSettings {
     }
     const blocked = ["configuration_repair", "storage_repair", "service_repair"].includes(state.state);
     const actions = node("div", "", "actions");
-    for (const [action, label] of [["reconcile", "Check and recover connection"], ["poll", "Check pairing approval"], ["rotate", "Renew credentials"]]) {
+    const neededActions = [
+      ...(["recovery_required", "repair_required", "reconciliation_required", "operation_finishing", "service_unavailable", "automatic_attention_required", "previous_retained", "candidate_saved"].includes(state.state)
+        ? [["reconcile", "Check and recover connection"]] : []),
+      ...(["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"].includes(state.state)
+        ? [["poll", "Check pairing approval"]] : []),
+      ...(["automatic_attention_required", "rotation_wait"].includes(state.state) && state.credential_status === "current"
+        ? [["rotate", "Renew credentials"]] : []),
+    ];
+    for (const [action, label] of neededActions) {
       const button = node("button", label);
       button.type = "button";
       button.disabled = this.busy || blocked || state.state === "operation_finishing" && action !== "reconcile" || action === "rotate" &&
@@ -536,7 +595,7 @@ export class HostedConnectionSettings {
       button.addEventListener("click", () => void this.submit(action));
       actions.append(button);
     }
-    advanced.append(actions);
+    if (neededActions.length) diagnostics.append(actions);
     if (["disconnected", "first_connection_required", "fresh_pairing_required", "consent_required"].includes(state.state) ||
         ["pairing_pending", "pairing_wait", "pairing_retry"].includes(state.state) && this.pairing === null) {
       const connection = document.createElement("form");
@@ -563,50 +622,87 @@ export class HostedConnectionSettings {
       });
       section.append(connection);
     }
-    if (state.state !== "first_connection_required") {
+    // Owner approval is still required on the portal. A focused, deliberate
+    // confirmation supplies the API booleans without a permanent consent form.
+    if (state.state !== "first_connection_required" && state.state !== "not_configured") {
       const reconnect = document.createElement("form");
       reconnect.setAttribute("data-hosted-reconnect", "");
-      reconnect.append(node("h3", "Reconnect with owner approval"), node("p", "Use a fresh approval to repair or replace this installation. The account portal verifies ownership and the current installation. Existing imports and calendar events are kept. Connections with cloud delivery history require separate owner repair.", "settings-help"));
-      const reconnectLabel = node("label", "New installation name");
-      const reconnectName = document.createElement("input");
-      reconnectName.name = "reconnect_label";
-      reconnectName.value = "Home Assistant";
-      reconnectName.required = true;
-      reconnectName.maxLength = 128;
-      reconnectName.disabled = this.busy || blocked;
-      reconnectLabel.append(reconnectName);
-      const reconnectConsent = checkbox("reconnect_consent", "I renew my consent to cloud processing for this new owner-approved connection.");
-      const reconnectConfirmation = checkbox("confirm_reconnect", "I understand that owner approval may replace this installation. Existing imports and calendar events will be kept.");
-      reconnectConsent.input.disabled = reconnectConfirmation.input.disabled = this.busy || blocked;
-      const repair = node("button", "Start owner-approved reconnect");
-      repair.type = "submit";
-      repair.disabled = true;
-      const canReconnect = () => { repair.disabled = this.busy || blocked || state.state === "operation_finishing" || !reconnectConsent.input.checked || !reconnectConfirmation.input.checked; };
-      reconnectConsent.input.addEventListener("change", canReconnect);
-      reconnectConfirmation.input.addEventListener("change", canReconnect);
-      reconnect.append(reconnectLabel, reconnectConsent.label, reconnectConfirmation.label, repair);
+      reconnect.append(node("h3", "Reconnect Home Assistant"),
+        node("p", "Repair or replace this connection using your Daylight account. Local imports and calendar events remain on this device.", "settings-help"));
+      const label = node("label", "New installation name");
+      const name = document.createElement("input");
+      name.name = "reconnect_label";
+      name.value = "Home Assistant";
+      name.required = true;
+      name.maxLength = 128;
+      name.disabled = this.busy || blocked || this.confirmation?.kind === "reconnect";
+      label.append(name);
+      const start = node("button", "Reconnect");
+      start.type = "button";
+      start.disabled = this.busy || blocked || state.state === "operation_finishing" || this.confirmation?.kind === "reconnect";
+      const showConfirmation = () => {
+        if (!name.value.trim() || name.value.length > 128) return;
+        this.confirmation = {kind: "reconnect", label: name.value};
+        this.managementOpen = true;
+        this._renderPreservingDraft();
+      };
+      start.addEventListener("click", showConfirmation);
       reconnect.addEventListener("submit", event => {
         event.preventDefault();
-        if (!reconnectConsent.input.checked || !reconnectConfirmation.input.checked) return;
-        void this.submit("reconnect", {processing_consent: true, installation_label: reconnectName.value, confirm_reconnect: true});
+        showConfirmation();
       });
-      advanced.append(reconnect);
-
+      reconnect.append(label, start);
+      management.append(reconnect);
     }
 
-    const disconnect = document.createElement("form");
-    disconnect.setAttribute("data-hosted-disconnect", "");
-    const confirmation = checkbox("confirm_disconnect", "Stop hosted work on this installation and request remote disconnection.");
-    confirmation.input.disabled = this.busy;
-    const stop = node("button", "Disconnect");
-    stop.type = "submit";
-    stop.disabled = true;
-    confirmation.input.addEventListener("change", () => { stop.disabled = this.busy || !confirmation.input.checked; });
-    disconnect.append(confirmation.label, stop);
-    disconnect.addEventListener("submit", event => {
-      event.preventDefault();
-      if (confirmation.input.checked === true) void this.submit("disconnect", {confirm_disconnect: true});
-    });
-    advanced.append(disconnect);
+    if (!["disconnected", "first_connection_required", "not_configured"].includes(state.state)) {
+      const disconnect = node("div");
+      disconnect.setAttribute("data-hosted-disconnect", "");
+      disconnect.append(node("h3", "Disconnect Home Assistant"),
+        node("p", "Stop this installation's cloud connection. Local imports and calendars remain unchanged.", "settings-help"));
+      const stop = node("button", "Disconnect");
+      stop.type = "button";
+      stop.disabled = this.busy;
+      stop.addEventListener("click", () => {
+        this.confirmation = {kind: "disconnect"};
+        this.managementOpen = true;
+        this._renderPreservingDraft();
+      });
+      disconnect.append(stop);
+      management.append(disconnect);
+    }
+
+    if (this.confirmation && ["reconnect", "disconnect"].includes(this.confirmation.kind)) {
+      const reconnection = this.confirmation.kind === "reconnect";
+      const confirmation = node("div", "", "hosted-confirmation");
+      confirmation.setAttribute("data-hosted-confirmation", this.confirmation.kind);
+      confirmation.setAttribute("role", "group");
+      confirmation.setAttribute("aria-label", reconnection ? "Confirm reconnection" : "Confirm disconnection");
+      confirmation.append(node("h3", reconnection ? "Reconnect Home Assistant?" : "Disconnect Home Assistant?"));
+      confirmation.append(node("p", reconnection
+        ? "You agree to let Daylight Cloud process selected source content. Approve this new installation through your Daylight account. It may replace the current connection; your local imports and calendar events are kept."
+        : "This will stop hosted work and request revocation of this installation's cloud credentials. Local imports and calendar events are kept."));
+      if (reconnection) confirmation.append(node("p", `Installation name: ${this.confirmation.label}`));
+      const buttons = node("div", "", "actions");
+      const cancel = node("button", "Cancel");
+      cancel.type = "button";
+      cancel.addEventListener("click", () => { this.confirmation = null; this._renderPreservingDraft(); });
+      const confirm = node("button", reconnection ? "Agree & reconnect" : "Confirm disconnect");
+      confirm.type = "button";
+      confirm.disabled = this.busy;
+      confirm.addEventListener("click", () => {
+        if (!this.confirmation) return;
+        if (reconnection) {
+          const label = this.confirmation.label;
+          if (!label || label.length > 128) return;
+          void this.submit("reconnect", {processing_consent: true, installation_label: label, confirm_reconnect: true});
+        } else {
+          void this.submit("disconnect", {confirm_disconnect: true});
+        }
+      });
+      buttons.append(cancel, confirm);
+      confirmation.append(buttons);
+      management.append(confirmation);
+    }
   }
 }

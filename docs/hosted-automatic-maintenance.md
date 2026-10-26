@@ -1,11 +1,20 @@
-# Opt-in hosted connection maintenance
+# Bounded hosted connection maintenance
 
 In the native Daylight Cloud settings, configure trusted HTTPS API/account
-origins and optionally enable **Automatically maintain this connection**. It is
-off by default and separate from processing consent. Enabling it cannot create a
-connection, transfer credentials to another service, select a parser, submit a
-source or clear a local stop. Starting a connection and approving it in the owner
-portal remain explicit actions.
+origins. New service configurations enable bounded lifecycle maintenance by
+default. The former opt-in checkbox is no longer shown. This is separate from
+processing consent: the policy still requires a service-bound saved checkpoint
+with affirmative consent before any remote operation. Maintenance cannot
+create a connection, transfer credentials to another service, select a parser,
+submit a source or clear a local stop. Starting a connection and approving it
+in the owner portal remain explicit actions.
+
+A legacy installation with persisted `hosted_automatic_lifecycle: false`
+keeps that choice until its administrator deliberately uses the one-time
+**Enable automatic renewals** action. The on-page guided flow continues to
+help with pending approvals while that old opt-out remains saved. The backend preserves explicit false for older callers. An omitted maintenance
+field defaults to true only on first configuration; later omitted fields preserve
+the existing saved policy.
 
 After successful entry setup, a single HA-owned one-shot timer checks the durable
 policy. It polls an already-saved approval attempt, recovers saved candidate or
@@ -34,7 +43,7 @@ Local/BYO setup and ingestion remain independent of hosted failures.
 The open administrator UI subscribes to private, entry-only invalidations. It
 fetches the current safe snapshot on change, rather than trusting an old runtime
 payload. Notifications carry no credentials, approval codes or account links.
-Navigation, socket/session changes and opt-out unsubscribe; late responses cannot
+Navigation, socket/session changes and legacy opt-out unsubscribe; late responses cannot
 restore old entry state. Approval codes remain transient and disappear on
 completion or view/session loss. Socket readiness reloads safe status only.
 

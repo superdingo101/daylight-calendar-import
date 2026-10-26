@@ -242,6 +242,27 @@ const css = `
     overflow-wrap: anywhere;
   }
   .settings-help { color: var(--secondary-text-color); }
+  .settings-card .hosted-checkbox {
+    display: flex; align-items: flex-start; flex-direction: row; gap: 10px;
+    min-width: 0; line-height: 1.45; cursor: pointer;
+  }
+  .settings-card .hosted-checkbox input[type=checkbox] {
+    flex: 0 0 auto; width: 18px; height: 18px; margin: 2px 0 0;
+  }
+  .settings-card .hosted-checkbox span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+  .settings-card .hosted-account-link { display: inline-block; margin-top: 16px; margin-bottom: 6px; }
+  .settings-card .hosted-maintenance-upgrade {
+    margin-top: 12px; padding: 12px; border: 1px solid var(--divider-color);
+    border-radius: 8px;
+  }
+  .settings-card details { margin-top: 12px; }
+  .settings-card details > summary { cursor: pointer; padding: 8px 0; }
+  .settings-card .hosted-confirmation {
+    margin: 12px 0; padding: 14px; border: 1px solid var(--divider-color);
+    border-radius: 8px;
+  }
+  .settings-card .hosted-confirmation h3 { margin-top: 0; }
+  .settings-card .hosted-confirmation button { min-height: 44px; }
   @media (max-width: 480px) {
     .topbar {
       gap: 8px;
