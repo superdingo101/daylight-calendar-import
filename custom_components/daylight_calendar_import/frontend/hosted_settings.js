@@ -273,7 +273,8 @@ export class HostedConnectionSettings {
   async submit(action, input = {}, {preserveDraft = false} = {}) {
     if (!this.syncSession() || this.busy || !this.snapshot) return;
     const draft = preserveDraft ? this._captureDraft() : null;
-    this.confirmation = null;
+    const previousState = this.snapshot.state;
+    if (!preserveDraft) this.confirmation = null;
     this._cancelGuidance();
     if (["connect", "reconnect"].includes(action)) {
       this.guidedSteps = 0;
@@ -292,11 +293,15 @@ export class HostedConnectionSettings {
     if (draft) this._restoreDraft(draft);
     try {
       const result = action === "configure" ?
-        await configureHostedService(this.getHass(), entryId, input.api_origin, input.account_origin, true) :
+        await configureHostedService(this.getHass(), entryId, input.api_origin, input.account_origin,
+          input.enable_automatic === true || !this.snapshot.configured || this.snapshot.automatic_lifecycle) :
         await runHostedAction(this.getHass(), entryId, action, input);
       if (!this.syncSession() || generation !== this.generation) return;
       const {pairing, ...snapshot} = result;
       this.snapshot = snapshot;
+      const pending = ["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"];
+      if (preserveDraft && this.confirmation && snapshot.state !== previousState &&
+          !(pending.includes(previousState) && pending.includes(snapshot.state))) this.confirmation = null;
       if (["connect", "reconnect"].includes(action) && pairing) this.pairing = pairing;
       else if (action === "poll" && ["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"].includes(snapshot.state)) this.pairing = previousPairing;
     } catch {
@@ -529,7 +534,7 @@ export class HostedConnectionSettings {
       enable.type = "button";
       enable.disabled = this.busy;
       enable.addEventListener("click", () => void this.submit("configure", {
-        api_origin: state.api_origin, account_origin: state.account_origin,
+        api_origin: state.api_origin, account_origin: state.account_origin, enable_automatic: true,
       }));
       migrate.append(enable);
       section.append(migrate);
@@ -559,7 +564,7 @@ export class HostedConnectionSettings {
     const blocked = ["configuration_repair", "storage_repair", "service_repair"].includes(state.state);
     const actions = node("div", "", "actions");
     const neededActions = [
-      ...(["recovery_required", "repair_required", "operation_finishing", "service_unavailable", "automatic_attention_required", "previous_retained", "candidate_saved"].includes(state.state)
+      ...(["recovery_required", "repair_required", "reconciliation_required", "operation_finishing", "service_unavailable", "automatic_attention_required", "previous_retained", "candidate_saved"].includes(state.state)
         ? [["reconcile", "Check and recover connection"]] : []),
       ...(["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"].includes(state.state)
         ? [["poll", "Check pairing approval"]] : []),
@@ -620,11 +625,16 @@ export class HostedConnectionSettings {
       const start = node("button", "Reconnect");
       start.type = "button";
       start.disabled = this.busy || blocked || state.state === "operation_finishing";
-      start.addEventListener("click", () => {
+      const showConfirmation = () => {
         if (!name.value.trim() || name.value.length > 128) return;
         this.confirmation = {kind: "reconnect", label: name.value};
         this.managementOpen = true;
         this.render();
+      };
+      start.addEventListener("click", showConfirmation);
+      reconnect.addEventListener("submit", event => {
+        event.preventDefault();
+        showConfirmation();
       });
       reconnect.append(label, start);
       management.append(reconnect);
