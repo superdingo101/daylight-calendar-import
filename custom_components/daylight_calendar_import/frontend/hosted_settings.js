@@ -86,7 +86,7 @@ export async function loadHostedState(hass, entryId) {
   return validateHostedState(await hass.callWS({type: `${PREFIX}get`, ...(entryId ? {entry_id: entryId} : {})}), {entryId});
 }
 
-export async function configureHostedService(hass, entryId, apiOrigin, accountOrigin, automatic = false) {
+export async function configureHostedService(hass, entryId, apiOrigin, accountOrigin, automatic = true) {
   if (!trustedHostedOrigin(apiOrigin) || !trustedHostedOrigin(accountOrigin)) {
     throw new Error("Enter complete HTTPS service origins, without paths or credentials.");
   }
@@ -144,7 +144,7 @@ const EXPLANATIONS = {
 };
 
 function checkbox(name, text) {
-  const label = node("label");
+  const label = node("label", "", "hosted-checkbox");
   const input = document.createElement("input");
   input.type = "checkbox";
   input.name = name;
@@ -161,6 +161,7 @@ export class HostedConnectionSettings {
     this.timer = null;
     this.guidedSteps = 0;
     this.advancedOpen = false;
+    this.confirmation = null;
     this.guidedReconnect = false;
     this.onBusy = onBusy;
     this.element = node("section", "", "settings-card");
@@ -228,6 +229,7 @@ export class HostedConnectionSettings {
     this._cancelGuidance();
     this.guidedSteps = 0;
     this.advancedOpen = false;
+    this.confirmation = null;
     this.guidedReconnect = false;
     this.generation++;
     this.entryId = null;
@@ -267,6 +269,7 @@ export class HostedConnectionSettings {
   async submit(action, input = {}, {preserveDraft = false} = {}) {
     if (!this.syncSession() || this.busy || !this.snapshot) return;
     const draft = preserveDraft ? this._captureDraft() : null;
+    this.confirmation = null;
     this._cancelGuidance();
     if (["connect", "reconnect"].includes(action)) {
       this.guidedSteps = 0;
@@ -285,7 +288,7 @@ export class HostedConnectionSettings {
     if (draft) this._restoreDraft(draft);
     try {
       const result = action === "configure" ?
-        await configureHostedService(this.getHass(), entryId, input.api_origin, input.account_origin, input.automatic_lifecycle === true) :
+        await configureHostedService(this.getHass(), entryId, input.api_origin, input.account_origin, true) :
         await runHostedAction(this.getHass(), entryId, action, input);
       if (!this.syncSession() || generation !== this.generation) return;
       const {pairing, ...snapshot} = result;
@@ -467,6 +470,11 @@ export class HostedConnectionSettings {
     advanced.append(node("summary", "Advanced settings & troubleshooting"));
     advanced.addEventListener("toggle", () => { this.advancedOpen = advanced.open; });
     section.append(advanced);
+    const management = node("details");
+    management.append(node("summary", "Manage connection"));
+    const diagnostics = node("details");
+    diagnostics.append(node("summary", "Troubleshooting & developer settings"));
+    advanced.append(management, diagnostics);
     if (state.credential_status === "overlap") section.append(node("p", "This is an overlap credential. Ordinary access may remain available until expiry; lifecycle changes need owner repair."));
     if (this.busy) section.append(node("p", "Connection operation in progress…"));
 
@@ -485,10 +493,6 @@ export class HostedConnectionSettings {
       label.append(input);
       configuration.append(label);
     }
-    const automatic = checkbox("automatic_lifecycle", "Automatically maintain this connection");
-    automatic.input.checked = state.automatic_lifecycle;
-    automatic.input.disabled = this.busy;
-    configuration.append(automatic.label, node("p", "After you grant connection consent, automatically check approval, recover saved credentials and renew before expiry using bounded retries. This does not enable source delivery or cloud parsing.", "settings-help"));
     const save = node("button", "Save service configuration");
     save.type = "submit";
     save.disabled = this.busy;
@@ -498,12 +502,26 @@ export class HostedConnectionSettings {
       void this.submit("configure", {
         api_origin: configuration.elements.namedItem("api_origin").value,
         account_origin: configuration.elements.namedItem("account_origin").value,
-        automatic_lifecycle: automatic.input.checked,
       });
     });
-    advanced.append(configuration);
+    diagnostics.append(configuration);
     if (!state.configured) advanced.open = true;
     if (!state.configured) return;
+
+    // The former default was opt-out. Do not silently change an existing
+    // credential's persisted policy: offer a one-time upgrade instead.
+    if (!state.automatic_lifecycle && state.credential_status === "current" && state.state === "connected") {
+      const migrate = node("div", "", "hosted-maintenance-upgrade");
+      migrate.append(node("p", "Automatic credential renewal is not enabled for this earlier connection."));
+      const enable = node("button", "Enable automatic renewals");
+      enable.type = "button";
+      enable.disabled = this.busy;
+      enable.addEventListener("click", () => void this.submit("configure", {
+        api_origin: state.api_origin, account_origin: state.account_origin,
+      }));
+      migrate.append(enable);
+      section.append(migrate);
+    }
 
     if (state.account_url) {
       const accountLink = node("a", "Open account portal");
@@ -511,6 +529,7 @@ export class HostedConnectionSettings {
       accountLink.target = "_blank";
       accountLink.rel = "noopener noreferrer";
       accountLink.referrerPolicy = "no-referrer";
+      accountLink.className = "hosted-account-link";
       section.append(accountLink);
     } else section.append(node("p", "Use the owner account portal for installation reconciliation. Pairing instructions provide the approval link when starting a connection.", "settings-help"));
     if (this.pairing) {
@@ -527,7 +546,15 @@ export class HostedConnectionSettings {
     }
     const blocked = ["configuration_repair", "storage_repair", "service_repair"].includes(state.state);
     const actions = node("div", "", "actions");
-    for (const [action, label] of [["reconcile", "Check and recover connection"], ["poll", "Check pairing approval"], ["rotate", "Renew credentials"]]) {
+    const neededActions = [
+      ...(["recovery_required", "repair_required", "operation_finishing", "service_unavailable", "automatic_attention_required", "previous_retained", "candidate_saved"].includes(state.state)
+        ? [["reconcile", "Check and recover connection"]] : []),
+      ...(["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"].includes(state.state)
+        ? [["poll", "Check pairing approval"]] : []),
+      ...(["automatic_attention_required", "rotation_wait"].includes(state.state) && state.credential_status === "current"
+        ? [["rotate", "Renew credentials"]] : []),
+    ];
+    for (const [action, label] of neededActions) {
       const button = node("button", label);
       button.type = "button";
       button.disabled = this.busy || blocked || state.state === "operation_finishing" && action !== "reconcile" || action === "rotate" &&
@@ -536,7 +563,7 @@ export class HostedConnectionSettings {
       button.addEventListener("click", () => void this.submit(action));
       actions.append(button);
     }
-    advanced.append(actions);
+    if (neededActions.length) diagnostics.append(actions);
     if (["disconnected", "first_connection_required", "fresh_pairing_required", "consent_required"].includes(state.state) ||
         ["pairing_pending", "pairing_wait", "pairing_retry"].includes(state.state) && this.pairing === null) {
       const connection = document.createElement("form");
