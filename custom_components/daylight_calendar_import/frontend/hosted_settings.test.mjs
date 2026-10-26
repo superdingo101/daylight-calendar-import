@@ -749,3 +749,34 @@ test("saved reconnect flag is boolean and terminal states never resume issuance"
     h.settings.stop();
   }
 });
+
+test("browser ready resumes saved reconnect without restoring secrets or starting pairing", async () => {
+  const h = guidedSetup({...snapshot, automatic_lifecycle: true, reconnect_in_progress: true, state: "pairing_wait"});
+  const listeners = new Map();
+  h.getHass().connection.addEventListener = (event, callback) => listeners.set(event, callback);
+  h.getHass().connection.removeEventListener = event => listeners.delete(event);
+  await h.settings.load("entry-1");
+  h.getHass().connection.connected = false;
+  listeners.get("disconnected")();
+  assert.equal(h.timers.size, 0);
+  h.getHass().connection.connected = true;
+  listeners.get("ready")(); await flush();
+  assert.equal(h.settings.pairing, null);
+  assert.equal(h.timers.size, 1);
+  h.setHandler(async request => ({...snapshot, automatic_lifecycle: true, reconnect_in_progress: request.action === "poll",
+    state: request.action === "poll" ? "candidate_saved" : "connected"}));
+  await h.tick(); await h.tick();
+  assert.deepEqual(h.calls.filter(call => call.action).map(call => call.action), ["poll", "reconcile"]);
+  h.settings.stop();
+});
+
+test("expired reconnect is classified automatically and uncertain exchange never gets replayed", async () => {
+  const h = guidedSetup({...snapshot, automatic_lifecycle: true, reconnect_in_progress: true, state: "pairing_wait"});
+  await h.settings.load("entry-1");
+  h.setHandler(async () => ({...snapshot, automatic_lifecycle: true, reconnect_in_progress: true, state: "fresh_pairing_required"}));
+  await h.tick();
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.settings.snapshot.state, "fresh_pairing_required");
+  assert.deepEqual(h.calls.filter(call => call.action).map(call => call.action), ["poll"]);
+  h.settings.stop();
+});
