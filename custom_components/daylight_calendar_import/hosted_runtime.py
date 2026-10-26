@@ -158,7 +158,8 @@ class HostedConnectionRuntime:
             "entry_id": self._entry_id,
             "configured": self._service is not None,
             "automatic_lifecycle": self._automatic,
-            "reconnect_in_progress": bool(self._controller and self._controller.reconnect_in_progress),
+            "reconnect_in_progress": (self._controller is not None
+                                      and self._controller.reconnect_in_progress is True),
             "api_origin": self._service.api_origin if self._service else None,
             "account_origin": self._service.account_origin if self._service else None,
             "state": self._state.state,
