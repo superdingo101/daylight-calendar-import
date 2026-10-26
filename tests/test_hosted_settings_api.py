@@ -170,6 +170,31 @@ async def test_configure_validates_and_same_service_is_noop():
     assert result.errors[0][1] == "invalid_hosted_configuration" and not hass.config_entries.updates
 
 
+@pytest.mark.parametrize("saved_maintenance", [False, True])
+async def test_malformed_saved_origins_repair_preserves_maintenance_policy(monkeypatch, saved_maintenance):
+    """A malformed saved service is not a first-time connection setup."""
+    cfg = entry(options={
+        CONF_HOSTED_SERVICE: {"api_origin": "invalid"},
+        CONF_HOSTED_AUTOMATIC: saved_maintenance,
+    })
+    hass = hass_for(cfg)
+    fake_runtime(hass, cfg)
+    patches = []
+
+    async def capture_patch(_hass, _entry, patch):
+        patches.append(patch)
+        raise SettingsValidationError("reload_failed")
+
+    monkeypatch.setattr(api, "async_save_option_patch", capture_patch)
+    response = await invoke(api.websocket_hosted_configure, hass, {
+        "entry_id": cfg.entry_id, **SERVICE,
+    })
+    assert response.errors and response.errors[0][1] == "reload_failed"
+    assert patches == [{CONF_HOSTED_SERVICE: SERVICE,
+                        CONF_HOSTED_AUTOMATIC: saved_maintenance}]
+    assert cfg.options[CONF_HOSTED_AUTOMATIC] is saved_maintenance
+
+
 @pytest.mark.parametrize("failure", ["unchanged", "saved", "stale"])
 async def test_failed_configuration_keeps_old_owner_closed_after_saved_origin_change(monkeypatch, failure):
     cfg = entry()
