@@ -229,10 +229,11 @@ test("reconnect uses concise confirmation and fresh transient owner approval", a
   await openCloud(page);
   await page.getByText("Manage connection", {exact: true}).click();
   await expect(page.getByRole("checkbox", {name: "I renew my consent"})).toHaveCount(0);
+  const beforeEnter = page.url();
   await page.getByLabel("New installation name", {exact: true}).press("Enter");
   await expect(page.getByText("Reconnect Home Assistant?", {exact: true})).toBeVisible();
   expect(await actions(page)).toEqual([]);
-  await expect(page).toHaveURL(/hosted-connection/);
+  await expect(page).toHaveURL(beforeEnter);
   await page.getByRole("button", {name: "Cancel", exact: true}).click();
   expect(await actions(page)).toEqual([]);
   await page.getByRole("button", {name: "Reconnect", exact: true}).click();
