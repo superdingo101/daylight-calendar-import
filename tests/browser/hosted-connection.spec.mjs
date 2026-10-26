@@ -178,11 +178,10 @@ test("settled operation recovery is explicit and does not replay creation or ren
 });
 
 
-test("new configuration defaults to background maintenance and retains drafts during safe updates", async ({page}) => {
+test("automatic maintenance keeps drafts during safe status updates without a user toggle", async ({page}) => {
+  await page.evaluate(() => { window.hostedFixture.state.automatic_lifecycle = true; });
   await openCloud(page);
   await expect(page.getByRole("checkbox", {name: "Automatically maintain this connection"})).toHaveCount(0);
-  await page.getByRole("button", {name: "Save service configuration", exact: true}).click();
-  await expect.poll(() => page.evaluate(() => window.hostedFixture.state.automatic_lifecycle)).toBe(true);
   await expect.poll(() => page.evaluate(() => typeof window.hostedFixture.subscriber)).toBe("function");
   expect(await actions(page)).toEqual([]);
   await consent(page).check();
@@ -210,13 +209,30 @@ test("new configuration defaults to background maintenance and retains drafts du
   await expect.poll(() => page.evaluate(() => window.hostedFixture.subscriber)).toBe(null);
 });
 
+test("a legacy connection keeps its opt-out until the one-time renewal upgrade", async ({page}) => {
+  await page.evaluate(() => {
+    window.hostedFixture.state = {...window.hostedFixture.state,
+      state: "connected", credential_status: "current", credential_expires_at: "2027-01-01T00:00:00Z"};
+  });
+  await page.getByRole("navigation", {name: "Daylight views"}).getByRole("button", {name: "Settings", exact: true}).click();
+  await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
+  await page.getByText("Advanced settings & troubleshooting", {exact: true}).click();
+  await page.getByText("Troubleshooting & developer settings", {exact: true}).click();
+  await page.getByRole("button", {name: "Save service configuration", exact: true}).click();
+  await expect.poll(() => page.evaluate(() => window.hostedFixture.calls.filter(c => c.type.endsWith("/configure")).at(-1).automatic_lifecycle)).toBe(false);
+  await page.getByRole("button", {name: "Enable automatic renewals", exact: true}).click();
+  await expect.poll(() => page.evaluate(() => window.hostedFixture.state.automatic_lifecycle)).toBe(true);
+  await expect(page.getByRole("button", {name: "Enable automatic renewals", exact: true})).toHaveCount(0);
+});
+
 test("reconnect uses concise confirmation and fresh transient owner approval", async ({page}) => {
   await openCloud(page);
   await page.getByText("Manage connection", {exact: true}).click();
   await expect(page.getByRole("checkbox", {name: "I renew my consent"})).toHaveCount(0);
-  await page.getByRole("button", {name: "Reconnect", exact: true}).click();
+  await page.getByLabel("New installation name", {exact: true}).press("Enter");
   await expect(page.getByText("Reconnect Home Assistant?", {exact: true})).toBeVisible();
   expect(await actions(page)).toEqual([]);
+  await expect(page).toHaveURL(/hosted-connection/);
   await page.getByRole("button", {name: "Cancel", exact: true}).click();
   expect(await actions(page)).toEqual([]);
   await page.getByRole("button", {name: "Reconnect", exact: true}).click();
