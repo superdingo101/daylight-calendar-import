@@ -161,12 +161,14 @@ export class HostedConnectionSettings {
     this.timer = null;
     this.guidedSteps = 0;
     this.advancedOpen = false;
+    this.guidedReconnect = false;
     this.onBusy = onBusy;
     this.element = node("section", "", "settings-card");
     this.generation = 0;
     this.entryId = null;
     this.loaded = false;
     this.busy = false;
+    this.notifyBusy = false;
     this.snapshot = null;
     this.pairing = null;
     this.error = null;
@@ -226,6 +228,7 @@ export class HostedConnectionSettings {
     this._cancelGuidance();
     this.guidedSteps = 0;
     this.advancedOpen = false;
+    this.guidedReconnect = false;
     this.generation++;
     this.entryId = null;
     this.loaded = false;
@@ -234,7 +237,8 @@ export class HostedConnectionSettings {
     this.error = null;
     const wasBusy = this.busy;
     this.busy = false;
-    if (wasBusy) this.onBusy(false);
+    if (wasBusy && this.notifyBusy) this.onBusy(false);
+    this.notifyBusy = false;
     this.render();
   }
 
@@ -260,19 +264,25 @@ export class HostedConnectionSettings {
     if (generation === this.generation) { this.render(); this._guide(); }
   }
 
-  async submit(action, input = {}) {
+  async submit(action, input = {}, {preserveDraft = false} = {}) {
     if (!this.syncSession() || this.busy || !this.snapshot) return;
+    const draft = preserveDraft ? this._captureDraft() : null;
     this._cancelGuidance();
-    if (["connect", "reconnect"].includes(action)) this.guidedSteps = 0;
+    if (["connect", "reconnect"].includes(action)) {
+      this.guidedSteps = 0;
+      this.guidedReconnect = action === "reconnect";
+    }
     const generation = ++this.generation;
     const entryId = this.entryId;
     this.busy = true;
+    this.notifyBusy = !preserveDraft;
     this.error = null;
     // Codes and links belong only to the latest explicit connection attempt.
     const previousPairing = action === "poll" ? this.pairing : null;
     this.pairing = null;
-    this.onBusy(true);
+    if (!preserveDraft) this.onBusy(true);
     this.render();
+    if (draft) this._restoreDraft(draft);
     try {
       const result = action === "configure" ?
         await configureHostedService(this.getHass(), entryId, input.api_origin, input.account_origin, input.automatic_lifecycle === true) :
@@ -288,9 +298,11 @@ export class HostedConnectionSettings {
     } finally {
       if (generation === this.generation) {
         this.busy = false;
-        this.onBusy(false);
+        if (!preserveDraft) this.onBusy(false);
+        this.notifyBusy = false;
         this._subscribe();
         this.render();
+        if (draft) this._restoreDraft(draft);
         this.element.querySelector("[role=alert]")?.focus();
         this._guide();
       }
@@ -306,8 +318,10 @@ export class HostedConnectionSettings {
     this._cancelGuidance();
     // Page-scoped assistance never issues a new pairing, rotation or disconnect.
     // The server remains authoritative for polling deadlines and uncertain exchanges.
-    if (this.error || this.busy || !this.snapshot || this.snapshot.automatic_lifecycle) return;
+    if (this.error || this.busy || !this.snapshot) return;
     const state = this.snapshot.state;
+    if (state === "reconnect_pending") this.guidedReconnect = true;
+    if (this.snapshot.automatic_lifecycle && !this.guidedReconnect) return;
     const polling = ["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"].includes(state);
     const verifying = ["candidate_saved", "recovery_required"].includes(state);
     if (!polling && !verifying) return;
@@ -327,7 +341,7 @@ export class HostedConnectionSettings {
       this.timer = null;
       if (!this.syncSession() || generation !== this.generation) return;
       this.guidedSteps++;
-      void this.submit(polling ? "poll" : "reconcile");
+      void this.submit(polling ? "poll" : "reconcile", {}, {preserveDraft: true});
     }, polling ? (this.pairing?.poll_interval_seconds || 30) * 1000 : 1000);
     this.timer?.unref?.();
   }

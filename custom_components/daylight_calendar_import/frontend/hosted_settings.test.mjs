@@ -608,3 +608,40 @@ test("expired codes and retry budgets stop guided work; backend maintenance owns
   h.settings.guidedSteps = 0; h.settings.snapshot.automatic_lifecycle = true;
   h.settings._guide(); assert.equal(h.timers.size, 0);
 });
+
+test("guided checks preserve draft service origins, replacement fields and focus", async () => {
+  const h = guidedSetup({...snapshot, state: "pairing_pending"});
+  await h.settings.load("entry-1");
+  let field = h.settings.element.querySelectorAll("input").find(input => input.name === "api_origin");
+  field.value = "https://draft.example.test";
+  globalThis.document.activeElement = field;
+  const name = h.settings.element.querySelectorAll("input").find(input => input.name === "reconnect_label");
+  name.value = "Replacement draft";
+  const confirmation = h.settings.element.querySelectorAll("input").find(input => input.name === "confirm_reconnect");
+  confirmation.checked = true;
+  h.setHandler(async () => ({...snapshot, state: "pairing_pending"}));
+  await h.tick();
+  field = h.settings.element.querySelectorAll("input").find(input => input.name === "api_origin");
+  assert.equal(field.value, "https://draft.example.test");
+  assert.equal(field.focused, true);
+  assert.equal(h.settings.element.querySelectorAll("input").find(input => input.name === "reconnect_label").value, "Replacement draft");
+  assert.equal(h.settings.element.querySelectorAll("input").find(input => input.name === "confirm_reconnect").checked, true);
+  globalThis.document.activeElement = null;
+  h.settings.stop();
+});
+
+test("owner-approved reconnect completes on the page even with background maintenance enabled", async () => {
+  for (const restored of [false, true]) {
+    const h = guidedSetup({...snapshot, automatic_lifecycle: true, state: restored ? "reconnect_pending" : "connected"});
+    await h.settings.load("entry-1");
+    h.setHandler(async request => ({...snapshot, automatic_lifecycle: true, state:
+      request.action === "reconnect" ? "reconnect_pending" : request.action === "poll" ? "candidate_saved" : "connected",
+      ...(request.action === "reconnect" ? {pairing} : {})}));
+    if (!restored) await h.settings.submit("reconnect", {processing_consent: true, installation_label: "Replacement", confirm_reconnect: true});
+    await h.tick(); await h.tick();
+    assert.equal(h.settings.snapshot.state, "connected");
+    assert.equal(h.timers.size, 0);
+    assert.deepEqual(h.calls.slice(restored ? 1 : 2).map(call => call.action), ["poll", "reconcile"]);
+    h.settings.stop();
+  }
+});

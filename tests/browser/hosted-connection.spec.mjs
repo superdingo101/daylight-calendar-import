@@ -274,3 +274,23 @@ test("guided approval completes automatically with advanced controls collapsed",
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   await assertNoStoredSecrets(page);
 });
+
+test("automatic checks keep Advanced drafts and caret while approval is pending", async ({page}) => {
+  await page.clock.install();
+  await openCloud(page);
+  await consent(page).check();
+  await page.getByRole("button", {name: "Start new connection", exact: true}).click();
+  const origin = page.getByLabel("API origin", {exact: true});
+  await origin.fill("https://draft-api.example.test");
+  await origin.focus();
+  const replacement = page.getByLabel("New installation name", {exact: true});
+  await replacement.fill("Replacement draft");
+  await replacement.focus();
+  await replacement.evaluate(input => input.setSelectionRange(2, 8));
+  await page.clock.fastForward(5000);
+  await expect.poll(async () => (await actions(page)).map(call => call.action)).toContain("poll");
+  await expect(origin).toHaveValue("https://draft-api.example.test");
+  await expect(replacement).toHaveValue("Replacement draft");
+  await expect(replacement).toBeFocused();
+  expect(await replacement.evaluate(input => [input.selectionStart, input.selectionEnd])).toEqual([2, 8]);
+});

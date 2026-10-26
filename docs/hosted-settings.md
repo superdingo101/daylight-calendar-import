@@ -114,4 +114,6 @@ Existing server deadlines, locks and uncertain-exchange safeguards remain
 authoritative. Checks stop on errors, code expiration, session/navigation
 changes or a bounded attempt budget; explicit recovery remains in Advanced.
 When background maintenance is enabled, the page uses the existing subscription
-instead of starting a second polling loop.
+for ordinary connections. Owner-approved reconnect remains page-driven because
+the background policy deliberately excludes replacement checkpoints. Guided
+checks preserve in-progress form drafts, focus and text selection.
