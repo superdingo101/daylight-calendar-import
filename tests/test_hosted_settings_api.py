@@ -340,7 +340,9 @@ async def test_real_default_maintenance_without_acquiring_consent(hass, hass_ws_
     # not overwritten until an administrator deliberately enables maintenance.
     disabled = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE, automatic_lifecycle=False)
     assert disabled["automatic_lifecycle"] is False
-    restored = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE)
+    preserved = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE)
+    assert preserved["automatic_lifecycle"] is False
+    restored = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE, automatic_lifecycle=True)
     assert restored["automatic_lifecycle"] is True
     request.assert_not_called()
 
