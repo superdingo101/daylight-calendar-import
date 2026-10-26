@@ -10,6 +10,7 @@ const openCloud = async page => {
   await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
   await expect(page.getByRole("heading", {name: "Daylight connection", exact: true})).toBeVisible();
   await expect(page.getByLabel("Installation name", {exact: true})).toBeVisible();
+  await page.getByText("Advanced settings & troubleshooting", {exact: true}).click();
 };
 const consent = page => page.getByRole("checkbox", {name: "I agree to send selected source content to Daylight for cloud processing.", exact: true});
 const assertNoStoredSecrets = async page => {
@@ -100,7 +101,7 @@ test("native connection needs consent and confirmation, with transient approval 
   await sections(page).getByRole("button", {name: "General", exact: true}).click();
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toHaveCount(0);
   await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
-  await expect(page.getByText("Waiting for approval in the account portal.", {exact: false})).toBeVisible();
+  await expect(page.getByText("Approve this connection in your Daylight account.", {exact: false})).toBeVisible();
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toHaveCount(0);
   await expect(page.getByRole("link", {name: "Approve this connection", exact: true})).toHaveCount(0);
   expect((await actions(page)).map(call => call.action)).toEqual(["connect"]);
@@ -109,6 +110,7 @@ test("native connection needs consent and confirmation, with transient approval 
   await expect(consent(page)).not.toBeChecked();
   await expect(page.getByRole("button", {name: "Start new connection", exact: true})).toBeDisabled();
 
+  await page.getByText("Advanced settings & troubleshooting", {exact: true}).click();
   const disconnect = page.getByRole("button", {name: "Disconnect", exact: true});
   await expect(disconnect).toBeDisabled();
   await page.getByRole("checkbox", {name: "Stop hosted work on this installation and request remote disconnection.", exact: true}).check();
@@ -137,7 +139,7 @@ test("an identity change discards a late one-time pairing response without retry
     panel.hass = {...panel._hass, user: {id: "another-owner", is_admin: true}};
     window.hostedFixture.release();
   });
-  await expect(page.getByText("Waiting for approval in the account portal.", {exact: false})).toBeVisible();
+  await expect(page.getByText("Approve this connection in your Daylight account.", {exact: false})).toBeVisible();
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toHaveCount(0);
   await expect(page.getByRole("link", {name: "Approve this connection", exact: true})).toHaveCount(0);
   expect((await actions(page)).map(call => call.action)).toEqual(["connect"]);
@@ -161,6 +163,7 @@ test("settled operation recovery is explicit and does not replay creation or ren
   await page.evaluate(() => { window.hostedFixture.state.state = "operation_finishing"; });
   await page.getByRole("navigation", {name: "Daylight views"}).getByRole("button", {name: "Settings", exact: true}).click();
   await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
+  await page.getByText("Advanced settings & troubleshooting", {exact: true}).click();
   const recover = page.getByRole("button", {name: "Check and recover connection", exact: true});
   await expect(recover).toBeEnabled();
   await expect(page.getByRole("button", {name: "Renew credentials", exact: true})).toBeDisabled();
@@ -200,7 +203,7 @@ test("opt-in maintenance refreshes safe status and clears transient approval", a
     fixture.state = {...fixture.state, state: "connected", credential_status: "current", credential_expires_at: "2026-12-01T00:00:00Z"};
     fixture.subscriber({entry_id: "entry-1"});
   });
-  await expect(page.getByText("The saved installation credential has been verified.", {exact: true})).toBeVisible();
+  await expect(page.getByText("Your Home Assistant is securely connected to Daylight.", {exact: true})).toBeVisible();
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toHaveCount(0);
   expect((await actions(page)).map(call => call.action)).toEqual(["connect"]);
   await sections(page).getByRole("button", {name: "General", exact: true}).click();
@@ -223,6 +226,7 @@ test("reconnect needs renewed consent, replacement confirmation and fresh transi
   await sections(page).getByRole("button", {name: "General", exact: true}).click();
   await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toHaveCount(0);
+  await page.getByText("Advanced settings & troubleshooting", {exact: true}).click();
   await expect(page.getByRole("button", {name: "Check pairing approval", exact: true})).toBeEnabled();
   expect((await actions(page)).map(call => call.action)).toEqual(["reconnect"]);
 });
@@ -234,10 +238,59 @@ test("pristine reconnect remains read-only and leads to first connection without
   await page.getByRole("checkbox", {name: "I renew my consent to cloud processing for this new owner-approved connection.", exact: true}).check();
   await page.getByRole("checkbox", {name: "I understand that owner approval may replace this installation. Existing imports and calendar events will be kept.", exact: true}).check();
   await page.getByRole("button", {name: "Start owner-approved reconnect", exact: true}).click();
-  await expect(page.getByText("This installation has no saved connection yet.", {exact: false})).toBeVisible();
+  await expect(page.getByText("Connect Home Assistant to your Daylight account.", {exact: false})).toBeVisible();
   await expect(page.getByRole("button", {name: "Start owner-approved reconnect", exact: true})).toHaveCount(0);
   await consent(page).check();
   await page.getByRole("button", {name: "Start new connection", exact: true}).click();
   await expect(page.getByText(`Approval code: ${CODE}`, {exact: true})).toBeVisible();
   expect((await actions(page)).map(call => call.action)).toEqual(["reconnect", "connect"]);
+});
+
+
+test("guided approval completes automatically with advanced controls collapsed", async ({page}) => {
+  await page.clock.install();
+  await openCloud(page);
+  await page.getByText("Advanced settings & troubleshooting", {exact: true}).click();
+  await expect(page.getByLabel("API origin", {exact: true})).toBeHidden();
+  await consent(page).check();
+  await page.getByRole("button", {name: "Start new connection", exact: true}).click();
+  await expect(page.getByText("Approval code: " + CODE, {exact: true})).toBeVisible();
+  await page.evaluate(() => {
+    const panel = document.querySelector("daylight-import-panel");
+    const previous = panel._hass.callWS;
+    panel.hass = {...panel._hass, callWS: async call => {
+      if (call.action === "poll") window.hostedFixture.state.state = "candidate_saved";
+      if (call.action === "reconcile") window.hostedFixture.state = {...window.hostedFixture.state, state: "connected", credential_status: "current"};
+      return previous(call);
+    }};
+  });
+  await page.clock.fastForward(5000);
+  await expect.poll(async () => (await actions(page)).map(call => call.action)).toContain("poll");
+  await page.clock.fastForward(1000);
+  await expect(page.getByText("Your Home Assistant is securely connected to Daylight.", {exact: true})).toBeVisible();
+  await expect(page.getByText("Approval code: " + CODE, {exact: true})).toHaveCount(0);
+  await expect(page.getByRole("button", {name: "Renew credentials", exact: true})).toBeHidden();
+  await expect(consent(page)).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  await assertNoStoredSecrets(page);
+});
+
+test("automatic checks keep Advanced drafts and caret while approval is pending", async ({page}) => {
+  await page.clock.install();
+  await openCloud(page);
+  await consent(page).check();
+  await page.getByRole("button", {name: "Start new connection", exact: true}).click();
+  const origin = page.getByLabel("API origin", {exact: true});
+  await origin.fill("https://draft-api.example.test");
+  await origin.focus();
+  const replacement = page.getByLabel("New installation name", {exact: true});
+  await replacement.fill("Replacement draft");
+  await replacement.focus();
+  await replacement.evaluate(input => input.setSelectionRange(2, 8));
+  await page.clock.fastForward(5000);
+  await expect.poll(async () => (await actions(page)).map(call => call.action)).toContain("poll");
+  await expect(origin).toHaveValue("https://draft-api.example.test");
+  await expect(replacement).toHaveValue("Replacement draft");
+  await expect(replacement).toBeFocused();
+  expect(await replacement.evaluate(input => [input.selectionStart, input.selectionEnd])).toEqual([2, 8]);
 });

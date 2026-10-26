@@ -96,3 +96,24 @@ returns `first_connection_required` without writing intent or sending a request.
 The UI directs the administrator to **Start new connection**, with fresh consent,
 without changing service origins or entering a blocking service-repair state.
 An unbound legacy stop or existing recovery material remains fail-closed.
+
+## Guided connection page
+
+The settings page keeps service origins, ongoing maintenance opt-in, renewal,
+owner-approved replacement and disconnection under **Advanced settings &
+troubleshooting**. A new installation still requires explicit processing consent
+and a name before starting a connection. The portal requires its separate emailed
+verification code after the 12-character HA connection code.
+
+While the administrator keeps the page open, it checks approval at the advertised
+interval and reconciles a saved candidate automatically. It also verifies saved
+connection material when the page is opened after restart. This page-scoped
+assistance does not enable durable background maintenance, source delivery or
+parsing. It never starts pairing, replacement, renewal or disconnection itself.
+Existing server deadlines, locks and uncertain-exchange safeguards remain
+authoritative. Checks stop on errors, code expiration, session/navigation
+changes or a bounded attempt budget; explicit recovery remains in Advanced.
+When background maintenance is enabled, the page uses the existing subscription
+for ordinary connections. Owner-approved reconnect remains page-driven because
+the background policy deliberately excludes replacement checkpoints. Guided
+checks preserve in-progress form drafts, focus and text selection.
