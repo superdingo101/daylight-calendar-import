@@ -1,4 +1,4 @@
-/** Admin-only guided connection; durable background maintenance stays opt-in. */
+/** Admin-only guided connection; bounded maintenance requires saved consent. */
 
 const PREFIX = "daylight_calendar_import/hosted/";
 const STATE_KEYS = ["entry_id", "configured", "automatic_lifecycle", "api_origin", "account_origin", "account_url", "state", "credential_status", "credential_expires_at"];
@@ -86,12 +86,19 @@ export async function loadHostedState(hass, entryId) {
   return validateHostedState(await hass.callWS({type: `${PREFIX}get`, ...(entryId ? {entry_id: entryId} : {})}), {entryId});
 }
 
-export async function configureHostedService(hass, entryId, apiOrigin, accountOrigin, automatic = true) {
+export async function configureHostedService(hass, entryId, apiOrigin, accountOrigin, automatic) {
   if (!trustedHostedOrigin(apiOrigin) || !trustedHostedOrigin(accountOrigin)) {
     throw new Error("Enter complete HTTPS service origins, without paths or credentials.");
   }
+  // Omitted: the backend enables maintenance only for genuine first setup,
+  // preserving a previous opt-out even when saved origins need repair.
+  // Explicit true: the administrator chose the one-time renewal upgrade.
+  if (automatic !== undefined && typeof automatic !== "boolean") {
+    throw new Error("Unexpected Daylight maintenance setting.");
+  }
   return validateHostedState(await hass.callWS({
-    type: `${PREFIX}configure`, entry_id: entryId, api_origin: apiOrigin, account_origin: accountOrigin, automatic_lifecycle: automatic,
+    type: `${PREFIX}configure`, entry_id: entryId, api_origin: apiOrigin, account_origin: accountOrigin,
+    ...(automatic === undefined ? {} : {automatic_lifecycle: automatic}),
   }), {entryId});
 }
 
@@ -294,7 +301,7 @@ export class HostedConnectionSettings {
     try {
       const result = action === "configure" ?
         await configureHostedService(this.getHass(), entryId, input.api_origin, input.account_origin,
-          input.enable_automatic === true || !this.snapshot.configured || this.snapshot.automatic_lifecycle) :
+          input.enable_automatic === true ? true : undefined) :
         await runHostedAction(this.getHass(), entryId, action, input);
       if (!this.syncSession() || generation !== this.generation) return;
       const {pairing, ...snapshot} = result;
@@ -628,11 +635,11 @@ export class HostedConnectionSettings {
       name.value = "Home Assistant";
       name.required = true;
       name.maxLength = 128;
-      name.disabled = this.busy || blocked;
+      name.disabled = this.busy || blocked || this.confirmation?.kind === "reconnect";
       label.append(name);
       const start = node("button", "Reconnect");
       start.type = "button";
-      start.disabled = this.busy || blocked || state.state === "operation_finishing";
+      start.disabled = this.busy || blocked || state.state === "operation_finishing" || this.confirmation?.kind === "reconnect";
       const showConfirmation = () => {
         if (!name.value.trim() || name.value.length > 128) return;
         this.confirmation = {kind: "reconnect", label: name.value};
@@ -675,6 +682,7 @@ export class HostedConnectionSettings {
       confirmation.append(node("p", reconnection
         ? "You agree to let Daylight Cloud process selected source content. Approve this new installation through your Daylight account. It may replace the current connection; your local imports and calendar events are kept."
         : "This will stop hosted work and request revocation of this installation's cloud credentials. Local imports and calendar events are kept."));
+      if (reconnection) confirmation.append(node("p", `Installation name: ${this.confirmation.label}`));
       const buttons = node("div", "", "actions");
       const cancel = node("button", "Cancel");
       cancel.type = "button";
