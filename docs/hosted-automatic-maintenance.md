@@ -12,9 +12,9 @@ in the owner portal remain explicit actions.
 A legacy installation with persisted `hosted_automatic_lifecycle: false`
 keeps that choice until its administrator deliberately uses the one-time
 **Enable automatic renewals** action. The on-page guided flow continues to
-help with pending approvals while that old opt-out remains saved. The backend
-preserves explicit false for older callers but omitted configuration fields now
-default to true.
+help with pending approvals while that old opt-out remains saved. The backend preserves explicit false for older callers. An omitted maintenance
+field defaults to true only on first configuration; later omitted fields preserve
+the existing saved policy.
 
 After successful entry setup, a single HA-owned one-shot timer checks the durable
 policy. It polls an already-saved approval attempt, recovers saved candidate or
