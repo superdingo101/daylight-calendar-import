@@ -45,6 +45,20 @@ function setup(response = snapshot) {
     setHandler: value => { handler = value; }};
 }
 
+test("unconfigured service opens trusted origin fields without empty management controls", async () => {
+  const missing = {...snapshot, configured: false, automatic_lifecycle: false,
+    api_origin: null, account_origin: null, account_url: null, state: "not_configured"};
+  const {settings} = setup(missing);
+  await settings.load("entry-1");
+  const details = settings.element.querySelectorAll("details");
+  assert.equal(details.length, 2);
+  assert.equal(details[0].open, true);
+  assert.equal(details[1].open, true);
+  assert.ok(settings.element.querySelector("[data-hosted-configure]"));
+  assert.equal(texts(settings.element).includes("Manage connection"), false);
+  assert.equal(settings.element.querySelector("[data-hosted-connect]"), null);
+});
+
 test("hosted client sends only explicit closed requests and never secrets", async () => {
   const calls = [];
   const hass = {callWS: async message => { calls.push(message); return snapshot; }};
