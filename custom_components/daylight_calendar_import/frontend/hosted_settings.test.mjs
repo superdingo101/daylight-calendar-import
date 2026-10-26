@@ -538,17 +538,22 @@ test("owner-approved reconnect uses deliberate short confirmation without checkb
   const {settings, calls, setHandler} = context;
   await settings.load("entry-1");
   const form = settings.element.querySelector("[data-hosted-reconnect]");
+  form.elements.namedItem("reconnect_label").value = "Kitchen";
+  settings.element.querySelector("[data-hosted-configure]").elements.namedItem("api_origin").value = "https://draft.example.test";
   assert.equal(form.elements.namedItem("reconnect_consent"), undefined);
   assert.equal(form.elements.namedItem("confirm_reconnect"), undefined);
   form.submit(event()); // Pressing Enter must be prevented from navigating.
   assert.equal(calls.length, 1);
   assert.ok(settings.element.querySelector("[data-hosted-confirmation]"));
+  assert.equal(settings.element.querySelector("[data-hosted-reconnect]").elements.namedItem("reconnect_label").value, "Kitchen");
   findButton(settings.element, "Cancel").click();
   assert.equal(calls.length, 1);
+  assert.equal(settings.element.querySelector("[data-hosted-reconnect]").elements.namedItem("reconnect_label").value, "Kitchen");
+  assert.equal(settings.element.querySelector("[data-hosted-configure]").elements.namedItem("api_origin").value, "https://draft.example.test");
   findButton(settings.element, "Reconnect").click();
   setHandler(async () => ({...snapshot, state: "reconnect_pending", pairing}));
   findButton(settings.element, "Agree & reconnect").click(); await flush();
-  assert.deepEqual(calls.at(-1), {type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "reconnect", processing_consent: true, installation_label: "Home Assistant", confirm_reconnect: true});
+  assert.deepEqual(calls.at(-1), {type: "daylight_calendar_import/hosted/action", entry_id: "entry-1", action: "reconnect", processing_consent: true, installation_label: "Kitchen", confirm_reconnect: true});
   assert.equal(settings.pairing.user_code, pairing.user_code);
   assert.equal(findButton(settings.element, "Check pairing approval").disabled, false);
   settings.clear(); assert.equal(settings.pairing, null);
