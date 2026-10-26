@@ -1,4 +1,4 @@
-/** Explicit, admin-only Daylight connection controls. Background work is owned by the opted-in entry runtime. */
+/** Admin-only guided connection; durable background maintenance stays opt-in. */
 
 const PREFIX = "daylight_calendar_import/hosted/";
 const STATE_KEYS = ["entry_id", "configured", "automatic_lifecycle", "api_origin", "account_origin", "account_url", "state", "credential_status", "credential_expires_at"];
@@ -119,23 +119,23 @@ export async function runHostedAction(hass, entryId, action, input = {}) {
 
 const EXPLANATIONS = {
   not_configured: "Configure the trusted Daylight service before connecting.",
-  first_connection_required: "This installation has no saved connection yet. Use Start new connection below to create its first owner-approved connection.",
+  first_connection_required: "Connect Home Assistant to your Daylight account.",
   configuration_repair: "The saved service configuration needs repair. Check both HTTPS origins.",
   storage_repair: "Private connection storage needs repair. Preserve the original file and repair storage before continuing.",
   service_repair: "The saved connection belongs to a different or unknown service. Owner and service reconciliation is required; changing origins does not move credentials.",
   service_unavailable: "Daylight could not be reached. Check status when the service is available.",
   operation_finishing: "A previous operation is still finishing. Use Check and recover connection after it settles.",
   reconnect_pending: "A fresh owner-approved reconnect is in progress. Approve the new attempt in the account portal, then check approval and recover it explicitly. Previous credentials and local stop remain preserved until verification.",
-  recovery_required: "Saved connection material needs verification. Check and recover it before connecting again.",
+  recovery_required: "Verifying your saved connection…",
   repair_required: "This installation needs owner attention. Open the account portal and reconcile the existing installation.",
   reconciliation_required: "An existing installation needs explicit owner and journal reconciliation before a new connection.",
   remote_disconnect_unconfirmed: "Hosted work is stopped locally. Remote disconnection is unconfirmed; reconcile it in the account portal.",
-  disconnected: "This installation is not connected. A previous disconnect may still require owner reconciliation before a new connection.",
-  connected: "The saved installation credential has been verified.",
+  disconnected: "Connect Home Assistant to your Daylight account.",
+  connected: "Your Home Assistant is securely connected to Daylight.",
   previous_retained: "The previous credential remains available while the saved replacement needs recovery.",
-  candidate_saved: "The new credential was saved privately. Check and recover it to finish verification.",
-  pairing_pending: "Waiting for approval in the account portal. Check approval after the advertised interval.",
-  pairing_wait: "Wait for the pairing interval before checking approval again.",
+  candidate_saved: "Approval received. Finishing your secure connection…",
+  pairing_pending: "Approve this connection in your Daylight account. This page will finish connecting automatically.",
+  pairing_wait: "Waiting for your approval. We will check again automatically.",
   pairing_retry: "Approval checking was interrupted. This approval attempt is still live; automatic checks will resume after the retry delay.",
   fresh_pairing_required: "A fresh pairing and owner approval are required. Start a new connection deliberately.",
   rotation_wait: "A previous renewal may still be pending. Wait before issuing another renewal, then check status.",
@@ -154,8 +154,13 @@ function checkbox(name, text) {
 }
 
 export class HostedConnectionSettings {
-  constructor({getHass, onBusy = () => {}}) {
+  constructor({getHass, onBusy = () => {}, schedule = setTimeout, cancel = clearTimeout}) {
     this.getHass = getHass;
+    this.schedule = schedule;
+    this.cancel = cancel;
+    this.timer = null;
+    this.guidedSteps = 0;
+    this.advancedOpen = false;
     this.onBusy = onBusy;
     this.element = node("section", "", "settings-card");
     this.generation = 0;
@@ -218,6 +223,9 @@ export class HostedConnectionSettings {
   clear({preserveReconnect = false} = {}) {
     if (!preserveReconnect) this.reconnectEntry = null;
     this._unsubscribe();
+    this._cancelGuidance();
+    this.guidedSteps = 0;
+    this.advancedOpen = false;
     this.generation++;
     this.entryId = null;
     this.loaded = false;
@@ -249,11 +257,13 @@ export class HostedConnectionSettings {
       this.snapshot = null;
       this.error = "Could not load the Daylight connection. Refresh to check its current state.";
     }
-    if (generation === this.generation) this.render();
+    if (generation === this.generation) { this.render(); this._guide(); }
   }
 
   async submit(action, input = {}) {
     if (!this.syncSession() || this.busy || !this.snapshot) return;
+    this._cancelGuidance();
+    if (["connect", "reconnect"].includes(action)) this.guidedSteps = 0;
     const generation = ++this.generation;
     const entryId = this.entryId;
     this.busy = true;
@@ -282,8 +292,44 @@ export class HostedConnectionSettings {
         this._subscribe();
         this.render();
         this.element.querySelector("[role=alert]")?.focus();
+        this._guide();
       }
     }
+  }
+
+  _cancelGuidance() {
+    if (this.timer !== null) this.cancel(this.timer);
+    this.timer = null;
+  }
+
+  _guide() {
+    this._cancelGuidance();
+    // Page-scoped assistance never issues a new pairing, rotation or disconnect.
+    // The server remains authoritative for polling deadlines and uncertain exchanges.
+    if (this.error || this.busy || !this.snapshot || this.snapshot.automatic_lifecycle) return;
+    const state = this.snapshot.state;
+    const polling = ["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"].includes(state);
+    const verifying = ["candidate_saved", "recovery_required"].includes(state);
+    if (!polling && !verifying) return;
+    if (this.guidedSteps >= 124) {
+      this.error = "Automatic checks paused. Open Advanced settings & troubleshooting to check and recover the connection.";
+      this.render();
+      return;
+    }
+    if (this.pairing && Date.parse(this.pairing.expires_at) <= Date.now()) {
+      this.pairing = null;
+      this.error = "This connection code expired. Check connection status before starting again.";
+      this.render();
+      return;
+    }
+    const generation = this.generation;
+    this.timer = this.schedule(() => {
+      this.timer = null;
+      if (!this.syncSession() || generation !== this.generation) return;
+      this.guidedSteps++;
+      void this.submit(polling ? "poll" : "reconcile");
+    }, polling ? (this.pairing?.poll_interval_seconds || 30) * 1000 : 1000);
+    this.timer?.unref?.();
   }
 
   _unsubscribe() {
@@ -400,7 +446,13 @@ export class HostedConnectionSettings {
     const status = node("p", EXPLANATIONS[state.state] || "Check connection status before continuing.");
     status.setAttribute("role", "status");
     section.append(status);
-    if (state.credential_expires_at) section.append(node("p", `Verified credential expiry: ${state.credential_expires_at}`));
+    if (state.credential_expires_at) section.append(node("p", `Connection verified · Credential expires ${new Date(state.credential_expires_at).toLocaleDateString(undefined, {year: "numeric", month: "long", day: "numeric"})}`));
+    section.append(node("p", "Cloud processing and hosted email are not yet available in this alpha.", "settings-help"));
+    const advanced = node("details");
+    advanced.open = this.advancedOpen;
+    advanced.append(node("summary", "Advanced settings & troubleshooting"));
+    advanced.addEventListener("toggle", () => { this.advancedOpen = advanced.open; });
+    section.append(advanced);
     if (state.credential_status === "overlap") section.append(node("p", "This is an overlap credential. Ordinary access may remain available until expiry; lifecycle changes need owner repair."));
     if (this.busy) section.append(node("p", "Connection operation in progress…"));
 
@@ -435,7 +487,8 @@ export class HostedConnectionSettings {
         automatic_lifecycle: automatic.input.checked,
       });
     });
-    section.append(configuration);
+    advanced.append(configuration);
+    if (!state.configured) advanced.open = true;
     if (!state.configured) return;
 
     if (state.account_url) {
@@ -455,7 +508,7 @@ export class HostedConnectionSettings {
       approve.target = "_blank";
       approve.rel = "noopener noreferrer";
       approve.referrerPolicy = "no-referrer";
-      instructions.append(approve, node("p", `Expires: ${this.pairing.expires_at}. Check no more often than every ${this.pairing.poll_interval_seconds} seconds.`));
+      instructions.append(node("h3", "Approve your connection"), approve, node("p", "Enter this connection code in your account, then verify with the separate code sent to your email. Return here; we will finish connecting automatically."), node("p", `Code expires ${new Date(this.pairing.expires_at).toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"})}.`));
       section.append(instructions);
     }
     const blocked = ["configuration_repair", "storage_repair", "service_repair"].includes(state.state);
@@ -469,7 +522,7 @@ export class HostedConnectionSettings {
       button.addEventListener("click", () => void this.submit(action));
       actions.append(button);
     }
-    section.append(actions);
+    advanced.append(actions);
     if (["disconnected", "first_connection_required", "fresh_pairing_required", "consent_required"].includes(state.state) ||
         ["pairing_pending", "pairing_wait", "pairing_retry"].includes(state.state) && this.pairing === null) {
       const connection = document.createElement("form");
@@ -523,7 +576,7 @@ export class HostedConnectionSettings {
         if (!reconnectConsent.input.checked || !reconnectConfirmation.input.checked) return;
         void this.submit("reconnect", {processing_consent: true, installation_label: reconnectName.value, confirm_reconnect: true});
       });
-      section.append(reconnect);
+      advanced.append(reconnect);
 
     }
 
@@ -540,6 +593,6 @@ export class HostedConnectionSettings {
       event.preventDefault();
       if (confirmation.input.checked === true) void this.submit("disconnect", {confirm_disconnect: true});
     });
-    section.append(disconnect);
+    advanced.append(disconnect);
   }
 }

@@ -536,3 +536,75 @@ test("pristine reconnect result routes directly to a usable first connection for
   assert.equal(context.calls.at(-1).action, "connect");
   assert.equal(context.settings.pairing.user_code, pairing.user_code);
 });
+
+function guidedSetup(state = snapshot) {
+  const fixture = setup(state);
+  const timers = new Map();
+  let next = 0;
+  fixture.settings.schedule = (callback, delay) => { const id = ++next; timers.set(id, {callback, delay}); return id; };
+  fixture.settings.cancel = id => timers.delete(id);
+  fixture.tick = async () => {
+    const [id, timer] = timers.entries().next().value;
+    timers.delete(id); timer.callback(); await flush();
+    return timer.delay;
+  };
+  fixture.timers = timers;
+  return fixture;
+}
+
+test("guided connection polls at the advertised interval then verifies without maintenance opt-in", async () => {
+  const h = guidedSetup(); await h.settings.load("entry-1");
+  assert.equal(h.timers.size, 0);
+  h.setHandler(async request => request.action === "connect" ? {...snapshot, state: "pairing_pending", pairing} :
+    request.action === "poll" ? {...snapshot, state: "candidate_saved"} :
+    {...snapshot, state: "connected", credential_status: "current"});
+  await h.settings.submit("connect", {processing_consent: true, installation_label: "Test"});
+  assert.equal(await h.tick(), 5000);
+  assert.equal(await h.tick(), 1000);
+  assert.equal(h.settings.snapshot.state, "connected");
+  assert.equal(h.timers.size, 0);
+  assert.deepEqual(h.calls.slice(1).map(call => call.action), ["connect", "poll", "reconcile"]);
+  assert.equal(h.settings.snapshot.automatic_lifecycle, false);
+  h.settings.stop();
+});
+
+test("startup verifies saved credentials once and stops on owner repair or uncertain failure", async () => {
+  const h = guidedSetup({...snapshot, state: "recovery_required"});
+  await h.settings.load("entry-1");
+  h.setHandler(async () => ({...snapshot, state: "repair_required"}));
+  await h.tick(); assert.equal(h.timers.size, 0);
+  assert.equal(h.calls.at(-1).action, "reconcile");
+  h.setHandler(async () => ({...snapshot, state: "recovery_required"}));
+  await h.settings.load("entry-1");
+  h.setHandler(async () => { throw Error("private"); });
+  await h.tick(); assert.equal(h.timers.size, 0);
+  assert.equal(h.settings.error.includes("private"), false);
+});
+
+test("guided work is cancelled on navigation, identity change and disconnect", async () => {
+  for (const change of ["stop", "identity", "disconnect"]) {
+    const h = guidedSetup({...snapshot, state: "recovery_required"});
+    await h.settings.load("entry-1");
+    const callback = [...h.timers.values()][0].callback;
+    if (change === "stop") h.settings.stop();
+    else {
+      h.setHass({...h.getHass(), ...(change === "identity" ? {user: {id: "other", is_admin: true}} : {connection: {connected: false}})});
+      h.settings.syncSession();
+    }
+    callback(); await flush();
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.timers.size, 0);
+  }
+});
+
+test("expired codes and retry budgets stop guided work; backend maintenance owns its own work", async () => {
+  const h = guidedSetup(); await h.settings.load("entry-1");
+  h.setHandler(async () => ({...snapshot, state: "pairing_pending", pairing: {...pairing, expires_at: "2020-01-01T00:00:00Z"}}));
+  await h.settings.submit("connect", {processing_consent: true, installation_label: "Test"});
+  assert.equal(h.settings.pairing, null); assert.equal(h.timers.size, 0);
+  assert.match(h.settings.error, /expired/);
+  h.settings.error = null; h.settings.snapshot = {...snapshot, state: "pairing_pending"};
+  h.settings.guidedSteps = 124; h.settings._guide(); assert.equal(h.timers.size, 0);
+  h.settings.guidedSteps = 0; h.settings.snapshot.automatic_lifecycle = true;
+  h.settings._guide(); assert.equal(h.timers.size, 0);
+});
