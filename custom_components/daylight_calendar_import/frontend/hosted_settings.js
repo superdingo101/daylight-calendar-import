@@ -605,7 +605,7 @@ export class HostedConnectionSettings {
       reconnect.setAttribute("data-hosted-reconnect", "");
       reconnect.append(node("h3", "Reconnect Home Assistant"),
         node("p", "Repair or replace this connection using your Daylight account. Local imports and calendar events remain on this device.", "settings-help"));
-      const label = node("label", "Installation name");
+      const label = node("label", "New installation name");
       const name = document.createElement("input");
       name.name = "reconnect_label";
       name.value = "Home Assistant";
