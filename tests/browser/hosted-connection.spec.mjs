@@ -388,6 +388,7 @@ for (const resumeState of ["pairing_wait", "candidate_saved", "reconnect_pending
     }, resumeState);
     await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
     await expect(page.getByText("Approval code: " + CODE, {exact: true})).toHaveCount(0);
+    await expect(page.getByRole("button", {name: "Start new connection", exact: true})).toHaveCount(0);
     if (resumeState !== "candidate_saved") {
       await expect(page.getByText(/Already approved/)).toBeVisible();
       await page.clock.fastForward(30000);

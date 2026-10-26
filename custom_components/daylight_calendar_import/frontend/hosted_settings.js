@@ -601,8 +601,8 @@ export class HostedConnectionSettings {
       actions.append(button);
     }
     if (neededActions.length) diagnostics.append(actions);
-    if (["disconnected", "first_connection_required", "fresh_pairing_required", "consent_required"].includes(state.state) ||
-        ["pairing_pending", "pairing_wait", "pairing_retry"].includes(state.state) && this.pairing === null) {
+    if (!state.reconnect_in_progress && (["disconnected", "first_connection_required", "fresh_pairing_required", "consent_required"].includes(state.state) ||
+        ["pairing_pending", "pairing_wait", "pairing_retry"].includes(state.state) && this.pairing === null)) {
       const connection = document.createElement("form");
       connection.setAttribute("data-hosted-connect", "");
       const label = node("label", "Installation name");
