@@ -183,7 +183,7 @@ async def test_malformed_saved_origins_repair_preserves_maintenance_policy(monke
 
     async def capture_patch(_hass, _entry, patch):
         patches.append(patch)
-        raise SettingsValidationError("reload_failed")
+        raise SettingsValidationError("reload_failed", "Simulated configuration reload failure")
 
     monkeypatch.setattr(api, "async_save_option_patch", capture_patch)
     response = await invoke(api.websocket_hosted_configure, hass, {
