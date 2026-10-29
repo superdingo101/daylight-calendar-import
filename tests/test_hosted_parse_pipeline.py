@@ -906,3 +906,62 @@ async def test_hosted_lifecycle_result_sets_only_verified_current_credentials(
         with pytest.raises(ProviderError):
             runtime.parse_session()
     await runtime.async_stop()
+
+
+async def test_real_hosted_guard_blocks_cancelled_submit_after_storage_lock(
+    hass, hass_admin_user, hosted_review, monkeypatch,
+):
+    """Cancelling the handler alone must veto admission, without disconnecting."""
+    from custom_components.daylight_calendar_import.hosted_parser import DaylightHostedParserProvider
+
+    review = hosted_review
+    connection = review.store.hosted_runtime
+    credential = BoundCredential(
+        "account-identifier-1234",
+        "installation-identifier-1234",
+        "x" * 60,
+        (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+    )
+    checkpoint = CredentialCheckpoint(
+        processing_consent=True, current=credential, service_binding=SERVICE,
+    )
+    connection._service = SERVICE
+    connection._credential_store = SimpleNamespace(snapshot=checkpoint)
+    connection._verified_parse_credential = credential
+    connection._state = HostedConnectionResult("connected", "current")
+    monkeypatch.setattr(HostedConnectionRuntime, "parse_session", REAL_PARSE_SESSION)
+
+    ready = asyncio.Event()
+    handler = None
+
+    async def parse(*_args, **_kwargs):
+        nonlocal handler
+        handler = asyncio.current_task()
+        await review.store._lock.acquire()
+        ready.set()
+        return ParseOutcome([DRAFT], [])
+
+    monkeypatch.setattr(DaylightHostedParserProvider, "async_parse", parse)
+    request = asyncio.create_task(
+        hass.services.async_call(
+            DOMAIN,
+            "submit_text",
+            {"text": "School concert"},
+            blocking=True,
+            return_response=True,
+            context=Context(user_id=hass_admin_user.id),
+        )
+    )
+    await ready.wait()
+    async with asyncio.timeout(3):
+        while not review.store._lock._waiters:
+            await asyncio.sleep(0)
+    assert review.state["active"] is True
+    assert connection._state.credential_status == "current"
+    handler.cancel()
+    review.store._lock.release()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    assert review.state["active"] is True
+    assert connection._state.credential_status == "current"
+    assert not review.store.list()
