@@ -815,3 +815,94 @@ async def test_hosted_reprocess_retains_existing_drafts_and_original_reference_c
         runtime.provider.async_parse.await_args.kwargs["reference_datetime"]
     ) == datetime.fromisoformat(original.created_at)
     runtime.writes.assert_not_awaited()
+
+
+async def test_hosted_parse_session_accepts_overlap_and_fences_exact_generations(hass, monkeypatch):
+    """Only the same generation can accept results; lifecycle work never inherits one."""
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    assert runtime._parse_generation == 0
+    runtime._state = HostedConnectionResult("connected", "overlap")
+    _, first_guard = runtime.parse_session()
+    first_guard()
+    runtime.pause()
+    assert runtime._parse_generation == 1
+    runtime.resume()
+    with pytest.raises(ProviderError) as expired:
+        first_guard()
+    assert expired.value.code == "hosted_connection_changed"
+    assert str(expired.value) == (
+        "Daylight Cloud connection changed or needs verification. "
+        "Open Daylight Cloud settings before retrying."
+    )
+    _, second_guard = runtime.parse_session()
+    second_guard()
+
+    created = []
+    real_create_task = hass.async_create_task
+
+    def recording_create_task(*args, **kwargs):
+        created.append(kwargs.copy())
+        return real_create_task(*args, **kwargs)
+
+    monkeypatch.setattr(hass, "async_create_task", recording_create_task)
+    runtime._perform = AsyncMock(return_value=runtime.snapshot())
+    work = runtime._start_work("reconcile", {})
+    assert runtime._parse_generation == 2
+    assert created and created[-1]["eager_start"] is False
+    with pytest.raises(ProviderError) as invalidated:
+        second_guard()
+    assert invalidated.value.code == "hosted_connection_changed"
+    await work
+    await asyncio.sleep(0)
+    await runtime.async_stop()
+
+
+@pytest.mark.parametrize("changed", ["missing", "no_current", "foreign_service"])
+async def test_hosted_parse_guard_detects_checkpoint_identity_changes(hass, monkeypatch, changed):
+    """Do not let a modified credential checkpoint authorize persistence."""
+    runtime, store = await verified_runtime(hass, monkeypatch)
+    _, guard = runtime.parse_session()
+    if changed == "missing":
+        store.snapshot = None
+    elif changed == "no_current":
+        store.snapshot = replace(store.snapshot, current=None)
+    else:
+        store.snapshot = replace(
+            store.snapshot,
+            service_binding=HostedServiceBinding(
+                "https://another-api.example.test", SERVICE.account_origin,
+            ),
+        )
+    with pytest.raises(ProviderError) as error:
+        guard()
+    assert error.value.code == "hosted_connection_changed"
+    with pytest.raises(ProviderError) as error:
+        runtime.parse_session()
+    assert error.value.code == "hosted_connection_changed"
+    await runtime.async_stop()
+
+
+@pytest.mark.parametrize("status,expected_verified", [
+    ("overlap", True),
+    ("disconnected", False),
+])
+async def test_hosted_lifecycle_result_sets_only_verified_current_credentials(
+    hass, monkeypatch, status, expected_verified,
+):
+    """Overlap retains legitimate authority; disconnection clears it."""
+    runtime, store = await verified_runtime(hass, monkeypatch)
+    runtime._controller = SimpleNamespace(
+        reconnect_in_progress=False,
+        async_reconcile=AsyncMock(return_value=HostedConnectionResult(
+            "connected" if expected_verified else "disconnected", status,
+        )),
+    )
+    result = await runtime.async_action("reconcile")
+    assert result["credential_status"] == status
+    assert (runtime._verified_parse_credential == store.snapshot.current) is expected_verified
+    if expected_verified:
+        runtime.parse_session()[1]()
+    else:
+        with pytest.raises(ProviderError):
+            runtime.parse_session()
+    await runtime.async_stop()
