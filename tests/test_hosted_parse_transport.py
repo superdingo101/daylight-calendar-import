@@ -485,9 +485,11 @@ async def test_outer_parse_timeout_preserves_public_timeout_constant(transport, 
     assert values == [transport_module.PARSE_TIMEOUT_SECONDS]
 
 
-def test_invalid_canonical_error_envelope_keeps_http_status():
+async def test_invalid_canonical_error_envelope_keeps_http_status(transport):
+    client, session = transport
+    session.request.return_value = Response(value={"private": "invalid"}, status=503)
     with pytest.raises(HostedParseError) as error:
-        HostedParseTransport._raise_api_error({"private": "invalid"}, 503, None)
+        await client.async_parse({}, (), token=TOKEN)
     assert (error.value.code, error.value.status) == ("provider_invalid_response", 503)
 
 
