@@ -672,7 +672,7 @@ async def test_nullable_attachment_filename_and_hash_reach_transport(provider, h
         "id": item.id, "filename": None, "media_type": "image/png",
         "size_bytes": item.size_bytes, "sha256": None,
     }]
-    assert binaries[0][2].startswith(b"\\x89PNG")
+    assert binaries[0][2].startswith(b"\x89PNG")
 
 
 async def test_source_id_and_title_inclusive_max_lengths(provider):
