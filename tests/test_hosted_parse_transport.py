@@ -386,3 +386,106 @@ def test_transport_uses_actual_session_instance(transport):
     client, session = transport
     assert client._session is session
     assert client._service is SERVICE
+
+
+@pytest.mark.parametrize("raw,expected_type", [
+    ("-10485760", int), ("10485760", int),
+    ("-10485761", Decimal), ("10485761", Decimal),
+])
+def test_number_integer_or_decimal_boundary_is_type_strict(raw, expected_type):
+    observed = _number(raw)
+    assert type(observed) is expected_type
+    assert observed == Decimal(raw)
+
+
+@pytest.mark.parametrize("status,code,retryable", [
+    (300, "provider_invalid_response", False),
+    (400, "upstream_validation", False),
+    (429, "provider_rate_limited", True),
+])
+async def test_status_boundary_with_valid_error_payloads(transport, status, code, retryable):
+    client, session = transport
+    session.request.return_value = Response(
+        value=api_error(code, retryable), status=status,
+    )
+    with pytest.raises(HostedParseError) as raised:
+        await client.async_parse({}, (), token=TOKEN)
+    assert (raised.value.code, raised.value.status) == (code, status)
+    assert raised.value.retryable is retryable
+
+
+async def test_non_rate_limited_http_error_does_not_validate_retry_header(transport):
+    client, session = transport
+    session.request.return_value = Response(
+        value=api_error("upstream_error", False), status=500,
+        headers={"Retry-After": "not-a-number"},
+    )
+    with pytest.raises(HostedParseError) as error:
+        await client.async_parse({}, (), token=TOKEN)
+    assert (error.value.code, error.value.status) == ("upstream_error", 500)
+    assert error.value.retry_after is None
+
+
+def test_429_retry_header_must_be_numeric_even_when_not_in_range():
+    for value in ("abc", "999", "0", "-1", "301", "1.5"):
+        with pytest.raises(HostedParseError) as error:
+            HostedParseTransport._raise_api_error(api_error(), 429, value)
+        assert (error.value.code, error.value.status) == ("provider_invalid_response", 429)
+
+
+@pytest.mark.parametrize("failure,expected", [
+    (TimeoutError("sensitive"), "provider_timeout"),
+    (aiohttp.ClientConnectionError("sensitive"), "provider_unavailable"),
+])
+async def test_stream_failure_retains_received_status(transport, failure, expected):
+    client, session = transport
+    response = Response(value={}, status=502)
+
+    async def interrupted(_size):
+        raise failure
+        yield b"unreachable"
+
+    response.content.iter_chunked = interrupted
+    session.request.return_value = response
+    with pytest.raises(HostedParseError) as error:
+        await client.async_parse({}, (), token=TOKEN)
+    assert (error.value.code, error.value.status) == (expected, 502)
+    assert error.value.retryable and error.value.uncertain
+    assert response.closed
+
+
+async def test_response_iterates_in_bounded_16k_chunks(transport):
+    client, session = transport
+    response = Response(value={"result": 1})
+    requested_sizes = []
+
+    async def content_chunks(size):
+        requested_sizes.append(size)
+        yield b'{"result":1}'
+
+    response.content.iter_chunked = content_chunks
+    session.request.return_value = response
+    assert await client.async_parse({}, (), token=TOKEN) == {"result": 1}
+    assert requested_sizes == [16384]
+
+
+async def test_outer_parse_timeout_preserves_public_timeout_constant(transport, monkeypatch):
+    client, session = transport
+    response = Response(value={})
+    session.request.return_value = response
+    actual_timeout = asyncio.timeout
+    values = []
+
+    def recording_timeout(seconds):
+        values.append(seconds)
+        return actual_timeout(0.05)
+
+    monkeypatch.setattr(transport_module.asyncio, "timeout", recording_timeout)
+    assert await client.async_parse({}, (), token=TOKEN) == {}
+    assert values == [transport_module.PARSE_TIMEOUT_SECONDS]
+
+
+def test_invalid_canonical_error_envelope_keeps_http_status():
+    with pytest.raises(HostedParseError) as error:
+        HostedParseTransport._raise_api_error({"private": "invalid"}, 503, None)
+    assert (error.value.code, error.value.status) == ("provider_invalid_response", 503)
