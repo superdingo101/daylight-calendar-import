@@ -199,8 +199,8 @@ async def async_parse_text(
 
 
 async def async_parse_source(
-    hass: HomeAssistant, *, source: SourceDocument, ai_task_entity: str,
-    reference_datetime: datetime | None = None,
+    hass: HomeAssistant, *, source: SourceDocument, ai_task_entity: str | None,
+    reference_datetime: datetime | None = None, provider: Any | None = None,
 ) -> ParseOutcome:
     """Route a normalized source through the configured parser provider."""
     from .providers import AITaskParserProvider
@@ -213,7 +213,8 @@ async def async_parse_source(
         if reference_datetime.utcoffset() is None:
             raise ValueError("reference datetime must include a time zone")
         reference = reference_datetime.astimezone(local_tz)
-    provider = AITaskParserProvider(hass, ai_task_entity)
+    if provider is None:
+        provider = AITaskParserProvider(hass, ai_task_entity)
     return await provider.async_parse(
         source,
         reference_datetime=reference.isoformat(),

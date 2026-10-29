@@ -13,6 +13,8 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
     CONF_EMAIL_ENABLED,
+    CONF_PARSER_PROVIDER,
+    PARSER_PROVIDER_AI_TASK,
     CONF_EMAIL_HOST,
     CONF_EMAIL_MAILBOX,
     CONF_EMAIL_PASSWORD,
@@ -176,6 +178,14 @@ async def async_setup_email_runtime(
     """Start Direct IMAP polling when email ingestion is enabled."""
     options = getattr(entry, "options", {})
     if not options.get(CONF_EMAIL_ENABLED, False):
+        return None
+    # M3 activates manual managed parsing only. Direct IMAP's automatic retry
+    # policy needs durable parse-attempt reconciliation before it may use Cloud.
+    # Retain every saved mailbox setting while pausing collection entirely.
+    provider = options.get(
+        CONF_PARSER_PROVIDER, getattr(entry, "data", {}).get(CONF_PARSER_PROVIDER, PARSER_PROVIDER_AI_TASK)
+    )
+    if provider != PARSER_PROVIDER_AI_TASK:
         return None
 
     source = DirectImapSource(

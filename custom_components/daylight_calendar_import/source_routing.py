@@ -32,7 +32,7 @@ class SourceRoutingPlan:
     """Parser evidence, bounded destination, and review-only warnings."""
 
     parser_source: SourceDocument
-    calendar_entity: str
+    calendar_entity: str | None
     warnings: tuple[str, ...] = ()
     requires_confirmation: bool = False
 
@@ -40,12 +40,14 @@ class SourceRoutingPlan:
 def plan_source_routing(
     source: SourceDocument,
     *,
-    default_calendar: str,
+    default_calendar: str | None,
     allowed_calendars: set[str],
     aliases: Mapping[str, str],
 ) -> SourceRoutingPlan:
     """Route only a declared allowed alias and never infer an unknown target."""
-    if default_calendar not in allowed_calendars:
+    if (default_calendar is None and allowed_calendars) or (
+        default_calendar is not None and default_calendar not in allowed_calendars
+    ):
         raise ValueError("Default calendar must be a writable calendar")
     extracted = extract_calendar_route(
         subject=source.title if source.kind is SourceKind.EMAIL else None,
@@ -64,6 +66,8 @@ def plan_source_routing(
         warnings = (_UNKNOWN,)
     elif resolution.status == "conflicting":
         warnings = (_CONFLICTING,)
+    if destination is None:
+        warnings = (*warnings, "Choose a writable calendar in Settings, then confirm each destination during review.")
     parser_source = replace(
         source,
         text=extracted.body if source.text is not None else None,
@@ -71,5 +75,5 @@ def plan_source_routing(
     )
     return SourceRoutingPlan(
         parser_source, destination, warnings,
-        requires_confirmation=resolution.status in ("unresolved", "conflicting"),
+        requires_confirmation=(destination is None or resolution.status in ("unresolved", "conflicting")),
     )

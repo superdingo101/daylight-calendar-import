@@ -77,6 +77,13 @@ export function submissionOutcomeUncertain(error, submitted = true) {
 export function submissionErrorMessage(error, submitted = true) {
   const detail = typeof error?.message === "string" && error.message.trim() ? error.message.trim() : "Could not submit this import.";
   const identifier = `${error?.code || ""} ${error?.translation_key || ""} ${detail}`;
+  if (/Daylight Cloud/.test(identifier)) {
+    if (/rate limit/i.test(detail)) return `${detail} Wait before trying again.`;
+    if (/outcome is uncertain/i.test(detail)) return detail;
+    if (/not enabled|access/i.test(detail)) return `${detail} Use the Daylight Cloud settings tab to check managed parsing access; reconnecting alone does not enable it.`;
+    if (/connection changed|needs verification|rejected the connection|repair the connection/i.test(detail)) return `${detail} Open the Daylight Cloud settings tab to verify or repair the connection.`;
+    return `${detail} Check the Daylight Cloud settings tab and recent activity. No local AI Task fallback was used.`;
+  }
   if (/1,000,000-character limit/i.test(identifier)) {
     return `${detail} Reduce the text or split it into separate imports, including any supporting text added to a PDF.`;
   }

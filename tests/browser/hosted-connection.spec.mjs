@@ -462,3 +462,26 @@ test("fresh Cloud settings render without local AI or writable calendars", async
   await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
   await expect(page.getByRole("heading", {name: "Daylight connection", exact: true})).toBeVisible();
 });
+
+test("Cloud mode discloses paused Direct IMAP while retaining its saved settings", async ({page}) => {
+  await page.evaluate(() => {
+    const panel = document.querySelector("daylight-import-panel");
+    const fallback = panel._hass.callWS;
+    panel.hass = {...panel._hass, callWS: async call => {
+      if (call.type === "daylight_calendar_import/settings/get") return {
+        entry_id: "entry-1", parser_provider: "daylight_cloud", ai_task_entity: null,
+        calendar_entity: null, calendar_entities: [], calendar_aliases: {}, conflict_calendar_entities: [],
+        notifications: {enabled: false, target: null, classes: []},
+        email: {enabled: true, host: "imap.example.test", port: 993, username: "saved-mailbox",
+          password_configured: true, mailbox: "Calendar", verify_ssl: true, sender_allowlist: []},
+      };
+      return fallback(call);
+    }};
+  });
+  await page.getByRole("navigation", {name: "Daylight views"})
+    .getByRole("button", {name: "Settings", exact: true}).click();
+  await sections(page).getByRole("button", {name: "Email", exact: true}).click();
+  await expect(page.getByRole("status").filter({hasText: "Direct IMAP is paused"})).toBeVisible();
+  await expect(page.getByLabel("Enable Direct IMAP ingestion", {exact: true})).toBeChecked();
+  await expect(page.getByLabel("IMAP host", {exact: true})).toHaveValue("imap.example.test");
+});

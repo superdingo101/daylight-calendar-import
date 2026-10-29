@@ -80,7 +80,10 @@ jobs:
       image: ${{ needs.plan.outputs.execution_image }}
     env:
       MUTATION_EXECUTION_IMAGE: ${{ needs.plan.outputs.execution_image }}
-    timeout-minutes: 60
+    # __init__.py is the sole source module in shard 1 and now exceeds one hour.
+    # Extend only its wall-clock budget; all other shards retain 60 minutes.
+    # The complete cold population and fail-closed aggregate are unchanged.
+    timeout-minutes: ${{ matrix.index == 1 && 120 || 60 }}
     strategy:
       fail-fast: false
       matrix:

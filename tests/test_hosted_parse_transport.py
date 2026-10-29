@@ -518,3 +518,28 @@ def test_invalid_transport_service_binding_error_is_stable():
     with pytest.raises(ValueError) as raised:
         HostedParseTransport(MagicMock(), object())
     assert str(raised.value) == "invalid trusted service"
+
+
+@pytest.mark.parametrize("status,expected_code", [
+    (300, "provider_invalid_response"),
+    (301, "provider_invalid_response"),
+])
+async def test_redirect_boundary_rejects_even_canonical_error_body(transport, status, expected_code):
+    """A syntactically valid Cloud error must not make a redirect acceptable."""
+    client, session = transport
+    session.request.return_value = Response(
+        value=api_error("provider_rate_limited", True), status=status,
+    )
+    with pytest.raises(HostedParseError) as raised:
+        await client.async_parse({}, (), token=TOKEN)
+    assert (raised.value.code, raised.value.status) == (expected_code, status)
+    assert session.request.call_count == 1
+
+
+def test_retry_after_is_validated_only_for_actual_http_429():
+    """An unrelated response code cannot acquire 429-only header validation."""
+    with pytest.raises(HostedParseError) as raised:
+        HostedParseTransport._raise_api_error(api_error("upstream_error", False), 430, "301")
+    assert (raised.value.code, raised.value.status, raised.value.retry_after) == (
+        "upstream_error", 430, None,
+    )

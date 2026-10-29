@@ -6,6 +6,13 @@ from aiohttp import ClientConnectionError, ClientResponseError
 from httpx import HTTPStatusError, NetworkError, TimeoutException
 
 PROVIDER_FAILURE_GUIDANCE = {
+    "hosted_imap_paused": "Direct IMAP is paused while Daylight Cloud parsing is selected. Choose BYO AI Task to resume email ingestion.",
+    "hosted_connection_changed": "Daylight Cloud connection changed or needs verification. Open Daylight Cloud settings before retrying.",
+    "hosted_authentication": "Daylight Cloud rejected the connection credential. Repair the connection in Daylight Cloud settings before retrying.",
+    "hosted_access": "Managed parsing is not enabled for this Daylight Cloud connection. Check its access before retrying.",
+    "hosted_rate_limited": "Daylight Cloud rate limit reached. Wait before deliberately retrying; the request was not replayed.",
+    "hosted_outcome_uncertain": "Daylight Cloud parse outcome is uncertain. Check recent activity and the review inbox before deliberately retrying; the request was not replayed.",
+    "hosted_parse_failed": "Daylight Cloud could not parse the source. Check its settings and recent activity before deliberately retrying.",
     "provider_timeout": "The AI provider timed out. Wait before trying the source again.",
     "provider_rate_limited": "The AI provider rate limit was reached. Wait and check your provider quota before trying again.",
     "provider_unavailable": "The AI provider is unavailable. Check the configured AI Task and its connection before trying again.",

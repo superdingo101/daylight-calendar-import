@@ -284,3 +284,23 @@ test("uncertain errors retain re-import mode but completed service failures clea
   }
   assert.equal(submissionOutcomeUncertain(new Error("upload failed"), false), false);
 });
+
+test("hosted failures distinguish connection repair, access, rate limits and uncertain outcomes", () => {
+  const failure = message => ({code: "home_assistant_error", message});
+  for (const message of [
+    "Daylight Cloud connection changed. Open settings before retrying.",
+    "Daylight Cloud connection needs verification.",
+    "Daylight Cloud rejected the connection credential.",
+  ]) {
+    const advice = submissionErrorMessage(failure(message));
+    assert.match(advice, /Daylight Cloud settings tab.*verify or repair/);
+    assert.doesNotMatch(advice, /configured AI task entity/);
+  }
+  assert.match(submissionErrorMessage(failure("Daylight Cloud managed parsing is not enabled for this connection.")),
+    /reconnecting alone does not enable it/);
+  assert.match(submissionErrorMessage(failure("Daylight Cloud rate limit reached.")), /Wait before trying again/);
+  const uncertain = "Daylight Cloud parse outcome is uncertain. Check recent activity before deliberately retrying; the request was not replayed.";
+  assert.equal(submissionErrorMessage(failure(uncertain)), uncertain);
+  assert.match(submissionErrorMessage(failure("Daylight Cloud could not parse this source.")),
+    /No local AI Task fallback was used/);
+});

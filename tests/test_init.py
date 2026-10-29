@@ -3313,6 +3313,9 @@ async def test_cloud_setup_loads_without_local_services_and_never_falls_back_to_
     store = SimpleNamespace(
         async_load=AsyncMock(), list_notifications=Mock(return_value=()),
         list=Mock(return_value=()), get=Mock(return_value=None),
+        is_source_duplicate=Mock(return_value=False),
+        async_begin_submission=AsyncMock(return_value="activity-id"),
+        async_record_parse_failure=AsyncMock(),
     )
     parse = AsyncMock()
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
@@ -3323,10 +3326,10 @@ async def test_cloud_setup_loads_without_local_services_and_never_falls_back_to_
     listing, _ = hass.services.handlers[(DOMAIN, SERVICE_LIST_PENDING)]
     assert await listing(SimpleNamespace(data={}, context=context)) == {"imports": []}
     handler, _ = hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)]
-    with pytest.raises(ProviderError, match="not available yet"):
+    with pytest.raises(ProviderError, match="needs verification"):
         await handler(SimpleNamespace(data={"text": "private source"}, context=context))
     handler, _ = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)]
-    with pytest.raises(ProviderError, match="not available yet"):
+    with pytest.raises(ProviderError, match="needs verification"):
         await handler(SimpleNamespace(data={"text": "private source"}, context=context))
     handler, _ = hass.services.handlers[(DOMAIN, SERVICE_IMPORT_TEXT)]
     with pytest.raises(ServiceValidationError, match="Configure a writable calendar"):
