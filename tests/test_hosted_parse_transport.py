@@ -59,9 +59,22 @@ async def test_form_data_and_headers(transport):
     assert args == ("POST", SERVICE.api_origin + "/v1/parse")
     assert kwargs["headers"]["Authorization"] == "Bearer " + TOKEN
     assert kwargs["headers"]["Accept-Encoding"] == "identity"
+    assert kwargs["headers"]["Accept"] == "application/json"
+    assert set(kwargs["headers"]) == {"Accept", "Accept-Encoding", "X-Request-ID", "Authorization"}
+    from uuid import UUID
+    assert str(UUID(kwargs["headers"]["X-Request-ID"])) == kwargs["headers"]["X-Request-ID"]
+    assert (kwargs["max_line_size"], kwargs["max_field_size"], kwargs["max_headers"]) == (4096, 4096, 32)
     assert kwargs["allow_redirects"] is False and kwargs["auto_decompress"] is False
     assert kwargs["timeout"].total == 120
     assert len(kwargs["data"]._fields) == 2
+    fields = kwargs["data"]._fields
+    assert fields[0][0]["name"] == "request"
+    assert fields[0][1]["Content-Type"] == "application/json"
+    assert fields[0][2] == '{"source":"Unicode ✓"}'
+    assert fields[1][0]["name"] == "attachment.one"
+    assert fields[1][0]["filename"] == "one"
+    assert fields[1][1]["Content-Type"] == "image/png"
+    assert fields[1][2] == b"PNG"
     assert response.closed
 
 
@@ -274,3 +287,71 @@ async def test_whole_request_timeout_includes_body_read(transport, monkeypatch):
     assert error.value.code == "provider_timeout" and error.value.uncertain
     assert response.closed and closed.is_set()
     assert session.request.call_count == 1
+
+
+def test_hosted_error_exposes_sanitized_structured_flags():
+    error = HostedParseError("safe_error", status=429, retryable=True, retry_after=5, uncertain=True)
+    assert (error.code, error.status, error.retryable, error.retry_after, error.uncertain) == (
+        "safe_error", 429, True, 5, True,
+    )
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("-10485760", -10485760), ("10485760", 10485760),
+    ("10485761", Decimal("10485761")), ("-10485761", Decimal("-10485761")),
+    ("0", 0), ("-0.125", Decimal("-0.125")),
+])
+def test_number_exact_canonical_limits(raw, expected):
+    assert _number(raw) == expected
+
+
+async def test_transport_json_boundary_and_decimal_preservation(transport, monkeypatch):
+    client, session = transport
+    payload = {"x": "abc"}
+    import json as json_module
+    encoded = json_module.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
+    monkeypatch.setattr(transport_module, "MAX_PARSE_REQUEST_JSON_BYTES", len(encoded))
+    session.request.return_value = Response(raw=b'{"confidence":0.123456789012345678901}')
+    assert (await client.async_parse(payload, (), token=TOKEN))["confidence"] == Decimal("0.123456789012345678901")
+    monkeypatch.setattr(transport_module, "MAX_PARSE_REQUEST_JSON_BYTES", len(encoded) - 1)
+    with pytest.raises(HostedParseError) as error:
+        await client.async_parse(payload, (), token=TOKEN)
+    assert error.value.code == "source_too_large"
+
+
+async def test_response_byte_limit_accepts_exact_length_and_rejects_next(transport, monkeypatch):
+    client, session = transport
+    raw = b'{"x":1}'
+    session.request.return_value = Response(raw=raw)
+    monkeypatch.setattr(transport_module, "MAX_PARSE_RESPONSE_BYTES", len(raw))
+    assert await client.async_parse({}, (), token=TOKEN) == {"x": 1}
+    monkeypatch.setattr(transport_module, "MAX_PARSE_RESPONSE_BYTES", len(raw) - 1)
+    with pytest.raises(HostedParseError) as error:
+        await client.async_parse({}, (), token=TOKEN)
+    assert (error.value.code, error.value.status) == ("provider_invalid_response", 200)
+
+
+@pytest.mark.parametrize("status,code", [(300, "provider_invalid_response"), (400, "provider_invalid_response")])
+async def test_status_edges_reject_invalid_envelope(transport, status, code):
+    client, session = transport
+    session.request.return_value = Response(value={"bad": True}, status=status)
+    with pytest.raises(HostedParseError) as error:
+        await client.async_parse({}, (), token=TOKEN)
+    assert (error.value.code, error.value.status) == (code, status)
+
+
+async def test_invalid_response_status_preserved_after_decode(transport):
+    client, session = transport
+    session.request.return_value = Response(raw=b'{', status=200)
+    with pytest.raises(HostedParseError) as error:
+        await client.async_parse({}, (), token=TOKEN)
+    assert (error.value.code, error.value.status) == ("provider_invalid_response", 200)
+
+
+@pytest.mark.parametrize("retry", ["1", "300"])
+def test_retry_after_inclusive_public_boundary(retry):
+    with pytest.raises(HostedParseError) as error:
+        HostedParseTransport._raise_api_error(api_error(), 429, retry)
+    assert (error.value.code, error.value.status, error.value.retry_after) == (
+        "provider_rate_limited", 429, int(retry),
+    )
