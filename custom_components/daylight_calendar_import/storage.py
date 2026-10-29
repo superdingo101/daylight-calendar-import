@@ -1373,8 +1373,8 @@ class PendingImportStore:
             def guarded_acceptance() -> None:
                 if cancelled_before_acceptance.is_set():
                     raise asyncio.CancelledError
-                if acceptance_guard is not None:
-                    acceptance_guard()
+                # Only passed to the transaction when a guard was supplied.
+                acceptance_guard()
 
             result, cancelled = await self._async_complete_transaction(
                 self._async_commit_reprocessed(
@@ -1519,8 +1519,8 @@ class PendingImportStore:
         def guarded_acceptance() -> None:
             if cancelled_before_acceptance.is_set():
                 raise asyncio.CancelledError
-            if acceptance_guard is not None:
-                acceptance_guard()
+            # Only passed to the transaction when a guard was supplied.
+            acceptance_guard()
 
         result, cancelled = await self._async_complete_transaction(
             self._async_add_transaction(
