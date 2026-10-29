@@ -215,6 +215,10 @@ async def test_authority_gates_no_network(provider, change):
     with pytest.raises(HostedParseError) as error:
         await client.async_parse(TextSourceAdapter().create("source"), reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
     assert "private" not in str(error.value)
+    if change == "service":
+        assert error.value.code == "service_reconciliation_required"
+    else:
+        assert (error.value.code, error.value.status) == ("unauthenticated", 401)
     client._transport.async_parse.assert_not_called()
 
 
@@ -234,6 +238,7 @@ async def test_credential_change_after_response_rejects_stale_result(provider):
     with pytest.raises(HostedParseError, match="Daylight Cloud"):
         await client.async_parse(TextSourceAdapter().create("source"), reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
     assert client._transport.async_parse.call_count == 1
+    assert (client._authority().token, ) == ("R" * 43,)
 
 
 async def test_invalid_response_is_fixed_error(provider):
@@ -241,7 +246,7 @@ async def test_invalid_response_is_fixed_error(provider):
     client._transport.async_parse.return_value = {"private": "raw provider data"}
     with pytest.raises(HostedParseError) as error:
         await client.async_parse(TextSourceAdapter().create("source"), reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
-    assert error.value.code == "provider_invalid_response"
+    assert (error.value.code, error.value.status) == ("provider_invalid_response", 200)
     assert "private" not in str(error.value)
 
 
@@ -361,3 +366,125 @@ def test_explicit_offsets_and_temporal_warnings_do_not_invent_inference(start, e
     assert (parsed.events[0].start, parsed.events[0].end) == (start, end)
     assert parsed.event_assumptions == [()]
     assert "event 0: ambiguous_source_time: Confirm the supplied local time." in parsed.warnings
+
+
+@pytest.mark.parametrize("key", ["start", "end"])
+def test_rfc3339_lowercase_z_is_normalized_for_domain_parser(key):
+    raw = result()
+    raw["events"][0]["draft"]["start"] = "2026-11-05T18:00:00z"
+    raw["events"][0]["draft"]["end"] = "2026-11-05T19:00:00z"
+    parsed = parse_hosted_result(raw, TextSourceAdapter().create("School night"))
+    assert parsed.events[0].start == "2026-11-05T18:00:00Z"
+    assert parsed.events[0].end == "2026-11-05T19:00:00Z"
+
+
+@pytest.mark.parametrize("value,maximum,nullable", [
+    ("x", 1, False), ("x" * 128, 128, False),
+    (None, 1, True),
+])
+def test_public_text_boundary_accepts(value, maximum, nullable):
+    _text(value, maximum, nullable=nullable)
+
+
+@pytest.mark.parametrize("size", [128, 129])
+def test_public_warning_count_boundary(size):
+    warning = {"code": "okay", "message": "x", "field": None}
+    warnings = [warning.copy() for _ in range(size)]
+    if size == 128:
+        assert len(_warnings(warnings, 128)) == 128
+    else:
+        with pytest.raises(ValueError):
+            _warnings(warnings, 128)
+
+
+@pytest.mark.parametrize("field,limit", [("message", 2048), ("field", 128)])
+def test_warning_string_limits_exact(field, limit):
+    warning = {"code": "okay", "message": "x", "field": None}
+    warning[field] = "x" * limit
+    assert _warnings([warning], 1)[0][field] == "x" * limit
+    warning[field] += "x"
+    with pytest.raises(ValueError):
+        _warnings([warning], 1)
+
+
+@pytest.mark.parametrize("confidence", [0, 1, Decimal("0"), Decimal("1")])
+def test_public_confidence_inclusive_boundaries(confidence):
+    draft = result()["events"][0]["draft"]
+    draft["confidence"] = confidence
+    assert _draft(draft)["confidence"] == float(confidence)
+
+
+@pytest.mark.parametrize("field", ["events", "rejected"])
+def test_public_top_level_array_count_boundaries(field):
+    raw = result()
+    raw[field] = [raw[field][0] for _ in range(256)]
+    source = TextSourceAdapter().create("One-off school event")
+    parse_hosted_result(raw, source)
+    raw[field].append(raw[field][0])
+    with pytest.raises(ValueError):
+        parse_hosted_result(raw, source)
+
+
+def test_provider_metadata_key_and_count_boundaries():
+    raw = result()
+    source = TextSourceAdapter().create("School night")
+    raw["provider_metadata"] = {str(i): "x" for i in range(32)}
+    raw["provider_metadata"]["x" * 128] = raw["provider_metadata"].pop("0")
+    parse_hosted_result(raw, source)
+    raw["provider_metadata"]["x" * 129] = "x"
+    with pytest.raises(ValueError):
+        parse_hosted_result(raw, source)
+
+
+def test_rejected_candidate_inclusive_index_zero_and_summary_boundary():
+    raw = result()
+    source = TextSourceAdapter().create("School night")
+    rejected = raw["rejected"][0]
+    rejected["index"] = 0
+    rejected["raw_summary"] = "x" * 4096
+    rejected["message"] = "x" * 2048
+    assert parse_hosted_result(raw, source).warnings[-1].startswith("candidate 0:")
+    rejected["raw_summary"] += "x"
+    with pytest.raises(ValueError):
+        parse_hosted_result(raw, source)
+
+
+def test_canonical_source_evidence_separator(monkeypatch):
+    import custom_components.daylight_calendar_import.hosted_parser as module
+    source = TextSourceAdapter().create("Description")
+    source = replace(source, title="Header")
+    seen = {}
+    original = module.parse_ai_data
+
+    def capture(data, *, source_text):
+        seen["source_text"] = source_text
+        return original(data, source_text=source_text)
+
+    monkeypatch.setattr(module, "parse_ai_data", capture)
+    parse_hosted_result(result(), source)
+    assert seen["source_text"] == "Header\\n\\nDescription"
+
+
+def test_attachment_rejects_webp_when_riff_or_webp_marker_alone(tmp_path):
+    for content in (b"RIFFxxxxNOTAbody", b"FAKExxxxWEBPbody"):
+        item = attachment(tmp_path, content, "image/webp")
+        with pytest.raises(ValueError):
+            _attachment_bytes({"local": str(tmp_path)}, item)
+
+
+async def test_pre_request_authority_change_has_exact_error(provider):
+    client, saved, _ = provider
+    previous = saved[0].current
+    from dataclasses import replace as dc_replace
+    from unittest.mock import AsyncMock as AM
+    client._hass.async_add_executor_job = AM(side_effect=lambda *_: saved.__setitem__(
+        0, dc_replace(saved[0], current=dc_replace(previous, token="Q" * 43))) or b"\x89PNG\r\n\x1a\nbody")
+    from tempfile import TemporaryDirectory
+    with TemporaryDirectory() as folder:
+        client._hass.config.media_dirs = {"local": folder}
+        item = attachment(Path(folder))
+        source = SourceDocument("source", SourceKind.IMAGE, datetime.now(UTC), attachments=(item,))
+        with pytest.raises(HostedParseError) as error:
+            await client.async_parse(source, reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
+    assert (error.value.code, error.value.status) == ("unauthenticated", 401)
+    client._transport.async_parse.assert_not_called()
