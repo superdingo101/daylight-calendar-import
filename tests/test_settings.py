@@ -1750,6 +1750,7 @@ def test_hosted_empty_settings_snapshot_and_legacy_provider_defaults():
     with pytest.raises(SettingsValidationError) as error:
         effective_parser_provider(configured)
     assert error.value.code == "invalid_parser_provider"
+    assert str(error.value) == "Choose a supported parser provider."
 
 
 @pytest.mark.parametrize(
@@ -1853,3 +1854,80 @@ async def test_legacy_implicit_calendar_scope_is_preserved_during_hosted_setup_c
         await async_save_option_patch(hass, configured, {CONF_CALENDAR_ENTITY: "calendar.work"})
     assert error.value.code == "default_not_allowed"
     assert not hass.config_entries.updates
+
+
+async def test_hosted_provider_reload_restores_admission_only_on_success():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    configured = entry()
+    hass = hass_for(configured)
+    store = hass.data[DOMAIN][configured.entry_id]
+    assert store.accepting_services is True
+    await async_save_option_patch(hass, configured, {CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD})
+    assert store.accepting_services is True
+    assert store.calendar_settings_reload_guard is False
+    assert hass.config_entries.reloads == [configured.entry_id]
+
+
+async def test_hosted_provider_reload_failed_keeps_old_runtime_closed():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    configured = entry()
+    hass = hass_for(configured)
+    store = hass.data[DOMAIN][configured.entry_id]
+    hass.config_entries.async_reload = AsyncMock(return_value=False)
+    with pytest.raises(SettingsValidationError) as error:
+        await async_save_option_patch(hass, configured, {CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD})
+    assert error.value.code == "reload_failed"
+    assert store.accepting_services is False
+    assert store.calendar_settings_reload_guard is True
+
+
+async def test_provider_mode_switch_checks_active_service_handlers():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    configured = entry()
+    hass = hass_for(configured)
+    store = hass.data[DOMAIN][configured.entry_id]
+    store.active_service_handlers.add("inflight")
+    with pytest.raises(SettingsValidationError) as error:
+        await async_save_option_patch(hass, configured, {CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD})
+    assert error.value.code == "calendar_change_busy"
+    assert store.accepting_services is True
+    assert not hass.config_entries.updates
+
+
+async def test_provider_mode_switch_refuses_unloading_entry():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    configured = entry()
+    hass = hass_for(configured)
+    store = hass.data[DOMAIN][configured.entry_id]
+    store.accepting_services = False
+    with pytest.raises(SettingsValidationError) as error:
+        await async_save_option_patch(hass, configured, {CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD})
+    assert error.value.code == "pending_store_unavailable"
+    assert not hass.config_entries.updates
+
+
+def test_parser_choice_error_description_is_stable():
+    from custom_components.daylight_calendar_import.settings import (
+        effective_parser_provider, normalize_core_options,
+    )
+    configured = hosted_entry()
+    configured.options[CONF_PARSER_PROVIDER] = "unsupported"
+    with pytest.raises(SettingsValidationError) as error:
+        effective_parser_provider(configured)
+    assert (error.value.code, str(error.value)) == (
+        "invalid_parser_provider", "Choose a supported parser provider.",
+    )
+    with pytest.raises(SettingsValidationError) as error:
+        normalize_core_options(None, None, [], parser_provider="unsupported")
+    assert (error.value.code, str(error.value)) == (
+        "invalid_parser_provider", "Choose a supported parser provider.",
+    )
+
+
+def test_cloud_mode_rejects_mixed_invalid_calendar_types():
+    from custom_components.daylight_calendar_import.settings import normalize_core_options
+    with pytest.raises(SettingsValidationError) as error:
+        normalize_core_options(
+            None, None, ["calendar.valid", 123], parser_provider=PARSER_PROVIDER_DAYLIGHT_CLOUD,
+        )
+    assert error.value.code == "invalid_calendar"
