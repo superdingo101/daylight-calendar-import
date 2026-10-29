@@ -659,3 +659,26 @@ async def test_source_text_limit_remains_owned_by_provider_capabilities(provider
         await client.async_parse(source, reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
     assert error.value.code == "source_too_large"
     client._transport.async_parse.assert_not_called()
+
+
+async def test_nullable_attachment_filename_and_hash_reach_transport(provider, hass, tmp_path):
+    client, _, _ = provider
+    hass.config.media_dirs = {"local": str(tmp_path)}
+    item = replace(attachment(tmp_path), filename=None, sha256=None)
+    source = SourceDocument("source", SourceKind.IMAGE, datetime.now(UTC), attachments=(item,))
+    await client.async_parse(source, reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
+    request, binaries = client._transport.async_parse.call_args.args
+    assert request["source"]["attachments"] == [{
+        "id": item.id, "filename": None, "media_type": "image/png",
+        "size_bytes": item.size_bytes, "sha256": None,
+    }]
+    assert binaries[0][2].startswith(b"\\x89PNG")
+
+
+async def test_source_id_and_title_inclusive_max_lengths(provider):
+    client, _, _ = provider
+    source = replace(TextSourceAdapter().create("school"), id="i" * 128, title="t" * 512)
+    await client.async_parse(source, reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
+    request = client._transport.async_parse.call_args.args[0]
+    assert request["source"]["id"] == "i" * 128
+    assert request["source"]["title"] == "t" * 512
