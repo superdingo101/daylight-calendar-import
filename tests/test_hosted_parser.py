@@ -488,3 +488,44 @@ async def test_pre_request_authority_change_has_exact_error(provider):
             await client.async_parse(source, reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
     assert (error.value.code, error.value.status) == ("unauthenticated", 401)
     client._transport.async_parse.assert_not_called()
+
+
+def test_text_default_is_not_nullable():
+    with pytest.raises(ValueError):
+        _text(None, 1)
+
+
+def test_attachment_rejects_invalid_pdf_signature(tmp_path):
+    item = attachment(tmp_path, b"not a pdf document", "application/pdf")
+    with pytest.raises(ValueError):
+        _attachment_bytes({"local": str(tmp_path)}, item)
+
+
+def test_attachment_file_open_is_directory_relative_and_nonfollowing(tmp_path, monkeypatch):
+    import os
+    item = attachment(tmp_path)
+    opened = []
+    real_open = os.open
+
+    def recorded(path, flags, *args, **kwargs):
+        opened.append((path, flags, kwargs.get("dir_fd")))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", recorded)
+    assert _attachment_bytes({"local": str(tmp_path)}, item).startswith(b"\x89PNG")
+    assert opened[0][0] == tmp_path
+    assert opened[0][1] == os.O_RDONLY | os.O_DIRECTORY
+    assert opened[0][2] is None
+    assert opened[1][0] == "daylight-fixture.png"
+    assert opened[1][1] == os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    assert isinstance(opened[1][2], int)
+
+
+def test_hosted_provider_constructs_real_bound_transport(hass):
+    import custom_components.daylight_calendar_import.hosted_parser as module
+    provider = DaylightHostedParserProvider(
+        hass, service_binding=SERVICE, checkpoint=lambda: checkpoint(), active=lambda: True,
+    )
+    assert isinstance(provider._transport, module.HostedParseTransport)
+    assert provider._transport._service is SERVICE
+    assert provider._transport._session is module.async_get_clientsession(hass)
