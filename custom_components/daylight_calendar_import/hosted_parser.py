@@ -87,7 +87,15 @@ def _draft(value: Any) -> dict[str, Any]:
     confidence = value["confidence"]
     if type(confidence) not in (int, float, Decimal) or not 0 <= confidence <= 1:
         raise ValueError
-    mapped = {**value, "confidence": float(confidence)}
+    # The canonical RFC 3339 decoder accepts lowercase z, whereas the local
+    # domain parser only accepts the standard uppercase UTC designator.
+    # Normalize both timestamps before either local validation or parsing.
+    mapped = {
+        **value,
+        "confidence": float(confidence),
+        **({key: value[key][:-1] + "Z" if value[key].endswith("z") else value[key]
+            for key in ("start", "end")} if not value["all_day"] else {}),
+    }
     # Semantic ordering, actual dates, nonempty titles and offset-awareness are
     # independently enforced by the same local domain validator as BYO.
     EventDraft.from_mapping(mapped)
