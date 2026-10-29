@@ -965,3 +965,40 @@ async def test_real_hosted_guard_blocks_cancelled_submit_after_storage_lock(
     assert review.state["active"] is True
     assert connection._state.credential_status == "current"
     assert not review.store.list()
+
+
+async def test_real_hosted_guard_blocks_cancelled_reprocess_before_acceptance(hass, monkeypatch):
+    """Cancelled retained-text reprocessing cannot append anything after its lock wait."""
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    store = PendingImportStore(hass)
+    await store.async_load()
+    original = (await store.async_add(
+        source_text="School concert", events=[DRAFT],
+    )).pending
+
+    ready = asyncio.Event()
+
+    async def parser(_pending):
+        await store._lock.acquire()
+        ready.set()
+        return (), ("This warning must never commit",)
+
+    async def reprocess():
+        _, guard = runtime.parse_session()
+        return await store.async_reprocess(
+            original.id, parser, acceptance_guard=guard,
+        )
+
+    request = asyncio.create_task(reprocess())
+    await ready.wait()
+    async with asyncio.timeout(3):
+        while not store._lock._waiters:
+            await asyncio.sleep(0)
+    request.cancel()
+    await asyncio.sleep(0)
+    store._lock.release()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    assert store.get(original.id) is original
+    assert store.get(original.id).warnings == original.warnings
+    await runtime.async_stop()
