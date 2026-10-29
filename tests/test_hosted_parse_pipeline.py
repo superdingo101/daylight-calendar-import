@@ -898,6 +898,7 @@ async def test_hosted_lifecycle_result_sets_only_verified_current_credentials(
         )),
     )
     result = await runtime.async_action("reconcile")
+    await asyncio.sleep(0)  # Let the completed lifecycle task release runtime ownership.
     assert result["credential_status"] == status
     assert (runtime._verified_parse_credential == store.snapshot.current) is expected_verified
     if expected_verified:
