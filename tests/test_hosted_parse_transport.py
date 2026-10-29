@@ -355,3 +355,34 @@ def test_retry_after_inclusive_public_boundary(retry):
     assert (error.value.code, error.value.status, error.value.retry_after) == (
         "provider_rate_limited", 429, int(retry),
     )
+
+
+def test_hosted_error_default_flags_are_fail_closed():
+    error = HostedParseError("provider_unavailable")
+    assert str(error) == "Daylight Cloud could not parse this source"
+    assert (error.retryable, error.uncertain, error.retry_after, error.status) == (
+        False, False, None, None,
+    )
+
+
+async def test_malformed_retry_header_preserves_status(transport):
+    client, session = transport
+    session.request.return_value = Response(
+        value=api_error(), status=429, headers={"Retry-After": "301"},
+    )
+    with pytest.raises(HostedParseError) as error:
+        await client.async_parse({}, (), token=TOKEN)
+    assert (error.value.code, error.value.status) == ("provider_invalid_response", 429)
+
+
+def test_large_exact_integral_is_never_lossily_converted():
+    for raw in ("10485761", "-10485761", "10000000000000000000"):
+        value = _number(raw)
+        assert type(value) is Decimal
+        assert value == Decimal(raw)
+
+
+def test_transport_uses_actual_session_instance(transport):
+    client, session = transport
+    assert client._session is session
+    assert client._service is SERVICE
