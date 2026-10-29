@@ -682,3 +682,74 @@ async def test_source_id_and_title_inclusive_max_lengths(provider):
     request = client._transport.async_parse.call_args.args[0]
     assert request["source"]["id"] == "i" * 128
     assert request["source"]["title"] == "t" * 512
+
+
+async def test_unpaired_surrogate_source_is_rejected_before_cloud_post(provider):
+    """The optional text field must still be checked when it is present."""
+    client, _, _ = provider
+    source = replace(TextSourceAdapter().create("School night"), text="bad \ud800 unicode")
+    with pytest.raises(SourceValidationError) as raised:
+        await client.async_parse(
+            source, reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC",
+        )
+    assert raised.value.code == "invalid_source"
+    client._transport.async_parse.assert_not_called()
+
+
+@pytest.mark.parametrize("size,accepted", [(127, True), (128, True), (129, False)])
+async def test_zone_string_length_is_checked_inclusive_of_128(
+    provider, monkeypatch, size, accepted,
+):
+    """Exercise string bounds independently of the installed tzdata catalogue."""
+    from custom_components.daylight_calendar_import import hosted_parser as module
+
+    client, _, _ = provider
+    monkeypatch.setattr(module, "ZoneInfo", lambda _: object())
+    zone = "X" * size
+    source = TextSourceAdapter().create("School night")
+    if not accepted:
+        with pytest.raises(SourceValidationError) as raised:
+            await client.async_parse(
+                source, reference_datetime="2026-10-28T10:00:00Z", time_zone=zone,
+            )
+        assert raised.value.code == "invalid_source"
+        client._transport.async_parse.assert_not_called()
+    else:
+        await client.async_parse(
+            source, reference_datetime="2026-10-28T10:00:00Z", time_zone=zone,
+        )
+        assert client._transport.async_parse.call_args.args[0]["time_zone"] == zone
+
+
+def test_staged_attachment_read_is_bounded_by_declared_size_plus_one(tmp_path, monkeypatch):
+    """Do not read an entire staged file if its size changes after fstat."""
+    import os
+    from custom_components.daylight_calendar_import import hosted_parser as module
+
+    item = attachment(tmp_path)
+    original_fdopen = os.fdopen
+    read_sizes = []
+
+    class BoundedReader:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return self.handle.__exit__(exc_type, exc, traceback)
+
+        def fileno(self):
+            return self.handle.fileno()
+
+        def read(self, size=-1):
+            read_sizes.append(size)
+            return self.handle.read(size)
+
+    def fdopen(*args, **kwargs):
+        return BoundedReader(original_fdopen(*args, **kwargs))
+
+    monkeypatch.setattr(module.os, "fdopen", fdopen)
+    assert module._attachment_bytes({"local": str(tmp_path)}, item) == b"\x89PNG\r\n\x1a\nbody"
+    assert read_sizes == [item.size_bytes + 1]
