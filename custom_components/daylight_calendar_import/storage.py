@@ -916,8 +916,13 @@ class PendingImportStore:
     async def _async_complete_transaction(
         self,
         operation: Awaitable[Any],
+        *, on_cancel: Callable[[], None] | None = None,
     ) -> tuple[Any, bool]:
-        """Let a storage transaction finish before propagating caller cancellation."""
+        """Let a storage transaction finish before propagating caller cancellation.
+
+        An optional synchronous signal preserves pre-admission cancellation for
+        acceptance guards even though the handler temporarily calls uncancel().
+        """
         task = asyncio.create_task(operation)
         cancelled = False
         while not task.done():
@@ -925,6 +930,8 @@ class PendingImportStore:
                 await asyncio.wait({task})
             except asyncio.CancelledError:
                 cancelled = True
+                if on_cancel is not None:
+                    on_cancel()
                 asyncio.current_task().uncancel()  # type: ignore[union-attr]
         if task.cancelled():
             raise asyncio.CancelledError
@@ -1361,8 +1368,20 @@ class PendingImportStore:
             self._reprocessing.add(pending_id)
         try:
             candidates, warnings = await parser(original)
+            cancelled_before_acceptance = asyncio.Event()
+
+            def guarded_acceptance() -> None:
+                if cancelled_before_acceptance.is_set():
+                    raise asyncio.CancelledError
+                if acceptance_guard is not None:
+                    acceptance_guard()
+
             result, cancelled = await self._async_complete_transaction(
-                self._async_commit_reprocessed(original, candidates, warnings, acceptance_guard)
+                self._async_commit_reprocessed(
+                    original, candidates, warnings,
+                    guarded_acceptance if acceptance_guard is not None else None,
+                ),
+                on_cancel=(cancelled_before_acceptance.set if acceptance_guard is not None else None),
             )
             if cancelled:
                 raise asyncio.CancelledError
@@ -1495,6 +1514,14 @@ class PendingImportStore:
         acceptance_guard: Callable[[], None] | None = None,
     ) -> PendingImportAddResult:
         """Persist events, letting the storage transaction finish before cancellation."""
+        cancelled_before_acceptance = asyncio.Event()
+
+        def guarded_acceptance() -> None:
+            if cancelled_before_acceptance.is_set():
+                raise asyncio.CancelledError
+            if acceptance_guard is not None:
+                acceptance_guard()
+
         result, cancelled = await self._async_complete_transaction(
             self._async_add_transaction(
                 source_text=source_text,
@@ -1509,8 +1536,9 @@ class PendingImportStore:
                 source_sender=source_sender,
                 warnings=warnings,
                 activity_id=activity_id,
-                acceptance_guard=acceptance_guard,
-            )
+                acceptance_guard=(guarded_acceptance if acceptance_guard is not None else None),
+            ),
+            on_cancel=(cancelled_before_acceptance.set if acceptance_guard is not None else None),
         )
         if cancelled:
             raise asyncio.CancelledError
