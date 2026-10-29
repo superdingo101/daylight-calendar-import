@@ -2,6 +2,9 @@
 
 DOMAIN = "daylight_calendar_import"
 CONF_AI_TASK_ENTITY = "ai_task_entity"
+CONF_PARSER_PROVIDER = "parser_provider"
+PARSER_PROVIDER_AI_TASK = "ai_task"
+PARSER_PROVIDER_DAYLIGHT_CLOUD = "daylight_cloud"
 CONF_CALENDAR_ENTITY = "calendar_entity"
 CONF_CALENDAR_ENTITIES = "calendar_entities"
 SERVICE_PARSE_TEXT = "parse_text"

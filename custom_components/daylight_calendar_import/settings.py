@@ -12,6 +12,9 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_AI_TASK_ENTITY,
+    CONF_PARSER_PROVIDER,
+    PARSER_PROVIDER_AI_TASK,
+    PARSER_PROVIDER_DAYLIGHT_CLOUD,
     CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
     CONF_CALENDAR_ALIASES,
@@ -73,50 +76,47 @@ class SettingsValidationError(ValueError):
         self.code = code
 
 
-def effective_ai_task_entity(entry: ConfigEntry) -> str:
-    """Return the effective AI Task entity."""
-    current = getattr(entry, "options", {})
-    return current.get(
-        CONF_AI_TASK_ENTITY,
-        entry.data[CONF_AI_TASK_ENTITY],
+def effective_parser_provider(entry: ConfigEntry) -> str:
+    """Read the explicit parser choice, retaining BYO for every legacy entry."""
+    provider = entry.options.get(
+        CONF_PARSER_PROVIDER, entry.data.get(CONF_PARSER_PROVIDER, PARSER_PROVIDER_AI_TASK)
     )
+    if provider not in (PARSER_PROVIDER_AI_TASK, PARSER_PROVIDER_DAYLIGHT_CLOUD):
+        raise SettingsValidationError("invalid_parser_provider", "Choose a supported parser provider.")
+    return provider
 
 
-def effective_calendar_options(entry: ConfigEntry) -> tuple[str, list[str]]:
-    """Return the effective default and writable calendars."""
+def effective_ai_task_entity(entry: ConfigEntry) -> str | None:
+    """Return the saved BYO selection, even when hosted parsing is selected."""
+    return entry.options.get(CONF_AI_TASK_ENTITY, entry.data.get(CONF_AI_TASK_ENTITY))
+
+
+def effective_calendar_options(entry: ConfigEntry) -> tuple[str | None, list[str]]:
+    """Return configured writable calendars; a new hosted entry may have none."""
     current = getattr(entry, "options", {})
-    default_calendar = current.get(
-        CONF_CALENDAR_ENTITY,
-        entry.data[CONF_CALENDAR_ENTITY],
-    )
-    allowed_calendars = list(
-        current.get(
+    default_calendar = current.get(CONF_CALENDAR_ENTITY, entry.data.get(CONF_CALENDAR_ENTITY))
+    allowed_calendars = list(current.get(
+        CONF_CALENDAR_ENTITIES,
+        entry.data.get(
             CONF_CALENDAR_ENTITIES,
-            entry.data.get(
-                CONF_CALENDAR_ENTITIES,
-                [entry.data[CONF_CALENDAR_ENTITY]],
-            ),
-        )
-    )
-    return (
-        default_calendar,
-        list(dict.fromkeys((*allowed_calendars, default_calendar))),
-    )
+            [entry.data[CONF_CALENDAR_ENTITY]] if entry.data.get(CONF_CALENDAR_ENTITY) else [],
+        ),
+    ))
+    if default_calendar is not None:
+        allowed_calendars.append(default_calendar)
+    return default_calendar, list(dict.fromkeys(allowed_calendars))
 
 
-def effective_core_options(entry: ConfigEntry) -> tuple[str, str, list[str]]:
-    """Return effective AI and writable-calendar settings."""
+def effective_core_options(entry: ConfigEntry) -> tuple[str | None, str | None, list[str]]:
+    """Return saved AI and writable-calendar settings."""
     default_calendar, allowed_calendars = effective_calendar_options(entry)
-    return (
-        effective_ai_task_entity(entry),
-        default_calendar,
-        allowed_calendars,
-    )
+    return effective_ai_task_entity(entry), default_calendar, allowed_calendars
 
 
 def core_option_patch(
-    baseline: tuple[str, str, list[str]],
+    baseline: tuple[str | None, str | None, list[str]],
     submitted: Mapping[str, Any],
+    *, parser_provider: str = PARSER_PROVIDER_AI_TASK,
 ) -> dict[str, Any]:
     """Return only intentionally changed core options, normalized as atomic groups."""
     baseline_ai, baseline_default, baseline_allowed = baseline
@@ -124,8 +124,11 @@ def core_option_patch(
         submitted.get(CONF_AI_TASK_ENTITY, baseline_ai),
         submitted.get(CONF_CALENDAR_ENTITY, baseline_default),
         list(submitted.get(CONF_CALENDAR_ENTITIES, baseline_allowed)),
+        parser_provider=submitted.get(CONF_PARSER_PROVIDER, parser_provider),
     )
     patch: dict[str, Any] = {}
+    if CONF_PARSER_PROVIDER in submitted and submitted[CONF_PARSER_PROVIDER] != parser_provider:
+        patch[CONF_PARSER_PROVIDER] = submitted[CONF_PARSER_PROVIDER]
     if (
         CONF_AI_TASK_ENTITY in submitted
         and normalized[CONF_AI_TASK_ENTITY] != baseline_ai
@@ -144,24 +147,33 @@ def core_option_patch(
 
 
 def normalize_core_options(
-    ai_task_entity: str,
-    default_calendar: str,
+    ai_task_entity: str | None,
+    default_calendar: str | None,
     allowed_calendars: list[str],
+    *, parser_provider: str = PARSER_PROVIDER_AI_TASK,
 ) -> dict[str, Any]:
     """Normalize one core-settings submission."""
-    if not ai_task_entity.startswith("ai_task."):
+    if parser_provider not in (PARSER_PROVIDER_AI_TASK, PARSER_PROVIDER_DAYLIGHT_CLOUD):
+        raise SettingsValidationError("invalid_parser_provider", "Choose a supported parser provider.")
+    hosted = parser_provider == PARSER_PROVIDER_DAYLIGHT_CLOUD
+    if not (hosted and ai_task_entity is None) and (
+        not isinstance(ai_task_entity, str) or not ai_task_entity.startswith("ai_task.")
+    ):
         raise SettingsValidationError(
             "invalid_ai_task", "The selected AI Task entity is invalid."
         )
     allowed = list(dict.fromkeys(allowed_calendars))
     if (
-        not default_calendar.startswith("calendar.")
-        or any(not entity.startswith("calendar.") for entity in allowed)
+        (default_calendar is None and (not hosted or bool(allowed)))
+        or (default_calendar is not None and (
+            not isinstance(default_calendar, str) or not default_calendar.startswith("calendar.")
+        ))
+        or any(not isinstance(entity, str) or not entity.startswith("calendar.") for entity in allowed)
     ):
         raise SettingsValidationError(
             "invalid_calendar", "Writable calendars must be calendar entities."
         )
-    if default_calendar not in allowed:
+    if default_calendar is not None and default_calendar not in allowed:
         raise SettingsValidationError(
             "default_not_allowed",
             "The default calendar must be included in the allowed calendars.",
@@ -225,7 +237,7 @@ def effective_calendar_intelligence(entry: ConfigEntry) -> tuple[dict[str, str],
             enforce_count_limit=False,
         ),
         normalize_conflict_calendars(
-            entry.options.get(CONF_CONFLICT_CALENDAR_ENTITIES, [default_calendar])
+            entry.options.get(CONF_CONFLICT_CALENDAR_ENTITIES, [default_calendar] if default_calendar else [])
         ),
     )
 
@@ -302,6 +314,7 @@ def settings_snapshot(entry: ConfigEntry) -> dict[str, Any]:
     aliases, conflict_calendars = effective_calendar_intelligence(entry)
     return {
         "entry_id": entry.entry_id,
+        "parser_provider": effective_parser_provider(entry),
         "calendar_aliases": aliases,
         "conflict_calendar_entities": conflict_calendars,
         "ai_task_entity": ai_task_entity,
@@ -320,29 +333,35 @@ async def async_save_option_patch(
     """Merge an option patch into the latest state and reload the entry."""
     merged = {**entry.options, **patch}
     # A writable calendar may not be removed while an existing alias uses it.
-    default, allowed = (
-        merged.get(CONF_CALENDAR_ENTITY, entry.data[CONF_CALENDAR_ENTITY]),
-        merged.get(
+    provider = merged.get(
+        CONF_PARSER_PROVIDER, entry.data.get(CONF_PARSER_PROVIDER, PARSER_PROVIDER_AI_TASK)
+    )
+    default = merged.get(CONF_CALENDAR_ENTITY, entry.data.get(CONF_CALENDAR_ENTITY))
+    allowed = merged.get(
+        CONF_CALENDAR_ENTITIES,
+        entry.data.get(
             CONF_CALENDAR_ENTITIES,
-            entry.data.get(CONF_CALENDAR_ENTITIES, [entry.data[CONF_CALENDAR_ENTITY]]),
+            [entry.data[CONF_CALENDAR_ENTITY]] if entry.data.get(CONF_CALENDAR_ENTITY) else [],
         ),
+    )
+    normalize_core_options(
+        merged.get(CONF_AI_TASK_ENTITY, entry.data.get(CONF_AI_TASK_ENTITY)),
+        default, list(allowed), parser_provider=provider,
     )
     normalize_calendar_aliases(
         merged.get(CONF_CALENDAR_ALIASES, {}), allowed,
         enforce_count_limit=CONF_CALENDAR_ALIASES in patch,
     )
-    if default not in allowed:
-        raise SettingsValidationError(
-            "default_not_allowed", "The default calendar must be included in the allowed calendars."
-        )
     # A calendar scope change is rejected when its authoritative queue or
     # admission state is unavailable; no speculative second storage instance.
     old_default, old_allowed = effective_calendar_options(entry)
     calendar_scope_changed = (
         default != old_default or set(allowed) != set(old_allowed)
     )
+    parser_changed = provider != effective_parser_provider(entry)
+    runtime_scope_changed = calendar_scope_changed or parser_changed
     pending_store = getattr(hass, "data", {}).get(DOMAIN, {}).get(entry.entry_id)
-    if calendar_scope_changed and pending_store is None:
+    if runtime_scope_changed and pending_store is None:
         raise SettingsValidationError(
             "pending_store_unavailable",
             "Load Daylight Calendar Import before changing writable calendars. "
@@ -367,7 +386,7 @@ async def async_save_option_patch(
                 "Daylight is processing a submission. Retry the calendar "
                 "change after ingestion finishes.",
             )
-        for pending in pending_store.list():
+        for pending in pending_store.list() if calendar_scope_changed else ():
             for event in pending.events:
                 destination = event.calendar_entity or old_default
                 if destination not in allowed:
@@ -384,7 +403,7 @@ async def async_save_option_patch(
                     )
 
     was_accepting = True
-    if calendar_scope_changed:
+    if runtime_scope_changed:
         # The store lock serializes this validation against durable pending edits.
         # Closing service/poll admission until reload prevents new work from
         # committing an old destination in the update-to-unload interval.
@@ -411,7 +430,7 @@ async def async_save_option_patch(
         reloaded = await hass.config_entries.async_reload(entry.entry_id)
     finally:
         if (
-            calendar_scope_changed
+            runtime_scope_changed
             and hass.data.get(DOMAIN, {}).get(entry.entry_id) is pending_store
         ):
             # Restore only after a successful reload. A failed unload must

@@ -148,3 +148,21 @@ Approval codes remain transient. If a code is no longer visible, an already
 approved attempt can still finish. Otherwise use a privately saved code or wait
 for expiry and choose Reconnect under Manage connection. Expiry is classified by
 the controller, rather than freezing the page indefinitely in a waiting state.
+
+## Parser setup and local settings
+
+The hosted branch's initial HA setup first asks for a parser provider. Local AI
+Task (BYO) keeps the account-free setup with a local AI Task entity and writable
+calendars. Daylight Cloud can create the integration without either local
+service; connection and processing consent are completed in Daylight settings.
+Configure a writable calendar before approving an event.
+
+General settings can explicitly switch providers while retaining the saved BYO
+selection, Direct IMAP settings and local review queue. Existing entries continue
+to use BYO until an administrator changes the provider. Cloud selection never
+silently invokes the retained AI Task entity. Without a local AI permission
+entity, stored source/review access requires an HA administrator.
+
+This setup increment prepares provider selection only. Managed parsing remains
+unavailable until the separate hosted parser and runtime integration is added;
+M2 pairing and existing local review remain available.
