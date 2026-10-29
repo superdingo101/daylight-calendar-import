@@ -548,7 +548,7 @@ async def test_attachment_descriptor_matches_every_public_contract_field(provide
         "size_bytes": item.size_bytes,
         "sha256": item.sha256,
     }]
-    assert binaries == ((item.id, item.media_type, b"\\x89PNG\\r\\n\\x1a\\nbody"),)
+    assert binaries == ((item.id, item.media_type, b"\x89PNG\r\n\x1a\nbody"),)
 
 
 @pytest.mark.parametrize("field,oversized", [
@@ -648,6 +648,6 @@ def test_nonregular_file_is_rejected_even_if_stat_size_matches(tmp_path, monkeyp
 def test_rejects_invalid_unicode_inside_provider_metadata():
     import voluptuous as vol
     raw = result()
-    raw["provider_metadata"] = {"otherwise_valid": {"text": "\\ud800"}}
+    raw["provider_metadata"] = {"otherwise_valid": {"text": "\ud800"}}
     with pytest.raises((ValueError, vol.Invalid, UnicodeError)):
         parse_hosted_result(raw, TextSourceAdapter().create("school"))
