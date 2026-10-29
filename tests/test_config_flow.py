@@ -1283,6 +1283,11 @@ async def test_provider_choice_precedes_local_entity_setup():
     assert show.call_args.kwargs["step_id"] == "user"
     schema = show.call_args.kwargs["data_schema"]
     assert [key.schema for key in schema.schema] == [CONF_PARSER_PROVIDER]
+    marker = next(iter(schema.schema))
+    assert marker.default() == PARSER_PROVIDER_AI_TASK
+    choice = next(iter(schema.schema.values()))
+    assert choice.config["translation_key"] == "parser_provider"
+    assert choice.config["mode"] == "list"
     assert list(schema.schema.values())[0].config["options"] == [
         PARSER_PROVIDER_AI_TASK, PARSER_PROVIDER_DAYLIGHT_CLOUD,
     ]
@@ -1309,6 +1314,7 @@ async def test_hosted_setup_needs_no_ai_task_calendar_or_consent_shortcut():
         CONF_AI_TASK_ENTITY: None, CONF_CALENDAR_ENTITY: None, CONF_CALENDAR_ENTITIES: [],
     }
     assert "processing_consent" not in create.call_args.kwargs["data"]
+    assert create.call_args.kwargs["title"] == "Daylight Calendar Import"
 
 
 async def test_hosted_options_omit_unconfigured_local_suggestions_and_save_without_them():
@@ -1329,6 +1335,13 @@ async def test_hosted_options_omit_unconfigured_local_suggestions_and_save_witho
             CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD,
             CONF_CALENDAR_ENTITIES: [], CONF_EMAIL_ENABLED: False,
         }
+        schema = suggested.call_args.args[0]
+        marker = next(k for k in schema.schema if k.schema == CONF_PARSER_PROVIDER)
+        assert marker.default() == PARSER_PROVIDER_DAYLIGHT_CLOUD
+        assert schema.schema[marker].config["translation_key"] == "parser_provider"
+        assert schema.schema[marker].config["options"] == [
+            PARSER_PROVIDER_AI_TASK, PARSER_PROVIDER_DAYLIGHT_CLOUD,
+        ]
         result = await flow.async_step_init({
             CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD, CONF_EMAIL_ENABLED: False,
         })
