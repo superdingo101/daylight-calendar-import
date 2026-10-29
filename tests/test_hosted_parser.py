@@ -554,7 +554,6 @@ async def test_attachment_descriptor_matches_every_public_contract_field(provide
 @pytest.mark.parametrize("field,oversized", [
     ("id", "i" * 129),
     ("title", "t" * 513),
-    ("text", "t" * 1000001),
 ])
 async def test_exact_source_string_limits_reject_before_sending(provider, field, oversized):
     client, _, _ = provider
@@ -651,3 +650,12 @@ def test_rejects_invalid_unicode_inside_provider_metadata():
     raw["provider_metadata"] = {"otherwise_valid": {"text": "\ud800"}}
     with pytest.raises((ValueError, vol.Invalid, UnicodeError)):
         parse_hosted_result(raw, TextSourceAdapter().create("school"))
+
+
+async def test_source_text_limit_remains_owned_by_provider_capabilities(provider):
+    client, _, _ = provider
+    source = replace(TextSourceAdapter().create("source"), text="x" * 1000001)
+    with pytest.raises(SourceValidationError) as error:
+        await client.async_parse(source, reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
+    assert error.value.code == "source_too_large"
+    client._transport.async_parse.assert_not_called()
