@@ -489,3 +489,30 @@ def test_invalid_canonical_error_envelope_keeps_http_status():
     with pytest.raises(HostedParseError) as error:
         HostedParseTransport._raise_api_error({"private": "invalid"}, 503, None)
     assert (error.value.code, error.value.status) == ("provider_invalid_response", 503)
+
+
+async def test_multipart_request_json_has_compact_comma_delimiter(transport):
+    client, session = transport
+    session.request.return_value = Response(value={})
+    await client.async_parse({"a": 1, "b": 2}, (), token=TOKEN)
+    multipart = session.request.call_args.kwargs["data"]
+    assert multipart._fields[0][2] == '{"a":1,"b":2}'
+
+
+@pytest.mark.parametrize("failure,expected", [
+    (TimeoutError("private"), "provider_timeout"),
+    (aiohttp.ClientConnectionError("private"), "provider_unavailable"),
+])
+async def test_failed_request_without_http_response_has_no_status(transport, failure, expected):
+    client, session = transport
+    session.request.side_effect = failure
+    with pytest.raises(HostedParseError) as raised:
+        await client.async_parse({}, (), token=TOKEN)
+    assert (raised.value.code, raised.value.status) == (expected, None)
+    assert raised.value.retryable and raised.value.uncertain
+
+
+def test_invalid_transport_service_binding_error_is_stable():
+    with pytest.raises(ValueError) as raised:
+        HostedParseTransport(MagicMock(), object())
+    assert str(raised.value) == "invalid trusted service"
