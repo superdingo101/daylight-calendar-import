@@ -529,3 +529,125 @@ async def test_hosted_provider_constructs_real_bound_transport(hass):
     assert isinstance(provider._transport, module.HostedParseTransport)
     assert provider._transport._service is SERVICE
     assert provider._transport._session is module.async_get_clientsession(hass)
+
+
+async def test_attachment_descriptor_matches_every_public_contract_field(provider, hass, tmp_path):
+    """Changes to individual canonical descriptor keys must fail the wire test."""
+    client, _, _ = provider
+    hass.config.media_dirs = {"local": str(tmp_path)}
+    item = attachment(tmp_path)
+    source = SourceDocument("source", SourceKind.IMAGE, datetime.now(UTC), attachments=(item,))
+    await client.async_parse(
+        source, reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC",
+    )
+    request, binaries = client._transport.async_parse.call_args.args
+    assert request["source"]["attachments"] == [{
+        "id": item.id,
+        "filename": item.filename,
+        "media_type": item.media_type,
+        "size_bytes": item.size_bytes,
+        "sha256": item.sha256,
+    }]
+    assert binaries == ((item.id, item.media_type, b"\\x89PNG\\r\\n\\x1a\\nbody"),)
+
+
+@pytest.mark.parametrize("field,oversized", [
+    ("id", "i" * 129),
+    ("title", "t" * 513),
+    ("text", "t" * 1000001),
+])
+async def test_exact_source_string_limits_reject_before_sending(provider, field, oversized):
+    client, _, _ = provider
+    source = replace(TextSourceAdapter().create("School night"), **{field: oversized})
+    with pytest.raises(SourceValidationError) as error:
+        await client.async_parse(source, reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
+    assert error.value.code == "invalid_source"
+    client._transport.async_parse.assert_not_called()
+
+
+@pytest.mark.parametrize("filename", ["f" * 513, ""])
+async def test_attachment_filename_limit_rejects_before_file_read(provider, hass, tmp_path, filename):
+    client, _, _ = provider
+    hass.config.media_dirs = {"local": str(tmp_path)}
+    item = replace(attachment(tmp_path), filename=filename)
+    source = SourceDocument("source", SourceKind.IMAGE, datetime.now(UTC), attachments=(item,))
+    with pytest.raises(SourceValidationError) as error:
+        await client.async_parse(source, reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
+    assert error.value.code == "invalid_source"
+    client._transport.async_parse.assert_not_called()
+
+
+async def test_uppercase_hex_hash_is_accepted_without_changing_descriptor(provider, hass, tmp_path):
+    client, _, _ = provider
+    hass.config.media_dirs = {"local": str(tmp_path)}
+    item = replace(attachment(tmp_path), sha256=attachment(tmp_path).sha256.upper())
+    source = SourceDocument("source", SourceKind.IMAGE, datetime.now(UTC), attachments=(item,))
+    await client.async_parse(source, reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
+    request, binaries = client._transport.async_parse.call_args.args
+    assert request["source"]["attachments"][0]["sha256"] == item.sha256
+    assert binaries[0][0] == item.id
+
+
+async def test_stale_post_response_credential_is_exact_unauthenticated(provider):
+    client, saved, _ = provider
+
+    async def revoked(*args, **kwargs):
+        saved[0] = replace(saved[0], current=replace(saved[0].current, token="Q" * 43))
+        return result()
+
+    client._transport.async_parse.side_effect = revoked
+    with pytest.raises(HostedParseError) as error:
+        await client.async_parse(TextSourceAdapter().create("school"), reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
+    assert (error.value.code, error.value.status, error.value.retryable) == (
+        "unauthenticated", 401, False,
+    )
+    client._transport.async_parse.assert_awaited_once()
+
+
+def test_rejected_message_and_nullable_summary_edges():
+    raw = result()
+    source = TextSourceAdapter().create("school")
+    rejected = raw["rejected"][0]
+    rejected["raw_summary"] = None
+    parsed = parse_hosted_result(raw, source)
+    assert parsed.warnings[-1].startswith("candidate")
+    rejected["message"] = "x" * 2049
+    with pytest.raises(ValueError):
+        parse_hosted_result(raw, source)
+
+
+def test_global_warning_count_requires_maximum_128_valid_warnings():
+    raw = result()
+    source = TextSourceAdapter().create("school")
+    warning = {"code": "warning", "message": "test", "field": None}
+    raw["warnings"] = [warning.copy() for _ in range(128)]
+    assert len(parse_hosted_result(raw, source).warnings) >= 128
+    raw["warnings"].append(warning.copy())
+    with pytest.raises(ValueError):
+        parse_hosted_result(raw, source)
+
+
+def test_nested_staged_media_path_is_rejected_even_when_filename_exists(tmp_path):
+    item = attachment(tmp_path)
+    nested = replace(item, content_ref=item.content_ref + "/extra")
+    with pytest.raises(ValueError):
+        _attachment_bytes({"local": str(tmp_path)}, nested)
+
+
+def test_nonregular_file_is_rejected_even_if_stat_size_matches(tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    item = attachment(tmp_path)
+    monkeypatch.setattr(
+        os, "fstat", lambda _: SimpleNamespace(st_mode=0o040700, st_size=item.size_bytes),
+    )
+    with pytest.raises(ValueError):
+        _attachment_bytes({"local": str(tmp_path)}, item)
+
+
+def test_rejects_invalid_unicode_inside_provider_metadata():
+    import voluptuous as vol
+    raw = result()
+    raw["provider_metadata"] = {"otherwise_valid": {"text": "\\ud800"}}
+    with pytest.raises((ValueError, vol.Invalid, UnicodeError)):
+        parse_hosted_result(raw, TextSourceAdapter().create("school"))
