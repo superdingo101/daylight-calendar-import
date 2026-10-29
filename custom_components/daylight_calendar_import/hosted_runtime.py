@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, replace
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -21,6 +22,7 @@ from .hosted_credentials import (
     HostedCredentialConflict,
     HostedCredentialStorageError,
     HostedCredentialStore,
+    CredentialCheckpoint,
 )
 from .hosted_lifecycle import (
     HostedConnectionResult,
@@ -34,6 +36,7 @@ from .hosted_transport import (
     HostedTransportError,
 )
 from .storage import PendingImportStore
+from .providers import ParserProvider, ProviderError
 
 CONF_HOSTED_SERVICE = "hosted_service"
 CONF_HOSTED_AUTOMATIC = "hosted_automatic_lifecycle"
@@ -90,6 +93,9 @@ class HostedConnectionRuntime:
         self._entry_id = entry.entry_id
         self._service: HostedServiceBinding | None = None
         self._controller: HostedLifecycleController | None = None
+        self._credential_store: HostedCredentialStore | None = None
+        self._parse_generation = 0
+        self._verified_parse_credential = None
         self._state = HostedConnectionResult("not_configured")
         self._accepting = False
         self._stopped = False
@@ -134,6 +140,8 @@ class HostedConnectionRuntime:
         pending = self._hass.data.get(DOMAIN, {}).get(self._entry_id)
         kwargs = ({"reconciler": LocalOnlyNamespaceReconciler(pending)}
                   if type(pending) is PendingImportStore else {})
+        self._credential_store = store
+        self._verified_parse_credential = None
         self._controller = HostedLifecycleController(store, HostedLifecycleTransport(
             async_get_clientsession(self._hass),
             api_origin=self._service.api_origin,
@@ -168,6 +176,56 @@ class HostedConnectionRuntime:
             "account_url": self._state.account_url,
         }
 
+    def parse_session(self) -> tuple[ParserProvider, Callable[[], None]]:
+        """Create one private, generation-fenced parser and acceptance guard.
+
+        No credential is added to the public settings snapshot. A previously
+        loaded checkpoint is insufficient: the current runtime must have verified
+        it, and lifecycle changes invalidate an already-started parse permanently.
+        """
+        from .hosted_parser import DaylightHostedParserProvider
+
+        generation = self._parse_generation
+        store, service = self._credential_store, self._service
+        task = asyncio.current_task()
+
+        def active() -> bool:
+            return (
+                self.accepting and not self.busy
+                and self._parse_generation == generation
+                and self._state.credential_status in ("current", "overlap")
+                and store is not None and self._credential_store is store
+                and self._service == service
+                and task is not None and not task.cancelling()
+            )
+
+        def checkpoint() -> CredentialCheckpoint | None:
+            try:
+                return store.snapshot if store is not None else None
+            except HostedCredentialStorageError:
+                return None
+
+        initial = checkpoint()
+
+        def guard() -> None:
+            current = checkpoint()
+            if (not active() or service is None or initial is None
+                    or current is None or current.service_binding != service
+                    or not current.processing_consent or current.local_disconnect != "none"
+                    or current.reconnect is not None or current.current is None
+                    or current.current != initial.current
+                    or current.current != self._verified_parse_credential
+                    or datetime.now(UTC) >= datetime.fromisoformat(current.current.expires_at)):
+                raise ProviderError(
+                    "hosted_connection_changed",
+                    "Daylight Cloud connection changed or needs verification. Open Daylight Cloud settings before retrying.",
+                )
+
+        guard()
+        return DaylightHostedParserProvider(
+            self._hass, service_binding=service, checkpoint=checkpoint, active=active,
+        ), guard
+
     @property
     def accepting(self) -> bool:
         """Whether the entry owner currently admits explicit native actions."""
@@ -181,6 +239,7 @@ class HostedConnectionRuntime:
     def pause(self) -> None:
         """Close admission before platform unload starts."""
         self._accepting = False
+        self._parse_generation += 1
         if self._cancel_timer is not None:
             self._cancel_timer()
             self._cancel_timer = None
@@ -265,6 +324,7 @@ class HostedConnectionRuntime:
             raise
 
     def _start_work(self, action: str, kwargs: dict[str, Any]) -> asyncio.Task:
+        self._parse_generation += 1
         if self._cancel_timer is not None:
             self._cancel_timer()
             self._cancel_timer = None
@@ -305,6 +365,12 @@ class HostedConnectionRuntime:
                     raise
                 if self._automation is not None and isinstance(result, HostedConnectionResult):
                     await self._automation.async_note_verified(result)
+            if isinstance(result, HostedConnectionResult):
+                self._verified_parse_credential = (
+                    self._credential_store.snapshot.current
+                    if result.credential_status in ("current", "overlap")
+                    and self._credential_store is not None else None
+                )
         except HostedCredentialStorageError:
             self._controller = None
             self._automation = None

@@ -389,6 +389,12 @@ async def async_save_option_patch(
         for pending in pending_store.list() if calendar_scope_changed else ():
             for event in pending.events:
                 destination = event.calendar_entity or old_default
+                # A newly hosted entry can already contain drafts with no
+                # destination. Adding its first calendar must not trap those
+                # drafts or silently resolve them to a new default.
+                if (old_default is None and event.calendar_entity is None
+                        and event.routing_unresolved):
+                    continue
                 if destination not in allowed:
                     raise SettingsValidationError(
                         "pending_destination_not_allowed",

@@ -6441,3 +6441,21 @@ test("fresh Cloud settings need no AI entity and do not invent calendar choices"
   assert.match(panel._content.querySelectorAll("p").map(node => node.textContent).join(" "),
     /Configure a writable calendar before approving an event/);
 });
+
+test("Email settings disclose paused IMAP in Cloud mode without clearing saved configuration", () => {
+  const panel = new DaylightImportPanel();
+  panel._settings = {
+    entry_id: "entry-1", parser_provider: "daylight_cloud", ai_task_entity: null,
+    calendar_entity: null, calendar_entities: [],
+    email: {enabled: true, host: "imap.example.test", port: 993, username: "mailbox",
+      password_configured: true, mailbox: "Calendar", verify_ssl: true, sender_allowlist: []},
+  };
+  const cloud = panel.emailSettingsView();
+  assert.match(cloud.querySelector(".email-parser-status").textContent, /Direct IMAP is paused/);
+  assert.match(cloud.querySelector(".email-parser-status").textContent, /settings are retained/);
+  assert.match(cloud.querySelector(".email-parser-status").textContent, /paste and upload remain available/);
+  assert.equal(find(cloud, "form").elements.namedItem("email_enabled").checked, true);
+  assert.equal(find(cloud, "form").elements.namedItem("email_host").value, "imap.example.test");
+  panel._settings.parser_provider = "ai_task";
+  assert.equal(panel.emailSettingsView().querySelector(".email-parser-status"), null);
+});

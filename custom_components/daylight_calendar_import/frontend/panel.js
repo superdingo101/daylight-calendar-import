@@ -1782,6 +1782,13 @@ export class DaylightImportPanel extends HTMLElement {
 
     const form = document.createElement("form");
     const email = this._settings.email;
+    if (this._settings.parser_provider === "daylight_cloud") {
+      const paused = element("p",
+        "Direct IMAP is paused while Daylight Cloud parsing is selected. Your email settings are retained. Select BYO AI Task to resume Direct IMAP; paste and upload remain available with Cloud.",
+        "email-parser-status");
+      paused.setAttribute("role", "status");
+      section.append(paused);
+    }
     const draft = this._settingsDrafts.email;
     const value = (key, fallback) => draft?.[key] ?? fallback;
 

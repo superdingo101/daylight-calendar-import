@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import replace
+from collections.abc import Callable
 from typing import Any
 
 import voluptuous as vol
@@ -30,6 +31,7 @@ from .const import (
     SOURCE_TEXT_LIMIT_MESSAGE,
     CONF_AI_TASK_ENTITY,
     PARSER_PROVIDER_AI_TASK,
+    PARSER_PROVIDER_DAYLIGHT_CLOUD,
     CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
     DOMAIN,
@@ -64,7 +66,7 @@ from .dedup import source_fingerprint
 from .calendar_observation import CalendarObservationError, async_classify_conflicts
 from .parser import ParseOutcome, async_parse_source as parse_source_with_provider
 from .pdfs import async_pdf_source
-from .providers import SourceValidationError, ProviderError
+from .providers import SourceValidationError, ProviderError, ParserProvider
 from .review_panel import async_register_review_panel, async_remove_review_panel
 from .settings import effective_ai_task_entity, effective_calendar_options, effective_calendar_intelligence, effective_parser_provider
 from .settings_api import async_register_settings_api
@@ -375,8 +377,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return invoke
 
     def route_review_source(source: SourceDocument):
-        if ai_task_entity is None:
-            raise ProviderError("provider_unavailable", "Daylight Cloud parsing is not available yet.")
         # Enforce the original normalized input bound before routing removes
         # control-data lines from parser evidence, including for IMAP sources.
         if source.text is not None and len(source.text) > MAX_SOURCE_TEXT_CHARS:
@@ -388,10 +388,68 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             aliases=aliases,
         )
 
+    async def selected_parse(
+        source: SourceDocument, *, reference_datetime: datetime | None = None,
+    ) -> tuple[ParseOutcome, Callable[[], None] | None]:
+        """Capture one selected provider; never fall back to retained BYO AI."""
+        if ai_task_entity is not None:
+            outcome = await _async_parse_source(
+                hass, source, ai_task_entity,
+                **({"reference_datetime": reference_datetime} if reference_datetime is not None else {}),
+            )
+            return outcome, None
+        runtime = getattr(pending_store, "hosted_runtime", None)
+        if runtime is None:
+            raise ProviderError(
+                "hosted_connection_changed", "Daylight Cloud connection needs verification. Open Daylight Cloud settings before retrying.",
+            )
+        provider, check_runtime = runtime.parse_session()
+
+        def guard() -> None:
+            if (not pending_store.accepting_services
+                    or hass.data.get(DOMAIN, {}).get(entry.entry_id) is not pending_store
+                    or effective_parser_provider(entry) != PARSER_PROVIDER_DAYLIGHT_CLOUD):
+                raise ProviderError(
+                    "hosted_connection_changed", "Daylight Cloud connection changed. Open Daylight Cloud settings before retrying.",
+                )
+            check_runtime()
+
+        guard()
+        try:
+            outcome = await _async_parse_source(
+                hass, source, None, provider=provider,
+                reference_datetime=reference_datetime or source.received_at,
+            )
+        except ProviderError as error:
+            from .hosted_parse_transport import HostedParseError
+            if not isinstance(error, HostedParseError):
+                raise
+            raise _hosted_parse_failure(error) from None
+        guard()
+        return outcome, guard
+
+    async def accept_parsed(
+        guard: Callable[[], None] | None, **kwargs: Any,
+    ) -> PendingImportAddResult:
+        """Fence hosted acceptance inside storage without changing BYO calls."""
+        if guard is None:
+            return await pending_store.async_add(**kwargs)
+        try:
+            return await pending_store.async_add(**kwargs, acceptance_guard=guard)
+        except (ProviderError, asyncio.CancelledError) as error:
+            try:
+                await pending_store.async_record_parse_failure(
+                    kwargs["activity_id"],
+                    **({"provider_error_code": error.code} if isinstance(error, ProviderError) else {}),
+                )
+            except (Exception, asyncio.CancelledError):
+                pass
+            raise
+
     async def parse_submission(source: SourceDocument, activity_id: str) -> Any:
         """Finish a stopped parser without obscuring its original error."""
         try:
-            return await _async_parse_source(hass, source, ai_task_entity)
+            return await selected_parse(source)
         except (asyncio.CancelledError, Exception) as error:
             try:
                 if isinstance(error, ProviderError):
@@ -410,9 +468,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ) -> None:
         """Send one normalized email through the existing review pipeline."""
         # Email polling owns retry/terminal classification for parser failures.
+        # Its automatic retries must never repeat an ambiguous managed POST.
+        if ai_task_entity is None:
+            raise ProviderError(
+                "hosted_imap_paused", "Direct IMAP is paused while Daylight Cloud parsing is selected. Choose BYO AI Task to resume email ingestion.",
+            )
         route = route_review_source(source)
-        outcome = await _async_parse_source(hass, route.parser_source, ai_task_entity)
-        await pending_store.async_add(
+        outcome, guard = await selected_parse(route.parser_source)
+        await accept_parsed(guard,
             source_text=email_review_source_text(source),
             events=outcome.events,
             **({"event_assumptions": outcome.event_assumptions}
@@ -434,19 +497,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return calendar_entity
 
     async def handle_parse_text(call: ServiceCall) -> ServiceResponse:
-        outcome = await _parse_text_with_ai_task(
-            hass, ai_task_entity, call.data[ATTR_TEXT], context=call.context
-        )
+        if ai_task_entity is not None:
+            outcome = await _parse_text_with_ai_task(
+                hass, ai_task_entity, call.data[ATTR_TEXT], context=call.context
+            )
+        else:
+            await _async_check_entity_control_permission(hass, None, call.context)
+            outcome, guard = await selected_parse(TextSourceAdapter().create(call.data[ATTR_TEXT]))
+            guard()
         return {"events": [draft.as_dict() for draft in outcome.events],
                 "warnings": outcome.warnings}
 
     async def handle_import_text(call: ServiceCall) -> ServiceResponse:
         if default_calendar is None:
             raise ServiceValidationError("Configure a writable calendar before creating events")
-        outcome = await _parse_text_with_ai_task(
-            hass, ai_task_entity, call.data[ATTR_TEXT], context=call.context
-        )
+        if ai_task_entity is not None:
+            outcome = await _parse_text_with_ai_task(
+                hass, ai_task_entity, call.data[ATTR_TEXT], context=call.context
+            )
+        else:
+            await _async_check_entity_control_permission(hass, None, call.context)
+            outcome, guard = await selected_parse(TextSourceAdapter().create(call.data[ATTR_TEXT]))
+            guard()
         for draft in outcome.events:
+            if ai_task_entity is None:
+                guard()
             await _async_create_calendar_event(
                 hass,
                 default_calendar,
@@ -476,8 +551,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
         try:
-            outcome = await parse_submission(route.parser_source, activity_id)
-            result = await pending_store.async_add(
+            outcome, guard = await parse_submission(route.parser_source, activity_id)
+            result = await accept_parsed(guard,
                 source_text=source.text,
                 events=outcome.events,
                 **({"event_assumptions": outcome.event_assumptions}
@@ -507,10 +582,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
         try:
-            outcome = await parse_submission(route.parser_source, activity_id)
+            outcome, guard = await parse_submission(route.parser_source, activity_id)
             label = "PDF" if source.kind is SourceKind.PDF else "Image"
             attachment_note = f"{label} attachment (SHA-256: {source.attachments[0].sha256})" if source.attachments else ""
-            result = await pending_store.async_add(
+            result = await accept_parsed(guard,
                 source_text="\n\n".join(part for part in (source.text, attachment_note) if part),
                 events=outcome.events,
                 **({"event_assumptions": outcome.event_assumptions}
@@ -682,16 +757,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Explicitly reparse available source text without replacing user work."""
         await check_read_permission(call)
 
+        acceptance_guard = None
+
         async def reparse(original: PendingImport):
+            nonlocal acceptance_guard
             source = SourceDocument(
                 id=original.id, kind=SourceKind.MANUAL_TEXT,
                 received_at=datetime.fromisoformat(original.created_at),
                 text=original.source_text, title=original.source_title,
             )
             route = route_review_source(source)
-            outcome = await _async_parse_source(
-                hass, route.parser_source, ai_task_entity,
-                reference_datetime=source.received_at,
+            outcome, acceptance_guard = await selected_parse(
+                route.parser_source, reference_datetime=source.received_at,
             )
             assumptions = outcome.event_assumptions or ((),) * len(outcome.events)
             candidates = tuple(PendingEvent.create(
@@ -707,6 +784,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             try:
                 updated, added, duplicates = await pending_store.async_reprocess(
                     call.data[ATTR_PENDING_ID], reparse,
+                    **({"acceptance_guard": lambda: acceptance_guard()} if ai_task_entity is None else {}),
                 )
             except PendingEventEditError as err:
                 raise ServiceValidationError(str(err)) from err
@@ -1212,6 +1290,19 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await PendingImportStore(hass).async_remove_storage()
 
 
+def _hosted_parse_failure(error: Any) -> ProviderError:
+    """Translate public status into safe hosted guidance without server text."""
+    if error.status == 401:
+        return ProviderError("hosted_authentication", "Daylight Cloud rejected the connection credential. Open Daylight Cloud settings to repair the connection before retrying.")
+    if error.status == 403:
+        return ProviderError("hosted_access", "Daylight Cloud managed parsing is not enabled for this connection. Check access in Daylight Cloud settings before retrying.")
+    if error.status == 429:
+        return ProviderError("hosted_rate_limited", "Daylight Cloud rate limit reached. Wait before deliberately retrying; the request was not replayed.")
+    if error.uncertain:
+        return ProviderError("hosted_outcome_uncertain", "Daylight Cloud parse outcome is uncertain. Check recent activity and the review inbox before deliberately retrying; the request was not replayed.")
+    return ProviderError("hosted_parse_failed", "Daylight Cloud could not parse this source. Check Daylight Cloud settings and recent activity before deliberately retrying.")
+
+
 async def _parse_text_with_ai_task(
     hass: HomeAssistant,
     ai_task_entity: str | None,
@@ -1230,13 +1321,13 @@ async def _async_parse_source(
     source: SourceDocument,
     ai_task_entity: str | None,
     *,
-    reference_datetime: datetime | None = None,
+    reference_datetime: datetime | None = None, provider: ParserProvider | None = None,
 ) -> ParseOutcome:
-    """Feed a normalized source into the current text parser boundary."""
-    if ai_task_entity is None:
+    """Feed a normalized source through the selected parser boundary."""
+    if ai_task_entity is None and provider is None:
         raise ProviderError(
             "provider_unavailable",
-            "Daylight Cloud parsing is not available yet. The selected provider has not been changed.",
+            "Daylight Cloud connection needs verification. Open Daylight Cloud settings before retrying.",
         )
     if source.text is None and not source.attachments:
         raise SourceValidationError(
@@ -1248,6 +1339,7 @@ async def _async_parse_source(
         source=source,
         ai_task_entity=ai_task_entity,
         **({"reference_datetime": reference_datetime} if reference_datetime is not None else {}),
+        **({"provider": provider} if provider is not None else {}),
     )
 
 

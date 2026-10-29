@@ -1342,6 +1342,7 @@ class PendingImportStore:
         self,
         pending_id: str,
         parser: Callable[[PendingImport], Awaitable[tuple[tuple[PendingEvent, ...], tuple[str, ...]]]],
+        *, acceptance_guard: Callable[[], None] | None = None,
     ) -> tuple[PendingImport, int, int]:
         """Reparse retained text, preserving existing drafts and all dedupe history."""
         async with self._lock:
@@ -1361,7 +1362,7 @@ class PendingImportStore:
         try:
             candidates, warnings = await parser(original)
             result, cancelled = await self._async_complete_transaction(
-                self._async_commit_reprocessed(original, candidates, warnings)
+                self._async_commit_reprocessed(original, candidates, warnings, acceptance_guard)
             )
             if cancelled:
                 raise asyncio.CancelledError
@@ -1371,10 +1372,12 @@ class PendingImportStore:
 
     async def _async_commit_reprocessed(
         self, original: PendingImport, candidates: tuple[PendingEvent, ...],
-        warnings: tuple[str, ...],
+        warnings: tuple[str, ...], acceptance_guard: Callable[[], None] | None = None,
     ) -> tuple[PendingImport, int, int]:
         """Append novel drafts only if the entire original review is unchanged."""
         async with self._lock:
+            if acceptance_guard is not None:
+                acceptance_guard()
             current = self._items.get(original.id)
             if current is not original:
                 if current is None or UNSUPPORTED_RECURRENCE_WARNING not in warnings:
@@ -1489,6 +1492,7 @@ class PendingImportStore:
         source_sender: str | None = None,
         warnings: Iterable[str] = (),
         activity_id: str | None = None,
+        acceptance_guard: Callable[[], None] | None = None,
     ) -> PendingImportAddResult:
         """Persist events, letting the storage transaction finish before cancellation."""
         result, cancelled = await self._async_complete_transaction(
@@ -1505,6 +1509,7 @@ class PendingImportStore:
                 source_sender=source_sender,
                 warnings=warnings,
                 activity_id=activity_id,
+                acceptance_guard=acceptance_guard,
             )
         )
         if cancelled:
@@ -1526,6 +1531,7 @@ class PendingImportStore:
         source_sender: str | None = None,
         warnings: Iterable[str] = (),
         activity_id: str | None = None,
+        acceptance_guard: Callable[[], None] | None = None,
     ) -> PendingImportAddResult:
         """Persist only events not already pending or handled."""
         source_text = source_text.strip()
@@ -1544,6 +1550,11 @@ class PendingImportStore:
         )
 
         async with self._lock:
+            # Fence stale hosted results after waiting for the real store lock.
+            # Once the guarded durable transaction starts, retain the existing
+            # uncertainty/recovery semantics rather than interrupting its save.
+            if acceptance_guard is not None:
+                acceptance_guard()
             source_claims = self._source_claims
             source_was_claimed = (
                 activity_id is not None and activity_id in source_claims

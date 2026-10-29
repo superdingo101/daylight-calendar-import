@@ -331,3 +331,31 @@ test("uncertain calendar write keeps the left-edge overflow actions on screen", 
   await check.click();
   await expect(page.getByRole("region", {name: "Calendar check results"})).toContainText("Scheduling conflict");
 });
+
+for (const [message, advice] of [
+  ["Daylight Cloud rejected the connection credential. Open Daylight Cloud settings to repair the connection before retrying.", "verify or repair"],
+  ["Daylight Cloud managed parsing is not enabled for this connection. Check access in Daylight Cloud settings before retrying.", "reconnecting alone does not enable it"],
+  ["Daylight Cloud parse outcome is uncertain. Check recent activity and the review inbox before deliberately retrying; the request was not replayed.", "request was not replayed"],
+]) {
+  test(`hosted parse guidance: ${advice}`, async ({page}) => {
+    await page.evaluate(message => {
+      const panel = document.querySelector("daylight-import-panel");
+      const previous = panel._hass.callWS;
+      panel.hass = {...panel._hass, callWS: async call => {
+        if (call.service === "submit_text") {
+          window.fixture.calls.push(call);
+          throw {code: "home_assistant_error", message};
+        }
+        return previous(call);
+      }};
+    }, message);
+    await openImport(page, "text");
+    const form = textForm(page);
+    await form.getByRole("textbox").fill(source);
+    await form.getByRole("button", {name: "Import events", exact: true}).click();
+    await expect(form.getByRole("status")).toContainText(advice);
+    await expect(form.getByRole("textbox")).toHaveValue(source);
+    await expect(form.getByRole("button", {name: "Check recent activity", exact: true})).toBeVisible();
+    expect(await calls(page)).toHaveLength(1);
+  });
+}
