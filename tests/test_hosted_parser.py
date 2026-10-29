@@ -521,7 +521,7 @@ def test_attachment_file_open_is_directory_relative_and_nonfollowing(tmp_path, m
     assert isinstance(opened[1][2], int)
 
 
-def test_hosted_provider_constructs_real_bound_transport(hass):
+async def test_hosted_provider_constructs_real_bound_transport(hass):
     import custom_components.daylight_calendar_import.hosted_parser as module
     provider = DaylightHostedParserProvider(
         hass, service_binding=SERVICE, checkpoint=lambda: checkpoint(), active=lambda: True,
