@@ -462,7 +462,7 @@ def test_canonical_source_evidence_separator(monkeypatch):
 
     monkeypatch.setattr(module, "parse_ai_data", capture)
     parse_hosted_result(result(), source)
-    assert seen["source_text"] == "Header\\n\\nDescription"
+    assert seen["source_text"] == "Header\n\nDescription"
 
 
 def test_attachment_rejects_webp_when_riff_or_webp_marker_alone(tmp_path):
