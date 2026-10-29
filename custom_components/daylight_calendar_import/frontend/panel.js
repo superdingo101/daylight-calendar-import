@@ -174,6 +174,7 @@ const css = `
   }
   form { display: grid; gap: 12px; }
   label { display: grid; gap: 4px; }
+  .settings-card label[hidden] { display: none; }
   input, textarea, select { box-sizing: border-box; width: 100%; padding: 8px; font: inherit; color: inherit; background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; }
   input[type=checkbox] { width: auto; }
   textarea { min-height: 10rem; resize: vertical; }
@@ -516,7 +517,8 @@ function showEditError(form, message) {
 }
 
 function entityChoices(hass, domain, requiredFeature, configured = []) {
-  const configuredIds = new Set(configured);
+  const configuredIds = new Set(configured.filter(entityId =>
+    typeof entityId === "string" && entityId.startsWith(`${domain}.`)));
   const byId = new Map();
   for (const state of Object.values(hass?.states || {})) {
     if (!state?.entity_id?.startsWith(`${domain}.`)) continue;
@@ -1202,11 +1204,26 @@ export class DaylightImportPanel extends HTMLElement {
     this._hostedSettings.stop();
   }
 
+  generalSettingsPatch(form) {
+    const provider = form.elements.namedItem("parser_provider").value;
+    const aiTaskEntity = form.elements.namedItem("ai_task_entity").value;
+    const patch = {};
+    if (provider !== (this._settings.parser_provider ?? "ai_task")) {
+      patch.parser_provider = provider;
+    }
+    // Choosing Cloud never clears the saved BYO entity. Retain the legacy
+    // AI-only save shape, but include a retained Cloud-mode entity only on edit.
+    if (aiTaskEntity && (provider === "ai_task" ||
+        aiTaskEntity !== this._settings.ai_task_entity)) {
+      patch.ai_task_entity = aiTaskEntity;
+    }
+    return patch;
+  }
+
   async saveGeneralSettings(form) {
     if (this._settingsSaving || !this._settings) return;
-    const aiTaskEntity = form.elements.namedItem("ai_task_entity").value;
     const entryId = this._settings.entry_id;
-    const patch = {ai_task_entity: aiTaskEntity};
+    const patch = this.generalSettingsPatch(form);
     this._setSettingsDraft("general", patch);
     await this._saveSettings(
       "general",
@@ -1290,26 +1307,57 @@ export class DaylightImportPanel extends HTMLElement {
     heading.tabIndex = -1;
     section.append(
       heading,
-      element("p", "Choose the AI Task entity Daylight uses to extract calendar events.", "settings-help"),
+      element("p", "Choose how Daylight extracts calendar events.", "settings-help"),
     );
     const form = document.createElement("form");
+    const providerLabel = element("label", "Parser provider");
+    const providerSelect = document.createElement("select");
+    providerSelect.name = "parser_provider";
+    providerSelect.setAttribute("aria-label", "Parser provider");
+    const selectedProvider = this._settingsDrafts.general?.parser_provider ??
+      this._settings.parser_provider ?? "ai_task";
+    appendOptions(providerSelect, [
+      {id: "ai_task", label: "Local / BYO AI Task"},
+      {id: "daylight_cloud", label: "Daylight Cloud"},
+    ], selectedProvider);
+    providerLabel.append(providerSelect);
+    const hosted = selectedProvider === "daylight_cloud";
     const label = element("label", "AI Task entity");
+    label.hidden = hosted;
     const select = document.createElement("select");
     select.name = "ai_task_entity";
+    select.setAttribute("aria-label", "AI Task entity");
     const selectedAi = this._settingsDrafts.general?.ai_task_entity ??
       this._settings.ai_task_entity;
     const choices = entityChoices(
       this._hass, "ai_task", 1, [this._settings.ai_task_entity, selectedAi],
     );
+    if (hosted && !selectedAi) {
+      choices.unshift({id: "", label: "No AI Task entity configured"});
+    }
     appendOptions(select, choices, selectedAi);
+    select.required = !hosted;
+    select.disabled = hosted;
     select.addEventListener("change", () => {
-      this._setSettingsDraft("general", {ai_task_entity: select.value});
+      this._setSettingsDraft("general", this.generalSettingsPatch(form));
+    });
+    providerSelect.addEventListener("change", () => {
+      this._setSettingsDraft("general", this.generalSettingsPatch(form));
+      this.render();
+      Array.from(this._content.querySelectorAll("select"))
+        .find(control => control.name === "parser_provider")?.focus();
     });
     label.append(select);
     const save = element("button", this._settingsSaving ? "Saving…" : "Save general settings");
     save.type = "submit";
-    save.disabled = this._settingsSaving || choices.length === 0;
-    form.append(label, save);
+    save.disabled = this._settingsSaving || !hosted && choices.length === 0 ||
+      hosted && !this._settingsDrafts.general;
+    form.append(providerLabel, label);
+    if (hosted) {
+      form.append(element("p", "Manage your connection and processing consent in Daylight Cloud settings. " +
+        "No local AI Task entity is required.", "settings-help"));
+    }
+    form.append(save);
     form.addEventListener("submit", event => {
       event.preventDefault();
       void this.saveGeneralSettings(form);
@@ -1325,7 +1373,8 @@ export class DaylightImportPanel extends HTMLElement {
     heading.tabIndex = -1;
     section.append(
       heading,
-      element("p", "Choose the default destination and the calendars available during review.", "settings-help"),
+      element("p", "Choose the default destination and the calendars available during review. " +
+        "Configure a writable calendar before approving an event.", "settings-help"),
     );
     const form = document.createElement("form");
     const draft = this._settingsDrafts.calendars;
@@ -1351,6 +1400,7 @@ export class DaylightImportPanel extends HTMLElement {
     const defaultLabel = element("label", "Default calendar");
     const defaultSelect = document.createElement("select");
     defaultSelect.name = "calendar_entity";
+    defaultSelect.setAttribute("aria-label", "Default calendar");
     appendOptions(defaultSelect, defaultChoices, selectedDefault);
     defaultSelect.addEventListener("change", updateCalendarDraft);
     defaultLabel.append(defaultSelect);

@@ -12,6 +12,9 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_AI_TASK_ENTITY,
+    CONF_PARSER_PROVIDER,
+    PARSER_PROVIDER_AI_TASK,
+    PARSER_PROVIDER_DAYLIGHT_CLOUD,
     CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
     CONF_EMAIL_ENABLED,
@@ -31,6 +34,7 @@ from .settings import (
     async_validate_email_options,
     core_option_patch,
     effective_core_options,
+    effective_parser_provider,
     normalize_core_options,
     settings_lock,
 )
@@ -86,7 +90,41 @@ class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle the initial setup step."""
+        """Choose an explicit processor before asking for optional local services."""
+        if user_input is not None:
+            provider = user_input[CONF_PARSER_PROVIDER]
+            if provider == PARSER_PROVIDER_AI_TASK:
+                return await self.async_step_byo()
+            if provider == PARSER_PROVIDER_DAYLIGHT_CLOUD:
+                await self.async_set_unique_id(DOMAIN)
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title="Daylight Calendar Import",
+                    data={
+                        CONF_PARSER_PROVIDER: provider,
+                        CONF_AI_TASK_ENTITY: None,
+                        CONF_CALENDAR_ENTITY: None,
+                        CONF_CALENDAR_ENTITIES: [],
+                    },
+                )
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema({
+                vol.Required(CONF_PARSER_PROVIDER, default=PARSER_PROVIDER_AI_TASK): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[PARSER_PROVIDER_AI_TASK, PARSER_PROVIDER_DAYLIGHT_CLOUD],
+                        translation_key="parser_provider",
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                ),
+            }),
+            errors={} if user_input is None else {"base": "invalid_parser_provider"},
+        )
+
+    async def async_step_byo(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Preserve the complete account-free local AI Task setup."""
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
@@ -102,19 +140,15 @@ class DaylightCalendarImportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN)
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title="Daylight Calendar Import",
-                    data=core_options,
+                    data={CONF_PARSER_PROVIDER: PARSER_PROVIDER_AI_TASK, **core_options},
                 )
 
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_AI_TASK_ENTITY): _ai_task_selector(),
-                vol.Required(CONF_CALENDAR_ENTITY): _calendar_selector(),
-                vol.Required(CONF_CALENDAR_ENTITIES): _calendar_selector(
-                    multiple=True
-                ),
-            }
-        )
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        schema = vol.Schema({
+            vol.Required(CONF_AI_TASK_ENTITY): _ai_task_selector(),
+            vol.Required(CONF_CALENDAR_ENTITY): _calendar_selector(),
+            vol.Required(CONF_CALENDAR_ENTITIES): _calendar_selector(multiple=True),
+        })
+        return self.async_show_form(step_id="byo", data_schema=schema, errors=errors)
 
 
 
@@ -128,6 +162,7 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlow):
         """Configure core runtime choices and enable or disable email ingestion."""
         current = self.config_entry.options
         current_core = effective_core_options(self.config_entry)
+        provider = effective_parser_provider(self.config_entry)
         ai_task_entity, default_calendar, allowed_calendars = current_core
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -136,10 +171,11 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlow):
                 self._pending_core_patch = core_option_patch(
                     baseline,
                     {
-                        CONF_AI_TASK_ENTITY: user_input[CONF_AI_TASK_ENTITY],
-                        CONF_CALENDAR_ENTITY: user_input[CONF_CALENDAR_ENTITY],
-                        CONF_CALENDAR_ENTITIES: user_input[CONF_CALENDAR_ENTITIES],
+                        **{key: user_input[key] for key in (
+                            CONF_AI_TASK_ENTITY, CONF_CALENDAR_ENTITY, CONF_CALENDAR_ENTITIES, CONF_PARSER_PROVIDER
+                        ) if key in user_input},
                     },
+                    parser_provider=getattr(self, "_provider_form_baseline", provider),
                 )
             except SettingsValidationError as err:
                 errors[CONF_CALENDAR_ENTITY] = err.code
@@ -167,23 +203,27 @@ class DaylightCalendarImportOptionsFlow(config_entries.OptionsFlow):
                     return await self.async_step_email()
         else:
             self._core_form_baseline = current_core
+            self._provider_form_baseline = provider
 
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_AI_TASK_ENTITY): _ai_task_selector(),
-                vol.Required(CONF_CALENDAR_ENTITY): _calendar_selector(),
-                vol.Required(CONF_CALENDAR_ENTITIES): _calendar_selector(
-                    multiple=True
-                ),
-                vol.Required(CONF_EMAIL_ENABLED): selector.BooleanSelector(),
-            }
-        )
+        schema = vol.Schema({
+            vol.Required(CONF_PARSER_PROVIDER, default=provider): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[PARSER_PROVIDER_AI_TASK, PARSER_PROVIDER_DAYLIGHT_CLOUD],
+                    translation_key="parser_provider",
+                )
+            ),
+            vol.Optional(CONF_AI_TASK_ENTITY): _ai_task_selector(),
+            vol.Optional(CONF_CALENDAR_ENTITY): _calendar_selector(),
+            vol.Optional(CONF_CALENDAR_ENTITIES): _calendar_selector(multiple=True),
+            vol.Required(CONF_EMAIL_ENABLED): selector.BooleanSelector(),
+        })
         suggested_values = (
             user_input
             if user_input is not None
             else {
-                CONF_AI_TASK_ENTITY: ai_task_entity,
-                CONF_CALENDAR_ENTITY: default_calendar,
+                CONF_PARSER_PROVIDER: provider,
+                **({CONF_AI_TASK_ENTITY: ai_task_entity} if ai_task_entity is not None else {}),
+                **({CONF_CALENDAR_ENTITY: default_calendar} if default_calendar is not None else {}),
                 CONF_CALENDAR_ENTITIES: allowed_calendars,
                 CONF_EMAIL_ENABLED: current.get(CONF_EMAIL_ENABLED, False),
             }

@@ -20,7 +20,8 @@ Request:
 
 Because Daylight currently permits one config entry, the panel read command discovers
 that sole entry automatically. The response includes its `entry_id` for subsequent
-update commands, plus the effective AI Task entity, default calendar, writable
+update commands, plus `parser_provider` (`ai_task` or `daylight_cloud`), the saved
+AI Task entity, default calendar, writable
 calendar list, normalized `calendar_aliases` mapping, independent
 `conflict_calendar_entities` list, and Direct IMAP settings. The saved IMAP password is never
 returned. The response exposes only `password_configured: true|false`.
@@ -35,8 +36,21 @@ not overwrite a newer Calendars-settings save (and vice versa). When calendars
 are supplied, the effective default calendar must remain present in the
 effective writable-calendar list.
 
+`parser_provider` is an explicit core setting. Legacy entries without it remain
+in `ai_task` mode. Selecting `daylight_cloud` retains saved BYO/IMAP/calendar
+settings and does not imply processing consent or create a Cloud connection.
+A new hosted entry may return `ai_task_entity: null`, `calendar_entity: null`
+and `calendar_entities: []`. Local AI Task mode requires its entity and writable
+calendar settings before it can be selected. Selecting Cloud never falls back
+to a retained local AI entity. Calendar writes still require an allowed writable
+destination.
+
 Saving merges the validated patch into the latest config-entry options and then
-reloads the entry.
+reloads the entry. Parser-provider changes use the same admission/reload barrier
+as calendar changes, so a mode switch cannot occur under active ingestion.
+This hosted-branch setup increment deliberately refuses managed parse calls with
+`provider_unavailable`; the separate hosted parser/runtime increment activates
+the selected provider after its transport and consent checks are implemented.
 
 ## Update calendar intelligence settings
 
@@ -103,6 +117,7 @@ Validation failures use stable WebSocket error codes:
 - `invalid_sender_allowlist`
 - `cannot_connect`
 - `default_not_allowed`
+- `invalid_parser_provider`
 - `invalid_ai_task`
 - `invalid_calendar`
 - `entry_not_found`

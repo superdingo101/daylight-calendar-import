@@ -22,10 +22,15 @@ function validNotificationPolicy(policy) {
 }
 
 function validateSettings(result) {
+  const provider = result?.parser_provider === undefined ? "ai_task" : result.parser_provider;
+  const hosted = provider === "daylight_cloud";
   if (!result || typeof result.entry_id !== "string" ||
-      typeof result.ai_task_entity !== "string" ||
-      typeof result.calendar_entity !== "string" ||
+      !["ai_task", "daylight_cloud"].includes(provider) ||
+      !(typeof result.ai_task_entity === "string" || hosted && result.ai_task_entity === null) ||
+      !(typeof result.calendar_entity === "string" || hosted && result.calendar_entity === null) ||
       !Array.isArray(result.calendar_entities) ||
+      result.calendar_entities.some(value => typeof value !== "string") ||
+      (result.calendar_entity === null && result.calendar_entities.length !== 0) ||
       typeof result.email !== "object" || result.email === null ||
       !validNotificationPolicy(result.notifications)) {
     throw new Error("Daylight settings returned an unexpected response. Try again.");
@@ -54,7 +59,7 @@ export async function saveCoreSettings(hass, settings) {
     type: SETTINGS_CORE_UPDATE,
     entry_id: settings.entry_id,
   };
-  for (const key of ["ai_task_entity", "calendar_entity", "calendar_entities"]) {
+  for (const key of ["parser_provider", "ai_task_entity", "calendar_entity", "calendar_entities"]) {
     if (settings[key] !== undefined) payload[key] = settings[key];
   }
   return validateSettings(await hass.callWS(payload));

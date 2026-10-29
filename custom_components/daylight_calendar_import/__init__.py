@@ -29,6 +29,7 @@ from .const import (
     MAX_SOURCE_TEXT_CHARS,
     SOURCE_TEXT_LIMIT_MESSAGE,
     CONF_AI_TASK_ENTITY,
+    PARSER_PROVIDER_AI_TASK,
     CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
     DOMAIN,
@@ -65,7 +66,7 @@ from .parser import ParseOutcome, async_parse_source as parse_source_with_provid
 from .pdfs import async_pdf_source
 from .providers import SourceValidationError, ProviderError
 from .review_panel import async_register_review_panel, async_remove_review_panel
-from .settings import effective_ai_task_entity, effective_calendar_options, effective_calendar_intelligence
+from .settings import effective_ai_task_entity, effective_calendar_options, effective_calendar_intelligence, effective_parser_provider
 from .settings_api import async_register_settings_api
 from .settings import effective_notification_preferences
 from .notification_delivery import async_deliver_notifications, MAX_ACTIVE_TASKS as _MAX_NOTIFICATION_TASKS
@@ -231,14 +232,17 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return entry.version == 2
 
 
-def _calendar_configuration(entry: ConfigEntry) -> tuple[str, tuple[str, ...]]:
+def _calendar_configuration(entry: ConfigEntry) -> tuple[str | None, tuple[str, ...]]:
     """Return effective calendar settings."""
     default_calendar, allowed_calendars = effective_calendar_options(entry)
     return default_calendar, tuple(allowed_calendars)
 
 
-def _ai_task_configuration(entry: ConfigEntry) -> str:
+def _ai_task_configuration(entry: ConfigEntry) -> str | None:
     """Return the effective AI Task entity."""
+    # A retained BYO choice is configuration, never an implicit hosted fallback.
+    if effective_parser_provider(entry) != PARSER_PROVIDER_AI_TASK:
+        return None
     return effective_ai_task_entity(entry)
 
 
@@ -371,6 +375,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return invoke
 
     def route_review_source(source: SourceDocument):
+        if ai_task_entity is None:
+            raise ProviderError("provider_unavailable", "Daylight Cloud parsing is not available yet.")
         # Enforce the original normalized input bound before routing removes
         # control-data lines from parser evidence, including for IMAP sources.
         if source.text is not None and len(source.text) > MAX_SOURCE_TEXT_CHARS:
@@ -435,6 +441,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "warnings": outcome.warnings}
 
     async def handle_import_text(call: ServiceCall) -> ServiceResponse:
+        if default_calendar is None:
+            raise ServiceValidationError("Configure a writable calendar before creating events")
         outcome = await _parse_text_with_ai_task(
             hass, ai_task_entity, call.data[ATTR_TEXT], context=call.context
         )
@@ -587,6 +595,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
 
     async def handle_approve_pending(call: ServiceCall) -> ServiceResponse:
+        if ai_task_entity is None:
+            await _async_check_entity_control_permission(hass, None, call.context)
         pending_id = call.data[ATTR_PENDING_ID]
         pending_to_approve = pending_store.get(pending_id)
         if pending_to_approve is None:
@@ -622,6 +632,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
 
     async def handle_reject_pending(call: ServiceCall) -> ServiceResponse:
+        if ai_task_entity is None:
+            await _async_check_entity_control_permission(hass, None, call.context)
         for calendar_entity in allowed_calendars:
             await _async_check_entity_control_permission(hass, calendar_entity, call.context)
         pending_id = call.data[ATTR_PENDING_ID]
@@ -1202,7 +1214,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 async def _parse_text_with_ai_task(
     hass: HomeAssistant,
-    ai_task_entity: str,
+    ai_task_entity: str | None,
     text: str,
     *,
     context: Context | None = None,
@@ -1216,11 +1228,16 @@ async def _parse_text_with_ai_task(
 async def _async_parse_source(
     hass: HomeAssistant,
     source: SourceDocument,
-    ai_task_entity: str,
+    ai_task_entity: str | None,
     *,
     reference_datetime: datetime | None = None,
 ) -> ParseOutcome:
     """Feed a normalized source into the current text parser boundary."""
+    if ai_task_entity is None:
+        raise ProviderError(
+            "provider_unavailable",
+            "Daylight Cloud parsing is not available yet. The selected provider has not been changed.",
+        )
     if source.text is None and not source.attachments:
         raise SourceValidationError(
             "empty_source",
@@ -1236,7 +1253,7 @@ async def _async_parse_source(
 
 async def _async_check_entity_control_permission(
     hass: HomeAssistant,
-    entity_id: str,
+    entity_id: str | None,
     context: Context | None,
 ) -> None:
     """Enforce Home Assistant entity-control permissions for a user call."""
@@ -1250,7 +1267,13 @@ async def _async_check_entity_control_permission(
             permission=POLICY_CONTROL,
             user_id=context.user_id,
         )
-    if not user.permissions.check_entity(entity_id, POLICY_CONTROL):
+    # Hosted entries have no local AI entity supplying an entity-permission
+    # boundary. Require an administrator for their stored review/source data.
+    allowed = (
+        bool(getattr(user, "is_admin", False)) if entity_id is None
+        else user.permissions.check_entity(entity_id, POLICY_CONTROL)
+    )
+    if not allowed:
         raise Unauthorized(
             context=context,
             permission=POLICY_CONTROL,

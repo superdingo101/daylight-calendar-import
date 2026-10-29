@@ -3295,3 +3295,91 @@ async def test_hosted_admission_follows_failed_platform_unload_guard(monkeypatch
             await async_unload_entry(hass, cfg)
     assert runtime.accepting is (not guard)
     assert store.accepting_services is (not guard)
+
+
+async def test_cloud_setup_loads_without_local_services_and_never_falls_back_to_saved_ai(monkeypatch):
+    from custom_components.daylight_calendar_import.const import (
+        CONF_PARSER_PROVIDER, PARSER_PROVIDER_DAYLIGHT_CLOUD,
+    )
+    from custom_components.daylight_calendar_import.providers import ProviderError
+    configured = entry({CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD})
+    # Even retaining a BYO setting must not silently use it in hosted mode.
+    assert _ai_task_configuration(configured) is None
+    configured.data = {
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD,
+        CONF_AI_TASK_ENTITY: None, CONF_CALENDAR_ENTITY: None, CONF_CALENDAR_ENTITIES: [],
+    }
+    assert _calendar_configuration(configured) == (None, ())
+    store = SimpleNamespace(
+        async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+        list=Mock(return_value=()), get=Mock(return_value=None),
+    )
+    parse = AsyncMock()
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
+    hass = FakeHass(user=SimpleNamespace(is_admin=True))
+    assert await async_setup_entry(hass, configured)
+    context = Context(user_id="owner-admin")
+    listing, _ = hass.services.handlers[(DOMAIN, SERVICE_LIST_PENDING)]
+    assert await listing(SimpleNamespace(data={}, context=context)) == {"imports": []}
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_PARSE_TEXT)]
+    with pytest.raises(ProviderError, match="not available yet"):
+        await handler(SimpleNamespace(data={"text": "private source"}, context=context))
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)]
+    with pytest.raises(ProviderError, match="not available yet"):
+        await handler(SimpleNamespace(data={"text": "private source"}, context=context))
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_IMPORT_TEXT)]
+    with pytest.raises(ServiceValidationError, match="Configure a writable calendar"):
+        await handler(SimpleNamespace(data={"text": "private source"}, context=context))
+    parse.assert_not_awaited()
+    assert hass.services.calls == []
+    hass.auth.user = SimpleNamespace(is_admin=False, permissions=FakePermissions())
+    with pytest.raises(Unauthorized):
+        await listing(SimpleNamespace(data={}, context=context))
+    store.list.assert_called_once_with()
+
+
+@pytest.mark.parametrize("with_calendar", [False, True])
+async def test_hosted_batch_actions_require_admin_before_pending_reads_or_mutations(monkeypatch, with_calendar):
+    from custom_components.daylight_calendar_import.const import (
+        CONF_PARSER_PROVIDER, PARSER_PROVIDER_DAYLIGHT_CLOUD,
+    )
+    configured = entry({CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD})
+    if not with_calendar:
+        configured.data = {
+            CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD,
+            CONF_AI_TASK_ENTITY: None, CONF_CALENDAR_ENTITY: None, CONF_CALENDAR_ENTITIES: [],
+        }
+    stored = pending()
+    store = SimpleNamespace(
+        async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+        get=Mock(return_value=stored), async_remove=AsyncMock(return_value=True),
+        async_process_events=AsyncMock(return_value=stored),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
+    hass = FakeHass(user=SimpleNamespace(is_admin=False, permissions=FakePermissions()))
+    await async_setup_entry(hass, configured)
+    context = Context(user_id="calendar-only-user")
+    for service in (SERVICE_APPROVE_PENDING, SERVICE_REJECT_PENDING):
+        handler, _ = hass.services.handlers[(DOMAIN, service)]
+        with pytest.raises(Unauthorized):
+            await handler(SimpleNamespace(data={ATTR_PENDING_ID: stored.id}, context=context))
+    store.get.assert_not_called()
+    store.async_remove.assert_not_awaited()
+    store.async_process_events.assert_not_awaited()
+    hass.auth.user = SimpleNamespace(is_admin=True, permissions=FakePermissions())
+    handler, _ = hass.services.handlers[(DOMAIN, SERVICE_REJECT_PENDING)]
+    assert await handler(SimpleNamespace(data={ATTR_PENDING_ID: stored.id}, context=context)) == {
+        "pending_id": stored.id, "rejected": True,
+    }
+    store.async_remove.assert_awaited_once_with(stored.id)
+
+    approve, _ = hass.services.handlers[(DOMAIN, SERVICE_APPROVE_PENDING)]
+    if with_calendar:
+        assert (await approve(SimpleNamespace(data={ATTR_PENDING_ID: stored.id}, context=context)))["approved"] is True
+        store.async_process_events.assert_awaited_once()
+    else:
+        with pytest.raises(ServiceValidationError, match="not in the allowed calendars"):
+            await approve(SimpleNamespace(data={ATTR_PENDING_ID: stored.id}, context=context))
+        store.async_process_events.assert_not_awaited()
+    assert hass.services.calls == []

@@ -400,3 +400,65 @@ for (const resumeState of ["pairing_wait", "candidate_saved", "reconnect_pending
     await assertNoStoredSecrets(page);
   });
 }
+
+test("parser selection preserves BYO configuration when switching to Cloud", async ({page}) => {
+  await page.evaluate(() => {
+    const panel = document.querySelector("daylight-import-panel");
+    const fallback = panel._hass.callWS;
+    const fixture = window.parserFixture = {calls: [], settings: {
+      entry_id: "entry-1", parser_provider: "ai_task", ai_task_entity: "ai_task.saved",
+      calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+      notifications: {enabled: false, target: null, classes: []}, email: {},
+    }};
+    panel.hass = {...panel._hass, callWS: async call => {
+      if (call.type === "daylight_calendar_import/settings/get") return structuredClone(fixture.settings);
+      if (call.type === "daylight_calendar_import/settings/core/update") {
+        fixture.calls.push(structuredClone(call));
+        for (const field of ["parser_provider", "ai_task_entity", "calendar_entity", "calendar_entities"]) {
+          if (Object.hasOwn(call, field)) fixture.settings[field] = call[field];
+        }
+        return structuredClone(fixture.settings);
+      }
+      return fallback(call);
+    }};
+  });
+  await page.getByRole("navigation", {name: "Daylight views"})
+    .getByRole("button", {name: "Settings", exact: true}).click();
+  await page.getByLabel("Parser provider", {exact: true}).selectOption("daylight_cloud");
+  await expect(page.getByLabel("AI Task entity", {exact: true})).toBeHidden();
+  await page.getByRole("button", {name: "Save general settings", exact: true}).click();
+  await expect(page.getByText("General settings saved", {exact: true})).toBeVisible();
+  expect(await page.evaluate(() => window.parserFixture.calls)).toEqual([{
+    type: "daylight_calendar_import/settings/core/update", entry_id: "entry-1",
+    parser_provider: "daylight_cloud",
+  }]);
+  expect(await page.evaluate(() => window.parserFixture.settings.ai_task_entity)).toBe("ai_task.saved");
+  expect(await page.evaluate(() => window.parserFixture.settings.calendar_entity)).toBe("calendar.family");
+  await page.getByLabel("Parser provider", {exact: true}).selectOption("ai_task");
+  await expect(page.getByLabel("AI Task entity", {exact: true})).toHaveValue("ai_task.saved");
+});
+
+test("fresh Cloud settings render without local AI or writable calendars", async ({page}) => {
+  await page.evaluate(() => {
+    const panel = document.querySelector("daylight-import-panel");
+    const fallback = panel._hass.callWS;
+    panel.hass = {...panel._hass, states: {}, callWS: async call => {
+      if (call.type === "daylight_calendar_import/settings/get") return {
+        entry_id: "entry-1", parser_provider: "daylight_cloud", ai_task_entity: null,
+        calendar_entity: null, calendar_entities: [], calendar_aliases: {}, conflict_calendar_entities: [],
+        notifications: {enabled: false, target: null, classes: []}, email: {},
+      };
+      return fallback(call);
+    }};
+  });
+  await page.getByRole("navigation", {name: "Daylight views"})
+    .getByRole("button", {name: "Settings", exact: true}).click();
+  await expect(page.getByLabel("Parser provider", {exact: true})).toHaveValue("daylight_cloud");
+  await expect(page.getByLabel("AI Task entity", {exact: true})).toBeHidden();
+  await expect(page.getByText("No local AI Task entity is required.", {exact: false})).toBeVisible();
+  await sections(page).getByRole("button", {name: "Calendars", exact: true}).click();
+  await expect(page.getByLabel("Default calendar", {exact: true}).locator("option")).toHaveCount(0);
+  await expect(page.getByRole("button", {name: "Save calendar settings", exact: true})).toBeDisabled();
+  await sections(page).getByRole("button", {name: "Daylight Cloud", exact: true}).click();
+  await expect(page.getByRole("heading", {name: "Daylight connection", exact: true})).toBeVisible();
+});

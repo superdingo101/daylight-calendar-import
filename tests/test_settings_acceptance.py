@@ -89,6 +89,7 @@ async def test_all_settings_tabs_survive_real_entry_reload(hass, hass_ws_client,
                           expected_notifications=initial["notifications"], notifications=POLICY)
     assert final == {
         "entry_id": entry.entry_id, "ai_task_entity": "ai_task.updated",
+        "parser_provider": "ai_task",
         "calendar_entity": "calendar.work", "calendar_entities": ["calendar.work", "calendar.family"],
         "calendar_aliases": {"school": "calendar.family"},
         "conflict_calendar_entities": ["calendar.observation"],
@@ -230,3 +231,46 @@ async def test_failed_mailbox_validation_redacts_remote_details_and_keeps_every_
     assert refused["error"]["code"] == "alias_target_not_allowed"
     assert dict(entry.options) == before
     assert await success(client, WS_GET_SETTINGS) == baseline
+
+
+async def test_fresh_cloud_entry_loads_without_ai_task_or_calendar_and_preserves_byo_after_reload(hass, hass_ws_client):
+    """Actual HA setup/settings reload must not assume local services exist."""
+    from custom_components.daylight_calendar_import.hosted_settings_api import WS_HOSTED_GET
+
+    configured = MockConfigEntry(domain=DOMAIN, version=2, data={
+        "parser_provider": "daylight_cloud", CONF_AI_TASK_ENTITY: None,
+        CONF_CALENDAR_ENTITY: None, CONF_CALENDAR_ENTITIES: [],
+    })
+    configured.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(configured.entry_id)
+    await hass.async_block_till_done()
+    client = await hass_ws_client(hass)
+    initial = await success(client, WS_GET_SETTINGS)
+    assert initial["parser_provider"] == "daylight_cloud"
+    assert initial[CONF_AI_TASK_ENTITY] is None
+    assert initial[CONF_CALENDAR_ENTITY] is None
+    assert initial[CONF_CALENDAR_ENTITIES] == []
+    connection = await success(client, WS_HOSTED_GET, entry_id=configured.entry_id)
+    assert connection["state"] == "not_configured"
+    assert configured.options == {}
+
+    denied = await call(client, WS_UPDATE_CORE_SETTINGS, entry_id=configured.entry_id,
+                        parser_provider="ai_task")
+    assert denied["success"] is False
+    assert denied["error"]["code"] == "invalid_ai_task"
+    assert configured.options == {}
+
+    await success(client, WS_UPDATE_CORE_SETTINGS, entry_id=configured.entry_id,
+                  calendar_entity="calendar.family", calendar_entities=["calendar.family"])
+    await success(client, WS_UPDATE_CORE_SETTINGS, entry_id=configured.entry_id,
+                  parser_provider="ai_task", ai_task_entity="ai_task.chosen")
+    # Explicitly select Cloud again while retaining the independent local settings.
+    final = await success(client, WS_UPDATE_CORE_SETTINGS, entry_id=configured.entry_id,
+                          parser_provider="daylight_cloud")
+    assert final[CONF_AI_TASK_ENTITY] == "ai_task.chosen"
+    assert final[CONF_CALENDAR_ENTITY] == "calendar.family"
+    assert await hass.config_entries.async_unload(configured.entry_id)
+    assert await hass.config_entries.async_setup(configured.entry_id)
+    await hass.async_block_till_done()
+    assert await success(client, WS_GET_SETTINGS) == final
+    assert hass.data[DOMAIN][configured.entry_id].accepting_services is True

@@ -198,3 +198,32 @@ test("notification target length uses Unicode code points as on Home Assistant",
   await assert.rejects(() => loadSettings({callWS: async () => invalid}),
     /unexpected response/);
 });
+
+test("settings client accepts fresh Cloud setup without AI or calendars", async () => {
+  const hosted = {...snapshot, parser_provider: "daylight_cloud",
+    ai_task_entity: null, calendar_entity: null, calendar_entities: []};
+  assert.equal(await loadSettings({callWS: async () => hosted}), hosted);
+  const calls = [];
+  const saved = await saveCoreSettings({callWS: async message => {
+    calls.push(message);
+    return {...snapshot, parser_provider: message.parser_provider};
+  }}, {entry_id: snapshot.entry_id, parser_provider: "daylight_cloud"});
+  assert.equal(saved.ai_task_entity, snapshot.ai_task_entity);
+  assert.equal(saved.calendar_entity, snapshot.calendar_entity);
+  assert.deepEqual(calls, [{type: "daylight_calendar_import/settings/core/update",
+    entry_id: "entry-1", parser_provider: "daylight_cloud"}]);
+});
+
+test("settings client rejects unknown parser and unconfigured BYO snapshots", async () => {
+  const invalid = [
+    {...snapshot, parser_provider: "unknown"},
+    {...snapshot, parser_provider: null},
+    {...snapshot, ai_task_entity: null},
+    {...snapshot, parser_provider: "ai_task", calendar_entity: null, calendar_entities: []},
+    {...snapshot, parser_provider: "daylight_cloud", calendar_entity: null},
+    {...snapshot, parser_provider: "daylight_cloud", calendar_entities: [null]},
+  ];
+  for (const response of invalid) {
+    await assert.rejects(() => loadSettings({callWS: async () => response}), /unexpected response/);
+  }
+});

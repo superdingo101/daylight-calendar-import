@@ -13,6 +13,9 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import (
     CONF_AI_TASK_ENTITY,
+    CONF_PARSER_PROVIDER,
+    PARSER_PROVIDER_AI_TASK,
+    PARSER_PROVIDER_DAYLIGHT_CLOUD,
     CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
     CONF_CALENDAR_ALIASES,
@@ -42,6 +45,7 @@ from .settings import (
     notification_preferences_patch,
     effective_notification_preferences,
     effective_core_options,
+    effective_parser_provider,
     settings_lock,
     settings_snapshot,
 )
@@ -103,12 +107,10 @@ async def websocket_get_settings(
     {
         "type": WS_UPDATE_CORE_SETTINGS,
         vol.Required("entry_id"): cv.string,
-        vol.Optional(CONF_AI_TASK_ENTITY): cv.entity_id,
-        vol.Optional(CONF_CALENDAR_ENTITY): cv.entity_id,
-        vol.Optional(CONF_CALENDAR_ENTITIES): vol.All(
-            [cv.entity_id],
-            vol.Length(min=1),
-        ),
+        vol.Optional(CONF_PARSER_PROVIDER): vol.In((PARSER_PROVIDER_AI_TASK, PARSER_PROVIDER_DAYLIGHT_CLOUD)),
+        vol.Optional(CONF_AI_TASK_ENTITY): vol.Any(None, cv.entity_id),
+        vol.Optional(CONF_CALENDAR_ENTITY): vol.Any(None, cv.entity_id),
+        vol.Optional(CONF_CALENDAR_ENTITIES): [cv.entity_id],
     }
 )
 @websocket_api.async_response
@@ -125,6 +127,7 @@ async def websocket_update_core_settings(
                 key in msg
                 for key in (
                     CONF_AI_TASK_ENTITY,
+                    CONF_PARSER_PROVIDER,
                     CONF_CALENDAR_ENTITY,
                     CONF_CALENDAR_ENTITIES,
                 )
@@ -136,6 +139,7 @@ async def websocket_update_core_settings(
             patch = core_option_patch(
                 effective_core_options(entry),
                 msg,
+                parser_provider=effective_parser_provider(entry),
             )
             if patch:
                 await async_save_option_patch(hass, entry, patch)

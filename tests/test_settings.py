@@ -14,6 +14,9 @@ from homeassistant.exceptions import Unauthorized
 from custom_components.daylight_calendar_import import async_setup
 from custom_components.daylight_calendar_import.const import (
     CONF_AI_TASK_ENTITY,
+    CONF_PARSER_PROVIDER,
+    PARSER_PROVIDER_AI_TASK,
+    PARSER_PROVIDER_DAYLIGHT_CLOUD,
     CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
     CONF_EMAIL_ENABLED,
@@ -286,6 +289,7 @@ def test_email_and_complete_settings_snapshots_hide_secret():
     snapshot = settings_snapshot(entry(options=options))
     assert snapshot == {
         "entry_id": "entry-1",
+        "parser_provider": PARSER_PROVIDER_AI_TASK,
         "ai_task_entity": "ai_task.initial",
         "calendar_entity": "calendar.family",
         "calendar_entities": ["calendar.family", "calendar.work"],
@@ -1719,3 +1723,133 @@ async def test_alias_count_limit_also_applies_to_direct_option_replacements():
     with pytest.raises(SettingsValidationError, match="at most 100"):
         await async_save_option_patch(hass, configured, {"calendar_aliases": aliases})
     assert hass.config_entries.updates == []
+
+
+def hosted_entry():
+    configured = entry()
+    configured.data = {
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD,
+        CONF_AI_TASK_ENTITY: None,
+        CONF_CALENDAR_ENTITY: None,
+        CONF_CALENDAR_ENTITIES: [],
+    }
+    return configured
+
+
+def test_hosted_empty_settings_snapshot_and_legacy_provider_defaults():
+    from custom_components.daylight_calendar_import.settings import effective_parser_provider
+    configured = hosted_entry()
+    assert effective_parser_provider(entry()) == PARSER_PROVIDER_AI_TASK
+    snapshot = settings_snapshot(configured)
+    assert snapshot[CONF_PARSER_PROVIDER] == PARSER_PROVIDER_DAYLIGHT_CLOUD
+    assert snapshot[CONF_AI_TASK_ENTITY] is None
+    assert snapshot[CONF_CALENDAR_ENTITY] is None
+    assert snapshot[CONF_CALENDAR_ENTITIES] == []
+    assert snapshot["conflict_calendar_entities"] == []
+    configured.options[CONF_PARSER_PROVIDER] = "unknown"
+    with pytest.raises(SettingsValidationError) as error:
+        effective_parser_provider(configured)
+    assert error.value.code == "invalid_parser_provider"
+
+
+@pytest.mark.parametrize(
+    ("ai", "default", "allowed", "provider", "code"),
+    [
+        (None, None, [], "unknown", "invalid_parser_provider"),
+        (None, None, [], PARSER_PROVIDER_AI_TASK, "invalid_ai_task"),
+        (None, "calendar.family", ["calendar.family"], PARSER_PROVIDER_AI_TASK, "invalid_ai_task"),
+        (None, None, ["calendar.family"], PARSER_PROVIDER_DAYLIGHT_CLOUD, "invalid_calendar"),
+        (None, 1, [], PARSER_PROVIDER_DAYLIGHT_CLOUD, "invalid_calendar"),
+        (None, None, [1], PARSER_PROVIDER_DAYLIGHT_CLOUD, "invalid_calendar"),
+        ("ai_task.test", None, [], PARSER_PROVIDER_AI_TASK, "invalid_calendar"),
+    ],
+)
+def test_provider_settings_fail_closed_for_incomplete_byo_or_invalid_values(ai, default, allowed, provider, code):
+    with pytest.raises(SettingsValidationError) as error:
+        normalize_core_options(ai, default, allowed, parser_provider=provider)
+    assert error.value.code == code
+
+
+def test_cloud_option_patch_preserves_byo_selection_and_only_changes_provider():
+    configured = entry()
+    assert core_option_patch(
+        effective_core_options(configured), {CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD},
+    ) == {CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD}
+    assert normalize_core_options(None, None, [], parser_provider=PARSER_PROVIDER_DAYLIGHT_CLOUD) == {
+        CONF_AI_TASK_ENTITY: None, CONF_CALENDAR_ENTITY: None, CONF_CALENDAR_ENTITIES: [],
+    }
+    assert core_option_patch(
+        (None, None, []), {CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD},
+        parser_provider=PARSER_PROVIDER_DAYLIGHT_CLOUD,
+    ) == {}
+
+
+async def test_cloud_provider_update_preserves_byo_options_and_pending_queue():
+    configured = entry(options={CONF_EMAIL_PASSWORD: "private-existing-imap"})
+    hass = hass_for(configured)
+    stored = SimpleNamespace(events=[SimpleNamespace(calendar_entity="calendar.family")])
+    store = hass.data[DOMAIN][configured.entry_id]
+    store.list = lambda: (stored,)
+    connection = FakeConnection()
+    await invoke(settings_api.websocket_update_core_settings, hass, connection, {
+        "id": 301, "entry_id": configured.entry_id,
+        "type": settings_api.WS_UPDATE_CORE_SETTINGS,
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD,
+    })
+    assert not connection.errors
+    assert configured.options == {
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD, CONF_EMAIL_PASSWORD: "private-existing-imap",
+    }
+    assert connection.results[-1][1][CONF_AI_TASK_ENTITY] == "ai_task.initial"
+    assert store.list() == (stored,)
+    assert store.accepting_services is True
+    assert hass.config_entries.reloads == [configured.entry_id]
+
+
+async def test_fresh_hosted_settings_can_add_calendar_then_select_byo_deliberately():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    configured = hosted_entry()
+    hass = hass_for(configured)
+    with pytest.raises(SettingsValidationError, match="AI Task"):
+        await async_save_option_patch(hass, configured, {CONF_PARSER_PROVIDER: PARSER_PROVIDER_AI_TASK})
+    assert not hass.config_entries.updates
+    await async_save_option_patch(hass, configured, {
+        CONF_CALENDAR_ENTITY: "calendar.family", CONF_CALENDAR_ENTITIES: ["calendar.family"],
+    })
+    await async_save_option_patch(hass, configured, {
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_AI_TASK, CONF_AI_TASK_ENTITY: "ai_task.new",
+    })
+    assert settings_snapshot(configured)[CONF_PARSER_PROVIDER] == PARSER_PROVIDER_AI_TASK
+    assert effective_core_options(configured) == ("ai_task.new", "calendar.family", ["calendar.family"])
+
+
+async def test_provider_change_refuses_inflight_or_unloaded_runtime():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+    configured = entry()
+    hass = hass_for(configured)
+    store = hass.data[DOMAIN][configured.entry_id]
+    store.active_submissions.add(object())
+    with pytest.raises(SettingsValidationError) as error:
+        await async_save_option_patch(hass, configured, {CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD})
+    assert error.value.code == "calendar_change_busy"
+    store.active_submissions.clear()
+    hass.data[DOMAIN].clear()
+    with pytest.raises(SettingsValidationError) as error:
+        await async_save_option_patch(hass, configured, {CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD})
+    assert error.value.code == "pending_store_unavailable"
+    assert not hass.config_entries.updates
+
+
+async def test_legacy_implicit_calendar_scope_is_preserved_during_hosted_setup_changes():
+    from custom_components.daylight_calendar_import.settings import async_save_option_patch
+
+    configured = entry()
+    configured.data.pop(CONF_CALENDAR_ENTITIES)
+    configured.options = {CONF_CALENDAR_ENTITY: "calendar.work"}
+    assert effective_core_options(configured)[2] == ["calendar.family", "calendar.work"]
+    configured.options = {}
+    hass = hass_for(configured)
+    with pytest.raises(SettingsValidationError) as error:
+        await async_save_option_patch(hass, configured, {CONF_CALENDAR_ENTITY: "calendar.work"})
+    assert error.value.code == "default_not_allowed"
+    assert not hass.config_entries.updates

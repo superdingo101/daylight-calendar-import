@@ -12,6 +12,9 @@ from custom_components.daylight_calendar_import.config_flow import (
 )
 from custom_components.daylight_calendar_import.const import (
     CONF_AI_TASK_ENTITY,
+    CONF_PARSER_PROVIDER,
+    PARSER_PROVIDER_AI_TASK,
+    PARSER_PROVIDER_DAYLIGHT_CLOUD,
     CONF_CALENDAR_ENTITIES,
     CONF_CALENDAR_ENTITY,
     CONF_EMAIL_ENABLED,
@@ -43,11 +46,11 @@ async def test_config_flow_shows_form():
     expected = {"type": "form"}
 
     with patch.object(flow, "async_show_form", return_value=expected) as show_form:
-        result = await flow.async_step_user()
+        result = await flow.async_step_byo()
 
     assert result is expected
     kwargs = show_form.call_args.kwargs
-    assert kwargs["step_id"] == "user"
+    assert kwargs["step_id"] == "byo"
     schema = kwargs["data_schema"]
     assert len(schema.schema) == 3
 
@@ -85,14 +88,14 @@ async def test_config_flow_creates_entry():
         patch.object(flow, "_abort_if_unique_id_configured", Mock()) as abort_if_configured,
         patch.object(flow, "async_create_entry", Mock(return_value=expected)) as create_entry,
     ):
-        result = await flow.async_step_user(user_input)
+        result = await flow.async_step_byo(user_input)
 
     assert result is expected
     set_unique_id.assert_awaited_once_with("daylight_calendar_import")
     abort_if_configured.assert_called_once_with()
     create_entry.assert_called_once_with(
         title="Daylight Calendar Import",
-        data=user_input,
+        data={CONF_PARSER_PROVIDER: PARSER_PROVIDER_AI_TASK, **user_input},
     )
 
 
@@ -101,7 +104,7 @@ async def test_config_flow_schema_uses_expected_required_keys():
     expected = {"type": "form"}
 
     with patch.object(flow, "async_show_form", return_value=expected) as show_form:
-        await flow.async_step_user()
+        await flow.async_step_byo()
 
     schema = show_form.call_args.kwargs["data_schema"]
     assert [marker.schema for marker in schema.schema] == [
@@ -115,7 +118,7 @@ async def test_config_flow_rejects_default_outside_allowed_calendars():
     flow = DaylightCalendarImportConfigFlow()
     expected = {"type": "form"}
     with patch.object(flow, "async_show_form", return_value=expected) as show_form:
-        result = await flow.async_step_user({
+        result = await flow.async_step_byo({
             CONF_AI_TASK_ENTITY: "ai_task.test",
             CONF_CALENDAR_ENTITY: "calendar.family",
             CONF_CALENDAR_ENTITIES: ["calendar.work"],
@@ -479,17 +482,19 @@ async def test_options_flow_shows_default_calendar_and_disabled_email_suggestion
     assert show_form.call_args.kwargs["step_id"] == "init"
     schema = add_suggested.call_args.args[0]
     assert [marker.schema for marker in schema.schema] == [
+        CONF_PARSER_PROVIDER,
         CONF_AI_TASK_ENTITY,
         CONF_CALENDAR_ENTITY,
         CONF_CALENDAR_ENTITIES,
         CONF_EMAIL_ENABLED,
     ]
     selectors = list(schema.schema.values())
-    assert selectors[0].config["filter"] == [
+    assert selectors[1].config["filter"] == [
         {"domain": ["ai_task"], "supported_features": [1]}
     ]
-    assert selectors[2].config["multiple"] is True
+    assert selectors[3].config["multiple"] is True
     assert add_suggested.call_args.args[1] == {
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_AI_TASK,
         CONF_AI_TASK_ENTITY: "ai_task.test",
         CONF_CALENDAR_ENTITY: "calendar.family",
         CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.work"],
@@ -530,6 +535,7 @@ async def test_options_flow_prefers_current_default_calendar_option():
 
     assert result is expected
     assert add_suggested.call_args.args[1] == {
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_AI_TASK,
         CONF_AI_TASK_ENTITY: "ai_task.option",
         CONF_CALENDAR_ENTITY: "calendar.work",
         CONF_CALENDAR_ENTITIES: ["calendar.work"],
@@ -1268,3 +1274,83 @@ async def test_options_flow_reports_reload_failure_after_disabled_save():
     assert entry.options[CONF_EMAIL_ENABLED] is False
     assert flow.hass.config_entries.reloads == ["test-entry"]
     assert show_form.call_args.kwargs["errors"] == {"base": "reload_failed"}
+
+
+async def test_provider_choice_precedes_local_entity_setup():
+    flow = DaylightCalendarImportConfigFlow()
+    with patch.object(flow, "async_show_form", return_value={"type": "form"}) as show:
+        await flow.async_step_user()
+    assert show.call_args.kwargs["step_id"] == "user"
+    schema = show.call_args.kwargs["data_schema"]
+    assert [key.schema for key in schema.schema] == [CONF_PARSER_PROVIDER]
+    assert list(schema.schema.values())[0].config["options"] == [
+        PARSER_PROVIDER_AI_TASK, PARSER_PROVIDER_DAYLIGHT_CLOUD,
+    ]
+    with patch.object(flow, "async_step_byo", AsyncMock(return_value={"type": "byo"})) as byo:
+        assert await flow.async_step_user({CONF_PARSER_PROVIDER: PARSER_PROVIDER_AI_TASK}) == {"type": "byo"}
+    byo.assert_awaited_once_with()
+    with patch.object(flow, "async_show_form", return_value={"type": "form"}) as show:
+        await flow.async_step_user({CONF_PARSER_PROVIDER: "unknown"})
+    assert show.call_args.kwargs["errors"] == {"base": "invalid_parser_provider"}
+
+
+async def test_hosted_setup_needs_no_ai_task_calendar_or_consent_shortcut():
+    flow = DaylightCalendarImportConfigFlow()
+    with (
+        patch.object(flow, "async_set_unique_id", AsyncMock()) as unique,
+        patch.object(flow, "_abort_if_unique_id_configured", Mock()) as duplicate,
+        patch.object(flow, "async_create_entry", return_value={"type": "create_entry"}) as create,
+    ):
+        assert await flow.async_step_user({CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD}) == {"type": "create_entry"}
+    unique.assert_awaited_once_with("daylight_calendar_import")
+    duplicate.assert_called_once_with()
+    assert create.call_args.kwargs["data"] == {
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD,
+        CONF_AI_TASK_ENTITY: None, CONF_CALENDAR_ENTITY: None, CONF_CALENDAR_ENTITIES: [],
+    }
+    assert "processing_consent" not in create.call_args.kwargs["data"]
+
+
+async def test_hosted_options_omit_unconfigured_local_suggestions_and_save_without_them():
+    flow = DaylightCalendarImportOptionsFlow()
+    flow.hass = _options_hass()
+    hosted = _options_entry(data={
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD,
+        CONF_AI_TASK_ENTITY: None, CONF_CALENDAR_ENTITY: None, CONF_CALENDAR_ENTITIES: [],
+    })
+    with (
+        patch.object(DaylightCalendarImportOptionsFlow, "config_entry", new_callable=PropertyMock, return_value=hosted),
+        patch.object(flow, "add_suggested_values_to_schema", side_effect=lambda schema, values: schema) as suggested,
+        patch.object(flow, "async_show_form", return_value={"type": "form"}),
+        patch.object(flow, "async_create_entry", return_value={"type": "create_entry"}),
+    ):
+        await flow.async_step_init()
+        assert suggested.call_args.args[1] == {
+            CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD,
+            CONF_CALENDAR_ENTITIES: [], CONF_EMAIL_ENABLED: False,
+        }
+        result = await flow.async_step_init({
+            CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD, CONF_EMAIL_ENABLED: False,
+        })
+    assert result == {"type": "create_entry"}
+    assert hosted.options == {CONF_EMAIL_ENABLED: False}
+
+
+async def test_actual_hosted_config_flow_creates_loadable_entry_without_local_entities(hass):
+    from custom_components.daylight_calendar_import.const import DOMAIN
+
+    started = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    assert started["type"] == "form"
+    assert started["step_id"] == "user"
+    created = await hass.config_entries.flow.async_configure(
+        started["flow_id"], {CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD},
+    )
+    assert created["type"] == "create_entry"
+    configured = created["result"]
+    await hass.async_block_till_done()
+    assert configured.version == 2
+    assert configured.data == {
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD,
+        CONF_AI_TASK_ENTITY: None, CONF_CALENDAR_ENTITY: None, CONF_CALENDAR_ENTITIES: [],
+    }
+    assert hass.data[DOMAIN][configured.entry_id].accepting_services is True

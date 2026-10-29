@@ -3,6 +3,13 @@
     "step": {
       "user": {
         "title": "Set up Daylight Calendar Import",
+        "description": "Choose how Daylight extracts events. Local AI Task works without a Daylight account. For Daylight Cloud, connect and consent in Daylight settings after setup; calendars can be configured before approving events.",
+        "data": {
+          "parser_provider": "Parser provider"
+        }
+      },
+      "byo": {
+        "title": "Use your own AI Task",
         "description": "Choose an AI Task entity, a default calendar, and the calendars allowed for reviewed events.",
         "data": {
           "ai_task_entity": "AI Task entity",
@@ -15,24 +22,28 @@
       "already_configured": "Daylight Calendar Import is already configured."
     },
     "error": {
-      "default_not_allowed": "The default calendar must be included in the allowed calendars."
+      "default_not_allowed": "The default calendar must be included in the allowed calendars.",
+      "invalid_parser_provider": "Choose a supported parser provider.",
+      "invalid_ai_task": "Choose an AI Task entity.",
+      "invalid_calendar": "Choose a default and allowed writable calendar."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Daylight Calendar Import options",
-        "description": "Choose the AI Task entity used to extract events, the default and allowed calendars, and optional self-hosted Direct IMAP ingestion.",
+        "description": "Choose the parser provider and optional local AI Task, writable calendars, and Direct IMAP ingestion. BYO requires an AI Task and calendars. Daylight Cloud connection and consent are managed in Daylight settings.",
         "data": {
           "ai_task_entity": "AI Task entity",
           "calendar_entity": "Default calendar for new imports",
           "calendar_entities": "Allowed calendars",
-          "email_enabled": "Enable Direct IMAP email ingestion"
+          "email_enabled": "Enable Direct IMAP email ingestion",
+          "parser_provider": "Parser provider"
         }
       },
       "email": {
         "title": "Direct IMAP",
-        "description": "\u26a0\ufe0f **Mailbox privacy:** Daylight can read the full contents and supported attachments of every unread, undeleted message in the configured mailbox. We strongly recommend using a dedicated email address or folder used only for calendar imports. [Learn more about mailbox access and privacy]({privacy_url})\n\nConnect a mailbox for Daylight to poll every five minutes. Messages are marked seen only after durable local handling.",
+        "description": "⚠️ **Mailbox privacy:** Daylight can read the full contents and supported attachments of every unread, undeleted message in the configured mailbox. We strongly recommend using a dedicated email address or folder used only for calendar imports. [Learn more about mailbox access and privacy]({privacy_url})\n\nConnect a mailbox for Daylight to poll every five minutes. Messages are marked seen only after durable local handling.",
         "data": {
           "email_host": "IMAP host",
           "email_port": "IMAP port",
@@ -49,7 +60,10 @@
       "invalid_email_config": "The email configuration is invalid.",
       "cannot_connect": "Unable to connect to the IMAP server.",
       "default_not_allowed": "The default calendar must be included in the allowed calendars.",
-      "reload_failed": "Settings were saved, but Daylight could not reload. Restart Home Assistant before relying on the new settings."
+      "reload_failed": "Settings were saved, but Daylight could not reload. Restart Home Assistant before relying on the new settings.",
+      "invalid_parser_provider": "Choose a supported parser provider.",
+      "invalid_ai_task": "Choose an AI Task entity before selecting local AI Task.",
+      "invalid_calendar": "Choose a default and allowed writable calendar before selecting local AI Task."
     }
   },
   "issues": {
@@ -60,6 +74,14 @@
     "hosted_lifecycle": {
       "title": "Daylight connection needs attention",
       "description": "Automatic connection maintenance needs attention: approval may have expired, an exchange or renewal may be uncertain, or retries reached a safe limit. Open Daylight settings > Daylight Cloud, check and recover the existing connection, and use the owner account portal if reconciliation is required. Automatic maintenance cannot create a new connection or repeat uncertain credential issuance."
+    }
+  },
+  "selector": {
+    "parser_provider": {
+      "options": {
+        "ai_task": "Local AI Task (BYO)",
+        "daylight_cloud": "Daylight Cloud"
+      }
     }
   }
 }

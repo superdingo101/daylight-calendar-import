@@ -6368,3 +6368,76 @@ test("collapsed source rows disclose their actual calendar without expanding", (
   assert.match(style, /\.event-more-menu \{[\s\S]*position: absolute/);
   assert.doesNotMatch(style, /\.event-more\[open\] \{ flex-basis: 100%/);
 });
+
+test("native parser selection preserves BYO settings when Cloud is selected", async () => {
+  const calls = [];
+  let current = {entry_id: "entry-1", ai_task_entity: "ai_task.saved",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []}, email: {}};
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+    calls.push(message);
+    if (message.type === "call_service") return {response: {imports: []}};
+    if (message.type === "daylight_calendar_import/settings/core/update") {
+      current = {...current, ...Object.fromEntries(
+        ["parser_provider", "ai_task_entity"].filter(key => message[key] !== undefined)
+          .map(key => [key, message[key]]))};
+    }
+    return current;
+  }};
+  await flush();
+  await panel.showSettings();
+  let form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("parser_provider").value, "ai_task");
+  const provider = form.elements.namedItem("parser_provider");
+  provider.value = "daylight_cloud";
+  provider.change();
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("ai_task_entity").disabled, true);
+  assert.match(panel._content.querySelectorAll("p").map(node => node.textContent).join(" "),
+    /processing consent in Daylight Cloud settings/);
+  form.submit({preventDefault() {}});
+  await flush();
+  assert.deepEqual(calls.filter(message => message.type.endsWith("/core/update")), [{
+    type: "daylight_calendar_import/settings/core/update", entry_id: "entry-1",
+    parser_provider: "daylight_cloud",
+  }]);
+  assert.equal(current.ai_task_entity, "ai_task.saved");
+  assert.equal(current.calendar_entity, "calendar.family");
+  form = find(panel._content, "form");
+  const restore = form.elements.namedItem("parser_provider");
+  restore.value = "ai_task";
+  restore.change();
+  form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("ai_task_entity").value, "ai_task.saved");
+  assert.equal(form.elements.namedItem("ai_task_entity").disabled, false);
+});
+
+test("fresh Cloud settings need no AI entity and do not invent calendar choices", async () => {
+  const current = {entry_id: "entry-1", parser_provider: "daylight_cloud",
+    ai_task_entity: null, calendar_entity: null, calendar_entities: [],
+    calendar_aliases: {}, conflict_calendar_entities: [],
+    notifications: {enabled: false, target: null, classes: []}, email: {}};
+  const panel = new DaylightImportPanel();
+  panel.hass = {user: {is_admin: true}, states: {
+    "ai_task.discovered": {entity_id: "ai_task.discovered", state: "idle",
+      attributes: {supported_features: 1}},
+  }, callWS: async message => message.type === "call_service"
+    ? {response: {imports: []}} : current};
+  await flush();
+  await panel.showSettings();
+  const general = find(panel._content, "form");
+  assert.equal(general.elements.namedItem("parser_provider").value, "daylight_cloud");
+  assert.equal(general.elements.namedItem("ai_task_entity").value, "");
+  assert.equal(general.elements.namedItem("ai_task_entity").required, false);
+  assert.equal(panel.generalSettingsPatch(general).ai_task_entity, undefined);
+  const calendars = panel._content.querySelector(".settings-tabs").querySelectorAll("button")
+    .find(button => button.textContent === "Calendars");
+  calendars.click();
+  const form = find(panel._content, "form");
+  assert.equal(form.elements.namedItem("calendar_entity").children.length, 0);
+  assert.equal(form.querySelectorAll("input").length, 0);
+  assert.equal(form.querySelector("button").disabled, true);
+  assert.match(panel._content.querySelectorAll("p").map(node => node.textContent).join(" "),
+    /Configure a writable calendar before approving an event/);
+});
