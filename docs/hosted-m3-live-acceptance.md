@@ -31,6 +31,8 @@ test expectations, not observations of the live model.
 | text_zero | no-events-newsletter.json | 900b6cc7a4d1a28fd4464e48549e543b0f682f13 |
 | text_all_day | dates-all-day-and-multiday.json | 6277bde732b9cbd834c8fbbda6aa16ae035305cb |
 | text_meeting | meeting-join-details.json | df0b6f4d4a445be3b032669db3ea738100574a6a |
+| text_dst | dates-dst-fall-back.json | 2c0d1322cae0757035e7ee878b3b71532a050516 |
+| text_mixed | email-school-newsletter.json | cf7176f028a968e906d4f307a96fc341a0562aa7 |
 | image | assets/media-screenshot.png | 3998be4cc9b5af8fe46a03518134b8044d104d97 |
 | text PDF | assets/media-multipage-text.pdf | ab421fcce9663ed751d0933219d665b841864560 |
 | scanned PDF | assets/media-multipage-scan.pdf | 73119d8a40bc7f3bcffe1fc1de0c31665791240a |
@@ -61,6 +63,8 @@ do not automatically retry or assume a request ID makes a replay idempotent.
 | text_zero | Successful no-events outcome; no draft, phantom event, or automatic retry. |
 | text_all_day | Two all-day drafts: October 16 and October 17–19 inclusive; verify the displayed dates and exclusive end semantics where exposed. |
 | text_meeting | One October 15 meeting with the synthetic join URL, meeting ID, passcode and dial instructions preserved in the draft. |
+| text_dst | One November 1 shift spanning first 1:30 am PDT to second 1:30 am PST. Verify offsets when available and any required human review; do not accept an ambiguous or zero-duration result silently. |
+| text_mixed | Six drafts for the listed timed and all-day events; no events from general announcements. Check inclusive multi-day dates and the budget link. |
 | image | Two drafts for science night October 22 and garden morning October 24, with times, locations and instructions visible in the asset. |
 | text PDF | The same two expected drafts. Note whether HA extracted text locally; a successful import does not by itself prove that PDF bytes reached the model. |
 | scanned PDF | The same two expected drafts from the scanned pages. Record any missing or altered fields; a successful result alone does not prove which bytes the provider received. |
