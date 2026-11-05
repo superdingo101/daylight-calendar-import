@@ -13,14 +13,14 @@ class FakeClient:
     def __init__(self):
         self.uploaded = []
         self.calls = []
-        self.pending = {"id": "pending-1", "events": [{"draft": {
+        self.pending = {"id": "pending-1", "events": [{
             "title": "Soccer practice",
             "start": "2026-10-15T17:00:00-07:00",
             "end": "2026-10-15T18:00:00-07:00",
             "all_day": False,
             "location": "Community Park",
             "description": "Bring water.",
-        }}]}
+        }]}
 
     def upload(self, name, content):
         self.uploaded.append((name, content))
@@ -64,13 +64,13 @@ def test_fixture_catalog_is_integrity_checked():
 def test_draft_comparator_preserves_dst_and_all_day():
     expected = [{"title": "Shift", "start": "2026-11-01T01:30:00-07:00",
                  "end": "2026-11-01T01:30:00-08:00", "all_day": False}]
-    assert m3.inspect_drafts(expected, [{"draft": expected[0]}]) == []
+    assert m3.inspect_drafts(expected, [expected[0]]) == []
     wrong = dict(expected[0], end="2026-11-01T01:30:00-07:00")
-    assert m3.inspect_drafts(expected, [{"draft": wrong}]) == ["event_0_end"]
+    assert m3.inspect_drafts(expected, [wrong]) == ["event_0_end"]
     assert m3.inspect_drafts([{"title": "Day", "start": "2026-10-16",
                                "end": "2026-10-17", "all_day": True}],
-                             [{"draft": {"title": "Day", "start": "2026-10-16",
-                                          "end": "2026-10-17", "all_day": True}}]) == []
+                             [{"title": "Day", "start": "2026-10-16",
+                               "end": "2026-10-17", "all_day": True}]) == []
 
 
 def test_records_live_service_path_and_requires_separate_persistence_proof():
