@@ -120,7 +120,9 @@ def test_mutmut_copy_uses_original_immutable_asset_directory(tmp_path):
     assert m3.fixture_root(mutant) == original
     (mutant / "tests/fixtures/extraction").mkdir(parents=True)
     (mutant / "tests/fixtures/extraction/explicit-practice.json").write_text("exists")
-    assert m3.fixture_root(mutant) == mutant
+    # A partially copied fixture catalog must not shadow original pinned media.
+    assert m3.fixture_root(mutant) == original
+    assert m3.fixture_root(original) == original
 
 
 def test_no_proxy_with_configured_environment_proxy(monkeypatch):
