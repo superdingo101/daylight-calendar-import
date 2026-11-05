@@ -225,3 +225,30 @@ def test_detail_transport_error_is_not_false_negative():
         path.write_text(json.dumps(source))
         result = m3.verify_persistence(DetailErrorClient(), path, root / "out")
         assert result["cases"][0]["state"] == "inconclusive"
+
+
+def test_verify_cli_never_reports_empty_readback_as_success(monkeypatch):
+    class OnlyZeroClient:
+        def __init__(self, origin, token):
+            assert origin == "http://127.0.0.1:8124"
+            assert token == "synthetic-token"
+
+    monkeypatch.setenv("DAYLIGHT_M3_HA_TOKEN", "synthetic-token")
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "zero.json"
+        source.write_text(json.dumps({
+            "evidence_type": "live_ha_service_path",
+            "run_id": "zero-only",
+            "cases": [{"case": "text_zero"}],
+        }))
+        with patch.object(m3, "HAClient", OnlyZeroClient):
+            assert m3.main([
+                "verify", "--confirm",
+                "--ha-origin", "http://127.0.0.1:8124",
+                "--evidence", str(source),
+                "--output", str(root / "readback"),
+            ]) == 1
+        saved = json.loads((root / "readback/verification.json").read_text())
+        assert saved["cases"] == []
+        assert "No pending imports were present to verify" in saved["limitations"]
