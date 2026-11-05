@@ -170,7 +170,7 @@ def inspect_drafts(expected: list[dict], observed: list[dict], long: bool = Fals
     if len(observed) != len(expected):
         errors.append("event_count")
     for index, (want, item) in enumerate(zip(expected, observed)):
-        actual = item.get("draft") if isinstance(item, dict) else None
+        actual = item if isinstance(item, dict) else None
         if not isinstance(actual, dict):
             errors.append(f"event_{index}_shape")
             continue
