@@ -397,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if result["completed"] else 1
         result = verify_persistence(client, args.evidence, args.output)
         print("Recorded " + str(len(result["cases"])) + " pending readback(s) privately.")
-        return 0 if all(r["persisted"] for r in result["cases"]) else 1
+        return 0 if result["cases"] and all(r["persisted"] for r in result["cases"]) else 1
     except (ValueError, OSError, json.JSONDecodeError):
         print("M3 evidence operation failed; inspect protected record and verify remote state before retrying.", file=sys.stderr)
         return 2
