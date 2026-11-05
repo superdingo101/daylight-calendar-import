@@ -25,20 +25,21 @@ complete hash. Stop on mismatch. Never paste fixture JSON's
 `provider_response` or `expected` into the import form: these are simulated
 test expectations, not observations of the live model.
 
-| Case | Input path under tests/fixtures/extraction/ | Git blob checksum |
+| Case | Input path from repository root | Git blob checksum |
 | --- | --- | --- |
-| text_basic | explicit-practice.json | 81cf6f0389b984b1a130dd3d82fd3e9e87077daa |
-| text_zero | no-events-newsletter.json | 900b6cc7a4d1a28fd4464e48549e543b0f682f13 |
-| text_all_day | dates-all-day-and-multiday.json | 6277bde732b9cbd834c8fbbda6aa16ae035305cb |
-| text_meeting | meeting-join-details.json | df0b6f4d4a445be3b032669db3ea738100574a6a |
-| text_dst | dates-dst-fall-back.json | 2c0d1322cae0757035e7ee878b3b71532a050516 |
-| text_mixed | email-school-newsletter.json | cf7176f028a968e906d4f307a96fc341a0562aa7 |
-| image | assets/media-screenshot.png | 3998be4cc9b5af8fe46a03518134b8044d104d97 |
-| text PDF | assets/media-multipage-text.pdf | ab421fcce9663ed751d0933219d665b841864560 |
-| scanned PDF | assets/media-multipage-scan.pdf | 73119d8a40bc7f3bcffe1fc1de0c31665791240a |
+| text_basic | tests/fixtures/extraction/explicit-practice.json | 81cf6f0389b984b1a130dd3d82fd3e9e87077daa |
+| text_zero | tests/fixtures/extraction/no-events-newsletter.json | 900b6cc7a4d1a28fd4464e48549e543b0f682f13 |
+| text_all_day | tests/fixtures/extraction/dates-all-day-and-multiday.json | 6277bde732b9cbd834c8fbbda6aa16ae035305cb |
+| text_meeting | tests/fixtures/extraction/meeting-join-details.json | df0b6f4d4a445be3b032669db3ea738100574a6a |
+| text_dst | tests/fixtures/extraction/dates-dst-fall-back.json | 2c0d1322cae0757035e7ee878b3b71532a050516 |
+| text_mixed | tests/fixtures/extraction/email-school-newsletter.json | cf7176f028a968e906d4f307a96fc341a0562aa7 |
+| text_long | docs/fixtures/hosted-long-description.txt | fcfd10141e6644108f6c00203297334914f06505 |
+| image | tests/fixtures/extraction/assets/media-screenshot.png | 3998be4cc9b5af8fe46a03518134b8044d104d97 |
+| text PDF | tests/fixtures/extraction/assets/media-multipage-text.pdf | ab421fcce9663ed751d0933219d665b841864560 |
+| scanned PDF | tests/fixtures/extraction/assets/media-multipage-scan.pdf | 73119d8a40bc7f3bcffe1fc1de0c31665791240a |
 
-For the text cases paste only the decoded `source_text` value from the
-respective JSON. For media cases upload the file through New import; use no
+For JSON text cases paste only the decoded `source_text` value from the
+respective JSON. For `text_long`, paste the complete UTF-8 text file. For media cases upload the file through New import; use no
 supporting text. These fixtures contain explicit historical 2026 dates and
 Pacific time; preserve the original dates when judging results, and record HA's
 configured time zone. The text fixtures' `reference_datetime` is an automated
@@ -65,6 +66,7 @@ do not automatically retry or assume a request ID makes a replay idempotent.
 | text_meeting | One October 15 meeting with the synthetic join URL, meeting ID, passcode and dial instructions preserved in the draft. |
 | text_dst | One November 1 shift spanning first 1:30 am PDT to second 1:30 am PST. Verify offsets when available and any required human review; do not accept an ambiguous or zero-duration result silently. |
 | text_mixed | Six drafts for the listed timed and all-day events; no events from general announcements. Check inclusive multi-day dates and the budget link. |
+| text_long | One November 18, 6–8 pm PST workshop. Inspect the complete description for all 24 numbered instructions and the final instruction, including its tail; record omissions, shortening or rewording rather than assuming long text survived. |
 | image | Two drafts for science night October 22 and garden morning October 24, with times, locations and instructions visible in the asset. |
 | text PDF | The same two expected drafts. Note whether HA extracted text locally; a successful import does not by itself prove that PDF bytes reached the model. |
 | scanned PDF | The same two expected drafts from the scanned pages. Record any missing or altered fields; a successful result alone does not prove which bytes the provider received. |
