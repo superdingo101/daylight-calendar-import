@@ -363,6 +363,7 @@ def verify_persistence(client: HAClient, evidence: Path, destination: Path) -> d
                     pass
             result["cases"].append(row)
             _private_write(destination / "verification.json", result)
+    _private_write(destination / "verification.json", result)
     return result
 
 
