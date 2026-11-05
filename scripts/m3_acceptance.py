@@ -16,10 +16,18 @@ import re
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import uuid4
 
-ROOT = Path(__file__).resolve().parents[1]
+def fixture_root(source_root: Path) -> Path:
+    """Use checked-out immutable assets when mutmut copies only test Python files."""
+    marker = source_root / "tests" / "fixtures" / "extraction" / "explicit-practice.json"
+    if source_root.name == "mutants" and not marker.is_file():
+        return source_root.parent
+    return source_root
+
+
+ROOT = fixture_root(Path(__file__).resolve().parents[1])
 FIXTURES = ROOT / "tests" / "fixtures" / "extraction"
 DOMAIN = "daylight_calendar_import"
 CASES = {
@@ -103,7 +111,7 @@ class HAClient:
         if not token.strip():
             raise ValueError("Missing protected HA token")
         self.token = token
-        self.opener = build_opener(NoRedirects())
+        self.opener = build_opener(ProxyHandler({}), NoRedirects())
 
     def request(self, path: str, payload: bytes | None = None, content_type: str = "application/json") -> dict:
         if not path.startswith("/api/") or "://" in path:
@@ -190,11 +198,17 @@ def inspect_drafts(expected: list[dict], observed: list[dict], long: bool = Fals
         if description and description.casefold() not in str(actual.get("description") or "").casefold():
             errors.append(f"event_{index}_description")
         if long:
-            desc = str(actual.get("description") or "")
+            desc = " ".join(str(actual.get("description") or "").split()).casefold()
+            source, _, _ = fixture("text_long")
             for step in range(1, 25):
-                if f"Step {step:02d}" not in desc:
+                instruction = next(
+                    line for line in source.splitlines()
+                    if line.startswith(f"Step {step:02d}:")
+                )
+                if " ".join(instruction.split()).casefold() not in desc:
                     errors.append(f"long_description_step_{step:02d}")
-            if "Return the completed worksheet to the information desk before leaving." not in desc:
+            ending = next(line for line in source.splitlines() if line.startswith("Final instruction:"))
+            if " ".join(ending.split()).casefold() not in desc:
                 errors.append("long_description_tail")
     return errors
 
@@ -249,6 +263,10 @@ def execute_cases(client: HAClient, cases: list[str], destination: Path) -> dict
         _private_write(destination / "evidence.json", record)
         try:
             data = {"source_id": "m3-evidence-" + run_id + "-" + case}
+            if case in MEDIA:
+                # Three media fixtures deliberately contain the same events.
+                # Only explicit re-import preserves independently reviewable drafts.
+                data["reimport_duplicates"] = True
             if media is None:
                 data["text"] = text
                 service = "submit_text"
@@ -295,24 +313,56 @@ def verify_persistence(client: HAClient, evidence: Path, destination: Path) -> d
     document = json.loads(evidence.read_bytes())
     if document.get("evidence_type") != "live_ha_service_path" or not isinstance(document.get("cases"), list):
         raise ValueError("Unsupported prior evidence")
-    rows = []
+    expected = []
     for case in document["cases"]:
         if not isinstance(case, dict) or case.get("case") not in CASES:
             raise ValueError("Invalid prior evidence entry")
         identifier = case.get("pending_id")
-        if not identifier:
-            continue
-        outcome = client.service("get_pending", {"pending_id": identifier})
-        item = outcome.get("pending")
-        rows.append({"case": case["case"], "persisted": isinstance(item, dict)
-                     and item.get("id") == identifier})
-    result = {"schema_version": 1, "evidence_type": "post_restart_readback",
-              "checked_at": datetime.now(UTC).isoformat(),
-              "prior_run_id": document.get("run_id"), "cases": rows,
-              "restart_was_observed": False,
-              "limitations": ["Operator must independently attest HA restart and exact revision"]}
+        if identifier:
+            if not isinstance(identifier, str):
+                raise ValueError("Invalid pending ID")
+            expected.append((case["case"], identifier))
+    result = {
+        "schema_version": 1,
+        "evidence_type": "post_restart_readback",
+        "checked_at": datetime.now(UTC).isoformat(),
+        "prior_run_id": document.get("run_id"),
+        "cases": [],
+        "restart_was_observed": False,
+        "limitations": ["Operator must independently attest HA restart and exact revision"],
+    }
     _new_directory(destination)
     _private_write(destination / "verification.json", result)
+    if not expected:
+        result["limitations"].append("No pending imports were present to verify")
+    else:
+        try:
+            listed = client.service("list_pending").get("imports")
+            if not isinstance(listed, list) or not all(
+                isinstance(item, dict) and isinstance(item.get("id"), str) for item in listed
+            ):
+                raise ValueError("Invalid pending listing")
+            known_ids = {item["id"] for item in listed}
+        except (ValueError, TypeError):
+            known_ids = None
+        for case, identifier in expected:
+            row = {"case": case, "persisted": None, "state": "inconclusive"}
+            if known_ids is not None and identifier not in known_ids:
+                row.update(persisted=False, state="missing")
+            elif known_ids is not None:
+                try:
+                    item = client.service("get_pending", {"pending_id": identifier}).get("pending")
+                    if not isinstance(item, dict):
+                        raise ValueError("Unexpected readback")
+                    if item.get("id") == identifier:
+                        row.update(persisted=True, state="present")
+                    else:
+                        row.update(persisted=False, state="id_mismatch")
+                except (ValueError, TypeError):
+                    # Auth, transport and concurrent changes are not evidence of absence.
+                    pass
+            result["cases"].append(row)
+            _private_write(destination / "verification.json", result)
     return result
 
 
