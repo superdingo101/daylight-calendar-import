@@ -57,7 +57,7 @@ def test_rejects_remote_or_unsafe_origins():
 def test_fixture_catalog_is_integrity_checked():
     for name in m3.CASES:
         source, expected, media = m3.fixture(name)
-        assert isinstance(source, str) and expected
+        assert isinstance(source, str) and isinstance(expected, list)
         assert (media is not None) == (name in m3.MEDIA)
 
 
