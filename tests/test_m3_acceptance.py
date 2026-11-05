@@ -127,7 +127,7 @@ def test_no_proxy_with_configured_environment_proxy(monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", "http://remote-proxy.invalid:8888")
     monkeypatch.setenv("http_proxy", "http://remote-proxy.invalid:8888")
     client = m3.HAClient("http://127.0.0.1:8124", "T" * 48)
-    assert not any(isinstance(handler, ProxyHandler) for handler in client.opener.handlers)
+    assert all(handler.proxies == {} for handler in client.opener.handlers\n               if isinstance(handler, ProxyHandler))
 
 
 def test_long_description_rejects_labels_without_full_instructions():
