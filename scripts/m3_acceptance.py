@@ -21,8 +21,9 @@ from uuid import uuid4
 
 def fixture_root(source_root: Path) -> Path:
     """Use checked-out immutable assets when mutmut copies only test Python files."""
-    marker = source_root / "tests" / "fixtures" / "extraction" / "explicit-practice.json"
-    if source_root.name == "mutants" and not marker.is_file():
+    # Mutmut copies Python tests and some assets, but not the complete pinned
+    # fixture catalog (notably docs and binary media). Never use a partial copy.
+    if source_root.name == "mutants":
         return source_root.parent
     return source_root
 
