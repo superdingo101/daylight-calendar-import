@@ -6,6 +6,8 @@ from datetime import UTC
 from hashlib import sha256
 from io import BytesIO, StringIO
 import json
+import os
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 import zlib
@@ -873,7 +875,9 @@ async def test_maximum_allowed_pdf_is_accepted(uploaded_file, monkeypatch):
 
 
 def test_pdf_worker_process_is_bounded_and_never_raises_before_mapping(monkeypatch):
-    """Worker failures are normalized only if the subprocess does not raise for exit codes."""
+    """Child launch isolates HA's allocator without relaxing bounded parsing."""
+    monkeypatch.setenv("PYTHONMALLOC", "debug")
+    monkeypatch.setenv("DAYLIGHT_PDF_WORKER_TEST", "retained")
     seen = []
 
     def run(command, **kwargs):
@@ -886,6 +890,11 @@ def test_pdf_worker_process_is_bounded_and_never_raises_before_mapping(monkeypat
     command, kwargs = seen[0]
     assert command[0] == pdfs.sys.executable
     assert command[1].endswith("pdf_worker.py")
+    child_env = kwargs.pop("env")
+    assert "PYTHONMALLOC" not in child_env
+    assert child_env == {key: value for key, value in os.environ.items() if key != "PYTHONMALLOC"}
+    assert child_env["DAYLIGHT_PDF_WORKER_TEST"] == "retained"
+    assert os.environ["PYTHONMALLOC"] == "debug"
     assert kwargs == {
         "input": b"%PDF-test",
         "stdout": subprocess.PIPE,
@@ -893,6 +902,22 @@ def test_pdf_worker_process_is_bounded_and_never_raises_before_mapping(monkeypat
         "timeout": 20,
         "check": False,
     }
+
+
+def test_real_text_pdf_fixture_works_with_ha_debug_allocator(monkeypatch):
+    """The exact M3 fixture must extract through the 256 MiB worker subprocess."""
+    monkeypatch.setenv("PYTHONMALLOC", "debug")
+    fixture = Path(__file__).parent / "fixtures/extraction/assets/media-multipage-text.pdf"
+    content = fixture.read_bytes()
+    assert len(content) == 1804
+    text, needs_attachment = pdfs._extract_pdf_text(content)
+    assert text == (
+        "Family science night\\nOctober 22, 2026\\n6:00-8:00 pm PDT\\n"
+        "Willow School hall\\nBring a notebook.\\n\\n\\n"
+        "Garden volunteer morning\\nOctober 24, 2026\\n9:00-11:00 am PDT\\n"
+        "Cedar Community Garden\\nBring gloves and water."
+    )
+    assert needs_attachment is False
 
 
 @pytest.mark.parametrize(
