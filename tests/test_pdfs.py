@@ -912,10 +912,10 @@ def test_real_text_pdf_fixture_works_with_ha_debug_allocator(monkeypatch):
     assert len(content) == 1804
     text, needs_attachment = pdfs._extract_pdf_text(content)
     assert text == (
-        "Family science night\\nOctober 22, 2026\\n6:00-8:00 pm PDT\\n"
-        "Willow School hall\\nBring a notebook.\\n\\n\\n"
-        "Garden volunteer morning\\nOctober 24, 2026\\n9:00-11:00 am PDT\\n"
-        "Cedar Community Garden\\nBring gloves and water."
+        "Family science night\nOctober 22, 2026\n6:00-8:00 pm PDT\n"
+        "Willow School hall\nBring a notebook.\n\n\n"
+        "Garden volunteer morning\nOctober 24, 2026\n9:00-11:00 am PDT\n"
+        "Cedar Community Garden\nBring gloves and water."
     )
     assert needs_attachment is False
 
