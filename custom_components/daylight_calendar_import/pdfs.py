@@ -12,6 +12,7 @@ import tempfile
 import subprocess
 import sys
 import json
+import os
 from uuid import uuid4
 
 from homeassistant.components.file_upload import process_uploaded_file
@@ -34,11 +35,17 @@ def _discard_uploaded_pdf(hass: HomeAssistant, file_id: str) -> None:
 
 def _extract_pdf_text(data: bytes) -> tuple[str, bool]:
     """Run untrusted PDF parsing with memory and CPU limits in a child process."""
+    # Home Assistant may configure PYTHONMALLOC=debug for its own process.
+    # Inheriting its allocator mode can exhaust the worker's bounded virtual
+    # address space even for tiny, valid PDFs. Do not alter HA's environment or
+    # relax the worker's own RLIMIT_AS/RLIMIT_CPU protections.
+    worker_env = os.environ.copy()
+    worker_env.pop("PYTHONMALLOC", None)
     try:
         result = subprocess.run(
             [sys.executable, str(Path(__file__).with_name("pdf_worker.py"))],
             input=data, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            timeout=20, check=False,
+            timeout=20, check=False, env=worker_env,
         )
     except subprocess.TimeoutExpired as err:
         raise SourceValidationError("invalid_pdf", "PDF extraction timed out") from err
