@@ -1502,6 +1502,74 @@ class PendingImportStore:
             self._commit_items(items)
             return edited
 
+    def hosted_ack_journal(self) -> tuple[HostedDeliveryJournalEntry, ...]:
+        """Return independent snapshots; the private store owns mutable evidence."""
+        if self._storage_blocked:
+            raise PendingImportStorageError(_STORAGE_ERROR)
+        return deepcopy(self._hosted_delivery_journal)
+
+    async def async_reconcile_hosted_ack(
+        self, *, entry: HostedDeliveryJournalEntry, action: str,
+        new_evidence: HostedDeliveryEvidence | None = None,
+    ) -> HostedDeliveryJournalEntry:
+        """Atomically update an accepted delivery using a journal snapshot as a CAS.
+
+        Only a validated server ACK response permits ``confirm``. A fresh claim
+        and verified attachment bytes are required before ``replace_lease``.
+        This method does not perform I/O with the hosted service.
+        """
+        entry, new_evidence = deepcopy(entry), deepcopy(new_evidence)
+        result, cancelled = await self._async_complete_transaction(
+            self._async_reconcile_hosted_ack_transaction(entry, action, new_evidence)
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    async def _async_reconcile_hosted_ack_transaction(
+        self, entry: HostedDeliveryJournalEntry, action: str,
+        new_evidence: HostedDeliveryEvidence | None,
+    ) -> HostedDeliveryJournalEntry:
+        async with self._lock:
+            if self._storage_blocked:
+                raise PendingImportStorageError(_STORAGE_ERROR)
+            if action not in {"attempt", "confirm", "expire", "replace_lease"}:
+                raise ValueError("invalid hosted journal action")
+            matches = [index for index, current in enumerate(self._hosted_delivery_journal)
+                       if current.evidence.source_id == entry.evidence.source_id]
+            if len(matches) != 1 or self._hosted_delivery_journal[matches[0]] != entry:
+                raise ValueError("stale hosted journal snapshot")
+            if entry.ack_status != "pending":
+                raise ValueError("hosted journal is terminal")
+            now = datetime.now(UTC)
+            expiry = datetime.fromisoformat(entry.evidence.source_expires_at.replace("Z", "+00:00"))
+            if action == "expire":
+                if now < expiry or new_evidence is not None:
+                    raise ValueError("hosted journal is not expired")
+                updated = replace(entry, ack_status="expired")
+            else:
+                if now >= expiry:
+                    raise ValueError("hosted journal has expired")
+                if action == "replace_lease":
+                    if new_evidence is None:
+                        raise ValueError("missing hosted delivery evidence")
+                    new_evidence.validate()
+                    if replace(new_evidence, lease_token=entry.evidence.lease_token) != entry.evidence:
+                        raise ValueError("hosted delivery evidence changed")
+                    updated = replace(entry, evidence=new_evidence)
+                else:
+                    if new_evidence is not None:
+                        raise ValueError("unexpected hosted delivery evidence")
+                    if action == "attempt":
+                        updated = replace(entry, attempt_count=entry.attempt_count + 1,
+                                          last_attempt_at=now.isoformat())
+                    else:
+                        updated = replace(entry, ack_status="confirmed")
+            journal = list(self._hosted_delivery_journal)
+            journal[matches[0]] = updated
+            await self._async_save(self._items, hosted_delivery_journal=tuple(journal))
+            return deepcopy(updated)
+
     def is_source_duplicate(self, source_id: str) -> bool:
         """Return whether a source ID is pending, handled, or being processed."""
         return self._source_fingerprint_exists(build_source_fingerprint(source_id))

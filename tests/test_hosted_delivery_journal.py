@@ -480,3 +480,67 @@ def test_invalid_unicode_filename_reports_exact_evidence_error():
     malformed = {**item.attachment_descriptors[0], "filename": chr(0xD800)}
     with pytest.raises(ValueError, match="^invalid hosted attachment evidence$"):
         replace(item, attachment_descriptors=(malformed,)).validate()
+
+
+async def test_ack_reconciliation_persists_cas_and_rejects_changed_evidence(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence()
+    await store.async_add(source_text="source", events=[], source_id=item.source_id, hosted_evidence=item)
+    original = store.hosted_ack_journal()[0]
+    attempted = await store.async_reconcile_hosted_ack(entry=original, action="attempt")
+    assert attempted.attempt_count == 1 and attempted.last_attempt_at
+    with pytest.raises(ValueError, match="stale"):
+        await store.async_reconcile_hosted_ack(entry=original, action="confirm")
+    replacement = replace(item, lease_token="new-secret")
+    with pytest.raises(ValueError, match="changed"):
+        await store.async_reconcile_hosted_ack(entry=attempted, action="replace_lease",
+                                                new_evidence=replace(replacement, source_evidence_sha256="b" * 64))
+    updated = await store.async_reconcile_hosted_ack(entry=attempted, action="replace_lease", new_evidence=replacement)
+    with pytest.raises(ValueError, match="stale"):
+        await store.async_reconcile_hosted_ack(entry=attempted, action="confirm")
+    confirmed = await store.async_reconcile_hosted_ack(entry=updated, action="confirm")
+    assert confirmed.ack_status == "confirmed"
+    restarted = make_store(monkeypatch, FakeStoreBackend(load_result=backend.saved[-1]))
+    await restarted.async_load()
+    assert restarted.hosted_ack_journal() == (confirmed,)
+    with pytest.raises(ValueError, match="terminal"):
+        await restarted.async_reconcile_hosted_ack(entry=confirmed, action="attempt")
+
+
+async def test_ack_reconciliation_rejects_invalid_actions_and_expiry(monkeypatch):
+    from custom_components.daylight_calendar_import import storage as storage_module
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence()
+    await store.async_add(source_text="source", events=[], source_id=item.source_id, hosted_evidence=item)
+    entry = store.hosted_ack_journal()[0]
+    for action, replacement in (("bogus", None), ("expire", None), ("replace_lease", None),
+                                ("attempt", item), ("confirm", item)):
+        with pytest.raises(ValueError):
+            await store.async_reconcile_hosted_ack(entry=entry, action=action, new_evidence=replacement)
+    class Future(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + timedelta(days=2)
+    monkeypatch.setattr(storage_module, "datetime", Future)
+    with pytest.raises(ValueError, match="expired"):
+        await store.async_reconcile_hosted_ack(entry=entry, action="confirm")
+    expired = await store.async_reconcile_hosted_ack(entry=entry, action="expire")
+    assert expired.ack_status == "expired"
+
+
+async def test_ack_reconciliation_blocks_after_uncertain_write(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence()
+    await store.async_add(source_text="source", events=[], source_id=item.source_id, hosted_evidence=item)
+    entry = store.hosted_ack_journal()[0]
+    backend.save_error = OSError("uncertain")
+    with pytest.raises(OSError):
+        await store.async_reconcile_hosted_ack(entry=entry, action="confirm")
+    with pytest.raises(PendingImportStorageError):
+        store.hosted_ack_journal()
+    with pytest.raises(PendingImportStorageError):
+        await store.async_reconcile_hosted_ack(entry=entry, action="attempt")
