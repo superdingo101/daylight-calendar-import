@@ -544,3 +544,32 @@ async def test_ack_reconciliation_blocks_after_uncertain_write(monkeypatch):
         store.hosted_ack_journal()
     with pytest.raises(PendingImportStorageError):
         await store.async_reconcile_hosted_ack(entry=entry, action="attempt")
+
+
+async def test_cancelled_ack_update_finishes_the_durable_write(monkeypatch):
+    import asyncio
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence()
+    await store.async_add(source_text="source", events=[], source_id=item.source_id, hosted_evidence=item)
+    entry = store.hosted_ack_journal()[0]
+    started, release = asyncio.Event(), asyncio.Event()
+    save = backend.async_save_immediate
+
+    async def delayed_save(data):
+        started.set()
+        await release.wait()
+        await save(data)
+
+    monkeypatch.setattr(backend, "async_save_immediate", delayed_save)
+    task = asyncio.create_task(store.async_reconcile_hosted_ack(entry=entry, action="attempt"))
+    await started.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert store.hosted_ack_journal()[0].attempt_count == 1
+    restarted = make_store(monkeypatch, FakeStoreBackend(load_result=backend.saved[-1]))
+    await restarted.async_load()
+    assert restarted.hosted_ack_journal()[0].attempt_count == 1
