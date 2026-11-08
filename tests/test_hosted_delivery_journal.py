@@ -477,6 +477,6 @@ def test_hosted_manifest_mismatch_reports_exact_error():
 
 def test_invalid_unicode_filename_reports_exact_evidence_error():
     item = _with_attachments([_descriptor()])
-    malformed = {**item.attachment_descriptors[0], "filename": "\\ud800"}
+    malformed = {**item.attachment_descriptors[0], "filename": chr(0xD800)}
     with pytest.raises(ValueError, match="^invalid hosted attachment evidence$"):
         replace(item, attachment_descriptors=(malformed,)).validate()
