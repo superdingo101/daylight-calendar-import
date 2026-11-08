@@ -103,6 +103,10 @@ class LocalOnlyNamespaceReconciler:
                     "seen_source_fingerprints": pending._seen_source_fingerprints,
                     "seen_event_fingerprints": pending._seen_event_fingerprints,
                 }
+                # A local-only receipt must never be issued for an ACK obligation,
+                # even while its storage write is still held in memory.
+                if pending._hosted_delivery_journal:
+                    raise NamespaceReconciliationError(_ERROR)
                 _local_data(loaded)
                 durable = await pending._store.hass.async_add_executor_job(_read_contract, pending._store.path)
                 if pending._storage_blocked or getattr(pending, "accepting_services", False) is not True or pending._store._data is not None:

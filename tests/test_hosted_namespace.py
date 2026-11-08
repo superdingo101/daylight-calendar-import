@@ -142,3 +142,81 @@ async def test_pause_during_disk_validation_cannot_return_a_receipt(pending, mon
     monkeypatch.setattr(pending._store.hass, "async_add_executor_job", pause_after_read)
     with pytest.raises(module.NamespaceReconciliationError):
         await module.LocalOnlyNamespaceReconciler(pending).async_receipt(None)
+
+
+async def test_actual_hosted_acceptance_remains_durable_and_blocks_local_only_reconnect(pending, hass):
+    from tests.test_hosted_delivery_journal import evidence
+
+    item = evidence()
+    result = await pending.async_add(source_text="Private source", events=[draft()],
+                                     source_id=item.source_id, hosted_evidence=item)
+    path = Path(pending._store.path)
+    saved = json.loads(path.read_text())["data"]
+    assert len(saved["items"]) == len(saved["hosted_delivery_journal"]) == 1
+    restarted = PendingImportStore(hass)
+    await restarted.async_load()
+    restarted.accepting_services = True
+    assert restarted._hosted_delivery_journal[0].evidence == item
+    assert await restarted.async_remove(result.pending.id)
+    assert restarted._hosted_delivery_journal[0].evidence == item
+    with pytest.raises(module.NamespaceReconciliationError):
+        await module.LocalOnlyNamespaceReconciler(restarted).async_receipt(None)
+
+
+async def test_hosted_checkpoint_propagates_real_store_writer_error(pending, monkeypatch):
+    from tests.test_hosted_delivery_journal import evidence
+
+    async def fail_write(_data):
+        raise OSError("disk failure")
+
+    monkeypatch.setattr(pending._store, "_async_write_data", fail_write)
+    item = evidence()
+    with pytest.raises(OSError):
+        await pending.async_add(source_text="Private source", events=[draft()],
+                                source_id=item.source_id, hosted_evidence=item)
+    assert pending._storage_blocked
+    assert not pending._hosted_delivery_journal and not pending.list()
+
+
+@pytest.mark.parametrize("field,value", [("_read_only", True), ("_data", {"queued": True})])
+async def test_hosted_checkpoint_denies_read_only_or_queued_writer(pending, field, value):
+    from custom_components.daylight_calendar_import.storage import PendingImportStorageError
+    from tests.test_hosted_delivery_journal import evidence
+
+    setattr(pending._store, field, value)
+    item = evidence()
+    with pytest.raises(PendingImportStorageError):
+        await pending.async_add(source_text="Private source", events=[draft()],
+                                source_id=item.source_id, hosted_evidence=item)
+    assert not pending._hosted_delivery_journal
+    if field == "_data":
+        pending._store._data = None
+
+
+async def test_hosted_immediate_checkpoint_has_exact_private_storage_envelope(pending):
+    """The on-disk contract must be atomic and recognizable on restart."""
+    from custom_components.daylight_calendar_import.storage import STORAGE_KEY, STORAGE_VERSION
+    from tests.test_hosted_delivery_journal import evidence
+
+    item = evidence()
+    await pending.async_add(source_text="Private source", events=[draft()],
+                            source_id=item.source_id, hosted_evidence=item)
+    envelope = json.loads(Path(pending._store.path).read_text())
+    assert set(envelope) == {"version", "minor_version", "key", "data"}
+    assert envelope["version"] == STORAGE_VERSION
+    assert envelope["minor_version"] == 1
+    assert envelope["key"] == STORAGE_KEY
+    assert len(envelope["data"]["hosted_delivery_journal"]) == 1
+
+
+@pytest.mark.parametrize("field,value", [("_read_only", True), ("_data", {"queued": True})])
+async def test_hosted_immediate_checkpoint_error_has_repair_instructions(pending, field, value):
+    from custom_components.daylight_calendar_import.storage import PendingImportStorageError, _STORAGE_ERROR
+    from tests.test_hosted_delivery_journal import evidence
+
+    setattr(pending._store, field, value)
+    item = evidence()
+    with pytest.raises(PendingImportStorageError) as exc:
+        await pending.async_add(source_text="Private source", events=[draft()],
+                                source_id=item.source_id, hosted_evidence=item)
+    assert str(exc.value) == _STORAGE_ERROR
