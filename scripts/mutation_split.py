@@ -253,6 +253,69 @@ def combine() -> dict:
     return combined
 
 
+
+def compare_legacy() -> dict:
+    """Prove the cold old and new shard 1 have identical scored mutant outcomes.
+
+    Timeouts count as kills under the existing repository policy; retain raw
+    status differences as diagnostics. Both runs must use the same checked-out
+    SHA, resolved userland and full mutant identity population.
+    """
+    catalog = verified_catalog()
+    old_path = Path("mutation-shards/legacy-shard-1.json")
+    new_path = Path("mutation-shards/results/shard-1.json")
+    old = json.loads(old_path.read_text(encoding="utf-8"))
+    new = json.loads(new_path.read_text(encoding="utf-8"))
+    for label, result in (("legacy", old), ("split", new)):
+        if (result.get("schema") != shards.SCHEMA
+                or result.get("complete") is not True
+                or type(result.get("index")) is not int or result["index"] != 1
+                or result.get("target_sha") != catalog["target_sha"]
+                or result.get("manifest_sha256") != catalog["manifest_sha256"]
+                or result.get("modules") != [MODULE]):
+            raise ValueError(f"{label} result is not the same complete exact-SHA init shard")
+        counts = shards.stats_checked(result.get("stats"), require_nonempty=True)
+        shards.validate_mutants(result.get("mutants"), [MODULE], counts)
+        shards.validate_environment(result.get("environment"))
+        if sorted(result["mutants"][MODULE]) != catalog["population"]:
+            raise ValueError(f"{label} result has a different mutant population")
+    if old["environment"]["sha256"] != new["environment"]["sha256"]:
+        raise ValueError("Legacy and split init shard executed in different environments")
+    original = old["mutants"][MODULE]
+    divided = new["mutants"][MODULE]
+    normalized = lambda verdict: "killed" if verdict in ("timeout", "killed") else verdict
+    differences = [
+        {"mutant": name, "legacy": original[name], "split": divided[name]}
+        for name in catalog["population"]
+        if original[name] != divided[name]
+    ]
+    changed_scored = [
+        item for item in differences
+        if normalized(item["legacy"]) != normalized(item["split"])
+    ]
+    if changed_scored:
+        raise ValueError(f"Legacy and split scored outcomes differ for {len(changed_scored)} mutants")
+    proof = {
+        "schema": 1, "equivalent": True,
+        "target_sha": catalog["target_sha"],
+        "environment_sha256": old["environment"]["sha256"],
+        "manifest_sha256": catalog["manifest_sha256"],
+        "catalog_sha256": catalog["catalog_sha256"],
+        "population_sha256": catalog["population_sha256"],
+        "mutant_count": len(original),
+        "scored_outcomes_identical": True,
+        "legacy_stats": old["stats"],
+        "split_stats": new["stats"],
+        "raw_status_differences": differences,
+        "legacy_seconds": old["seconds"],
+        "split_seconds": new["seconds"],
+    }
+    shards.write_json(Path("mutation-shards/legacy-init-equivalence.json"), proof)
+    print("PASS: same-SHA, same-userland legacy and split init shard outcomes match for",
+          len(original), "mutants; raw timing-status differences:", len(differences))
+    return proof
+
+
 def join_diagnostics() -> None:
     obj = verified_catalog()
     # First require every worker result; diagnostics are not a replacement for
@@ -271,7 +334,7 @@ def join_diagnostics() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("catalog", "run", "record", "combine", "join-diagnostics"))
+    parser.add_argument("command", choices=("catalog", "run", "record", "combine", "join-diagnostics", "compare-legacy"))
     parser.add_argument("--part", type=int)
     parser.add_argument("--seconds", type=int)
     args = parser.parse_args()
@@ -284,6 +347,8 @@ def main() -> int:
             record(args.part, args.seconds)
         elif args.command == "combine":
             combine()
+        elif args.command == "compare-legacy":
+            compare_legacy()
         else:
             join_diagnostics()
         return 0
