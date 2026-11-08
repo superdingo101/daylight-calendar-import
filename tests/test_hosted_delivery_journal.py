@@ -457,3 +457,26 @@ async def test_hosted_preexisting_fingerprint_error_is_exact(monkeypatch):
         await store.async_add(source_text="source", events=[draft()],
                               source_id=item.source_id, hosted_evidence=item)
     assert not backend.saved
+
+
+def test_five_distinct_attachments_exceed_hosted_attachment_count_limit():
+    descriptors = [_descriptor(str(index)) for index in range(5)]
+    with pytest.raises(ValueError, match="^invalid hosted attachment evidence$"):
+        _with_attachments(descriptors).validate()
+
+
+def test_uppercase_hosted_attachment_identifier_is_supported():
+    _with_attachments([_descriptor("ABC_09")]).validate()
+
+
+def test_hosted_manifest_mismatch_reports_exact_error():
+    item = _with_attachments([_descriptor()])
+    with pytest.raises(ValueError, match="^invalid hosted attachment manifest$"):
+        replace(item, attachment_manifest_sha256="0" * 64).validate()
+
+
+def test_invalid_unicode_filename_reports_exact_evidence_error():
+    item = _with_attachments([_descriptor()])
+    malformed = {**item.attachment_descriptors[0], "filename": "\\ud800"}
+    with pytest.raises(ValueError, match="^invalid hosted attachment evidence$"):
+        replace(item, attachment_descriptors=(malformed,)).validate()
