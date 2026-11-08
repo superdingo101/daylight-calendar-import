@@ -95,3 +95,33 @@ def test_journal_rejects_corrupt_fields():
             HostedDeliveryJournalEntry.from_dict({**record, key: value})
     with pytest.raises(ValueError):
         replace(item, source_expires_at="2030-01-01T00:00:00").validate()
+
+
+async def test_preexisting_source_can_record_duplicate_obligation(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence()
+    await store.async_add(source_text="source", events=[draft()], source_id=item.source_id)
+    result = await store.async_add(source_text="source", events=[draft()], source_id=item.source_id,
+                                   hosted_evidence=item)
+    assert result.duplicate_source
+    assert backend.saved[-1]["hosted_delivery_journal"][0]["acceptance_disposition"] == "duplicate"
+
+
+async def test_ambiguous_commit_requires_reload_and_preserves_outcome(monkeypatch):
+    class AmbiguousBackend(FakeStoreBackend):
+        async def async_save(self, data):
+            self.load_result = data
+            raise OSError("response lost after commit")
+
+    backend = AmbiguousBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence()
+    with pytest.raises(OSError):
+        await store.async_add(source_text="source", events=[draft()], source_id=item.source_id,
+                              hosted_evidence=item)
+    assert not store._hosted_delivery_journal
+    backend.__class__ = FakeStoreBackend
+    await store.async_load()
+    assert store._hosted_delivery_journal[0].evidence == item
+    assert len(store.list()) == 1
