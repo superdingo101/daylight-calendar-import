@@ -14,7 +14,6 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import time
 
 from scripts import mutation_shards as shards
 
@@ -177,7 +176,7 @@ def record(part: int, seconds: int) -> dict:
     from mutmut.mutation.diff_apply import get_diff_for_mutant
 
     code = export_survivors(
-        paths=[Path("mutants") / MODULE],
+        paths=[Path(MODULE)],
         metadata_factory=SourceFileMutationData,
         diff_for_mutant=get_diff_for_mutant,
         status_by_exit_code=status_by_exit_code,
