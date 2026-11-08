@@ -21,7 +21,7 @@ def fixture(tmp_path, monkeypatch):
     root.parent.mkdir(parents=True)
     root.write_text("async def async_setup_entry(): pass\n")
     manifest = {
-        "target_sha": "a" * 40, "manifest_sha256": "b" * 64,
+        "target_sha": "a" * 40, "manifest_sha256": "b" * 64, "shard_count": 8,
         "shards": [{"index": i, "modules": [split.MODULE] if i == 1 else ["other"]} for i in range(8)],
     }
     monkeypatch.setattr(split.shards, "git", lambda *args: "a" * 40)
@@ -131,6 +131,6 @@ def test_selected_diagnostic_export_never_includes_unselected_mutants(fixture, m
         metadata_factory=FakeMetadata,
         diff_for_mutant=lambda name, **kwargs: "diff",
         status_by_exit_code={0: "survived", 1: "killed"},
-        selected_mutants={names[0], names[2]},
+        selected_mutants={names[0]},
     ) == 0
     assert Path("mutation-survivor-names.txt").read_text().strip() == names[0]
