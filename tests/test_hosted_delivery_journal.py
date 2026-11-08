@@ -346,3 +346,74 @@ def test_journal_rejects_missing_and_extra_fields_without_discarding_evidence():
             HostedDeliveryJournalEntry.from_dict(damaged)
     with pytest.raises(ValueError, match="invalid hosted delivery journal"):
         HostedDeliveryJournalEntry.from_dict({**data, "unknown": "value"})
+
+
+async def test_hosted_acceptance_rejects_ambiguous_identity_expiry_and_duplicate_with_exact_errors(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence()
+    with pytest.raises(ValueError, match="^hosted source identity does not match evidence$"):
+        await store.async_add(source_text="source", events=[], source_id="unrelated",
+                              hosted_evidence=item)
+    expired = replace(item, source_expires_at="2020-01-01T00:00:00Z")
+    with pytest.raises(ValueError, match="^hosted source has expired$"):
+        await store.async_add(source_text="source", events=[],
+                              source_id=item.source_id, hosted_evidence=expired)
+    await store.async_add(source_text="source", events=[],
+                          source_id=item.source_id, hosted_evidence=item)
+    with pytest.raises(ValueError, match="^hosted delivery already has an ACK obligation$"):
+        await store.async_add(source_text="source", events=[],
+                              source_id=item.source_id, hosted_evidence=item)
+    assert len(backend.saved) == 1
+
+
+async def test_hosted_journal_write_failure_blocks_services_and_reload_recovers(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    backend.save_error = OSError("disk unavailable")
+    item = evidence()
+    with pytest.raises(OSError, match="disk unavailable"):
+        await store.async_add(source_text="source", events=[draft()],
+                              source_id=item.source_id, hosted_evidence=item)
+    assert store._storage_blocked is True
+    assert store.accepting_services is False
+    assert store._hosted_delivery_journal == ()
+    backend.save_error = None
+    await store.async_load()
+    assert store._storage_blocked is False
+    assert store._hosted_delivery_journal == ()
+
+
+async def test_hosted_no_events_persists_fingerprint_and_disposition_without_pending(monkeypatch):
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence()
+    result = await store.async_add(source_text="source", events=[],
+                                   source_id=item.source_id, hosted_evidence=item)
+    assert result.pending is None
+    assert len(backend.saved) == 1
+    snapshot = backend.saved[-1]
+    assert snapshot["items"] == []
+    assert source_fingerprint(item.source_id) in snapshot["seen_source_fingerprints"]
+    journal = snapshot["hosted_delivery_journal"]
+    assert len(journal) == 1
+    assert journal[0]["acceptance_disposition"] == "no_events"
+    assert journal[0]["source_fingerprint"] == source_fingerprint(item.source_id)
+    assert journal[0]["ack_status"] == "pending"
+    assert journal[0]["attempt_count"] == 0
+    assert journal[0]["last_attempt_at"] is None
+
+
+def test_attachment_manifest_detects_modified_digest_and_filename():
+    original = _descriptor(filename="one.png")
+    item = _with_attachments([original])
+    item.validate()
+    for changed in (
+        {**original, "filename": "two.png"},
+        {**original, "sha256": "b" * 64},
+        {**original, "media_type": "image/jpeg"},
+    ):
+        with pytest.raises(ValueError):
+            replace(item, attachment_descriptors=(changed,)).validate()
