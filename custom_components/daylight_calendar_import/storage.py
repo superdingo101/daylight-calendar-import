@@ -1627,6 +1627,10 @@ class PendingImportStore:
                 source_fp,
                 exclude_claim_id=activity_id,
             ):
+                # A concurrent source claim is not an accepted outcome. Never
+                # journal it as a durable duplicate while its worker might fail.
+                if hosted_evidence is not None and not self.is_source_durable(source_id):
+                    raise ValueError("hosted source is already being processed")
                 activity = self._finish_submission(activity_id, "duplicate")
                 if activity_id is not None or hosted_evidence is not None:
                     await self._async_save(

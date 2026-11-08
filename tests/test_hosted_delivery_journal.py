@@ -125,3 +125,17 @@ async def test_ambiguous_commit_requires_reload_and_preserves_outcome(monkeypatc
     await store.async_load()
     assert store._hosted_delivery_journal[0].evidence == item
     assert len(store.list()) == 1
+
+
+async def test_active_source_claim_is_not_an_ack_eligible_duplicate(monkeypatch):
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence()
+    store._source_claims["other-worker"] = source_fingerprint(item.source_id)
+    with pytest.raises(ValueError, match="already being processed"):
+        await store.async_add(source_text="source", events=[draft()], source_id=item.source_id,
+                              hosted_evidence=item)
+    assert not store._hosted_delivery_journal
+    assert not backend.saved
