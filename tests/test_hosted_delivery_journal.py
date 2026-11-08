@@ -417,3 +417,43 @@ def test_attachment_manifest_detects_modified_digest_and_filename():
     ):
         with pytest.raises(ValueError):
             replace(item, attachment_descriptors=(changed,)).validate()
+
+
+async def test_default_import_metadata_is_unchanged_with_hosted_journal(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence()
+    result = await store.async_add(source_text="source", events=[draft()],
+                                   source_id=item.source_id, hosted_evidence=item)
+    assert result.pending is not None
+    assert result.pending.source_kind == "manual_text"
+    assert result.pending.events[0].routing_unresolved is False
+    assert result.duplicate_events == 0
+    assert store._hosted_delivery_journal[0].acceptance_disposition == "pending"
+
+
+async def test_hosted_source_claim_mismatch_has_distinct_error(monkeypatch):
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence()
+    store._source_claims["claim"] = source_fingerprint("different")
+    with pytest.raises(ValueError, match="^source_id does not match claimed source$"):
+        await store.async_add(source_text="source", events=[draft()],
+                              source_id=item.source_id, hosted_evidence=item,
+                              activity_id="claim")
+    assert not backend.saved
+
+
+async def test_hosted_preexisting_fingerprint_error_is_exact(monkeypatch):
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence()
+    store._seen_source_fingerprints = (source_fingerprint(item.source_id),)
+    with pytest.raises(ValueError, match="^hosted source has no proven successful outcome$"):
+        await store.async_add(source_text="source", events=[draft()],
+                              source_id=item.source_id, hosted_evidence=item)
+    assert not backend.saved
