@@ -134,3 +134,71 @@ def test_selected_diagnostic_export_never_includes_unselected_mutants(fixture, m
         selected_mutants={names[0]},
     ) == 0
     assert Path("mutation-survivor-names.txt").read_text().strip() == names[0]
+
+
+def test_exact_sha_legacy_comparison_checks_every_scored_mutant(fixture):
+    names, _ = fixture
+    catalog = split.catalog()
+    env = ms.environment()
+    def result(statuses):
+        counts = {field: 0 for field in ms.FIELDS}
+        for status in statuses.values():
+            counts[status] += 1
+        counts["total"] = len(statuses)
+        return {
+            "schema": ms.SCHEMA, "complete": True, "index": 1,
+            "modules": [split.MODULE], "target_sha": catalog["target_sha"],
+            "manifest_sha256": catalog["manifest_sha256"],
+            "mutants": {split.MODULE: statuses},
+            "stats": counts, "seconds": 35, "environment": env,
+        }
+    legacy = {name: "killed" for name in names}
+    divided = dict(legacy)
+    divided[names[0]] = "timeout"
+    ms.write_json(Path("mutation-shards/legacy-shard-1.json"), result(legacy))
+    ms.write_json(Path("mutation-shards/results/shard-1.json"), result(divided))
+    proof = split.compare_legacy()
+    assert proof["equivalent"] is True
+    assert proof["mutant_count"] == len(names)
+    assert proof["scored_outcomes_identical"] is True
+    assert len(proof["raw_status_differences"]) == 1
+    divided[names[0]] = "survived"
+    ms.write_json(Path("mutation-shards/results/shard-1.json"), result(divided))
+    Path("mutation-shards/legacy-init-equivalence.json").unlink()
+    with pytest.raises(ValueError, match="scored outcomes differ"):
+        split.compare_legacy()
+    assert not Path("mutation-shards/legacy-init-equivalence.json").exists()
+
+
+def test_legacy_comparison_rejects_environment_and_population_changes(fixture):
+    names, _ = fixture
+    catalog = split.catalog()
+    statuses = {name: "killed" for name in names}
+    stats = {key: 0 for key in ms.FIELDS}
+    stats["total"] = len(names)
+    stats["killed"] = len(names)
+    base = {
+        "schema": ms.SCHEMA, "complete": True, "index": 1,
+        "modules": [split.MODULE], "target_sha": catalog["target_sha"],
+        "manifest_sha256": catalog["manifest_sha256"],
+        "mutants": {split.MODULE: statuses},
+        "stats": stats, "seconds": 35, "environment": ms.environment(),
+    }
+    old = Path("mutation-shards/legacy-shard-1.json")
+    new = Path("mutation-shards/results/shard-1.json")
+    ms.write_json(old, base)
+    ms.write_json(new, base)
+    assert split.compare_legacy()["equivalent"]
+    damaged = json.loads(json.dumps(base))
+    damaged["environment"]["details"]["python"] = "0.0.0"
+    damaged["environment"]["sha256"] = ms.sha256(ms.canonical(damaged["environment"]["details"]))
+    ms.write_json(new, damaged)
+    with pytest.raises(ValueError, match="different environments"):
+        split.compare_legacy()
+    damaged = json.loads(json.dumps(base))
+    damaged["mutants"][split.MODULE].pop(names[0])
+    damaged["stats"]["total"] -= 1
+    damaged["stats"]["killed"] -= 1
+    ms.write_json(new, damaged)
+    with pytest.raises(ValueError, match="different mutant population"):
+        split.compare_legacy()
