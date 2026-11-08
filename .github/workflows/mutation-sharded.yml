@@ -80,14 +80,12 @@ jobs:
       image: ${{ needs.plan.outputs.execution_image }}
     env:
       MUTATION_EXECUTION_IMAGE: ${{ needs.plan.outputs.execution_image }}
-    # __init__.py is the sole source module in shard 1 and now exceeds one hour.
-    # Extend only its wall-clock budget; all other shards retain 60 minutes.
-    # The complete cold population and fail-closed aggregate are unchanged.
-    timeout-minutes: ${{ matrix.index == 1 && 120 || 60 }}
+    # The init module is split into five exact-mutant jobs below.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        index: [0, 1, 2, 3, 4, 5, 6, 7]
+        index: [0, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -152,9 +150,155 @@ jobs:
           retention-days: 14
           overwrite: true
 
+
+  split_catalog:
+    needs: plan
+    name: Discover exact init mutant population
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.plan.outputs.execution_image }}
+    env:
+      MUTATION_EXECUTION_IMAGE: ${{ needs.plan.outputs.execution_image }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.target_sha }}
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutation-shard-manifest
+          path: mutation-shards
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.0"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements_test.txt
+      - name: Generate fresh init mutant identities with a single-mutant probe
+        run: |
+          set -euo pipefail
+          trap 'python scripts/pr_mutation.py restore' EXIT
+          rm -rf mutants
+          python -m scripts.mutation_shards prepare --index 1
+          mutmut run custom_components.daylight_calendar_import.x_async_setup_entry__mutmut_1
+          python scripts/pr_mutation.py restore
+          python -m scripts.mutation_split catalog
+          trap - EXIT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mutation-split-catalog
+          path: mutation-shards/split-catalog.json
+          if-no-files-found: error
+
+  split_shards:
+    needs: [plan, split_catalog]
+    name: Clean init mutant part ${{ matrix.part }}
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.plan.outputs.execution_image }}
+    env:
+      MUTATION_EXECUTION_IMAGE: ${{ needs.plan.outputs.execution_image }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.target_sha }}
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutation-shard-manifest
+          path: mutation-shards
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutation-split-catalog
+          path: mutation-shards
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.0"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements_test.txt
+      - name: Execute clean exact-mutant partition
+        env:
+          SPLIT_PART: ${{ matrix.part }}
+        run: |
+          set -euo pipefail
+          trap 'python scripts/pr_mutation.py restore' EXIT
+          rm -rf mutants
+          python -m scripts.mutation_shards prepare --index 1
+          started=$SECONDS
+          python -m scripts.mutation_split run --part "$SPLIT_PART"
+          python scripts/pr_mutation.py restore
+          python -m scripts.mutation_split record --part "$SPLIT_PART" --seconds "$((SECONDS-started))"
+          trap - EXIT
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-split-result-${{ matrix.part }}
+          path: mutation-shards/split-results/
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-split-diagnostics-${{ matrix.part }}
+          path: |
+            mutation-survivors.txt
+            mutation-survivor-names.txt
+            mutation-survivor-report.txt
+          if-no-files-found: warn
+
+  split_combine:
+    needs: [plan, split_shards]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    name: Verify and combine init partitions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require all exact-mutant workers
+        env:
+          SPLIT_RESULT: ${{ needs.split_shards.result }}
+        run: test "$SPLIT_RESULT" = success
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.target_sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutation-shard-manifest
+          path: mutation-shards
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutation-split-catalog
+          path: mutation-shards
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutation-split-result-*
+          path: mutation-shards/split-results
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutation-split-diagnostics-*
+          path: split-diagnostics
+      - name: Fail closed on full split population and scored identities
+        run: |
+          python3 -m scripts.mutation_split combine
+          python3 -m scripts.mutation_split join-diagnostics
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mutation-shard-result-1
+          path: mutation-shards/results/shard-1.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mutation-shard-diagnostics-1
+          path: shard-diagnostics/mutation-shard-diagnostics-1/
+          if-no-files-found: error
+
   aggregate:
     if: ${{ always() && needs.plan.result == 'success' }}
-    needs: [plan, shards]
+    needs: [plan, shards, split_combine]
     name: Validate complete mutation score
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -165,7 +309,12 @@ jobs:
       - name: Require all clean shards to succeed
         env:
           SHARD_RESULT: ${{ needs.shards.result }}
+          SPLIT_RESULT: ${{ needs.split_combine.result }}
         run: |
+          if [[ "$SPLIT_RESULT" != success ]]; then
+            echo "::error::Init mutation split failed: $SPLIT_RESULT"
+            exit 1
+          fi
           if [[ "$SHARD_RESULT" != success ]]; then
             echo "::error::A clean shard failed, timed out or was cancelled: $SHARD_RESULT"
             exit 1
