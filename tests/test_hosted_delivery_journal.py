@@ -103,10 +103,12 @@ async def test_preexisting_source_can_record_duplicate_obligation(monkeypatch):
     store = make_store(monkeypatch, backend)
     item = evidence()
     await store.async_add(source_text="source", events=[draft()], source_id=item.source_id)
-    result = await store.async_add(source_text="source", events=[draft()], source_id=item.source_id,
-                                   hosted_evidence=item)
-    assert result.duplicate_source
-    assert backend.saved[-1]["hosted_delivery_journal"][0]["acceptance_disposition"] == "duplicate"
+    before = backend.saved[-1]
+    with pytest.raises(ValueError, match="no proven successful outcome"):
+        await store.async_add(source_text="source", events=[draft()], source_id=item.source_id,
+                              hosted_evidence=item)
+    assert backend.saved[-1] is before
+    assert not store._hosted_delivery_journal
 
 
 async def test_ambiguous_commit_requires_reload_and_preserves_outcome(monkeypatch):

@@ -1644,11 +1644,10 @@ class PendingImportStore:
                 source_fp,
                 exclude_claim_id=activity_id,
             ):
-                # A concurrent source claim is not an accepted outcome. Never
-                # journal it as a durable duplicate while its worker might fail.
-                if hosted_evidence is not None and not any(
-                    item.source_fingerprint == source_fp for item in self._items.values()
-                ):
+                # Legacy source fingerprints do not prove immutable delivery
+                # evidence or distinguish terminal failure from success. A
+                # hosted re-delivery must use the existing journal instead.
+                if hosted_evidence is not None:
                     raise ValueError("hosted source has no proven successful outcome")
                 activity = self._finish_submission(activity_id, "duplicate")
                 if activity_id is not None or hosted_evidence is not None:
