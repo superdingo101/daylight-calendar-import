@@ -14,7 +14,8 @@ NAMES_PATH = Path("mutation-survivor-names.txt")
 REPORT_PATH = Path("mutation-survivor-report.txt")
 
 
-def export_survivors(*, paths, metadata_factory, diff_for_mutant, status_by_exit_code,\n                     selected_mutants: set[str] | None = None) -> int:
+def export_survivors(*, paths, metadata_factory, diff_for_mutant, status_by_exit_code,
+                     selected_mutants: set[str] | None = None) -> int:
     """Write all diagnostics using explicitly supplied mutmut data sources.
 
     This core remains importable in the older Home Assistant test environment,
