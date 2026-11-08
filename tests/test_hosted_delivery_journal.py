@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 
 import pytest
 
@@ -15,7 +16,7 @@ from tests.test_storage import FakeStoreBackend, draft, make_store
 
 def evidence(delivery_id="delivery"):
     return HostedDeliveryEvidence("entry", delivery_id, "secret-token",
-        (datetime.now(UTC) + timedelta(days=1)).isoformat(), "a" * 64, "b" * 64)
+        (datetime.now(UTC) + timedelta(days=1)).isoformat(), "a" * 64, sha256(b'{"attachments":[]}').hexdigest())
 
 
 @pytest.mark.parametrize("events,expected", [([draft()], "pending"), ([], "no_events")])
@@ -134,8 +135,47 @@ async def test_active_source_claim_is_not_an_ack_eligible_duplicate(monkeypatch)
     store = make_store(monkeypatch, backend)
     item = evidence()
     store._source_claims["other-worker"] = source_fingerprint(item.source_id)
-    with pytest.raises(ValueError, match="already being processed"):
+    with pytest.raises(ValueError, match="no proven successful outcome"):
         await store.async_add(source_text="source", events=[draft()], source_id=item.source_id,
                               hosted_evidence=item)
     assert not store._hosted_delivery_journal
     assert not backend.saved
+
+
+async def test_terminal_failure_history_cannot_authorize_ack(monkeypatch):
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence()
+    store._seen_source_fingerprints = (source_fingerprint(item.source_id),)
+    with pytest.raises(ValueError, match="no proven successful outcome"):
+        await store.async_add(source_text="source", events=[draft()], source_id=item.source_id,
+                              hosted_evidence=item)
+    assert not store._hosted_delivery_journal and not backend.saved
+
+
+def test_attachment_manifest_persists_and_rejects_invalid_evidence():
+    import json
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    descriptor = {"id": "image-1", "filename": "é.png", "media_type": "image/png",
+                  "size_bytes": 7, "sha256": "c" * 64}
+    checked = {"id": "image-1", "size_bytes": 7, "sha256": "c" * 64}
+    digest = sha256(json.dumps({"attachments": [descriptor]}, ensure_ascii=False,
+                              sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    item = replace(evidence(), attachment_descriptors=(descriptor,),
+                   verified_attachments=(checked,), attachment_manifest_sha256=digest)
+    item.validate()
+    record = HostedDeliveryJournalEntry(item, source_fingerprint(item.source_id), "pending")
+    assert HostedDeliveryJournalEntry.from_dict(record.as_dict()) == record
+    for invalid in (replace(item, attachment_descriptors=None),
+                    replace(item, verified_attachments=()),
+                    replace(item, verified_attachments=({"other": 1},)),
+                    replace(item, attachment_descriptors=({**descriptor, "filename": "\ud800"},)),
+                    replace(item, verified_attachments=({**checked, "size_bytes": 8},)),
+                    replace(item, attachment_manifest_sha256="0" * 64),
+                    replace(item, attachment_descriptors=({**descriptor, "media_type": "text/plain"},)),
+                    replace(item, attachment_descriptors=(descriptor,) * 5)):
+        with pytest.raises(ValueError):
+            invalid.validate()

@@ -161,3 +161,33 @@ async def test_actual_hosted_acceptance_remains_durable_and_blocks_local_only_re
     assert restarted._hosted_delivery_journal[0].evidence == item
     with pytest.raises(module.NamespaceReconciliationError):
         await module.LocalOnlyNamespaceReconciler(restarted).async_receipt(None)
+
+
+async def test_hosted_checkpoint_propagates_real_store_writer_error(pending, monkeypatch):
+    from tests.test_hosted_delivery_journal import evidence
+
+    async def fail_write(_data):
+        raise OSError("disk failure")
+
+    monkeypatch.setattr(pending._store, "_async_write_data", fail_write)
+    item = evidence()
+    with pytest.raises(OSError):
+        await pending.async_add(source_text="Private source", events=[draft()],
+                                source_id=item.source_id, hosted_evidence=item)
+    assert pending._storage_blocked
+    assert not pending._hosted_delivery_journal and not pending.list()
+
+
+@pytest.mark.parametrize("field,value", [("_read_only", True), ("_data", {"queued": True})])
+async def test_hosted_checkpoint_denies_read_only_or_queued_writer(pending, field, value):
+    from custom_components.daylight_calendar_import.storage import PendingImportStorageError
+    from tests.test_hosted_delivery_journal import evidence
+
+    setattr(pending._store, field, value)
+    item = evidence()
+    with pytest.raises(PendingImportStorageError):
+        await pending.async_add(source_text="Private source", events=[draft()],
+                                source_id=item.source_id, hosted_evidence=item)
+    assert not pending._hosted_delivery_journal
+    if field == "_data":
+        pending._store._data = None

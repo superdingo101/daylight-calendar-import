@@ -191,6 +191,21 @@ def _validate_pending_envelope(envelope: Any) -> dict[str, Any]:
 class _PendingStore(Store[dict[str, Any]]):
     """Migrate existing Home Assistant Store data before it is loaded."""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs["atomic_writes"] = True
+        super().__init__(*args, **kwargs)
+
+    async def async_save_immediate(self, data: dict[str, Any]) -> None:
+        """Make a private atomic checkpoint and propagate write failures."""
+        async with self._write_lock:
+            if self._read_only or self._data is not None:
+                raise PendingImportStorageError(_STORAGE_ERROR)
+            self._manager.async_invalidate(self.key)
+            await self._async_write_data({
+                "version": STORAGE_VERSION, "minor_version": 1,
+                "key": self.key, "data": data,
+            })
+
     async def _async_load_data(self) -> dict[str, Any] | None:
         """Inspect original data under HA's concurrent-load guard."""
         temporary = self._data is None
@@ -1520,6 +1535,8 @@ class PendingImportStore:
         hosted_evidence: HostedDeliveryEvidence | None = None,
     ) -> PendingImportAddResult:
         """Persist events, letting the storage transaction finish before cancellation."""
+        # Freeze mutable evidence before yielding to another task.
+        hosted_evidence = deepcopy(hosted_evidence)
         cancelled_before_acceptance = asyncio.Event()
 
         def guarded_acceptance() -> None:
@@ -1629,8 +1646,10 @@ class PendingImportStore:
             ):
                 # A concurrent source claim is not an accepted outcome. Never
                 # journal it as a durable duplicate while its worker might fail.
-                if hosted_evidence is not None and not self.is_source_durable(source_id):
-                    raise ValueError("hosted source is already being processed")
+                if hosted_evidence is not None and not any(
+                    item.source_fingerprint == source_fp for item in self._items.values()
+                ):
+                    raise ValueError("hosted source has no proven successful outcome")
                 activity = self._finish_submission(activity_id, "duplicate")
                 if activity_id is not None or hosted_evidence is not None:
                     await self._async_save(
@@ -2096,7 +2115,10 @@ class PendingImportStore:
         if hosted:
             data[_STORAGE_HOSTED_JOURNAL] = [entry.as_dict() for entry in hosted]
         try:
-            await self._store.async_save(data)
+            if hosted_delivery_journal is not None:
+                await self._store.async_save_immediate(data)
+            else:
+                await self._store.async_save(data)
         except BaseException:
             # A failed save can have committed on disk before reporting failure.
             # Do not overwrite uncertain acceptance; require a fresh reload first.

@@ -53,6 +53,9 @@ class FakeStoreBackend:
             raise self.save_error
         self.saved.append(data)
 
+    async def async_save_immediate(self, data):
+        await self.async_save(data)
+
     async def async_remove(self):
         self.removed = True
 
