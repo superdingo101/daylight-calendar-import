@@ -191,3 +191,32 @@ async def test_hosted_checkpoint_denies_read_only_or_queued_writer(pending, fiel
     assert not pending._hosted_delivery_journal
     if field == "_data":
         pending._store._data = None
+
+
+async def test_hosted_immediate_checkpoint_has_exact_private_storage_envelope(pending):
+    """The on-disk contract must be atomic and recognizable on restart."""
+    from custom_components.daylight_calendar_import.storage import STORAGE_KEY, STORAGE_VERSION
+    from tests.test_hosted_delivery_journal import evidence
+
+    item = evidence()
+    await pending.async_add(source_text="Private source", events=[draft()],
+                            source_id=item.source_id, hosted_evidence=item)
+    envelope = json.loads(Path(pending._store.path).read_text())
+    assert set(envelope) == {"version", "minor_version", "key", "data"}
+    assert envelope["version"] == STORAGE_VERSION
+    assert envelope["minor_version"] == 1
+    assert envelope["key"] == STORAGE_KEY
+    assert len(envelope["data"]["hosted_delivery_journal"]) == 1
+
+
+@pytest.mark.parametrize("field,value", [("_read_only", True), ("_data", {"queued": True})])
+async def test_hosted_immediate_checkpoint_error_has_repair_instructions(pending, field, value):
+    from custom_components.daylight_calendar_import.storage import PendingImportStorageError, _STORAGE_ERROR
+    from tests.test_hosted_delivery_journal import evidence
+
+    setattr(pending._store, field, value)
+    item = evidence()
+    with pytest.raises(PendingImportStorageError) as exc:
+        await pending.async_add(source_text="Private source", events=[draft()],
+                                source_id=item.source_id, hosted_evidence=item)
+    assert str(exc.value) == _STORAGE_ERROR
