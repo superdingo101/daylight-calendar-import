@@ -38,7 +38,7 @@ def export_survivors(*, paths, metadata_factory, diff_for_mutant, status_by_exit
             for mutant, exit_code in metadata.exit_code_by_key.items():
                 if selected_mutants is not None and mutant not in selected_mutants:
                     continue
-                if type(exit_code) is not int:
+                if selected_mutants is not None and type(exit_code) is not int:
                     raise ValueError(f"Missing executed mutant verdict for {mutant}")
                 found_mutants = True
                 status = status_by_exit_code[exit_code]
