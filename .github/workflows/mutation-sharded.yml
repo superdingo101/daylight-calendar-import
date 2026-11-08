@@ -11,6 +11,10 @@ on:
         required: false
         default: false
         type: boolean
+      verify_legacy_init:
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       target_sha:
@@ -19,6 +23,11 @@ on:
         type: string
       compare_unsharded:
         description: "Also run a cold unsharded engine and enforce exact-SHA/environment equivalence"
+        required: false
+        default: false
+        type: boolean
+      verify_legacy_init:
+        description: "Run a cold original unsplit init shard alongside the split and compare exact mutant verdicts"
         required: false
         default: false
         type: boolean
@@ -354,6 +363,90 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
           overwrite: true
+
+
+  legacy_init:
+    needs: plan
+    if: ${{ inputs.verify_legacy_init == true }}
+    name: Legacy unsplit init shard (equivalence proof)
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.plan.outputs.execution_image }}
+    env:
+      MUTATION_EXECUTION_IMAGE: ${{ needs.plan.outputs.execution_image }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.target_sha }}
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutation-shard-manifest
+          path: mutation-shards
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.0"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements_test.txt
+      - name: Reproduce original cold unpartitioned shard 1
+        run: |
+          set -euo pipefail
+          trap 'python scripts/pr_mutation.py restore' EXIT
+          rm -rf mutants
+          python -m scripts.mutation_shards prepare --index 1
+          started=$SECONDS
+          mutmut run
+          mutmut export-cicd-stats
+          python scripts/pr_mutation.py restore
+          python -m scripts.mutation_shards record --index 1 \
+            --out mutation-shards/legacy-shard-1.json --seconds "$((SECONDS-started))"
+          trap - EXIT
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-legacy-init-result
+          path: mutation-shards/legacy-shard-1.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  legacy_init_equivalence:
+    needs: [plan, aggregate, legacy_init]
+    if: ${{ always() && inputs.verify_legacy_init == true }}
+    name: Prove old and new init scored mutants are identical
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both engines to finish
+        env:
+          AGGREGATE_RESULT: ${{ needs.aggregate.result }}
+          LEGACY_RESULT: ${{ needs.legacy_init.result }}
+        run: |
+          test "$AGGREGATE_RESULT" = success
+          test "$LEGACY_RESULT" = success
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.target_sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutation-sharded-aggregate
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutation-legacy-init-result
+          path: mutation-shards
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutation-split-catalog
+          path: mutation-shards
+      - name: Compare exact population and per-mutant outcomes, fail closed
+        run: python3 -m scripts.mutation_split compare-legacy
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-legacy-init-equivalence
+          path: mutation-shards/legacy-init-equivalence.json
+          if-no-files-found: warn
+          retention-days: 14
 
   unsharded:
     needs: plan
