@@ -181,3 +181,168 @@ def test_attachment_manifest_persists_and_rejects_invalid_evidence():
                     replace(item, attachment_descriptors=(descriptor,) * 5)):
         with pytest.raises(ValueError):
             invalid.validate()
+
+
+# Mutation regression coverage: verify the exact trust-boundary contract, not just
+# whether a malformed payload happened to raise some exception.
+@pytest.mark.parametrize("field,value,message", [
+    ("local_config_entry_id", "", "invalid hosted delivery identity"),
+    ("local_config_entry_id", "invalid:id", "invalid hosted delivery identity"),
+    ("delivery_id", "bad/id", "invalid hosted delivery identity"),
+    ("delivery_id", "x" * 129, "invalid hosted delivery identity"),
+    ("lease_token", "", "invalid hosted lease token"),
+    ("lease_token", "x" * 1025, "invalid hosted lease token"),
+    ("lease_token", None, "invalid hosted lease token"),
+    ("source_evidence_sha256", "A" * 64, "invalid hosted evidence digest"),
+    ("source_evidence_sha256", "x" * 64, "invalid hosted evidence digest"),
+    ("attachment_manifest_sha256", "0" * 63, "invalid hosted evidence digest"),
+    ("attachment_descriptors", None, "invalid hosted attachment evidence"),
+    ("verified_attachments", None, "invalid hosted attachment evidence"),
+    ("attachment_descriptors", ({},), "invalid hosted attachment evidence"),
+    ("source_expires_at", "2026-01-01T00:00:00", "invalid hosted source expiry"),
+])
+def test_evidence_rejects_invalid_values_with_specific_error(field, value, message):
+    with pytest.raises(ValueError, match="^" + message + "$"):
+        replace(evidence(), **{field: value}).validate()
+
+
+def test_lease_token_and_identity_inclusive_limits():
+    base = evidence()
+    for token in ("a", "x" * 1024):
+        replace(base, lease_token=token).validate()
+    for ident in ("a", "A_0-" * 32):
+        replace(base, local_config_entry_id=ident, delivery_id=ident).validate()
+    assert replace(base, local_config_entry_id="x", delivery_id="y").source_id == "hosted:x:y"
+
+
+def _with_attachments(descriptors, verified=None):
+    import json
+
+    if verified is None:
+        verified = tuple({"id": d["id"], "size_bytes": d["size_bytes"], "sha256": d["sha256"]}
+                         for d in descriptors)
+    manifest = json.dumps({"attachments": list(descriptors)}, ensure_ascii=False,
+                          sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return replace(evidence(), attachment_descriptors=tuple(descriptors),
+                   verified_attachments=tuple(verified),
+                   attachment_manifest_sha256=sha256(manifest).hexdigest())
+
+
+def _descriptor(identifier="a", media_type="image/png", size=1, filename="a"):
+    return {"id": identifier, "filename": filename, "media_type": media_type,
+            "size_bytes": size, "sha256": "a" * 64}
+
+
+@pytest.mark.parametrize("media_type", [
+    "image/jpeg", "image/png", "image/webp", "application/pdf",
+])
+def test_all_supported_attachment_media_types_round_trip(media_type):
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    item = _with_attachments([_descriptor(media_type=media_type)])
+    item.validate()
+    entry = HostedDeliveryJournalEntry(item, source_fingerprint(item.source_id), "pending")
+    assert HostedDeliveryJournalEntry.from_dict(entry.as_dict()) == entry
+
+
+def test_four_attachments_and_total_size_limit_are_inclusive():
+    entries = [_descriptor(str(i), size=1) for i in range(4)]
+    _with_attachments(entries).validate()
+    entries[0]["size_bytes"] = 10485757
+    _with_attachments(entries).validate()
+    entries[0]["size_bytes"] = 10485758
+    with pytest.raises(ValueError, match="invalid hosted attachment manifest"):
+        _with_attachments(entries).validate()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("id", "bad/id"), ("id", ""), ("id", ".hidden"), ("id", "x" * 65),
+    ("media_type", "text/plain"), ("media_type", "IMAGE/PNG"),
+    ("size_bytes", 0), ("size_bytes", 10485761), ("size_bytes", True),
+    ("sha256", "A" * 64), ("sha256", "a" * 63),
+    ("filename", ""), ("filename", "a" * 513), ("filename", 42),
+])
+def test_attachment_field_rejection(field, value):
+    entry = _descriptor()
+    entry[field] = value
+    item = _with_attachments([entry])
+    with pytest.raises(ValueError, match="invalid hosted attachment evidence"):
+        item.validate()
+
+
+def test_attachment_field_boundaries_and_optional_filename():
+    for size in (1, 10485760):
+        _with_attachments([_descriptor(size=size)]).validate()
+    for filename in (None, "x", "x" * 512):
+        _with_attachments([_descriptor(filename=filename)]).validate()
+    descriptor = _descriptor()
+    del descriptor["filename"]
+    _with_attachments([descriptor]).validate()
+
+
+def test_attachment_duplicate_ids_mismatched_checks_and_extra_fields():
+    first, second = _descriptor("a"), _descriptor("a")
+    with pytest.raises(ValueError, match="invalid hosted attachment evidence"):
+        _with_attachments([first, second]).validate()
+
+    good = _descriptor()
+    verified = {"id": "a", "size_bytes": 1, "sha256": "a" * 64}
+    for bad in (
+        {**verified, "size_bytes": 2},
+        {**verified, "sha256": "b" * 64},
+        {**verified, "id": "b"},
+        {**verified, "extra": "x"},
+        {**verified, "size_bytes": True},
+        {"id": "a", "sha256": "a" * 64},
+    ):
+        with pytest.raises(ValueError, match="invalid hosted attachment evidence"):
+            _with_attachments([good], [bad]).validate()
+    with pytest.raises(ValueError, match="invalid hosted attachment evidence"):
+        _with_attachments([{**good, "extra": "x"}]).validate()
+    with pytest.raises(ValueError, match="invalid hosted attachment evidence"):
+        _with_attachments([good], []).validate()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("acceptance_disposition", "failed"),
+    ("ack_status", "unknown"),
+    ("attempt_count", -1),
+    ("attempt_count", True),
+    ("attempt_count", "1"),
+    ("last_attempt_at", 7),
+    ("source_fingerprint", "invalid"),
+])
+def test_journal_field_validation_exact_error(field, value):
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    item = evidence()
+    record = HostedDeliveryJournalEntry(item, source_fingerprint(item.source_id), "pending").as_dict()
+    with pytest.raises(ValueError, match="^invalid hosted " +
+                       ("source fingerprint" if field == "source_fingerprint"
+                        else "delivery journal") + "$"):
+        HostedDeliveryJournalEntry.from_dict({**record, field: value})
+
+
+@pytest.mark.parametrize("disposition", ["pending", "duplicate", "no_events"])
+@pytest.mark.parametrize("status", ["pending", "confirmed", "expired"])
+def test_journal_accepts_all_persisted_states(disposition, status):
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    item = evidence()
+    entry = HostedDeliveryJournalEntry(item, source_fingerprint(item.source_id),
+                                       disposition, status, 1, "2026-11-08T12:00:00Z")
+    assert HostedDeliveryJournalEntry.from_dict(entry.as_dict()) == entry
+
+
+def test_journal_rejects_missing_and_extra_fields_without_discarding_evidence():
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    item = evidence()
+    data = HostedDeliveryJournalEntry(item, source_fingerprint(item.source_id), "pending").as_dict()
+    for field in data:
+        damaged = dict(data)
+        damaged.pop(field)
+        with pytest.raises(ValueError, match="invalid hosted delivery journal"):
+            HostedDeliveryJournalEntry.from_dict(damaged)
+    with pytest.raises(ValueError, match="invalid hosted delivery journal"):
+        HostedDeliveryJournalEntry.from_dict({**data, "unknown": "value"})
