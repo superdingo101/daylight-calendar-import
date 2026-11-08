@@ -142,3 +142,22 @@ async def test_pause_during_disk_validation_cannot_return_a_receipt(pending, mon
     monkeypatch.setattr(pending._store.hass, "async_add_executor_job", pause_after_read)
     with pytest.raises(module.NamespaceReconciliationError):
         await module.LocalOnlyNamespaceReconciler(pending).async_receipt(None)
+
+
+async def test_actual_hosted_acceptance_remains_durable_and_blocks_local_only_reconnect(pending, hass):
+    from tests.test_hosted_delivery_journal import evidence
+
+    item = evidence()
+    result = await pending.async_add(source_text="Private source", events=[draft()],
+                                     source_id=item.source_id, hosted_evidence=item)
+    path = Path(pending._store.path)
+    saved = json.loads(path.read_text())["data"]
+    assert len(saved["items"]) == len(saved["hosted_delivery_journal"]) == 1
+    restarted = PendingImportStore(hass)
+    await restarted.async_load()
+    restarted.accepting_services = True
+    assert restarted._hosted_delivery_journal[0].evidence == item
+    assert await restarted.async_remove(result.pending.id)
+    assert restarted._hosted_delivery_journal[0].evidence == item
+    with pytest.raises(module.NamespaceReconciliationError):
+        await module.LocalOnlyNamespaceReconciler(restarted).async_receipt(None)
