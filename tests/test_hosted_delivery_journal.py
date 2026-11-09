@@ -652,7 +652,7 @@ async def test_ack_replacement_only_rotates_lease_token(monkeypatch):
 
 
 @pytest.mark.parametrize("field,value", [
-    ("source_id", "different"),
+    ("local_config_entry_id", "different"),
     ("delivery_id", "different"),
     ("source_expires_at", "2099-01-01T00:00:00Z"),
     ("source_evidence_sha256", "b" * 64),
@@ -705,7 +705,7 @@ async def test_ack_reconcile_rejects_stale_or_missing_identity_without_write(mon
     stale = replace(entry, attempt_count=999)
     with pytest.raises(ValueError, match="stale"):
         await store.async_reconcile_hosted_ack(entry=stale, action="attempt")
-    missing = replace(entry, evidence=replace(entry.evidence, source_id="missing"))
+    missing = replace(entry, evidence=replace(entry.evidence, local_config_entry_id="missing"))
     with pytest.raises(ValueError, match="stale"):
         await store.async_reconcile_hosted_ack(entry=missing, action="attempt")
     assert backend.saved[-1] is snapshot
