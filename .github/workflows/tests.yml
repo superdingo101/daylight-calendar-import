@@ -126,7 +126,7 @@ jobs:
           "pytest>=8.0"
           "pytest-asyncio>=0.24"
           "pytest-cov>=6.0"
-          "pytest-homeassistant-custom-component>=0.13.0"
+          "pytest-homeassistant==2026.11.0"
           "hypothesis>=6.168.1,<7"
           "PyTurboJPEG==1.8.3"
           "aioimaplib==2.0.1"
@@ -135,6 +135,8 @@ jobs:
           "referencing>=0.35,<1"
       - name: Verify installed package dependencies
         run: python -m pip check
+      # Home Assistant's supported 2026.11 fixtures require disabling the
+      # separate respx plugin so Home Assistant can install its httpx alias.
       # The installer uses Git release tags and the unmodified repository tree.
-      - run: pytest tests/hacs_install_upgrade.py
-      - run: pytest --cov --cov-branch --cov-fail-under=100
+      - run: pytest -p no:respx tests/hacs_install_upgrade.py
+      - run: pytest -p no:respx --cov --cov-branch --cov-fail-under=100
