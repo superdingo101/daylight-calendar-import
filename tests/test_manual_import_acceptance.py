@@ -19,7 +19,10 @@ from homeassistant.components.ai_task.const import AITaskEntityFeature
 from homeassistant.components.file_upload import FileUploadData
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+try:
+    from pytest_homeassistant.common import MockConfigEntry
+except ModuleNotFoundError:
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daylight_calendar_import.const import (
     CONF_AI_TASK_ENTITY, CONF_CALENDAR_ENTITY, DOMAIN,
