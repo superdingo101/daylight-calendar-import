@@ -12,7 +12,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.auth.const import GROUP_ID_USER
-from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
+try:
+    from pytest_homeassistant.common import MockConfigEntry, MockUser
+except ModuleNotFoundError:
+    from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
 
 from custom_components.daylight_calendar_import.const import (
     CONF_AI_TASK_ENTITY, CONF_CALENDAR_ENTITIES, CONF_CALENDAR_ENTITY,

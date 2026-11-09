@@ -5,7 +5,10 @@ from unittest.mock import ANY, AsyncMock
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.components.frontend import async_panel_exists
 from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+try:
+    from pytest_homeassistant.common import MockConfigEntry
+except ModuleNotFoundError:
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daylight_calendar_import.const import (
     ATTR_SOURCE_ID,

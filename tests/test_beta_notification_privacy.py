@@ -85,7 +85,10 @@ async def test_queue_reload_keeps_counts_and_deduplicated_private_notifications(
 async def test_real_queue_automation_event_has_only_id_and_count(hass, monkeypatch):
     """The installed runtime's event bus receives no source or meeting content."""
     from unittest.mock import AsyncMock
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
+    try:
+        from pytest_homeassistant.common import MockConfigEntry
+    except ModuleNotFoundError:
+        from pytest_homeassistant_custom_component.common import MockConfigEntry
     from custom_components.daylight_calendar_import.const import CONF_AI_TASK_ENTITY, CONF_CALENDAR_ENTITY
 
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_classify_conflicts",
