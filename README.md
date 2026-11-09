@@ -49,15 +49,16 @@ You stay in control: emails do **not** automatically create calendar events just
 
 ## Install with HACS
 
-Daylight Calendar Import is currently added as a **HACS custom repository**, not through the HACS default catalog.
+Daylight Calendar Import is not yet in the default catalog. Add it as a **custom integration repository** in HACS, or in the Home Assistant Marketplace on Home Assistant 2026.11 and newer.
 
-1. In Home Assistant, open **HACS**.
-2. Select the **three-dot menu → Custom repositories**.
-3. Enter `https://github.com/superdingo101/daylight-calendar-import` and choose **Integration** as the type.
-4. Add the repository, find **Daylight Calendar Import** in HACS, and install it.
-5. **Restart Home Assistant.**
-6. Go to **Settings → Devices & services → Add integration** and select **Daylight Calendar Import**.
-7. Select your AI Task entity, a **default calendar**, and the **allowed calendars** to which Daylight may write. Make sure the default calendar is also in the allowed list.
+[![Open Daylight Calendar Import in Home Assistant](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration)
+
+1. **[Open Daylight Calendar Import in Home Assistant](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration)**. The link supports HACS and Home Assistant Marketplace.
+2. If it is not already installed from the catalog, add `https://github.com/superdingo101/daylight-calendar-import` as a **custom Integration repository** when prompted (or through the HACS/Marketplace custom-repositories menu).
+3. Find **Daylight Calendar Import** and install it.
+4. **Restart Home Assistant.**
+5. Go to **Settings → Devices & services → Add integration** and select **Daylight Calendar Import**.
+6. Select your AI Task entity, a **default calendar**, and the **allowed calendars** to which Daylight may write. Make sure the default calendar is also in the allowed list.
 
 Once configured, open **Daylight Imports** in your Home Assistant sidebar. Its **Review inbox**, **Recent activity**, and **Settings** screens are where you'll manage imports.
 
