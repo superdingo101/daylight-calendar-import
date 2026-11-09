@@ -751,3 +751,97 @@ async def test_ack_reconcile_rejects_attempt_and_lease_replacement_after_expiry(
         with pytest.raises(ValueError, match="expired"):
             await store.async_reconcile_hosted_ack(entry=entry, action=action, new_evidence=fresh)
         assert backend.saved[-1] is before
+
+
+async def test_ack_reconciliation_precise_rejection_reasons(monkeypatch):
+    """Callers must distinguish malformed, stale, expired, and inconsistent ACKs."""
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    previous = backend.saved[-1]
+    fresh = replace(entry.evidence, lease_token="rotated-secret")
+    cases = (
+        ("unsupported", None, "invalid hosted journal action"),
+        ("replace_lease", None, "missing hosted delivery evidence"),
+        ("attempt", entry.evidence, "unexpected hosted delivery evidence"),
+        ("confirm", entry.evidence, "unexpected hosted delivery evidence"),
+        ("expire", None, "hosted journal is not expired"),
+        ("replace_lease", replace(fresh, source_evidence_sha256="b" * 64),
+         "hosted delivery evidence changed"),
+    )
+    for action, evidence_value, expected in cases:
+        with pytest.raises(ValueError, match=f"^{expected}$"):
+            await store.async_reconcile_hosted_ack(
+                entry=entry, action=action, new_evidence=evidence_value,
+            )
+        assert backend.saved[-1] is previous
+        assert store.hosted_ack_journal() == (entry,)
+
+    with pytest.raises(ValueError, match="^stale hosted journal snapshot$"):
+        await store.async_reconcile_hosted_ack(
+            entry=replace(entry, attempt_count=42), action="attempt",
+        )
+    assert backend.saved[-1] is previous
+
+    confirmed = await store.async_reconcile_hosted_ack(entry=entry, action="confirm")
+    with pytest.raises(ValueError, match="^hosted journal is terminal$"):
+        await store.async_reconcile_hosted_ack(entry=confirmed, action="attempt")
+
+
+async def test_ack_storage_block_preserves_repair_message(monkeypatch):
+    """Ambiguous saves block both reads and further CAS writes with the repair advice."""
+    from custom_components.daylight_calendar_import.storage import _STORAGE_ERROR
+
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    backend.save_error = OSError("uncertain persistence")
+    with pytest.raises(OSError, match="uncertain persistence"):
+        await store.async_reconcile_hosted_ack(entry=entry, action="attempt")
+    with pytest.raises(PendingImportStorageError) as caught:
+        store.hosted_ack_journal()
+    assert str(caught.value) == _STORAGE_ERROR
+    with pytest.raises(PendingImportStorageError) as caught:
+        await store.async_reconcile_hosted_ack(entry=entry, action="attempt")
+    assert str(caught.value) == _STORAGE_ERROR
+
+
+async def test_ack_at_exact_expiry_cannot_attempt(monkeypatch):
+    """An ACK lease expires at its deadline, not one instant afterward."""
+    from custom_components.daylight_calendar_import import storage as storage_module
+
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    expiration = datetime.fromisoformat(entry.evidence.source_expires_at)
+    before = backend.saved[-1]
+
+    class AtExpiry(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return expiration if tz else expiration.replace(tzinfo=None)
+
+    monkeypatch.setattr(storage_module, "datetime", AtExpiry)
+    with pytest.raises(ValueError, match="^hosted journal has expired$"):
+        await store.async_reconcile_hosted_ack(entry=entry, action="attempt")
+    assert backend.saved[-1] is before
+
+
+async def test_ack_lease_rotation_normalizes_prior_and_fresh_collections(monkeypatch):
+    """Identical list-backed evidence must not fail immutable evidence checks."""
+    store, backend, entry = await _accepted_journal(
+        monkeypatch, item=_with_attachments([_descriptor()]),
+    )
+    list_evidence = replace(
+        entry.evidence,
+        attachment_descriptors=list(entry.evidence.attachment_descriptors),
+        verified_attachments=list(entry.evidence.verified_attachments),
+    )
+    store._hosted_delivery_journal = (replace(entry, evidence=list_evidence),)
+    fresh = replace(
+        entry.evidence, lease_token="new-lease",
+        attachment_descriptors=list(entry.evidence.attachment_descriptors),
+        verified_attachments=list(entry.evidence.verified_attachments),
+    )
+    updated = await store.async_reconcile_hosted_ack(
+        entry=store.hosted_ack_journal()[0],
+        action="replace_lease", new_evidence=fresh,
+    )
+    assert updated.evidence.lease_token == "new-lease"
+    assert updated.evidence.attachment_descriptors == tuple(fresh.attachment_descriptors)
+    assert updated.evidence.verified_attachments == tuple(fresh.verified_attachments)
+    assert backend.saved[-1]["hosted_delivery_journal"][0]["lease_token"] == "new-lease"
