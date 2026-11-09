@@ -93,7 +93,10 @@ async def test_corpus_route_and_hostile_fields_survive_review_boundary(
 ):
     """Source and provider instructions cannot authorize automatic calendar writes."""
     from unittest.mock import AsyncMock
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
+    try:
+        from pytest_homeassistant.common import MockConfigEntry
+    except ModuleNotFoundError:
+        from pytest_homeassistant_custom_component.common import MockConfigEntry
     from custom_components.daylight_calendar_import.const import (
         ATTR_SOURCE_ID, ATTR_TEXT, CONF_AI_TASK_ENTITY, CONF_CALENDAR_ALIASES,
         CONF_CALENDAR_ENTITIES, CONF_CALENDAR_ENTITY, DOMAIN, SERVICE_SUBMIT_TEXT,
