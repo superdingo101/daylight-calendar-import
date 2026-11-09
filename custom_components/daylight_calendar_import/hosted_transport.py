@@ -26,6 +26,7 @@ MAX_BODY_BYTES = 16 * 1024
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{16,128}")
 _VERIFIER = re.compile(r"[A-Za-z0-9_-]{43}")
 _TOKEN = re.compile(r"[A-Za-z0-9._~-]{43,256}")
+_LEASE = re.compile(r"[A-Za-z0-9_-]{32,256}")
 _CODE = re.compile(r"[a-z][a-z0-9_]{0,127}")
 _TIMESTAMP = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}"
@@ -291,6 +292,22 @@ class HostedLifecycleTransport:
             "POST", "/v1/installation/disconnect", "disconnected", token
         )
 
+    async def acknowledge_source(
+        self, *, token: str, delivery_id: str, lease_token: str
+    ) -> dict[str, Any]:
+        """Submit one ACK; callers must journal acceptance and own any retry."""
+        _match(_TOKEN, token)
+        _match(_IDENTIFIER, delivery_id)
+        _match(_LEASE, lease_token)
+        result = await self._request(
+            "POST", f"/v1/sources/{delivery_id}/ack", "source-ack", 200,
+            headers={"Authorization": f"Bearer {token}"},
+            body={"schema_version": 1, "lease_token": lease_token},
+        )
+        if result["delivery_id"] != delivery_id:
+            raise HostedTransportError("invalid_response", status=200)
+        return result
+
     async def _credential(
         self, method: str, path: str, response: str, token: str
     ) -> dict[str, Any]:
@@ -363,6 +380,8 @@ class HostedLifecycleTransport:
                 ),
                 account_url=url,
             )
+        elif response == "source-ack":
+            fields.update(delivery_id=identifier, status="acknowledged", acknowledged_at=_timestamp)
         else:
             raise ValueError
         return vol.Schema({vol.Required(k): v for k, v in fields.items()})(value)
