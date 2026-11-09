@@ -106,6 +106,9 @@ jobs:
   test-ha-2026-11:
     name: Test Home Assistant 2026.11.0
     runs-on: ubuntu-latest
+    # Propagate the plugin exclusion into nested pytest subprocesses as well.
+    env:
+      PYTEST_ADDOPTS: "-p no:respx"
     steps:
       - uses: actions/checkout@v5
         with:
