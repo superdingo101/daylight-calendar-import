@@ -54,7 +54,13 @@ async def test_historical_storage_disk_round_trip_preserves_decisions(hass, tmp_
     # real envelope migration, private-file serialization, and atomic writes.
     monkeypatch.setattr(_PendingStore, "_async_load", _PendingStore._async_load_data)
     async def write_disk(store, envelope):
-        await hass.async_add_executor_job(store._write_data, envelope)
+        if hasattr(store, "_write_data"):
+            # Older Home Assistant Store writes envelopes through this helper.
+            await hass.async_add_executor_job(store._write_data, envelope)
+        else:
+            # HA 2026.11 writes via its _FileStoreIO transport.
+            mode, payload = store._prepare_data(envelope)
+            await store._io.async_write(mode, payload)
     monkeypatch.setattr(_PendingStore, "_async_write_data", write_disk)
 
     store = PendingImportStore(hass)
