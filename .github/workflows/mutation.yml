@@ -133,6 +133,8 @@ jobs:
     uses: ./.github/workflows/mutation-sharded.yml
     with:
       target_sha: ${{ needs.plan.outputs.head }}
+      # Exact-SHA legacy comparison is a one-time acceptance proof for this CI PR.
+      verify_legacy_init: ${{ github.event.pull_request.number == 213 }}
   mutation:
     name: ${{ ((github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'mutation-comprehensive') && 'Mutation score' || 'Unrelated label (no mutation validation)' }}
     if: ${{ always() && ((github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'mutation-comprehensive') }}
