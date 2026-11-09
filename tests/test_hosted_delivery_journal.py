@@ -591,3 +591,163 @@ async def test_cancelled_ack_update_finishes_the_durable_write(monkeypatch):
     restarted = make_store(monkeypatch, FakeStoreBackend(load_result=backend.saved[-1]))
     await restarted.async_load()
     assert restarted.hosted_ack_journal()[0].attempt_count == 1
+
+
+# Mutation regressions for durable ACK journal state transitions.
+async def _accepted_journal(monkeypatch, *, item=None):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = evidence() if item is None else item
+    await store.async_add(source_text="source", events=[], source_id=item.source_id, hosted_evidence=item)
+    return store, backend, store.hosted_ack_journal()[0]
+
+
+async def test_ack_attempts_are_monotonic_and_persist_each_increment(monkeypatch):
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    initial_count = len(backend.saved)
+    last_attempt = entry.last_attempt_at
+    for count in (1, 2, 3):
+        entry = await store.async_reconcile_hosted_ack(entry=entry, action="attempt")
+        assert entry.ack_status == "pending"
+        assert entry.attempt_count == count
+        assert entry.last_attempt_at is not None
+        assert entry.last_attempt_at != last_attempt or count > 1
+        assert backend.saved[-1]["hosted_delivery_journal"][0]["attempt_count"] == count
+        last_attempt = entry.last_attempt_at
+    assert len(backend.saved) == initial_count + 3
+    restarted = make_store(monkeypatch, FakeStoreBackend(load_result=backend.saved[-1]))
+    await restarted.async_load()
+    assert restarted.hosted_ack_journal() == (entry,)
+
+
+async def test_ack_confirmation_only_changes_terminal_status(monkeypatch):
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    attempted = await store.async_reconcile_hosted_ack(entry=entry, action="attempt")
+    confirmed = await store.async_reconcile_hosted_ack(entry=attempted, action="confirm")
+    assert confirmed.ack_status == "confirmed"
+    assert confirmed.evidence == attempted.evidence
+    assert confirmed.attempt_count == attempted.attempt_count
+    assert confirmed.last_attempt_at == attempted.last_attempt_at
+    assert backend.saved[-1]["hosted_delivery_journal"][0]["ack_status"] == "confirmed"
+    for action in ("attempt", "confirm", "expire", "replace_lease"):
+        with pytest.raises(ValueError, match="terminal"):
+            await store.async_reconcile_hosted_ack(
+                entry=confirmed, action=action,
+                new_evidence=replace(confirmed.evidence, lease_token="replacement") if action == "replace_lease" else None,
+            )
+
+
+async def test_ack_replacement_only_rotates_lease_token(monkeypatch):
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    fresh = replace(entry.evidence, lease_token="rotated-token")
+    updated = await store.async_reconcile_hosted_ack(
+        entry=entry, action="replace_lease", new_evidence=fresh,
+    )
+    assert updated.evidence == fresh
+    assert updated.evidence.lease_token != entry.evidence.lease_token
+    assert updated.ack_status == entry.ack_status
+    assert updated.attempt_count == entry.attempt_count
+    assert updated.last_attempt_at == entry.last_attempt_at
+    assert backend.saved[-1]["hosted_delivery_journal"][0]["evidence"]["lease_token"] == "rotated-token"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("source_id", "different"),
+    ("delivery_id", "different"),
+    ("source_expires_at", "2099-01-01T00:00:00Z"),
+    ("source_evidence_sha256", "b" * 64),
+    ("attachment_manifest_sha256", "b" * 64),
+])
+async def test_ack_lease_replacement_rejects_changed_immutable_evidence(monkeypatch, field, value):
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    fresh = replace(entry.evidence, lease_token="new-secret", **{field: value})
+    snapshot = backend.saved[-1]
+    with pytest.raises(ValueError):
+        await store.async_reconcile_hosted_ack(entry=entry, action="replace_lease", new_evidence=fresh)
+    assert backend.saved[-1] is snapshot
+    assert store.hosted_ack_journal() == (entry,)
+
+
+async def test_ack_lease_replacement_rejects_corrupt_fresh_evidence(monkeypatch):
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    snapshot = backend.saved[-1]
+    with pytest.raises(ValueError):
+        await store.async_reconcile_hosted_ack(
+            entry=entry, action="replace_lease",
+            new_evidence=replace(entry.evidence, lease_token=""),
+        )
+    assert backend.saved[-1] is snapshot
+
+
+async def test_ack_reconcile_rejects_unexpected_new_evidence_without_write(monkeypatch):
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    snapshot = backend.saved[-1]
+    for action in ("attempt", "confirm", "expire"):
+        with pytest.raises(ValueError):
+            await store.async_reconcile_hosted_ack(
+                entry=entry, action=action, new_evidence=entry.evidence,
+            )
+        assert backend.saved[-1] is snapshot
+    assert store.hosted_ack_journal() == (entry,)
+
+
+async def test_ack_journal_returns_independent_snapshots(monkeypatch):
+    store, _, entry = await _accepted_journal(monkeypatch, item=_with_attachments([_descriptor()]))
+    first = store.hosted_ack_journal()
+    assert first is not store.hosted_ack_journal()
+    first[0].evidence.attachment_descriptors[0]["filename"] = "changed.png"
+    assert store.hosted_ack_journal() == (entry,)
+
+
+async def test_ack_reconcile_rejects_stale_or_missing_identity_without_write(monkeypatch):
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    snapshot = backend.saved[-1]
+    stale = replace(entry, attempt_count=999)
+    with pytest.raises(ValueError, match="stale"):
+        await store.async_reconcile_hosted_ack(entry=stale, action="attempt")
+    missing = replace(entry, evidence=replace(entry.evidence, source_id="missing"))
+    with pytest.raises(ValueError, match="stale"):
+        await store.async_reconcile_hosted_ack(entry=missing, action="attempt")
+    assert backend.saved[-1] is snapshot
+
+
+async def test_ack_expiration_persists_and_is_terminal(monkeypatch):
+    from custom_components.daylight_calendar_import import storage as storage_module
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    expiry = datetime.fromisoformat(entry.evidence.source_expires_at)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return expiry if tz else expiry.replace(tzinfo=None)
+    monkeypatch.setattr(storage_module, "datetime", Clock)
+    expired = await store.async_reconcile_hosted_ack(entry=entry, action="expire")
+    assert expired.ack_status == "expired"
+    assert expired.evidence == entry.evidence
+    assert expired.attempt_count == entry.attempt_count
+    assert expired.last_attempt_at == entry.last_attempt_at
+    assert backend.saved[-1]["hosted_delivery_journal"][0]["ack_status"] == "expired"
+    with pytest.raises(ValueError, match="terminal"):
+        await store.async_reconcile_hosted_ack(entry=expired, action="confirm")
+
+
+async def test_ack_expiration_rejects_early_or_unexpected_evidence(monkeypatch):
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    snapshot = backend.saved[-1]
+    with pytest.raises(ValueError, match="not expired"):
+        await store.async_reconcile_hosted_ack(entry=entry, action="expire")
+    assert backend.saved[-1] is snapshot
+
+
+async def test_ack_reconcile_rejects_attempt_and_lease_replacement_after_expiry(monkeypatch):
+    from custom_components.daylight_calendar_import import storage as storage_module
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    class Future(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + timedelta(days=2)
+    monkeypatch.setattr(storage_module, "datetime", Future)
+    before = backend.saved[-1]
+    for action, fresh in (("attempt", None), ("replace_lease", replace(entry.evidence, lease_token="new-secret"))):
+        with pytest.raises(ValueError, match="expired"):
+            await store.async_reconcile_hosted_ack(entry=entry, action=action, new_evidence=fresh)
+        assert backend.saved[-1] is before
