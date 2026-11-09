@@ -648,7 +648,7 @@ async def test_ack_replacement_only_rotates_lease_token(monkeypatch):
     assert updated.ack_status == entry.ack_status
     assert updated.attempt_count == entry.attempt_count
     assert updated.last_attempt_at == entry.last_attempt_at
-    assert backend.saved[-1]["hosted_delivery_journal"][0]["evidence"]["lease_token"] == "rotated-token"
+    assert backend.saved[-1]["hosted_delivery_journal"][0]["lease_token"] == "rotated-token"
 
 
 @pytest.mark.parametrize("field,value", [
