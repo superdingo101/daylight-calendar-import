@@ -482,6 +482,24 @@ def test_invalid_unicode_filename_reports_exact_evidence_error():
         replace(item, attachment_descriptors=(malformed,)).validate()
 
 
+@pytest.mark.parametrize("has_attachment", [False, True])
+async def test_lease_replacement_accepts_list_evidence_after_restart(monkeypatch, has_attachment):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = _with_attachments([_descriptor()] if has_attachment else [])
+    await store.async_add(source_text="source", events=[], source_id=item.source_id, hosted_evidence=item)
+    restarted = make_store(monkeypatch, FakeStoreBackend(load_result=backend.saved[-1]))
+    await restarted.async_load()
+    entry = restarted.hosted_ack_journal()[0]
+    fresh = replace(item, lease_token="new-secret",
+                    attachment_descriptors=list(item.attachment_descriptors),
+                    verified_attachments=list(item.verified_attachments))
+    updated = await restarted.async_reconcile_hosted_ack(entry=entry, action="replace_lease", new_evidence=fresh)
+    assert updated.evidence.lease_token == "new-secret"
+    assert updated.evidence.attachment_descriptors == tuple(fresh.attachment_descriptors)
+    assert updated.evidence.verified_attachments == tuple(fresh.verified_attachments)
+
+
 async def test_ack_reconciliation_persists_cas_and_rejects_changed_evidence(monkeypatch):
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)

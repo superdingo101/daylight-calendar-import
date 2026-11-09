@@ -1554,7 +1554,17 @@ class PendingImportStore:
                     if new_evidence is None:
                         raise ValueError("missing hosted delivery evidence")
                     new_evidence.validate()
-                    if replace(new_evidence, lease_token=entry.evidence.lease_token) != entry.evidence:
+                    new_evidence = replace(
+                        new_evidence,
+                        attachment_descriptors=tuple(new_evidence.attachment_descriptors),
+                        verified_attachments=tuple(new_evidence.verified_attachments),
+                    )
+                    prior_evidence = replace(
+                        entry.evidence,
+                        attachment_descriptors=tuple(entry.evidence.attachment_descriptors),
+                        verified_attachments=tuple(entry.evidence.verified_attachments),
+                    )
+                    if replace(new_evidence, lease_token=prior_evidence.lease_token) != prior_evidence:
                         raise ValueError("hosted delivery evidence changed")
                     updated = replace(entry, evidence=new_evidence)
                 else:
