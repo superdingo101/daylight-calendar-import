@@ -1403,3 +1403,66 @@ def test_unknown_response_kind_cannot_select_installation_schema(transport, kind
     value = account_url(fixture("account-installation-status"))
     with pytest.raises(ValueError):
         client._validate(value, kind)
+
+
+async def test_source_ack_one_shot_validated_and_redacted(transport):
+    client, session = transport
+    identifier, lease = "d" * 32, "L" * 32
+    response = {"schema_version": 1, "delivery_id": identifier,
+                "status": "acknowledged", "acknowledged_at": "2026-11-08T10:00:00Z"}
+    session.request.return_value = Response(value=response)
+    assert await client.acknowledge_source(token=TOKEN, delivery_id=identifier, lease_token=lease) == response
+    args, kwargs = session.request.call_args
+    assert args == ("POST", f"https://api.daylight.test/v1/sources/{identifier}/ack")
+    assert kwargs["json"] == {"schema_version": 1, "lease_token": lease}
+    assert kwargs["headers"]["Authorization"] == "Bearer " + TOKEN
+    assert kwargs["allow_redirects"] is False and kwargs["auto_decompress"] is False
+    assert session.request.call_count == 1
+
+
+@pytest.mark.parametrize("field,value", [
+    ("schema_version", True), ("schema_version", 2), ("delivery_id", "another_delivery_id"),
+    ("status", "pending"), ("acknowledged_at", "tomorrow"), ("extra", 1),
+])
+async def test_source_ack_rejects_invalid_or_wrong_delivery_response(transport, field, value):
+    client, session = transport
+    response = {"schema_version": 1, "delivery_id": "d" * 32,
+                "status": "acknowledged", "acknowledged_at": "2026-11-08T10:00:00Z"}
+    response[field] = value
+    session.request.return_value = Response(value=response)
+    with pytest.raises(HostedTransportError, match="invalid_response"):
+        await client.acknowledge_source(token=TOKEN, delivery_id="d" * 32, lease_token="L" * 32)
+    assert session.request.call_count == 1
+
+
+@pytest.mark.parametrize("token,delivery,lease", [
+    ("bad", "d" * 32, "L" * 32), (TOKEN, "../bad", "L" * 32),
+    (TOKEN, "d" * 32, "bad"), (TOKEN, "d" * 32, "L" * 32 + "/"),
+])
+async def test_source_ack_invalid_request_never_sends(transport, token, delivery, lease):
+    client, session = transport
+    with pytest.raises(vol.Invalid):
+        await client.acknowledge_source(token=token, delivery_id=delivery, lease_token=lease)
+    session.request.assert_not_called()
+
+
+async def test_source_ack_lost_response_is_not_retried(transport):
+    client, session = transport
+    session.request.side_effect = aiohttp.ClientConnectionError("private secret")
+    with pytest.raises(HostedTransportError, match="service_unavailable") as caught:
+        await client.acknowledge_source(token=TOKEN, delivery_id="d" * 32, lease_token="L" * 32)
+    assert "private" not in str(caught.value)
+    assert session.request.call_count == 1
+
+
+async def test_source_ack_surfaces_stale_lease_without_remote_text(transport):
+    client, session = transport
+    session.request.return_value = Response(status=409, value={
+        "schema_version": 1,
+        "error": {"code": "lease_not_current", "message": "private server details", "retryable": False},
+    })
+    with pytest.raises(HostedTransportError, match="lease_not_current") as caught:
+        await client.acknowledge_source(token=TOKEN, delivery_id="d" * 32, lease_token="L" * 32)
+    assert caught.value.status == 409 and caught.value.retryable is False
+    assert "private" not in str(caught.value)
+    assert session.request.call_count == 1
