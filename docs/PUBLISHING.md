@@ -54,6 +54,36 @@ An unpublished draft or beta release cannot update `docs-live`.
 An out-of-order release, invalid MDX/navigation, failed Mintlify check,
 or Git push permission failure leaves the previous published docs untouched.
 
+## Optional beta documentation rehearsal
+
+Before the first stable release, you can rehearse the publication using an actual
+**published beta** (for example `v0.9.0-beta2`). This uses a separate Git branch
+named `docs-rehearsal` and **never** updates production `docs-live`.
+
+1. Prepare the beta normally: versions in `manifest.json` and `pyproject.toml`
+   must match the exact beta tag. Pass the existing HACS/Hassfest, browser and
+   full clean mutation-proof gates. The existing HACS release workflow creates
+   a **draft** GitHub release with a ZIP; inspect it and publish it explicitly
+   as a **prerelease**. A draft or untagged candidate is insufficient.
+2. In GitHub Actions, choose **Rehearse Mintlify docs from published beta**,
+   then **Run workflow** from `main`, with `release_tag=v0.9.0-beta2`.
+3. The workflow reads GitHub's published release metadata, verifies the
+   prerelease flag and nonempty HACS ZIP, checks out the precise tag, validates
+   the integration versions and Mintlify site, runs `mint validate` and
+   `mint broken-links`, and only then fast-forwards `docs-rehearsal`.
+4. Verify that `docs-rehearsal` equals the beta tag's full commit SHA and
+   that `docs-live` did not move. Re-run the workflow once to prove idempotency.
+5. This is a **Git and documentation-build rehearsal**, not proof of a live
+   Mintlify deployment. The public Import site must still be configured to
+   use `docs-live` only when a stable release exists. A separate private
+   Mintlify preview project can be used to test beta rendering if desired;
+   do not switch the public site to the rehearsal branch.
+
+Beta mode rejects stable, draft, release-candidate and malformed beta tags,
+and cannot update `docs-live`. Stable mode rejects prereleases and cannot
+update `docs-rehearsal`. Both reject out-of-order, divergent or invalid
+releases without moving their respective branches.
+
 ## Recovery
 
 The workflow also allows **Run workflow** with `release_tag` set to an
