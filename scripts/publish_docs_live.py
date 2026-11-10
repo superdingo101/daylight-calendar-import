@@ -130,9 +130,9 @@ def check_site(root: Path, tag: str) -> list[Path]:
         source = page.read_text(encoding="utf-8")
         if not re.match(r"\A---\s*\n.*?\n---\s*\n", source, flags=re.DOTALL):
             raise PublicationError(f"Missing MDX frontmatter: {page.relative_to(root)}")
-        # Check same-site absolute Markdown and MDX href routes. Mint validates
-        # more complex links separately, including relative and image links.
-        links = re.findall(r"\]\((/[^)#?]*)(?:[#?][^)]*)?\)", source)
+        # Check page links, not Markdown image asset links. Mint validates local
+        # image resources and more complex/relative links separately.
+        links = re.findall(r"(?<!!)\]\((/[^)#?]*)(?:[#?][^)]*)?\)", source)
         links += re.findall(r'\bhref=["\'](/[^"\'#?]*)', source)
         for link in links:
             if link != "/":
