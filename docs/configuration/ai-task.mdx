@@ -1,0 +1,39 @@
+---
+title: "AI Task providers"
+sidebarTitle: "AI Task providers"
+description: "Select a compatible Home Assistant AI Task entity and understand media support."
+---
+
+# AI Task providers
+
+Daylight uses a Home Assistant **AI Task entity**, not a conversation agent. Configure your AI provider in Home Assistant before selecting the entity in Daylight's settings.
+
+<Steps>
+  <Step title="Set up an AI Task provider">
+    Follow the Home Assistant [AI Task documentation](https://www.home-assistant.io/integrations/ai_task) and confirm that your integration exposes an AI Task entity.
+  </Step>
+  <Step title="Choose it in Daylight">
+    In **Daylight Imports → Settings → General**, select the AI Task entity to interpret submitted sources.
+  </Step>
+  <Step title="Verify with synthetic text">
+    Follow the [quickstart](/quickstart) before connecting an email inbox or uploading private documents.
+  </Step>
+  <Step title="Test media separately">
+    If you plan to upload photos or scanned PDFs, test that the selected provider and model can understand those exact file types.
+  </Step>
+</Steps>
+
+| Input | What the model must support |
+| --- | --- |
+| Pasted or email text | Structured data generation |
+| PDF with a usable text layer | Structured data generation |
+| JPEG, PNG, WebP | AI Task attachments and image understanding |
+| Scanned PDF | AI Task attachments **and PDF support** |
+
+<Note>
+  Your AI provider—not Daylight—controls its own pricing, retention, and data handling. Submitted text or file content can be sent to that provider. No Daylight Cloud subscription is required for the self-hosted integration.
+</Note>
+
+A provider can return partial results or incomplete events. Always check the drafts, especially the year, time zone, and appointment duration.
+
+See [provider compatibility](https://github.com/superdingo101/daylight-calendar-import/blob/main/docs/provider-compatibility.md) and [provider errors](https://github.com/superdingo101/daylight-calendar-import/blob/main/docs/provider-errors.md) for technical details.
