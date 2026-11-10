@@ -230,6 +230,92 @@ class DocsPublicationTest(unittest.TestCase):
             publish(self.released, release("v0.9.2"))
         self.assertIsNone(self.docs_live_sha())
 
+    def docs_rehearsal_sha(self) -> str | None:
+        response = run(
+            "ls-remote", "--heads", "origin", "refs/heads/docs-rehearsal",
+            cwd=self.released,
+        )
+        return response.split()[0] if response else None
+
+    def ship_beta(self, version: str) -> None:
+        """Advance main and check out an actual beta-tagged fixture release."""
+        self.write_version(version)
+        self.commit(f"ship beta {version}")
+        run("tag", f"v{version}", cwd=self.work)
+        run("push", "origin", "main", "--tags", cwd=self.work)
+        self.checkout_tag(f"v{version}")
+
+    def test_rehearsal_rejects_stable_rc_drafts_and_missing_zip(self) -> None:
+        for candidate in (
+            release(),
+            release("v0.9.0-rc1", prerelease=True),
+            release("v0.9.0-beta2"),
+            release("v0.9.0-beta2", prerelease=True, draft=True),
+            release("v0.9.0-beta2", prerelease=True, include_zip=False),
+            {**release("v0.9.0-beta2", prerelease=True), "published_at": None},
+        ):
+            with self.subTest(candidate=candidate), self.assertRaises(PublicationError):
+                check_release(candidate, rehearsal=True)
+
+    def test_beta_rehearsal_keeps_existing_stable_docs_unchanged(self) -> None:
+        publish(self.released, release())
+        stable_sha = self.docs_live_sha()
+        self.assertIsNotNone(stable_sha)
+        self.ship_beta("0.9.0-beta2")
+        beta = release("v0.9.0-beta2", prerelease=True)
+        with self.assertRaises(PublicationError):
+            publish(self.released, beta)
+        self.assertIsNone(self.docs_rehearsal_sha())
+        self.assertIn("Validated", publish(self.released, beta, rehearsal=True, check_only=True))
+        self.assertIsNone(self.docs_rehearsal_sha())
+        self.assertIn("Published v0.9.0-beta2", publish(self.released, beta, rehearsal=True))
+        self.assertEqual(self.docs_live_sha(), stable_sha)
+        self.assertEqual(
+            self.docs_rehearsal_sha(),
+            run("rev-parse", "v0.9.0-beta2^{commit}", cwd=self.released),
+        )
+        self.assertIn("Already published", publish(self.released, beta, rehearsal=True))
+
+    def test_beta_rehearsal_rejects_rollback_and_preserves_last_good(self) -> None:
+        self.ship_beta("0.9.0-beta2")
+        beta2 = release("v0.9.0-beta2", prerelease=True)
+        publish(self.released, beta2, rehearsal=True)
+        beta2_sha = self.docs_rehearsal_sha()
+        self.write_version("0.9.0-beta3")
+        (self.work / "docs/quickstart.mdx").unlink()
+        self.commit("beta3 candidate with invalid released docs")
+        run("tag", "v0.9.0-beta3", cwd=self.work)
+        run("push", "origin", "main", "--tags", cwd=self.work)
+        self.checkout_tag("v0.9.0-beta3")
+        beta3 = release("v0.9.0-beta3", prerelease=True)
+        with self.assertRaisesRegex(PublicationError, "nonexistent docs page"):
+            publish(self.released, beta3, rehearsal=True)
+        self.assertEqual(self.docs_rehearsal_sha(), beta2_sha)
+
+        (self.work / "docs/quickstart.mdx").write_text(
+            "---\ntitle: quickstart\n---\n# quickstart\n", encoding="utf-8",
+        )
+        self.write_version("0.9.0-beta4")
+        self.commit("repair docs for beta4")
+        run("tag", "v0.9.0-beta4", cwd=self.work)
+        run("push", "origin", "main", "--tags", cwd=self.work)
+        self.checkout_tag("v0.9.0-beta4")
+        self.assertIn("Published v0.9.0-beta4", publish(
+            self.released, release("v0.9.0-beta4", prerelease=True), rehearsal=True,
+        ))
+        beta4_sha = self.docs_rehearsal_sha()
+        self.checkout_tag("v0.9.0-beta2")
+        with self.assertRaisesRegex(PublicationError, "rollback|divergent"):
+            publish(self.released, beta2, rehearsal=True)
+        self.assertEqual(self.docs_rehearsal_sha(), beta4_sha)
+        self.assertIsNone(self.docs_live_sha())
+
+    def test_rehearsal_mode_rejects_arbitrary_target(self) -> None:
+        from scripts.publish_docs_live import inspect_ref
+
+        with self.assertRaisesRegex(PublicationError, "Unsupported documentation publication target"):
+            inspect_ref(self.released, "v0.9.0", target="main")
+
     def test_exact_tag_is_required_even_if_checked_out_content_looks_valid(self) -> None:
         (self.work / "docs/introduction.mdx").write_text(
             "---\ntitle: Development only\n---\n# Not released\n", encoding="utf-8",

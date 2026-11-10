@@ -1,9 +1,8 @@
-"""Publish Mintlify docs from an exact, validated stable HACS release.
+"""Publish Mintlify documentation from the exact, validated GitHub release.
 
-The public docs-live Git branch is a moving pointer to an immutable stable
-release commit. It is never a snapshot of current development main. Git push
-uses normal fast-forward semantics (no force), and every check is performed
-before the public branch is updated.
+Stable releases advance docs-live. Published beta prereleases can advance only
+an isolated docs-rehearsal branch when --rehearsal is explicitly selected.
+Neither mode uses force pushes or development-branch snapshots.
 """
 
 from __future__ import annotations
@@ -16,9 +15,11 @@ from pathlib import Path
 from typing import Any
 
 TAG_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+BETA_TAG_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-beta(0|[1-9]\d*)$")
 PAGE_RE = re.compile(r"^[a-zA-Z0-9/_-]+$")
 ASSET = "daylight-calendar-import.zip"
 TARGET = "docs-live"
+REHEARSAL_TARGET = "docs-rehearsal"
 
 
 class PublicationError(ValueError):
@@ -48,15 +49,17 @@ def _ancestor(repo: Path, first: str, second: str) -> bool:
     return process.returncode == 0
 
 
-def check_release(release: dict[str, Any]) -> str:
-    """Only a published, non-draft, non-prerelease release with a HACS ZIP qualifies."""
+def check_release(release: dict[str, Any], *, rehearsal: bool = False) -> str:
+    """Require a real published release of the correct type, with a HACS ZIP."""
     tag = release.get("tag_name")
-    if not isinstance(tag, str) or not TAG_RE.fullmatch(tag):
-        raise PublicationError("Only stable semantic-version release tags can publish docs")
+    required = BETA_TAG_RE if rehearsal else TAG_RE
+    if not isinstance(tag, str) or not required.fullmatch(tag):
+        kind = "beta prerelease" if rehearsal else "stable"
+        raise PublicationError(f"Only {kind} semantic-version release tags qualify")
     if (release.get("draft") is not False
-            or release.get("prerelease") is not False
+            or release.get("prerelease") is not rehearsal
             or not release.get("published_at")):
-        raise PublicationError("The GitHub release is not published and stable")
+        raise PublicationError("The GitHub release is not published with the required prerelease status")
     assets = release.get("assets")
     if not isinstance(assets, list) or not any(
         isinstance(asset, dict) and asset.get("name") == ASSET
@@ -140,8 +143,10 @@ def check_site(root: Path, tag: str) -> list[Path]:
     return files
 
 
-def inspect_ref(repo: Path, tag: str) -> tuple[str, str | None]:
-    """Verify the exact tag and non-rollback lineage before publication."""
+def inspect_ref(repo: Path, tag: str, *, target: str = TARGET) -> tuple[str, str | None]:
+    """Verify the exact tag and non-rollback lineage of one approved branch."""
+    if target not in (TARGET, REHEARSAL_TARGET):
+        raise PublicationError("Unsupported documentation publication target")
     current = _git(repo, "rev-parse", "HEAD")
     tagged = _git(repo, "rev-parse", f"refs/tags/{tag}^{{commit}}")
     if current != tagged:
@@ -150,42 +155,46 @@ def inspect_ref(repo: Path, tag: str) -> tuple[str, str | None]:
     if not _ancestor(repo, current, "refs/remotes/origin/main"):
         raise PublicationError("The release tag is not an ancestor of public main")
 
-    remote = _git(repo, "ls-remote", "--heads", "origin", f"refs/heads/{TARGET}")
+    remote = _git(repo, "ls-remote", "--heads", "origin", f"refs/heads/{target}")
     previous = remote.split()[0] if remote else None
     if previous and previous != current:
-        _git(repo, "fetch", "--no-tags", "origin", f"+refs/heads/{TARGET}:refs/remotes/origin/{TARGET}")
+        _git(repo, "fetch", "--no-tags", "origin", f"+refs/heads/{target}:refs/remotes/origin/{target}")
         if not _ancestor(repo, previous, current):
-            raise PublicationError("Refusing stale release, rollback, or divergent docs-live history")
+            raise PublicationError(f"Refusing stale release, rollback, or divergent {target} history")
     return current, previous
 
 
-def publish(repo: Path, release: dict[str, Any], *, check_only: bool = False) -> str:
-    """Preflight first; only then advance docs-live to the exact release commit."""
-    tag = check_release(release)
+def publish(repo: Path, release: dict[str, Any], *, check_only: bool = False,
+            rehearsal: bool = False) -> str:
+    """Preflight first; advance only the branch permitted for this release type."""
+    tag = check_release(release, rehearsal=rehearsal)
     checked = check_site(repo, tag)
-    sha, previous = inspect_ref(repo, tag)
+    target = REHEARSAL_TARGET if rehearsal else TARGET
+    sha, previous = inspect_ref(repo, tag, target=target)
     if previous == sha:
         return f"Already published {tag} ({sha}); {len(checked)} pages verified"
     if check_only:
         return f"Validated {tag} ({sha}); {len(checked)} pages ready for publication"
     # No force push: Git itself additionally rejects concurrent non-fast-forward
     # updates even after the ancestry preflight.
-    _git(repo, "push", "origin", f"{sha}:refs/heads/{TARGET}")
-    remote = _git(repo, "ls-remote", "--heads", "origin", f"refs/heads/{TARGET}")
+    _git(repo, "push", "origin", f"{sha}:refs/heads/{target}")
+    remote = _git(repo, "ls-remote", "--heads", "origin", f"refs/heads/{target}")
     if not remote or remote.split()[0] != sha:
-        raise PublicationError("Publication returned without the intended docs-live HEAD")
-    return f"Published {tag} ({sha}) to {TARGET}; {len(checked)} pages verified"
+        raise PublicationError(f"Publication returned without the intended {target} HEAD")
+    return f"Published {tag} ({sha}) to {target}; {len(checked)} pages verified"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", type=Path, required=True, help="Checkout of exact stable release tag")
+    parser.add_argument("--repo", type=Path, required=True, help="Checkout of exact released tag")
     parser.add_argument("--release-json", type=Path, required=True, help="Fresh GitHub API release response")
-    parser.add_argument("--publish", action="store_true", help="Actually advance docs-live after preflight")
+    parser.add_argument("--publish", action="store_true", help="Advance the allowed branch after preflight")
+    parser.add_argument("--rehearsal", action="store_true", help="Accept only beta releases and target docs-rehearsal")
     args = parser.parse_args()
     try:
         release = json.loads(args.release_json.read_text(encoding="utf-8"))
-        print(publish(args.repo.resolve(), release, check_only=not args.publish))
+        print(publish(args.repo.resolve(), release, check_only=not args.publish,
+                      rehearsal=args.rehearsal))
     except (OSError, ValueError, PublicationError) as error:
         parser.exit(1, f"Docs publication blocked: {error}\n")
 
