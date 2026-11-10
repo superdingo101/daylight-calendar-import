@@ -69,11 +69,13 @@
         ]
       },
       {
-        "group": "Help and privacy",
+        "group": "Help and reference",
         "icon": "life-buoy",
         "pages": [
           "help/troubleshooting",
-          "help/privacy"
+          "help/faq",
+          "help/privacy",
+          "help/advanced-reference"
         ]
       }
     ]
