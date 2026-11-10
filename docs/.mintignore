@@ -1,0 +1,14 @@
+# Internal project/deployment documentation, never part of public Mintlify.
+AGENTS.md
+PUBLISHING.md
+adr/
+hosted-api.md
+hosted-account-api.md
+public-beta-checklist.md
+v0.6.md
+mutation-*.md
+extraction-corpus.md
+email-extraction-corpus.md
+extraction-media-corpus.md
+routing-adversarial-corpus.md
+manual-submission-contract.md
