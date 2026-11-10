@@ -45,7 +45,7 @@ Daylight works without any email configuration. Open **Daylight Imports → New 
 | Extracted text from a text-layer PDF | Up to 100,000 Unicode characters across the PDF |
 | File types | JPEG, PNG, WebP, PDF |
 
-A single announcement can produce several drafts. Unsupported formats, incomplete files, and oversize input are rejected rather than silently truncated.
+A single announcement can produce several drafts. The **100,000-character extracted-PDF-text limit** is separate from the **1,000,000-character submitted-text limit**. A PDF can be rejected for too much extracted text even if it is smaller than 10 MiB and has fewer than 30 pages. Unsupported formats, incomplete files, and oversize input are rejected rather than silently truncated.
 
 <Warning>
   A model that exposes the AI Task attachment flag may still be unable to accept a particular PDF or image. Check the model/provider's actual media support before using scanned documents.
