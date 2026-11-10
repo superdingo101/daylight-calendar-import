@@ -44,7 +44,7 @@ No personal mailbox or household calendar is needed.
    model/version and run date. Do not record tokens, request bodies or responses.
 2. Supply an adapter using the configured provider and the production
    `PROMPT_TEMPLATE` and `EVENTS_STRUCTURE` from `parser.py`. The adapter protocol
-   is specified in [Extraction corpus](extraction-corpus.md). Preserve fixture
+   is specified in [Extraction corpus](https://github.com/superdingo101/daylight-calendar-import/blob/main/docs/extraction-corpus.md). Preserve fixture
    reference time and time zone; never feed expected or recorded responses to
    the provider.
 3. Run from the repository root:
