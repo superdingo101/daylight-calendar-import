@@ -1,39 +1,68 @@
 ---
 title: "Import emails with IMAP"
 sidebarTitle: "Optional email intake"
-description: "Safely configure a dedicated IMAP mailbox or folder for Daylight imports."
+description: "Configure a dedicated IMAP folder, understand polling and read/unread behavior, and keep private messages out of imports."
 ---
 
-Direct IMAP is an **optional self-hosted** method for bringing email announcements into the review workflow. Manual text and file imports remain available when email is disabled.
+If schools, clubs, or community groups email event announcements, Daylight can collect messages from a dedicated IMAP mailbox or folder and turn them into **drafts for review**. Email intake is optional; [pasting text and uploading files](/workflows/manual-import) work without it.
 
 <Warning>
-  Use a **dedicated mailbox or folder** for Daylight. When enabled, Daylight can fetch every unread, undeleted message in the configured folder—even unrelated private messages. It can send processable content to your selected AI provider. Check the existing unread backlog before enabling intake.
+  **Use a dedicated mailbox or folder.** As soon as you enable Direct IMAP, Daylight can inspect the entire **unread, undeleted backlog** of the selected folder—even unrelated private messages. Processable content may be sent to your AI Task provider. Review the backlog before enabling intake.
 </Warning>
 
+## Set up your mailbox
+
 <Steps>
-  <Step title="Prepare a dedicated mailbox or folder">
-    Forward only the announcements you want Daylight to handle. Review or clear unread messages already present before starting.
+  <Step title="Create a dedicated destination for announcements">
+    Use a separate email address or folder. Forward only the messages you want processed, and remove unrelated unread mail first.
   </Step>
-  <Step title="Collect your IMAP settings">
-    You'll need the server host, implicit TLS port (normally `993`), username, app password or password, and mailbox name. OAuth-only connections and STARTTLS are not supported by the direct IMAP path.
+  <Step title="Gather connection details">
+    You need the IMAP host, username, password or app password, folder name (often `INBOX`), and implicit-TLS port (normally `993`). **OAuth-only** logins, STARTTLS, and plaintext IMAP are not supported by this direct integration.
   </Step>
-  <Step title="Configure Email settings">
-    In **Daylight Imports → Settings → Email**, enter the connection details. Keep certificate verification enabled.
+  <Step title="Open Email settings">
+    In **Daylight Imports → Settings → Email**, enter the connection details and keep **Verify TLS certificate** enabled.
   </Step>
-  <Step title="Optionally restrict senders">
-    Add exact sender email addresses, one per line. The sender restriction is not sender authentication and does not remove the need for a dedicated folder.
+  <Step title="Optionally restrict exact senders">
+    Add one complete sender email address per line. Matching is exact after normalization; it does not accept domain-only entries. The `From` header can be spoofed, so this is **not** an authentication or security boundary.
   </Step>
-  <Step title="Enable intake and check activity">
-    Daylight performs an initial poll and continues at intervals. Read the result in **Recent activity** and review pending drafts before approving any event.
+  <Step title="Enable intake">
+    Save the settings, then check **Recent activity** and **Review inbox**. A successful email import creates pending drafts, never automatic calendar events.
   </Step>
 </Steps>
 
-## How email acknowledgement works
+## When will email appear?
 
-Daylight searches unread, undeleted messages. Once a result is durably handled (including certain terminal validation failures), it **attempts to mark the message read**. Retryable failures can leave the message unread for another poll. Do not mark a message read if you expect Daylight to retry discovering it.
+Daylight polls once immediately when enabled and approximately **every five minutes** afterward. The fixed search selects unread, undeleted messages from the configured folder. A long poll doesn't run concurrently with another one, so large backlogs can take more than one cycle.
 
-The system does not automatically approve imported events.
+Daylight processes eligible messages and attempts to mark them **read** only after it has a durable local result. Importing a message does not imply that any drafts were approved.
+
+### Why did an email become read without an event?
+
+Some source problems are **terminal for that particular message**, including unsupported media, empty processable content, malformed attachments, or size-limit violations. Daylight can record the failure and attempt to mark the message read so it won't repeatedly parse the same invalid input.
+
+Transient provider, network, and storage failures generally leave the message unread for a later poll. If the message was already durably handled but marking it read failed, Daylight can retry **acknowledgement without redoing the AI extraction**.
 
 <Note>
-  Mail providers' app-password, attachment, folder, and server requirements vary. See the [full Direct IMAP setup and recovery guide](/direct-imap) before connecting a real mailbox.
+  Marking a message unread again **does not reset** Daylight's saved source history after a durable outcome. Correct the content and **resend it as a new message** if you want a terminally failed announcement processed again.
 </Note>
+
+## Email attachment limits
+
+| Item | Direct IMAP limit |
+| --- | --- |
+| Supported direct attachment formats | JPEG, PNG, WebP, PDF |
+| Supported direct attachment parts | At most **4** |
+| Combined decoded supported attachments | At most **10 MiB** |
+| Entire raw email | Approximately **14.3 MiB** |
+
+These are **email-specific** bounds, not the single-file upload limits. Emailed PDF attachments are passed to the AI provider rather than through Daylight's manual PDF text-extraction path, so the manual-upload **30-page** and **100,000-extracted-character** checks are **not enforced on emailed PDFs**. The provider's own PDF/media limits still apply. Supported inline images, including logos, can count toward attachment processing.
+
+## What if mail isn't being processed?
+
+- Verify the **folder**, server, credentials, certificate settings, and unread status.
+- Confirm the sender is permitted if you configured an allowlist. Nonmatching senders stay unread and may be checked again on later polls.
+- Check **Recent activity** for a safe failure category.
+- Verify AI Task availability and media support. A provider's general attachment flag does not guarantee it accepts your PDF.
+- Avoid marking retryable messages read until you've resolved the problem.
+
+See [Troubleshooting](/help/troubleshooting) for a user-facing checklist or the [Direct IMAP reference](/direct-imap) for detailed handling, acknowledgement, and recovery semantics.

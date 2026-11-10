@@ -1,37 +1,41 @@
 ---
 title: "AI Task providers"
 sidebarTitle: "AI Task providers"
-description: "Select a compatible Home Assistant AI Task entity and understand media support."
+description: "Choose a Home Assistant AI Task entity, test your provider, and understand PDF and image compatibility."
 ---
 
-Daylight uses a Home Assistant **AI Task entity**, not a conversation agent. Configure your AI provider in Home Assistant before selecting the entity in Daylight's settings.
+Daylight uses a Home Assistant **AI Task entity** to extract event details. It does **not** use a conversation agent. Before choosing one, configure an AI integration in Home Assistant that exposes an AI Task entity capable of **structured data generation**.
+
+## Configure and test a provider
 
 <Steps>
-  <Step title="Set up an AI Task provider">
-    Follow the Home Assistant [AI Task documentation](https://www.home-assistant.io/integrations/ai_task) and confirm that your integration exposes an AI Task entity.
+  <Step title="Set up the provider in Home Assistant">
+    Follow the [Home Assistant AI Task guide](https://www.home-assistant.io/integrations/ai_task). Confirm that the provider creates an entity in the `ai_task` domain.
   </Step>
-  <Step title="Choose it in Daylight">
-    In **Daylight Imports → Settings → General**, select the AI Task entity to interpret submitted sources.
+  <Step title="Select the entity">
+    Open **Daylight Imports → Settings → General** and choose the **AI Task entity**, then select **Save general settings**.
   </Step>
-  <Step title="Verify with synthetic text">
-    Follow the [quickstart](/quickstart) before connecting an email inbox or uploading private documents.
+  <Step title="Try a fictional text event">
+    Start with the [Quickstart](/quickstart). Confirm the provider can extract a draft without writing to the calendar automatically.
   </Step>
-  <Step title="Test media separately">
-    If you plan to upload photos or scanned PDFs, test that the selected provider and model can understand those exact file types.
+  <Step title="Test images and PDFs separately">
+    If you plan to upload screenshots or scanned documents, test each actual file type with that particular provider and model. Attachment support alone does not guarantee PDF support.
   </Step>
 </Steps>
 
-| Input | What the model must support |
+## What works with each input?
+
+| Input | Provider capability |
 | --- | --- |
-| Pasted or email text | Structured data generation |
-| PDF with a usable text layer | Structured data generation |
-| JPEG, PNG, WebP | AI Task attachments and image understanding |
-| Scanned PDF | AI Task attachments **and PDF support** |
+| Pasted text or email body | Structured data generation |
+| PDF with selectable/extractable text | Structured data generation; Daylight extracts bounded text locally |
+| JPEG, PNG, WebP | AI Task attachments **and model image understanding** |
+| Scanned or image-only PDF | AI Task attachments **and actual PDF support** |
+
+A model can have a working text path but reject an image or PDF. This is not proof the whole Daylight integration is broken; choose a compatible model or submit usable text instead.
 
 <Note>
-  Your AI provider—not Daylight—controls its own pricing, retention, and data handling. Submitted text or file content can be sent to that provider. No Daylight Cloud subscription is required for the self-hosted integration.
+  AI output may be incomplete or wrong. Verify the year, time zone, duration, and destination calendar in every draft. The external provider may charge for requests and applies its own privacy/retention terms.
 </Note>
 
-A provider can return partial results or incomplete events. Always check the drafts, especially the year, time zone, and appointment duration.
-
-See [provider compatibility](/provider-compatibility) and [provider errors](/provider-errors) for technical details.
+If the provider times out, is rate-limited, returns an invalid structured response, or rejects a file, see [Troubleshooting](/help/troubleshooting) and the [technical provider error categories](/provider-errors). The [provider compatibility reference](/provider-compatibility) explains additional limits and the beta evaluation process.
