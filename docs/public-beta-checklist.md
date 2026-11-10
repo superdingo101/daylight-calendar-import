@@ -1,3 +1,8 @@
+---
+title: "Public beta acceptance checklist"
+hidden: true
+---
+
 # Public beta validation
 
 Use this checklist on an isolated Home Assistant installation and dedicated test
