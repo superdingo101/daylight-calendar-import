@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Daylight Calendar Import">
+<rect x="3" y="3" width="42" height="42" rx="11" fill="#242424"/>
+<path d="M13 18h19M13 25h19M13 32h10M18 13v8M29 13v8" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+<path d="m24 33 4 4 8-10" stroke="white" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
