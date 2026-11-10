@@ -1,0 +1,88 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "almond",
+  "name": "Daylight Calendar Import",
+  "description": "Turn announcements, emails, pictures, and PDFs into reviewable Home Assistant calendar events.",
+  "colors": {
+    "primary": "#242424",
+    "light": "#aeaeac",
+    "dark": "#484641"
+  },
+  "icons": {
+    "library": "lucide"
+  },
+  "favicon": "/logo/daylight.svg",
+  "logo": {
+    "light": "/logo/daylight.svg",
+    "dark": "/logo/daylight.svg"
+  },
+  "styling": {
+    "eyebrows": "breadcrumbs"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Daylight",
+        "href": "https://daylightcalendar.com"
+      },
+      {
+        "label": "Calendar Card",
+        "href": "https://docs.daylightcalendar.com"
+      }
+    ],
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/superdingo101/daylight-calendar-import"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/superdingo101/daylight-calendar-import"
+    }
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get started",
+        "icon": "rocket",
+        "expanded": true,
+        "pages": [
+          "introduction",
+          "installation",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "Import events",
+        "icon": "file-up",
+        "pages": [
+          "workflows/manual-import",
+          "workflows/review"
+        ]
+      },
+      {
+        "group": "Configuration",
+        "icon": "settings",
+        "pages": [
+          "configuration/ai-task",
+          "configuration/email"
+        ]
+      },
+      {
+        "group": "Help and privacy",
+        "icon": "life-buoy",
+        "pages": [
+          "help/troubleshooting",
+          "help/privacy"
+        ]
+      }
+    ]
+  },
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/introduction",
+      "permanent": true
+    }
+  ]
+}
