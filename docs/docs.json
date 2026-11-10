@@ -11,10 +11,10 @@
   "icons": {
     "library": "lucide"
   },
-  "favicon": "/logo/daylight.svg",
+  "favicon": "/logo/icon.svg",
   "logo": {
     "light": "/logo/daylight.svg",
-    "dark": "/logo/daylight.svg"
+    "dark": "/logo/daylight-dark.svg"
   },
   "styling": {
     "eyebrows": "breadcrumbs"
