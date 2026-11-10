@@ -1,0 +1,41 @@
+---
+title: "Import emails with IMAP"
+sidebarTitle: "Optional email intake"
+description: "Safely configure a dedicated IMAP mailbox or folder for Daylight imports."
+---
+
+# Import emails with IMAP
+
+Direct IMAP is an **optional self-hosted** method for bringing email announcements into the review workflow. Manual text and file imports remain available when email is disabled.
+
+<Warning>
+  Use a **dedicated mailbox or folder** for Daylight. When enabled, Daylight can fetch every unread, undeleted message in the configured folder—even unrelated private messages. It can send processable content to your selected AI provider. Check the existing unread backlog before enabling intake.
+</Warning>
+
+<Steps>
+  <Step title="Prepare a dedicated mailbox or folder">
+    Forward only the announcements you want Daylight to handle. Review or clear unread messages already present before starting.
+  </Step>
+  <Step title="Collect your IMAP settings">
+    You'll need the server host, implicit TLS port (normally `993`), username, app password or password, and mailbox name. OAuth-only connections and STARTTLS are not supported by the direct IMAP path.
+  </Step>
+  <Step title="Configure Email settings">
+    In **Daylight Imports → Settings → Email**, enter the connection details. Keep certificate verification enabled.
+  </Step>
+  <Step title="Optionally restrict senders">
+    Add exact sender email addresses, one per line. The sender restriction is not sender authentication and does not remove the need for a dedicated folder.
+  </Step>
+  <Step title="Enable intake and check activity">
+    Daylight performs an initial poll and continues at intervals. Read the result in **Recent activity** and review pending drafts before approving any event.
+  </Step>
+</Steps>
+
+## How email acknowledgement works
+
+Daylight searches unread, undeleted messages. Once a result is durably handled (including certain terminal validation failures), it **attempts to mark the message read**. Retryable failures can leave the message unread for another poll. Do not mark a message read if you expect Daylight to retry discovering it.
+
+The system does not automatically approve imported events.
+
+<Note>
+  Mail providers' app-password, attachment, folder, and server requirements vary. See the [full Direct IMAP setup and recovery guide](https://github.com/superdingo101/daylight-calendar-import/blob/main/docs/direct-imap.md) before connecting a real mailbox.
+</Note>
