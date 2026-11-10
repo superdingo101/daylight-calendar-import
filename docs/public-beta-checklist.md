@@ -135,7 +135,7 @@ unread mail; see [mailbox privacy and recovery](direct-imap.md).
   can repeat a message. It does not repeat the calendar write.
 - [ ] Verify both pending sensors match active/uncertain drafts. Rename a sensor
   and adapt the example automation to its actual entity ID.
-- [ ] Test the event-driven reminder in [Queue automations](v0.6.md#home-assistant-queue-automations).
+- [ ] Test the event-driven reminder in [Queue automations](review-api.md).
   Confirm `daylight_calendar_import_pending_added` contains only `pending_id`
   and `event_count`. Confirm restart alone does not fire it.
 - [ ] Export diagnostics and inspect notification messages and automation payloads
