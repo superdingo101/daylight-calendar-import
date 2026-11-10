@@ -1,0 +1,32 @@
+---
+title: "Troubleshooting"
+sidebarTitle: "Troubleshooting"
+description: "Resolve provider failures, duplicate results, missing drafts, and calendar-write uncertainty."
+---
+
+<AccordionGroup>
+  <Accordion title="I installed Daylight but cannot find it">
+    Restart Home Assistant after installing, then go to **Settings → Devices & services → Add integration**. Choose **Daylight Calendar Import** and complete configuration. After setup, look for **Daylight Imports** in the sidebar.
+  </Accordion>
+  <Accordion title="The AI provider fails or refuses an upload">
+    In **Daylight Imports → Settings → General**, confirm the AI Task entity is available. Verify the provider's credentials, quota, and connection. Image and scanned-PDF imports additionally require media compatibility. See the [provider error categories](/provider-errors).
+  </Accordion>
+  <Accordion title="An import says duplicate or no events found">
+    Check **Review inbox** and **Recent activity** before retrying. For no events, provide clearer dates and times. For duplicates, verify an earlier import was already handled. Avoid repeatedly submitting while a previous request is processing.
+  </Accordion>
+  <Accordion title="My calendar destination is wrong or needs confirmation">
+    Open the draft, select a calendar from the configured allowed calendars, and resolve any unknown or conflicting `Calendar:` hints. Daylight requires explicit approval before writing.
+  </Accordion>
+  <Accordion title="A calendar write is marked uncertain">
+    Do not approve the same event again immediately. Inspect the destination calendar and resolve the uncertain outcome explicitly in Daylight. This avoids creating duplicate events after network failures.
+  </Accordion>
+  <Accordion title="Home Assistant reports that Daylight storage needs repair">
+    Stop Home Assistant and preserve the private `.storage/daylight_calendar_import.pending_imports` file and any `.corrupt.*` copies. Restore a known-good backup rather than deleting or recreating the storage. Follow the [storage recovery guide](/storage-recovery).
+  </Accordion>
+</AccordionGroup>
+
+## Share diagnostics safely
+
+Home Assistant can export Daylight's **redacted diagnostics** from the integration menu. They contain bounded operational counts and provider capability flags, rather than messages, calendar entries, or credentials. See the [diagnostics reference](/diagnostics).
+
+If you can reproduce a problem, [open an issue on GitHub](https://github.com/superdingo101/daylight-calendar-import/issues) with the Daylight version, Home Assistant version, reproduction steps, and **sanitized** logs.

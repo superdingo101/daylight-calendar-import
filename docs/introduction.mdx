@@ -1,0 +1,48 @@
+---
+title: "Introduction"
+sidebarTitle: "Introduction"
+description: "Turn emails, screenshots, flyers, and PDFs into reviewable Home Assistant calendar events."
+---
+
+# Daylight Calendar Import
+
+Daylight Calendar Import turns event announcements into **drafts you approve before they appear on a Home Assistant calendar**. Paste a message, upload a flyer or PDF, or connect an optional email inbox. Daylight asks your Home Assistant **AI Task** provider to extract event details.
+
+<CardGroup cols={2}>
+  <Card title="Install Daylight" icon="download" href="/installation">
+    Add the integration through HACS or the Home Assistant Marketplace.
+  </Card>
+  <Card title="Import your first event" icon="rocket" href="/quickstart">
+    Start with pasted text. No email setup is necessary.
+  </Card>
+  <Card title="Import a file" icon="file-up" href="/workflows/manual-import">
+    Learn about image and PDF limitations.
+  </Card>
+  <Card title="Review and approve" icon="check-circle" href="/workflows/review">
+    Confirm dates, destinations, and potential conflicts.
+  </Card>
+</CardGroup>
+
+## Your calendar stays under your control
+
+<Steps>
+  <Step title="Submit a source">
+    Paste an announcement, upload an image or PDF, or let optional IMAP intake discover new mail.
+  </Step>
+  <Step title="Review AI-extracted drafts">
+    Daylight shows each detected event for you to edit or reject. Check dates, time zones, and the destination calendar.
+  </Step>
+  <Step title="Approve explicitly">
+    Only approval writes an event to a calendar. Pending drafts and rejected events do not write calendar entries.
+  </Step>
+</Steps>
+
+<Note>
+  The integration runs in your Home Assistant instance, with no Daylight Cloud account or subscription required. Your selected AI provider may charge for requests and receive the source content you submit.
+</Note>
+
+## What you need
+
+A supported Home Assistant installation, a writable calendar, and a configured AI Task entity. Images and scanned PDFs require a provider/model that accepts those file types. Email import is optional.
+
+Use Daylight Calendar Card to [display your calendars in Home Assistant](https://docs.daylightcalendar.com). It is a separate integration and is not required to import events.

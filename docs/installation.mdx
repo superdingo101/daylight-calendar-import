@@ -1,0 +1,42 @@
+---
+title: "Installation"
+sidebarTitle: "Installation"
+description: "Install Daylight Calendar Import with HACS or the Home Assistant Marketplace."
+---
+
+## Before you start
+
+- Home Assistant **2026.7.4 or later**.
+- At least one writable calendar entity configured in Home Assistant.
+- A working [AI Task integration](https://www.home-assistant.io/integrations/ai_task) that exposes an **AI Task entity**.
+- HACS or the Home Assistant Marketplace for the recommended installation method.
+
+<Steps>
+  <Step title="Open Daylight in Home Assistant">
+    [Open the installation link](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration). Until Daylight is in the default catalog, add `https://github.com/superdingo101/daylight-calendar-import` as a **custom integration repository** if prompted.
+  </Step>
+  <Step title="Install and restart">
+    Choose **Daylight Calendar Import**, install the release, and **restart Home Assistant**. If you're testing a beta release, explicitly select that release in HACS first.
+  </Step>
+  <Step title="Add the integration">
+    Go to **Settings → Devices & services → Add integration** and select **Daylight Calendar Import**.
+  </Step>
+  <Step title="Select your provider and calendars">
+    Choose the **AI Task entity**, a **default calendar**, and the **allowed calendars**. The default must also be in the allowed list.
+  </Step>
+  <Step title="Open Daylight Imports">
+    In the Home Assistant sidebar, open **Daylight Imports** and select **New import**.
+  </Step>
+</Steps>
+
+<Warning>
+  The installation link is not a substitute for a published release. If you are testing an unreleased PR, follow the project's [candidate-installation checklist](/public-beta-checklist) in an isolated Home Assistant instance instead.
+</Warning>
+
+## Manual installation
+
+Copy the repository's `custom_components/daylight_calendar_import` directory into your Home Assistant `custom_components` folder, restart Home Assistant, then add the integration in **Settings → Devices & services**. For an upgrade, preserve your Home Assistant configuration and `.storage` data.
+
+<Note>
+  You do not have to enable email import. Pasting text and uploading supported files work without it.
+</Note>

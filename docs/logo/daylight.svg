@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 48" role="img" aria-labelledby="title">
+<title id="title">Daylight Calendar Import</title>
+<rect x="2" y="5" width="35" height="35" rx="9" fill="#242424"/>
+<path d="M12 16h15M12 22h15M12 28h9M15 12v6M25 12v6" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>
+<path d="m21 30 4 4 8-9" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="47" y="28" fill="#242424" font-family="Arial,Helvetica,sans-serif" font-weight="700" font-size="24">Daylight</text>
+<text x="49" y="40" fill="#484641" font-family="Arial,Helvetica,sans-serif" font-size="10" letter-spacing="2">CALENDAR IMPORT</text>
+</svg>

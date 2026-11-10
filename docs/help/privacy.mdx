@@ -1,0 +1,31 @@
+---
+title: "Privacy and retention"
+sidebarTitle: "Privacy and retention"
+description: "Understand where source data goes and when private import records are retained."
+---
+
+Daylight Calendar Import runs in Home Assistant. The self-hosted integration does not require a Daylight-hosted account, but the **AI Task provider you configure may receive the source content you submit**.
+
+## What can leave Home Assistant?
+
+- Text from manual submissions, messages, or PDFs can be sent to the configured AI Task provider.
+- Images and PDF attachments can be sent to a compatible provider when interpretation requires them.
+- Direct IMAP can access every unread, undeleted message in its configured mailbox or folder. Use a dedicated import folder; sender restrictions are not an authentication mechanism.
+- Approval writes event details to the **destination calendar integration** you select, which may itself synchronize with an external service.
+
+## What stays pending locally?
+
+Drafts, source context, routing details, and uncertain calendar-write checkpoints are kept in Home Assistant private storage until their normal lifecycle resolves. You can review events before creating them.
+
+| Record | Policy |
+| --- | --- |
+| Unresolved imports and uncertain writes | Preserved until resolved |
+| Completed activity summaries | Generally 30 days or the newest 500 |
+| Deduplication fingerprints | Newest 10,000 per category |
+| Temporary uploads | Removed after processing |
+
+<Warning>
+  Never delete pending storage as a shortcut to clear errors or duplicates. Check the [storage recovery instructions](/storage-recovery) first.
+</Warning>
+
+Read the [complete retention policy](/retention) for exceptions protecting live work, notification delivery, and interrupted operations.

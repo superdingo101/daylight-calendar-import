@@ -1,0 +1,34 @@
+name: Validate Mintlify documentation
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".github/workflows/mintlify-docs-validate.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/mintlify-docs-validate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    name: Mintlify site validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Install Mintlify CLI
+        run: npm install --global mint@latest
+      - name: Validate docs.json and MDX
+        working-directory: docs
+        run: mint validate
+      - name: Check documentation links
+        working-directory: docs
+        run: mint broken-links
