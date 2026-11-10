@@ -281,22 +281,33 @@ class DocsPublicationTest(unittest.TestCase):
         beta2 = release("v0.9.0-beta2", prerelease=True)
         publish(self.released, beta2, rehearsal=True)
         beta2_sha = self.docs_rehearsal_sha()
-        self.ship_beta("0.9.0-beta3")
+        self.write_version("0.9.0-beta3")
+        (self.work / "docs/quickstart.mdx").unlink()
+        self.commit("beta3 candidate with invalid released docs")
+        run("tag", "v0.9.0-beta3", cwd=self.work)
+        run("push", "origin", "main", "--tags", cwd=self.work)
+        self.checkout_tag("v0.9.0-beta3")
         beta3 = release("v0.9.0-beta3", prerelease=True)
-        (self.released / "docs/quickstart.mdx").unlink()
         with self.assertRaisesRegex(PublicationError, "nonexistent docs page"):
             publish(self.released, beta3, rehearsal=True)
         self.assertEqual(self.docs_rehearsal_sha(), beta2_sha)
-        # Repair only the disposable checkout, never the tagged Git tree.
-        (self.released / "docs/quickstart.mdx").write_text(
+
+        (self.work / "docs/quickstart.mdx").write_text(
             "---\ntitle: quickstart\n---\n# quickstart\n", encoding="utf-8",
         )
-        self.assertIn("Published v0.9.0-beta3", publish(self.released, beta3, rehearsal=True))
-        beta3_sha = self.docs_rehearsal_sha()
+        self.write_version("0.9.0-beta4")
+        self.commit("repair docs for beta4")
+        run("tag", "v0.9.0-beta4", cwd=self.work)
+        run("push", "origin", "main", "--tags", cwd=self.work)
+        self.checkout_tag("v0.9.0-beta4")
+        self.assertIn("Published v0.9.0-beta4", publish(
+            self.released, release("v0.9.0-beta4", prerelease=True), rehearsal=True,
+        ))
+        beta4_sha = self.docs_rehearsal_sha()
         self.checkout_tag("v0.9.0-beta2")
         with self.assertRaisesRegex(PublicationError, "rollback|divergent"):
             publish(self.released, beta2, rehearsal=True)
-        self.assertEqual(self.docs_rehearsal_sha(), beta3_sha)
+        self.assertEqual(self.docs_rehearsal_sha(), beta4_sha)
         self.assertIsNone(self.docs_live_sha())
 
     def test_rehearsal_mode_rejects_arbitrary_target(self) -> None:
