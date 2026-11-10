@@ -132,7 +132,7 @@ def check_site(root: Path, tag: str) -> list[Path]:
             raise PublicationError(f"Missing MDX frontmatter: {page.relative_to(root)}")
         # Check page links, not Markdown image asset links. Mint validates local
         # image resources and more complex/relative links separately.
-        links = re.findall(r"(?<!!)\]\((/[^)#?]*)(?:[#?][^)]*)?\)", source)
+        links = re.findall(r"(?<!!)\[[^\]]*\]\((/[^)#?]*)(?:[#?][^)]*)?\)", source)
         links += re.findall(r'\bhref=["\'](/[^"\'#?]*)', source)
         for link in links:
             if link != "/":
