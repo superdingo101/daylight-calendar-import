@@ -6,6 +6,7 @@ on:
       - "scripts/publish_docs_live.py"
       - "tests/test_docs_publication.py"
       - ".github/workflows/publish-mintlify-docs.yml"
+      - ".github/workflows/rehearse-mintlify-docs.yml"
       - ".github/workflows/docs-publication-tests.yml"
   push:
     branches: [main]
@@ -13,6 +14,7 @@ on:
       - "scripts/publish_docs_live.py"
       - "tests/test_docs_publication.py"
       - ".github/workflows/publish-mintlify-docs.yml"
+      - ".github/workflows/rehearse-mintlify-docs.yml"
       - ".github/workflows/docs-publication-tests.yml"
   workflow_dispatch:
 
