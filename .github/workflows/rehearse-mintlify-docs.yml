@@ -24,6 +24,13 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
+      - name: Require main branch dispatch
+        run: |
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "ERROR: Start the docs rehearsal from main."
+            exit 1
+          fi
+
       - name: Checkout publisher tooling from main
         uses: actions/checkout@v6
         with:
