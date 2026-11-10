@@ -1,0 +1,48 @@
+---
+title: "Review and approve drafts"
+sidebarTitle: "Review and approve"
+description: "Choose the right calendar and prevent incorrect or duplicate events."
+---
+
+# Review and approve drafts
+
+After importing text, email, or a file, Daylight creates **pending review drafts**. Pending drafts do not write to a calendar.
+
+<Steps>
+  <Step title="Open Review inbox">
+    Find the submitted import and open its event drafts.
+  </Step>
+  <Step title="Verify each event">
+    Check the title, date, start and end times, all-day flag, location, description, and meeting details.
+  </Step>
+  <Step title="Choose a destination">
+    Confirm the calendar for each event. A default calendar is a fallback, not a substitute for checking routing warnings.
+  </Step>
+  <Step title="Check conflicts and duplicates">
+    Review potential overlaps or duplicate detections. A conflicting event might be valid, but it deserves a deliberate decision.
+  </Step>
+  <Step title="Approve or reject">
+    Approve the events you want, or reject any drafts that should not be created.
+  </Step>
+</Steps>
+
+<Warning>
+  If the calendar write result is uncertain, **do not retry blindly**. First inspect the actual destination calendar. Then use Daylight's explicit recovery control to record whether the event was created.
+</Warning>
+
+## Routing hints
+
+You can configure friendly names for your calendars and suggest one in submitted text:
+
+```text
+Calendar: Kids
+Soccer game on Saturday, November 21, 2026 at 9:00 AM
+```
+
+An unrecognized or contradictory hint requires confirmation before approval. Changing a destination does not automatically approve a draft.
+
+## Repeating events
+
+Daylight may recognize a repeating schedule but does not generate general recurring RRULE events from natural language. When recurrence is unsupported, enter the recurring schedule manually or resubmit independent explicit dates.
+
+For advanced users, consult the [review API contract](https://github.com/superdingo101/daylight-calendar-import/blob/main/docs/review-api.md) and [storage recovery guide](https://github.com/superdingo101/daylight-calendar-import/blob/main/docs/storage-recovery.md).
