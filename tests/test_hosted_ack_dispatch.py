@@ -9,8 +9,9 @@ from custom_components.daylight_calendar_import.hosted_ack_dispatch import (
     AckDispatchBlocked, async_dispatch_ack,
 )
 from custom_components.daylight_calendar_import.hosted_credentials import (
-    BoundCredential, CredentialCheckpoint,
+    BoundCredential, CandidateCredential, CredentialCheckpoint, ReconnectIntent,
 )
+from custom_components.daylight_calendar_import import hosted_ack_dispatch, storage
 from custom_components.daylight_calendar_import.hosted_transport import (
     HostedServiceBinding, HostedTransportError,
 )
@@ -71,7 +72,7 @@ async def test_confirm_and_reject_stale_retry(monkeypatch):
     assert len(transport.calls) == 1
 
 
-@pytest.mark.parametrize("kind", ["none", "disconnect", "namespace", "legacy", "local", "binding", "expired_credential"])
+@pytest.mark.parametrize("kind", ["none", "disconnect", "namespace", "legacy", "local", "binding", "expired_credential", "candidate", "rotation", "reconnect"])
 async def test_unbound_authority_does_not_ack(monkeypatch, kind):
     store, entry = await setup(monkeypatch)
     cp = checkpoint()
@@ -87,8 +88,16 @@ async def test_unbound_authority_does_not_ack(monkeypatch, kind):
         cp = replace(cp, service_binding=HostedServiceBinding("https://other.example.test", "https://account.example.test"))
     elif kind == "expired_credential":
         cp = replace(cp, current=replace(cp.current, expires_at=(datetime.now(UTC) - timedelta(days=1)).isoformat()))
+    elif kind == "candidate":
+        deadline = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+        cp = replace(cp, candidate=CandidateCredential(INSTALLATION, TOKEN, deadline, deadline))
+    elif kind == "rotation":
+        cp = replace(cp, rotation_not_before=(datetime.now(UTC) + timedelta(hours=1)).isoformat())
+    elif kind == "reconnect":
+        cp = replace(cp, pairing_verifier="v" * 43,
+                     reconnect=ReconnectIntent(ACCOUNT, INSTALLATION, "none", "pending-v2-local-only"))
     transport = Transport()
-    with pytest.raises(AckDispatchBlocked):
+    with pytest.raises(AckDispatchBlocked, match="^hosted ACK authority unavailable$"):
         await call(store, entry, SimpleNamespace(snapshot=cp), transport, "other" if kind == "local" else "entry")
     assert not transport.calls
     assert store.hosted_ack_journal()[0].attempt_count == 0
@@ -110,7 +119,7 @@ async def test_credential_change_during_request_does_not_confirm(monkeypatch):
     cp = checkpoint()
     creds = SimpleNamespace(snapshot=cp)
     transport = Transport(on_call=lambda: setattr(creds, "snapshot", replace(cp, revision=1)))
-    with pytest.raises(AckDispatchBlocked):
+    with pytest.raises(AckDispatchBlocked, match="^hosted ACK authority changed$"):
         await call(store, entry, creds, transport)
     assert store.hosted_ack_journal()[0].ack_status == "pending"
 
@@ -140,8 +149,48 @@ async def test_checkpoint_changed_before_send_leaves_attempt_pending(monkeypatch
             return cp if self.accesses == 1 else replace(cp, revision=1)
 
     transport = Transport()
-    with pytest.raises(AckDispatchBlocked):
+    with pytest.raises(AckDispatchBlocked, match="^hosted ACK authority changed$"):
         await call(store, entry, ChangingCredentials(), transport)
+    assert not transport.calls
+    assert store.hosted_ack_journal()[0].attempt_count == 1
+
+
+@pytest.mark.parametrize("which", ["source", "credential"])
+async def test_expiry_during_attempt_save_prevents_ack(monkeypatch, which):
+    now = datetime.now(UTC)
+    deadline = now + timedelta(seconds=1)
+    item = replace(evidence(), account_id=ACCOUNT, installation_id=INSTALLATION,
+                   source_expires_at=(deadline if which == "source" else now + timedelta(days=1)).isoformat())
+    store, entry = await setup(monkeypatch, item=item)
+    cp = checkpoint()
+    if which == "credential":
+        cp = replace(cp, current=replace(cp.current, expires_at=deadline.isoformat()))
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    Clock.current = now
+    monkeypatch.setattr(hosted_ack_dispatch, "datetime", Clock)
+    monkeypatch.setattr(storage, "datetime", Clock)
+    reconcile = store.async_reconcile_hosted_ack
+
+    async def slow_save(**kwargs):
+        result = await reconcile(**kwargs)
+        if kwargs["action"] == "attempt":
+            Clock.current = deadline
+        return result
+
+    monkeypatch.setattr(store, "async_reconcile_hosted_ack", slow_save)
+    transport = Transport()
+    if which == "source":
+        result = await call(store, entry, SimpleNamespace(snapshot=cp), transport)
+        assert result.ack_status == "expired" and result.attempt_count == 1
+    else:
+        with pytest.raises(AckDispatchBlocked, match="^hosted ACK authority unavailable$"):
+            await call(store, entry, SimpleNamespace(snapshot=cp), transport)
+        assert store.hosted_ack_journal()[0].ack_status == "pending"
     assert not transport.calls
     assert store.hosted_ack_journal()[0].attempt_count == 1
 

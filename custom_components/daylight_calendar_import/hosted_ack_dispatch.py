@@ -54,6 +54,12 @@ async def async_dispatch_ack(
     attempted = await store.async_reconcile_hosted_ack(entry=entry, action="attempt")
     if credentials.snapshot != checkpoint:
         raise AckDispatchBlocked("hosted ACK authority changed")
+    # Saving the attempt may take long enough for either authority to expire.
+    now = datetime.now(UTC)
+    if now >= expiry:
+        return await store.async_reconcile_hosted_ack(entry=attempted, action="expire")
+    if now >= datetime.fromisoformat(credential.expires_at):
+        raise AckDispatchBlocked("hosted ACK authority unavailable")
     await transport.acknowledge_source(token=credential.token, delivery_id=evidence.delivery_id,
                                        lease_token=evidence.lease_token)
     if credentials.snapshot != checkpoint:
