@@ -1,0 +1,86 @@
+---
+title: "Notifications and automations"
+sidebarTitle: "Notifications and automations"
+description: "Receive opt-in private alerts and use Home Assistant sensors and events to automate a review reminder."
+---
+
+Daylight exposes pending-review counts and optional notifications without putting private event details into automation payloads or push messages.
+
+## Enable notifications
+
+Open **Daylight Imports → Settings → Notifications** as an administrator.
+
+<Steps>
+  <Step title="Choose an existing notify entity">
+    Pick a Home Assistant **notify entity** (for example a mobile-app notification entity). If none is available, configure a supported Home Assistant notification integration first.
+  </Step>
+  <Step title="Choose the alerts">
+    Turn on **Enable notifications** and select the categories you want under **Notify me about**. Nothing is enabled by default.
+  </Step>
+  <Step title="Save notification settings">
+    Select **Save notification settings**. Test with a fictional import and check **Recent activity** if a delivery fails.
+  </Step>
+</Steps>
+
+### Available alert categories
+
+| Option | When Daylight can notify |
+| --- | --- |
+| Imports ready for review | A source has created pending review drafts |
+| Events added to a calendar | A write is confirmed to have created an event |
+| Calendar writes that could not start | A write was rejected before it started |
+| Calendar writes needing confirmation | A write started but the result is uncertain |
+| Sources that could not be processed | A source fails durably |
+| Calendar conflicts and possible duplicates | An explicit calendar observation finds a match |
+
+Messages omit the source text, sender, event title, destination calendar, and meeting details.
+
+<Note>
+  Notification delivery is **at least once**, not guaranteed exactly once. Some interrupted deliveries can repeat, and a successful Home Assistant notify call does not guarantee a device displayed the alert. A notification failure does not undo a calendar action.
+</Note>
+
+## Monitor the pending queue
+
+Each configured Daylight entry creates two Home Assistant sensor entities:
+
+- **Daylight Calendar Import Pending Imports** — how many imports are still awaiting review, including those requiring uncertainty resolution.
+- **Daylight Calendar Import Pending Events** — the number of event drafts currently in the pending queue.
+
+Find their actual entity IDs under **Settings → Devices & services → Daylight Calendar Import → Entities** or **Developer Tools → States**. Entity IDs depend on your Home Assistant installation; do not assume a fixed ID from the display name.
+
+These sensors update when stored pending work changes and **do not include private event content**.
+
+## Respond to a new pending import
+
+For advanced users, Daylight fires the event `daylight_calendar_import_pending_added` after it saves an import containing reviewable drafts. An example Home Assistant automation trigger is:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: daylight_calendar_import_pending_added
+```
+
+The payload contains only an opaque `pending_id` and an `event_count`. It doesn't contain email content or event titles.
+
+<Warning>
+  The event bus notification is **best effort**. A restart can interrupt its delivery, and Daylight does not replay it later. Use the **pending queue sensors** as the authoritative state if your automation must notice work that remains pending.
+</Warning>
+
+## Example: reminder while work is pending
+
+Replace the entity ID with the one Home Assistant assigned. This example sends a notification when the pending-import count rises above zero; adjust the notification action for your actual notify integration.
+
+```yaml
+triggers:
+  - trigger: numeric_state
+    entity_id: sensor.daylight_calendar_import_pending_imports
+    above: 0
+actions:
+  - action: notify.mobile_app_your_phone
+    data:
+      message: "You have Daylight imports waiting for review."
+```
+
+This is a **transition trigger**, not a recurring reminder. If Home Assistant restarts while the count is already above zero, the automation may not fire again until the state crosses the threshold. Add a periodic trigger or startup check if you need ongoing reminders.
+
+Read the [advanced reference](/help/advanced-reference) for notification persistence and authenticated service contracts.

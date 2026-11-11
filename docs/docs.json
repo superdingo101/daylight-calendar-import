@@ -65,7 +65,9 @@
         "icon": "settings",
         "pages": [
           "configuration/ai-task",
-          "configuration/email"
+          "configuration/calendars-routing",
+          "configuration/email",
+          "configuration/notifications-automations"
         ]
       },
       {
