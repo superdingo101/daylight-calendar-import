@@ -1,0 +1,35 @@
+---
+title: "Advanced reference and recovery"
+sidebarTitle: "Advanced reference"
+description: "Detailed documentation for administrators troubleshooting failures, permissions, and unusual import states."
+---
+
+Most users should start with the [Quickstart](/quickstart), [Review and approve](/workflows/review), or [Troubleshooting](/help/troubleshooting) guides. The resources below are intentionally more technical.
+
+## Common advanced tasks
+
+| If you need to… | Read |
+| --- | --- |
+| Check attachment/provider requirements in detail | [Provider compatibility](/provider-compatibility) |
+| Identify a classified AI provider failure | [Provider errors](/provider-errors) |
+| Diagnose an email intake or read/unread issue | [Direct IMAP setup and recovery](/direct-imap) |
+| See exactly what diagnostics contain | [Redacted diagnostics](/diagnostics) |
+| Understand local data retention exceptions | [Local retention](/retention) |
+| Recover from a storage corruption repair | [Storage recovery](/storage-recovery) |
+| Reprocess an eligible pending text submission | [Source reprocessing](/source-reprocessing) |
+
+## Developer and advanced automation contracts
+
+These guides describe Home Assistant actions and response schemas. They are not required for normal use through the Daylight Imports sidebar.
+
+- [Review service contract](/review-api)
+- [Settings API contract](/settings-api)
+- [Targeted deduplication reset](/targeted-dedupe-reset)
+
+<Warning>
+  If a calendar write is **uncertain**, check the destination calendar before resolving it. Never delete Daylight's private storage or reset deduplication just to clear a warning: you can lose evidence needed to prevent duplicate calendar events.
+</Warning>
+
+<Note>
+  These links describe the current self-hosted integration. Hosted-service architecture notes, internal test corpora, and CI/release procedures are intentionally not part of the public documentation.
+</Note>
