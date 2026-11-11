@@ -11,10 +11,7 @@
   "icons": {
     "library": "lucide"
   },
-  "favicon": {
-    "light": "https://docs.daylightcalendar.com/images/977.ico",
-    "dark": "https://docs.daylightcalendar.com/images/977.ico"
-  },
+  "favicon": "https://docs.daylightcalendar.com/images/977.ico",
   "logo": {
     "light": "https://docs.daylightcalendar.com/images/976.png",
     "dark": "https://docs.daylightcalendar.com/images/976.png"
