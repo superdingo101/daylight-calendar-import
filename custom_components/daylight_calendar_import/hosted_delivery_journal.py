@@ -28,6 +28,8 @@ class HostedDeliveryEvidence:
     attachment_manifest_sha256: str
     attachment_descriptors: tuple[dict[str, Any], ...] = ()
     verified_attachments: tuple[dict[str, Any], ...] = ()
+    account_id: str | None = None
+    installation_id: str | None = None
 
     def validate(self) -> None:
         """Reject malformed or ambiguous evidence before any storage write."""
@@ -36,6 +38,13 @@ class HostedDeliveryEvidence:
             raise ValueError("invalid hosted delivery identity")
         if type(self.lease_token) is not str or not 1 <= len(self.lease_token) <= 1024:
             raise ValueError("invalid hosted lease token")
+        if (self.account_id is None) != (self.installation_id is None):
+            raise ValueError("incomplete hosted namespace")
+        if self.account_id is not None and any(
+            type(value) is not str or _ID.fullmatch(value) is None
+            for value in (self.account_id, self.installation_id)
+        ):
+            raise ValueError("invalid hosted namespace")
         if any(type(value) is not str or _HASH.fullmatch(value) is None
                for value in (self.source_evidence_sha256, self.attachment_manifest_sha256)):
             raise ValueError("invalid hosted evidence digest")
@@ -85,6 +94,11 @@ class HostedDeliveryEvidence:
         """Create the installation-scoped deduplication identity."""
         return f"hosted:{self.local_config_entry_id}:{self.delivery_id}"
 
+    def matches_namespace(self, account_id: str, installation_id: str) -> bool:
+        """Fail closed for legacy records without a proven server namespace."""
+        return (self.account_id is not None and self.installation_id is not None
+                and self.account_id == account_id and self.installation_id == installation_id)
+
 
 @dataclass(frozen=True, slots=True)
 class HostedDeliveryJournalEntry:
@@ -109,8 +123,10 @@ class HostedDeliveryJournalEntry:
                   "source_evidence_sha256", "attachment_manifest_sha256", "attachment_descriptors",
                   "verified_attachments", "source_fingerprint",
                   "acceptance_disposition", "ack_status", "attempt_count", "last_attempt_at"}
-        if type(raw) is not dict or set(raw) != fields:
+        namespace = {"account_id", "installation_id"}
+        if type(raw) is not dict or set(raw) not in (fields, fields | namespace):
             raise ValueError("invalid hosted delivery journal")
+        fields = fields | (namespace if namespace <= set(raw) else set())
         evidence_fields = {key: raw[key] for key in fields if key in HostedDeliveryEvidence.__dataclass_fields__}
         evidence = HostedDeliveryEvidence(**evidence_fields)
         evidence.validate()

@@ -84,6 +84,49 @@ def test_evidence_validation_fails_closed_and_hides_token():
         HostedDeliveryJournalEntry.from_dict({})
 
 
+@pytest.mark.parametrize("account,installation", [
+    ("account", None), (None, "installation"), ("bad:id", "installation"),
+    ("account", "bad:id"), (1, "installation"),
+])
+def test_evidence_rejects_incomplete_or_invalid_hosted_namespace(account, installation):
+    item = replace(evidence(), account_id=account, installation_id=installation)
+    with pytest.raises(ValueError):
+        item.validate()
+
+
+async def test_hosted_namespace_survives_restart_and_cannot_change_on_release(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = replace(evidence(), account_id="account_one", installation_id="installation_one")
+    await store.async_add(source_text="source", events=[], source_id=item.source_id,
+                          hosted_evidence=item)
+    restarted = make_store(monkeypatch, FakeStoreBackend(load_result=backend.saved[-1]))
+    await restarted.async_load()
+    entry = restarted.hosted_ack_journal()[0]
+    assert entry.evidence == item
+    assert item.matches_namespace("account_one", "installation_one")
+    assert not item.matches_namespace("account_two", "installation_one")
+    assert not item.matches_namespace("account_one", "installation_two")
+    changed = replace(item, installation_id="installation_two", lease_token="new-token")
+    with pytest.raises(ValueError, match="evidence changed"):
+        await restarted.async_reconcile_hosted_ack(entry=entry, action="replace_lease",
+                                                  new_evidence=changed)
+
+
+def test_legacy_journal_without_server_namespace_remains_readable():
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    item = evidence()
+    raw = HostedDeliveryJournalEntry(item, source_fingerprint(item.source_id), "pending").as_dict()
+    del raw["account_id"]
+    del raw["installation_id"]
+    assert HostedDeliveryJournalEntry.from_dict(raw).evidence == item
+    assert not item.matches_namespace("account", "installation")
+    raw["account_id"] = "account"
+    with pytest.raises(ValueError, match="invalid hosted delivery journal"):
+        HostedDeliveryJournalEntry.from_dict(raw)
+
+
 def test_journal_rejects_corrupt_fields():
     from custom_components.daylight_calendar_import.dedup import source_fingerprint
 
