@@ -123,7 +123,7 @@ async def test_expired_source_is_terminal_without_ack(monkeypatch):
         source_expires_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat()))
     store._hosted_delivery_journal = (expired,)
     transport = Transport()
-    result = await call(store, expired, SimpleNamespace(snapshot=checkpoint()), transport)
+    result = await call(store, expired, SimpleNamespace(snapshot=CredentialCheckpoint()), transport)
     assert result.ack_status == "expired" and not transport.calls
 
 
