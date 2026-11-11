@@ -20,6 +20,13 @@ PAGE_RE = re.compile(r"^[a-zA-Z0-9/_-]+$")
 ASSET = "daylight-calendar-import.zip"
 TARGET = "docs-live"
 REHEARSAL_TARGET = "docs-rehearsal"
+# Exact, reviewed Daylight assets shared with the Calendar Card site.
+# All other assets must remain files in the tagged release tree.
+SHARED_BRAND_ASSETS = {
+    "favicon": "https://docs.daylightcalendar.com/images/977.ico",
+    "light logo": "https://docs.daylightcalendar.com/images/976.png",
+    "dark logo": "https://docs.daylightcalendar.com/images/976.png",
+}
 
 
 class PublicationError(ValueError):
@@ -125,8 +132,12 @@ def check_site(root: Path, tag: str) -> list[Path]:
         ("light logo", (config.get("logo") or {}).get("light")),
         ("dark logo", (config.get("logo") or {}).get("dark")),
     ]:
+        # Only the pinned, pre-existing Card branding URLs are allowed externally.
+        # Everything else must be a checked-in local asset in this release.
+        if asset == SHARED_BRAND_ASSETS[key]:
+            continue
         if not isinstance(asset, str) or not asset.startswith("/") or not (docs / asset.lstrip("/")).is_file():
-            raise PublicationError(f"Mintlify {key} asset is missing")
+            raise PublicationError(f"Mintlify {key} asset is missing or not approved")
 
     files = [_page_path(docs, route) for route in pages]
     for page in files:
