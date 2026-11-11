@@ -89,7 +89,7 @@
         {
           "anchor": "Home",
           "icon": "house",
-          "href": "/"
+          "href": "/introduction"
         },
         {
           "anchor": "GitHub",
