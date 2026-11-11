@@ -11,10 +11,10 @@
   "icons": {
     "library": "lucide"
   },
-  "favicon": "https://docs.daylightcalendar.com/images/977.ico",
+  "favicon": "/images/977.ico",
   "logo": {
-    "light": "https://docs.daylightcalendar.com/images/976.png",
-    "dark": "https://docs.daylightcalendar.com/images/976.png"
+    "light": "/images/976.png",
+    "dark": "/images/976.png"
   },
   "styling": {
     "eyebrows": "breadcrumbs"
@@ -43,7 +43,7 @@
   "navigation": {
     "groups": [
       {
-        "group": "Get started",
+        "group": "Get Started",
         "icon": "rocket",
         "expanded": true,
         "pages": [
@@ -53,12 +53,13 @@
         ]
       },
       {
-        "group": "Import events",
+        "group": "Import Events",
         "icon": "file-up",
         "pages": [
           "workflows/manual-import",
           "workflows/review"
-        ]
+        ],
+        "expanded": true
       },
       {
         "group": "Configuration",
@@ -68,19 +69,35 @@
           "configuration/calendars-routing",
           "configuration/email",
           "configuration/notifications-automations"
-        ]
+        ],
+        "expanded": true
       },
       {
-        "group": "Help and reference",
+        "group": "Help and Reference",
         "icon": "life-buoy",
         "pages": [
           "help/troubleshooting",
           "help/faq",
           "help/privacy",
           "help/advanced-reference"
-        ]
+        ],
+        "expanded": true
       }
-    ]
+    ],
+    "global": {
+      "anchors": [
+        {
+          "anchor": "Home",
+          "icon": "house",
+          "href": "/introduction"
+        },
+        {
+          "anchor": "GitHub",
+          "icon": "github",
+          "href": "https://github.com/superdingo101/daylight-calendar-import"
+        }
+      ]
+    }
   },
   "redirects": [
     {
