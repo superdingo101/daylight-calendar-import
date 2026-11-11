@@ -148,6 +148,48 @@ class DocsPublicationTest(unittest.TestCase):
         with self.assertRaisesRegex(PublicationError, "do not match"):
             check_site(self.released, "v0.9.1")
 
+    def test_pinned_calendar_card_branding_passes_release_validation(self) -> None:
+        config_path = self.work / "docs/docs.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["favicon"] = "https://docs.daylightcalendar.com/images/977.ico"
+        config["logo"] = {
+            "light": "https://docs.daylightcalendar.com/images/976.png",
+            "dark": "https://docs.daylightcalendar.com/images/976.png",
+        }
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        self.write_version("0.9.1")
+        self.commit("ship stable docs with shared Card branding")
+        run("tag", "v0.9.1", cwd=self.work)
+        run("push", "origin", "main", "--tags", cwd=self.work)
+        self.checkout_tag("v0.9.1")
+
+        self.assertEqual(len(check_site(self.released, "v0.9.1")), 3)
+        self.assertIn("Published v0.9.1", publish(self.released, release("v0.9.1")))
+        self.assertEqual(self.docs_live_sha(), run(
+            "rev-parse", "v0.9.1^{commit}", cwd=self.released,
+        ))
+
+    def test_unapproved_external_branding_is_rejected(self) -> None:
+        config_path = self.released / "docs/docs.json"
+        original = json.loads(config_path.read_text(encoding="utf-8"))
+        allowed_logo = "https://docs.daylightcalendar.com/images/976.png"
+        allowed_favicon = "https://docs.daylightcalendar.com/images/977.ico"
+        invalid_variants = (
+            {"favicon": "https://example.com/favicon.ico"},
+            {"favicon": "https://docs.daylightcalendar.com.evil.test/images/977.ico"},
+            {"favicon": "https://docs.daylightcalendar.com/images/other.ico"},
+            {"favicon": {"light": allowed_favicon, "dark": allowed_favicon}},
+            {"logo": {"light": "https://example.com/logo.png", "dark": allowed_logo}},
+            {"logo": {"light": allowed_logo, "dark": allowed_favicon}},
+        )
+        for changes in invalid_variants:
+            config = {**original, **changes}
+            with self.subTest(changes=changes):
+                config_path.write_text(json.dumps(config), encoding="utf-8")
+                with self.assertRaisesRegex(PublicationError, "not approved"):
+                    check_site(self.released, "v0.9.0")
+        self.assertIsNone(self.docs_live_sha())
+
     def test_valid_local_markdown_image_does_not_fail_page_validation(self) -> None:
         (self.released / "docs/introduction.mdx").write_text(
             "---\ntitle: Introduction\n---\n"

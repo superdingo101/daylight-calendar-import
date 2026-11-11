@@ -11,10 +11,10 @@
   "icons": {
     "library": "lucide"
   },
-  "favicon": "/logo/icon.svg",
+  "favicon": "https://docs.daylightcalendar.com/images/977.ico",
   "logo": {
-    "light": "/logo/daylight.svg",
-    "dark": "/logo/daylight-dark.svg"
+    "light": "https://docs.daylightcalendar.com/images/976.png",
+    "dark": "https://docs.daylightcalendar.com/images/976.png"
   },
   "styling": {
     "eyebrows": "breadcrumbs"
