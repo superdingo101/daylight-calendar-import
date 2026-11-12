@@ -1554,6 +1554,8 @@ class PendingImportStore:
                     if new_evidence is None:
                         raise ValueError("missing hosted delivery evidence")
                     new_evidence.validate()
+                    if entry.evidence.public_source_id is None:
+                        raise ValueError("hosted source identity unavailable")
                     new_evidence = replace(
                         new_evidence,
                         attachment_descriptors=tuple(new_evidence.attachment_descriptors),
@@ -1667,6 +1669,8 @@ class PendingImportStore:
         """Persist only events not already pending or handled."""
         if hosted_evidence is not None:
             hosted_evidence.validate()
+            if hosted_evidence.public_source_id is None:
+                raise ValueError("hosted source identity unavailable")
             if source_id != hosted_evidence.source_id:
                 raise ValueError("hosted source identity does not match evidence")
         source_text = source_text.strip()

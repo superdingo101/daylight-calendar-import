@@ -16,7 +16,8 @@ from tests.test_storage import FakeStoreBackend, draft, make_store
 
 def evidence(delivery_id="delivery"):
     return HostedDeliveryEvidence("entry", delivery_id, "secret-token",
-        (datetime.now(UTC) + timedelta(days=1)).isoformat(), "a" * 64, sha256(b'{"attachments":[]}').hexdigest())
+        (datetime.now(UTC) + timedelta(days=1)).isoformat(), "a" * 64,
+        sha256(b'{"attachments":[]}').hexdigest(), public_source_id="source_1234567890")
 
 
 @pytest.mark.parametrize("events,expected", [([draft()], "pending"), ([], "no_events")])
@@ -383,6 +384,8 @@ def test_journal_rejects_missing_and_extra_fields_without_discarding_evidence():
     item = evidence()
     data = HostedDeliveryJournalEntry(item, source_fingerprint(item.source_id), "pending").as_dict()
     for field in data:
+        if field == "public_source_id":
+            continue  # Legacy journals predate this field; replacement remains blocked.
         damaged = dict(data)
         damaged.pop(field)
         with pytest.raises(ValueError, match="invalid hosted delivery journal"):
@@ -888,3 +891,50 @@ async def test_ack_lease_rotation_normalizes_prior_and_fresh_collections(monkeyp
     assert updated.evidence.attachment_descriptors == tuple(fresh.attachment_descriptors)
     assert updated.evidence.verified_attachments == tuple(fresh.verified_attachments)
     assert backend.saved[-1]["hosted_delivery_journal"][0]["lease_token"] == "new-lease"
+
+
+async def test_source_identity_survives_restart_and_fences_new_leases(monkeypatch):
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    restarted = make_store(monkeypatch, FakeStoreBackend(load_result=backend.saved[-1]))
+    await restarted.async_load()
+    saved = restarted.hosted_ack_journal()[0]
+    assert saved.evidence.public_source_id == entry.evidence.public_source_id
+    changed = replace(saved.evidence, lease_token="other-token", public_source_id="source_other_12345")
+    with pytest.raises(ValueError, match="evidence changed"):
+        await restarted.async_reconcile_hosted_ack(entry=saved, action="replace_lease", new_evidence=changed)
+    valid = replace(saved.evidence, lease_token="other-token")
+    renewed = await restarted.async_reconcile_hosted_ack(entry=saved, action="replace_lease", new_evidence=valid)
+    assert renewed.evidence.public_source_id == saved.evidence.public_source_id
+
+
+@pytest.mark.parametrize("source_id", ["short", "bad:identity_123456", 42])
+def test_rejects_invalid_public_source_identity(source_id):
+    with pytest.raises(ValueError, match="invalid hosted source identity"):
+        replace(evidence(), public_source_id=source_id).validate()
+
+
+async def test_legacy_source_identity_allows_retry_but_not_replacement(monkeypatch):
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    store, backend, entry = await _accepted_journal(monkeypatch)
+    raw = entry.as_dict()
+    del raw["public_source_id"]
+    assert raw["source_fingerprint"] == source_fingerprint(entry.evidence.source_id)
+    legacy = HostedDeliveryJournalEntry.from_dict(raw)
+    store._hosted_delivery_journal = (legacy,)
+    attempted = await store.async_reconcile_hosted_ack(entry=legacy, action="attempt")
+    with pytest.raises(ValueError, match="identity unavailable"):
+        await store.async_reconcile_hosted_ack(
+            entry=attempted, action="replace_lease", new_evidence=replace(entry.evidence, lease_token="other-token")
+        )
+    assert store.hosted_ack_journal()[0] == attempted
+
+
+async def test_new_acceptance_requires_public_source_identity(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    item = replace(evidence(), public_source_id=None)
+    with pytest.raises(ValueError, match="identity unavailable"):
+        await store.async_add(source_text="source", events=[], source_id=item.source_id,
+                              hosted_evidence=item)
+    assert not backend.saved
