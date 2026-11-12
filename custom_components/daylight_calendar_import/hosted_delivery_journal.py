@@ -30,6 +30,7 @@ class HostedDeliveryEvidence:
     verified_attachments: tuple[dict[str, Any], ...] = ()
     account_id: str | None = None
     installation_id: str | None = None
+    public_source_id: str | None = None
 
     def validate(self) -> None:
         """Reject malformed or ambiguous evidence before any storage write."""
@@ -45,6 +46,11 @@ class HostedDeliveryEvidence:
             for value in (self.account_id, self.installation_id)
         ):
             raise ValueError("invalid hosted namespace")
+        if self.public_source_id is not None and (
+            type(self.public_source_id) is not str
+            or re.fullmatch(r"[A-Za-z0-9_-]{16,128}", self.public_source_id) is None
+        ):
+            raise ValueError("invalid hosted source identity")
         if any(type(value) is not str or _HASH.fullmatch(value) is None
                for value in (self.source_evidence_sha256, self.attachment_manifest_sha256)):
             raise ValueError("invalid hosted evidence digest")
@@ -124,9 +130,13 @@ class HostedDeliveryJournalEntry:
                   "verified_attachments", "source_fingerprint",
                   "acceptance_disposition", "ack_status", "attempt_count", "last_attempt_at"}
         namespace = {"account_id", "installation_id"}
-        if type(raw) is not dict or set(raw) not in (fields, fields | namespace):
+        source_identity = {"public_source_id"}
+        if type(raw) is not dict or set(raw) not in (
+            fields, fields | namespace, fields | source_identity, fields | namespace | source_identity
+        ):
             raise ValueError("invalid hosted delivery journal")
         fields = fields | (namespace if namespace <= set(raw) else set())
+        fields = fields | (source_identity if source_identity <= set(raw) else set())
         evidence_fields = {key: raw[key] for key in fields if key in HostedDeliveryEvidence.__dataclass_fields__}
         evidence = HostedDeliveryEvidence(**evidence_fields)
         evidence.validate()

@@ -202,13 +202,15 @@ HTTP 200 uses `delivery-ack-response.schema.json`: `status: "acknowledged"`, sta
 
 The journal is keyed by `(local_config_entry_id, delivery_id)` and durably contains:
 
-- raw opaque delivery ID and local entry namespace, namespaced source fingerprint, complete `source_evidence_sha256`, immutable source expiry;
+- raw opaque delivery ID and public `source_id`, local entry namespace, namespaced source fingerprint, complete `source_evidence_sha256`, immutable source expiry;
 - original attachment descriptors, canonical `{"attachments":[...]}` digest, and verified attachment IDs, byte counts and SHA-256s (explicit empty descriptors/manifest for text-only sources);
 - secret lease token, immutable `acceptance_disposition` (`pending | no_events | duplicate`), `ack_status` (`pending | confirmed | expired`), safe attempt count and last-attempt time.
 
 Before acceptance, HA verifies every attachment's byte length, SHA-256 and supported content type against its descriptor. Verification must be complete before recording the journal. Store no raw source bytes solely for ACK retries. Journal persistence and integrity validation must reject incomplete/corrupt records and mismatched namespaces. A pending-import reference is diagnostic only after acceptance. Review approval/rejection, removal of pending events, and dedup/history compaction MUST NOT delete or invalidate an unresolved journal obligation. There is no transport `handled` disposition or pending-to-handled recovery transition.
 
 After a lost ACK response or restart, retry the same token from the durable journal without downloading source bytes again or requiring a surviving pending import. A new claim/token requires comparing the freshly supplied source, identity, expiry and descriptors against persisted evidence, validating any needed attachment bytes, then atomically advancing the journal token before ACK. Reuse the accepted local outcome rather than parsing/writing duplicate events. Reject changed evidence without ACK. Serialise acceptance/reconciliation for a delivery so concurrent workers cannot overwrite newer tokens or duplicate acceptance.
+
+Legacy journals that predate the stored public `source_id` remain readable and can retry their existing token. They cannot accept a replacement lease because the original source identity cannot be verified.
 
 Cloud ACK is atomic and installation-scoped. An unconfirmed ACK succeeds only with the current active unexpired token, evaluated using a fresh clock after required locks. Expired/replaced tokens return 409 `lease_not_current` without disturbing the current lease. A retry of the same already-confirmed token returns the original success strictly before source expiry, even after lease expiry or payload cleanup. Cloud retains a minimal tenant-scoped ACK tombstone (delivery ID, confirmed-token verifier, original acknowledgement timestamp and immutable expiry) through that deadline. Tombstones do not authorize attachment fetches. At or after source expiry, all ACKs return the uniform 404 `not_found`, including confirmed retries; check expiry before returning idempotent success.
 
