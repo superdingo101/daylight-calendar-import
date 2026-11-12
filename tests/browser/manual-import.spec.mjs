@@ -252,3 +252,82 @@ test("multi-event import is compact, source-grouped, and expands individual cont
   await expect(page.getByRole("button", {name: "Approve Wear Red Day"})).toBeVisible();
   await expect(page.getByRole("button", {name: "Approve School picnic"})).toBeHidden();
 });
+
+
+test("mobile and desktop review menus do not reflow event actions or hide calendar destinations", async ({page}) => {
+  await page.evaluate(() => {
+    const fixture = window.fixture;
+    const panel = document.querySelector("daylight-import-panel");
+    panel._hass.states["calendar.family"] = {attributes: {friendly_name: "Family"}};
+    panel._hass.states["calendar.work"] = {attributes: {friendly_name: "Work"}};
+    fixture.pending.default_calendar = "calendar.family";
+    const base = fixture.pending.events[0];
+    fixture.pending.events = [
+      {...base, calendar_entity: null},
+      {...base, id: "second", title: "Wear Red Day", start: "2026-10-26",
+        end: "2026-10-27", all_day: true, status: "pending",
+        calendar_entity: "calendar.work"},
+    ];
+  });
+  await openImport(page, "text");
+  await textForm(page).getByRole("textbox").fill(source);
+  await textForm(page).getByRole("button", {name: "Import events", exact: true}).click();
+  const cards = page.locator(".detail-event");
+  await expect(cards).toHaveCount(2);
+  const first = cards.nth(0);
+  const second = cards.nth(1);
+  await expect(first.locator(".event-fold-summary .event-calendar")).toHaveText("Calendar · Family");
+  await expect(second.locator(".event-fold-summary .event-calendar")).toHaveText("Calendar · Work");
+  await expect(second.locator(".event-fold")).not.toHaveAttribute("open");
+  await second.locator(".event-fold > summary").click();
+  const edit = second.getByRole("button", {name: "Edit Wear Red Day"});
+  const approve = second.getByRole("button", {name: "Approve Wear Red Day"});
+  const more = second.locator(".event-more > summary");
+  const popup = second.locator(".event-more-menu");
+  const before = await Promise.all([edit.boundingBox(), approve.boundingBox(), more.boundingBox()]);
+  const beforeScroll = await page.evaluate(() => window.scrollY);
+  expect(before.every(Boolean)).toBe(true);
+  expect(before[2].width).toBeLessThanOrEqual(45);
+  await more.click();
+  await expect(second.locator(".event-more")).toHaveAttribute("open");
+  await expect(second.getByRole("button", {name: "Reject Wear Red Day"})).toBeVisible();
+  await expect(second.getByRole("button", {name: "Check calendars for Wear Red Day"})).toBeVisible();
+  const after = await Promise.all([edit.boundingBox(), approve.boundingBox(), more.boundingBox()]);
+  const afterScroll = await page.evaluate(() => window.scrollY);
+  for (let index = 0; index < before.length; index++) {
+    // Playwright may scroll a long review page to bring the popover on screen.
+    // Compare document positions rather than viewport positions to detect reflow.
+    expect(Math.abs(after[index].x - before[index].x)).toBeLessThan(2);
+    expect(Math.abs((after[index].y + afterScroll) -
+      (before[index].y + beforeScroll))).toBeLessThan(2);
+  }
+  const controls = await second.locator(".event-controls").boundingBox();
+  const menuBox = await popup.boundingBox();
+  expect(menuBox.y).toBeGreaterThanOrEqual(controls.y + controls.height - 1);
+  await more.click();
+  await expect(second.locator(".event-more")).not.toHaveAttribute("open");
+  await expect(popup).toBeHidden();
+  await expect(approve).toBeVisible();
+});
+
+
+test("uncertain calendar write keeps the left-edge overflow actions on screen", async ({page}) => {
+  await page.evaluate(() => {
+    window.fixture.pending.events[0].status = "write_uncertain";
+  });
+  await openImport(page, "text");
+  await textForm(page).getByRole("textbox").fill(source);
+  await textForm(page).getByRole("button", {name: "Import events", exact: true}).click();
+  await expect(page.getByText("Calendar write could not be confirmed.", {exact: false})).toBeVisible();
+  const overflow = page.locator(".detail-event .event-more");
+  await overflow.locator("summary").click();
+  await expect(overflow).toHaveAttribute("open");
+  const check = page.getByRole("button", {name: "Check calendars for School picnic"});
+  await expect(check).toBeVisible();
+  const box = await check.boundingBox();
+  const viewport = page.viewportSize();
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+  await check.click();
+  await expect(page.getByRole("region", {name: "Calendar check results"})).toContainText("Scheduling conflict");
+});

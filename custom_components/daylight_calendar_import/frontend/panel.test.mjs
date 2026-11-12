@@ -6244,3 +6244,46 @@ test("review cards display the calendar year on all-day dates and both ends of N
     assert.equal(panel._content.querySelector(".event-date").textContent, expected);
   }
 });
+
+
+test("collapsed source rows disclose their actual calendar without expanding", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {locale: {language: "en-US"}, config: {time_zone: "UTC"},
+    states: {
+      "calendar.family": {attributes: {friendly_name: "Family Calendar"}},
+      "calendar.work": {attributes: {friendly_name: "Work Calendar"}},
+    }};
+  panel._status = "ready";
+  panel._selectedId = "one";
+  panel._detail = {id: "one", source_title: "School week", default_calendar: "calendar.family",
+    events: [
+      {id: "a", title: "Wear Red Day", start: "2026-10-26", end: "2026-10-27",
+        all_day: true, status: "pending", calendar_entity: "calendar.work"},
+      {id: "b", title: "Pajama Day", start: "2026-10-27", end: "2026-10-28",
+        all_day: true, status: "pending"},
+      {id: "c", title: "Needs routing", start: "2026-10-28", end: "2026-10-29",
+        all_day: true, status: "pending", routing_unresolved: true,
+        calendar_entity: "calendar.family"},
+    ]};
+  panel.render();
+  const folds = panel._content.querySelectorAll(".event-fold");
+  assert.equal(folds.length, 3);
+  assert.deepEqual(folds.map(fold =>
+    fold.querySelector(".event-fold-summary").querySelector(".event-calendar").textContent), [
+    "Calendar · Work Calendar", "Calendar · Family Calendar",
+    "Calendar · Confirm destination",
+  ]);
+  assert.equal(folds[0].open, false);
+  assert.equal(folds[0].querySelectorAll(".event-calendar").length, 1,
+    "expansion must not repeat the calendar label");
+  assert.equal(folds[0].querySelector(".event-more").children[0].attributes["aria-label"],
+    "More actions for Wear Red Day");
+  const more = folds[0].querySelector(".event-more");
+  const menu = more.querySelector(".event-more-menu");
+  assert.deepEqual(menu.querySelectorAll("button").map(button => button.textContent),
+    ["Reject", "Check calendars"]);
+  const style = find(panel.shadowRoot, "style").textContent;
+  assert.match(style, /\.event-more \{ position: relative; flex: 0 0 44px; \}/);
+  assert.match(style, /\.event-more-menu \{[\s\S]*position: absolute/);
+  assert.doesNotMatch(style, /\.event-more\[open\] \{ flex-basis: 100%/);
+});

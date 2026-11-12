@@ -1,0 +1,88 @@
+name: Rehearse Mintlify docs from published beta
+
+# Explicit opt-in only. Stable documentation still uses
+# publish-mintlify-docs.yml, which cannot publish prereleases.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Already published beta release tag (for example v0.9.0-beta2)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-import-docs-rehearsal
+  cancel-in-progress: false
+
+jobs:
+  rehearse-docs:
+    name: Validate and publish isolated beta docs
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Require main branch dispatch
+        run: |
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "ERROR: Start the docs rehearsal from main."
+            exit 1
+          fi
+
+      - name: Checkout publisher tooling from main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Resolve published beta release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/daylight-release.json"
+
+      - name: Checkout exact published beta tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          path: released
+
+      - name: Validate beta, HACS ZIP, docs, and Git ancestry
+        run: |
+          python scripts/publish_docs_live.py \
+            --repo released \
+            --release-json "$RUNNER_TEMP/daylight-release.json" \
+            --rehearsal
+
+      - name: Set up Node for Mintlify
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install Mintlify CLI
+        run: npm install --global mint@latest
+
+      - name: Validate released Mintlify site
+        working-directory: released/docs
+        run: mint validate
+
+      - name: Reject broken documentation links
+        working-directory: released/docs
+        run: mint broken-links
+
+      - name: Advance only docs-rehearsal after all validation passes
+        run: |
+          set -euo pipefail
+          python scripts/publish_docs_live.py \
+            --repo released \
+            --release-json "$RUNNER_TEMP/daylight-release.json" \
+            --rehearsal \
+            --publish
+          {
+            echo "### Beta documentation rehearsal"
+            echo "Published \`$RELEASE_TAG\` to \`docs-rehearsal\`."
+            echo "The stable \`docs-live\` branch and the production Mintlify Git source were not changed."
+          } >> "$GITHUB_STEP_SUMMARY"

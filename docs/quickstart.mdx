@@ -1,0 +1,49 @@
+---
+title: "Quickstart"
+sidebarTitle: "Import your first event"
+description: "Paste a simple announcement and review its calendar draft."
+---
+
+# Import your first event
+
+Use a made-up event to verify that Daylight can read your AI Task provider and write to the correct calendar after approval.
+
+<Steps>
+  <Step title="Open New import">
+    In Home Assistant, open **Daylight Imports → New import** and choose **Paste event details**.
+  </Step>
+  <Step title="Paste a simple event">
+    Try the following synthetic example:
+
+    ```text
+    Neighborhood board meeting
+    Thursday, November 19, 2026
+    6:00 PM to 7:00 PM
+    Community center, Room 2
+    ```
+  </Step>
+  <Step title="Import">
+    Select **Import events**. Daylight uses the configured AI Task entity to extract an event and saves it for review. It does not write to your calendar yet.
+  </Step>
+  <Step title="Review the draft">
+    Check the event title, date, start and end times, time zone, and destination calendar. Correct any mistakes before proceeding.
+  </Step>
+  <Step title="Approve or reject">
+    Approve the draft to create an event in your chosen calendar, or reject it to leave that calendar unchanged.
+  </Step>
+</Steps>
+
+<Warning>
+  AI-extracted dates and times can be wrong. Check the year, time zone, and whether an event is all-day before approving it. If an approval reports an **uncertain write**, check the destination calendar before taking any recovery action.
+</Warning>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Upload a flyer or PDF" icon="file-image" href="/workflows/manual-import">
+    Learn which formats and AI provider capabilities work.
+  </Card>
+  <Card title="Configure email intake" icon="mail" href="/configuration/email">
+    Optionally import messages from a dedicated IMAP folder.
+  </Card>
+</CardGroup>

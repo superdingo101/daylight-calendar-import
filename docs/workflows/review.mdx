@@ -1,0 +1,84 @@
+---
+title: "Review and approve drafts"
+sidebarTitle: "Review and approve"
+description: "Check dates and calendar destinations, understand duplicates and conflicts, and approve events safely."
+---
+
+Every successful import creates **drafts awaiting your review**. A draft is not yet a calendar event: Daylight only writes to a calendar after you explicitly approve it.
+
+## Review your first import
+
+<Steps>
+  <Step title="Open Review inbox">
+    In **Daylight Imports**, select **Review inbox**, open your imported source, and expand an event when you need the full details. An announcement can contain multiple drafts.
+  </Step>
+  <Step title="Verify the important details">
+    Check the title, date and year, start and end times, time zone, all-day status, location, description, and any meeting details. AI extraction is helpful but not infallible.
+  </Step>
+  <Step title="Confirm the destination">
+    Check the destination calendar shown for each draft. A configured default is only a fallback. If you see **Confirm destination**, open the editor and explicitly select a writable calendar.
+  </Step>
+  <Step title="Inspect duplicates or overlaps">
+    You can choose **Check calendars** at any time. Daylight also runs the broader advisory observation automatically when you select **Approve** or **Approve all**, before asking you to confirm. Review any matches or incomplete-check warnings.
+  </Step>
+  <Step title="Approve or reject">
+    Approve the correct drafts or reject those you don't want. Mixed decisions are supported; rejecting a draft does not delete an existing calendar entry.
+  </Step>
+</Steps>
+
+## Duplicates, conflicts, and uncertain writes
+
+These situations look similar in the inbox but require different decisions:
+
+| Finding | What it means | What to do |
+| --- | --- | --- |
+| **Duplicate** | The source or event matches previously handled material | Check the existing review/activity record and destination calendar before re-importing |
+| **Possible duplicate** | A similar event was observed on a calendar | Compare details; similar titles don't always mean the same event |
+| **Conflict** | An existing event overlaps the proposed time | Decide whether the overlap is acceptable; don't assume the dates are wrong |
+| **Incomplete check** | A calendar couldn't be read, timed out, or exceeded observation limits | Restore access and check again; no warning does **not** mean no conflict |
+| **Uncertain write** | Daylight cannot prove whether an approval created an event | Inspect the actual destination calendar, then use the explicit recovery control |
+
+<Warning>
+  **Never retry an uncertain write blindly.** The calendar provider may have created the event even if the request timed out. Confirm the real outcome in the destination calendar first; then record whether the event was created, not created, or should be discarded using Daylight's recovery controls.
+</Warning>
+
+### How calendar checks work
+
+Daylight has three separate safety stages:
+
+1. **Manual advisory observation:** **Check calendars** reads the selected destination and configured conflict-observation calendars on demand. It does not write events.
+2. **Automatic advisory observation:** Selecting **Approve** or **Approve all** in the review UI automatically checks those same broader calendars **before the approval confirmation**. Review the returned matches and any incomplete-observation warning; these checks are not continuous monitoring.
+3. **Mandatory write-time preflight:** After confirmation, the backend freshly checks each event's **destination calendar only** for an exact duplicate immediately before writing. It does not repeat the broader conflict-calendar observation at write time.
+
+These stages can see different calendar states if events change between checks. Calendar read failures or incomplete results are not proof that a calendar is clear.
+
+## Calendar routing hints
+
+You can assign friendly calendar aliases in **Settings → Routing**. For example, an import can include:
+
+```text
+Calendar: Kids
+Soccer game on Saturday, November 21, 2026 at 9:00 AM
+```
+
+Daylight can resolve a known `Kids` alias to your configured writable calendar. An unknown or contradictory hint **blocks approval until you choose a destination explicitly**. Changing a draft's calendar does not approve it.
+
+## When an announcement describes repeating events
+
+Daylight does **not** generate general recurring calendar rules (RRULE) from a phrase like "every Thursday."
+
+To avoid accidentally creating an incorrect one-off event, the beta2 extractor applies a **conservative source-wide rule** when it detects unsupported recurrence. This can block approval of all events from that same announcement, **including independent events mixed with the repeating schedule**.
+
+If this happens, don't keep clicking Approve:
+
+1. Find the repeating schedule in the source. Add that recurrence directly in your calendar application.
+2. If the announcement also contains distinct one-time events, separate those into a new, clearly worded submission with explicit dates.
+3. Check **Recent activity** and any retained review drafts before resubmitting so you do not introduce duplicates.
+
+Detection depends partly on the AI provider. The fallback recognizes some common English phrases but is not a universal recurrence detector, especially for images or other languages. **Always review dates and recurrence manually.**
+
+## Permissions and advanced recovery
+
+Approving needs suitable Home Assistant control permission on the configured AI Task and allowed calendars, **and read permission on the event's destination** for duplicate-safe approval. Reading optional conflict calendars also needs read permission. A permission failure does not authorize bypassing the safety checks.
+
+See [Troubleshooting](/help/troubleshooting) for normal recovery and the [advanced reference](/help/advanced-reference) for service contracts, reprocessing, and storage recovery.

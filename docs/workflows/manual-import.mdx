@@ -1,0 +1,67 @@
+---
+title: "Import text, images, and PDFs"
+sidebarTitle: "Text, images, and PDFs"
+description: "Submit announcements and files without connecting an email inbox."
+---
+
+Daylight works without any email configuration. Open **Daylight Imports → New import** from the Home Assistant sidebar.
+
+<Tabs>
+  <Tab title="Paste text">
+    <Steps>
+      <Step title="Choose Paste event details">
+        Paste the original announcement into **Event details**. Dates, start and end times, and locations help the AI Task provider extract accurate events.
+      </Step>
+      <Step title="Optionally suggest a calendar">
+        If you've configured a friendly calendar name, you can begin the message with a routing hint such as `Calendar: Kids`. Confirm the actual destination during review.
+      </Step>
+      <Step title="Select Import events">
+        Wait for the result, then check each draft in the **Review inbox**.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Upload a file">
+    <Steps>
+      <Step title="Choose Upload image or PDF">
+        Choose one JPEG, PNG, WebP image, or PDF. You can also supply supporting text.
+      </Step>
+      <Step title="Check provider compatibility">
+        Images and scanned PDFs require an AI Task provider/model that supports the actual attachment type. A PDF with a usable text layer can work with a text-only provider.
+      </Step>
+      <Step title="Select Import file">
+        Review the extracted drafts. Uploading never approves an event automatically.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Limits
+
+| Input | Limit |
+| --- | --- |
+| Submitted text, including optional supporting text | 1,000,000 Unicode characters |
+| Uploaded image or PDF | 10 MiB |
+| PDF length | Up to 30 pages |
+| Extracted text from a text-layer PDF | Up to 100,000 Unicode characters across the PDF |
+| File types | JPEG, PNG, WebP, PDF |
+
+A single announcement can produce several drafts. The **100,000-character extracted-PDF-text limit** is separate from the **1,000,000-character submitted-text limit**. A PDF can be rejected for too much extracted text even if it is smaller than 10 MiB and has fewer than 30 pages. Unsupported formats, incomplete files, and oversize input are rejected rather than silently truncated.
+
+<Warning>
+  A model that exposes the AI Task attachment flag may still be unable to accept a particular PDF or image. Check the model/provider's actual media support before using scanned documents.
+</Warning>
+
+## If the result is unexpected
+
+- **Ready for review:** Verify and correct all drafts before approving them.
+- **Duplicate:** Check existing drafts and recent activity before submitting again.
+- **No events found:** Try a clearer source containing explicit dates and times.
+- **Failed:** Check the form and **Recent activity**, correct the source or provider issue, then retry deliberately.
+
+A lost browser connection does not prove the import failed. Check **Review inbox** and **Recent activity** before resubmitting.
+
+For deeper limits, permissions, and recurring schedule behavior, see the [detailed manual-import reference](/manual-import).
+
+<Card title="Review drafts" icon="check-circle" href="/workflows/review">
+  Understand approval, calendar routing, and uncertain calendar writes.
+</Card>

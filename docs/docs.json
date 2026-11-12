@@ -1,0 +1,109 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "almond",
+  "name": "Daylight Calendar Import",
+  "description": "Turn announcements, emails, pictures, and PDFs into reviewable Home Assistant calendar events.",
+  "colors": {
+    "primary": "#242424",
+    "light": "#aeaeac",
+    "dark": "#484641"
+  },
+  "icons": {
+    "library": "lucide"
+  },
+  "favicon": "/images/977.ico",
+  "logo": {
+    "light": "/images/976.png",
+    "dark": "/images/976.png"
+  },
+  "styling": {
+    "eyebrows": "breadcrumbs"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Daylight",
+        "href": "https://daylightcalendar.com"
+      },
+      {
+        "label": "Calendar Card",
+        "href": "https://docs.daylightcalendar.com"
+      }
+    ],
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/superdingo101/daylight-calendar-import"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/superdingo101/daylight-calendar-import"
+    }
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "icon": "rocket",
+        "expanded": true,
+        "pages": [
+          "introduction",
+          "installation",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "Import Events",
+        "icon": "file-up",
+        "pages": [
+          "workflows/manual-import",
+          "workflows/review"
+        ],
+        "expanded": true
+      },
+      {
+        "group": "Configuration",
+        "icon": "settings",
+        "pages": [
+          "configuration/ai-task",
+          "configuration/calendars-routing",
+          "configuration/email",
+          "configuration/notifications-automations"
+        ],
+        "expanded": true
+      },
+      {
+        "group": "Help and Reference",
+        "icon": "life-buoy",
+        "pages": [
+          "help/troubleshooting",
+          "help/faq",
+          "help/privacy",
+          "help/advanced-reference"
+        ],
+        "expanded": true
+      }
+    ],
+    "global": {
+      "anchors": [
+        {
+          "anchor": "Home",
+          "icon": "house",
+          "href": "/introduction"
+        },
+        {
+          "anchor": "GitHub",
+          "icon": "github",
+          "href": "https://github.com/superdingo101/daylight-calendar-import"
+        }
+      ]
+    }
+  },
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/introduction",
+      "permanent": true
+    }
+  ]
+}

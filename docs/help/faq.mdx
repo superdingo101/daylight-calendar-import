@@ -1,0 +1,41 @@
+---
+title: "Frequently asked questions"
+sidebarTitle: "FAQ"
+description: "Answers to common questions about accounts, calendar safety, supported files, and email imports."
+---
+
+## Do I need Daylight Calendar Card?
+
+No. **Daylight Calendar Import** adds events to Home Assistant calendars after your approval. **[Daylight Calendar Card](https://docs.daylightcalendar.com)** is a separate dashboard card that displays events. They work together, but neither requires the other.
+
+## Do I need a Daylight Cloud account or subscription?
+
+No. The self-hosted integration uses your own Home Assistant **AI Task** entity. Your chosen AI provider may charge for requests or retain submitted content according to its own policies. See [Privacy and retention](/help/privacy).
+
+## Will Daylight put events on my calendar automatically?
+
+No. Text, files, and optional email intake create drafts for you to review. **Only explicit approval writes a calendar event.** You can edit or reject drafts beforehand. See [Review and approve](/workflows/review).
+
+## Can I import a scanned PDF or photo?
+
+Only when your selected AI Task provider and model support that attachment type. Text-layer PDFs can be read locally and sent to a text-only provider. See [Text, images, and PDFs](/workflows/manual-import).
+
+## Can I import multiple events from one announcement?
+
+Yes. Daylight can produce multiple drafts from one message or file, and each draft must be reviewed. General repeating schedules are different: Daylight does not create recurring RRULE events from natural language.
+
+## Do I have to connect an email inbox?
+
+No. Start with **New import** and paste text or upload a supported image/PDF. IMAP email intake is optional and should use a dedicated folder or account. See [Optional email intake](/configuration/email).
+
+## What happens if the AI makes a mistake?
+
+Review and edit the title, date, time, destination calendar, and other fields. Check for duplicates and overlaps. If a calendar write is reported as uncertain, inspect the destination calendar before resolving it—don't blindly retry. See [Review and approve](/workflows/review).
+
+## Can I use any Home Assistant calendar?
+
+You need at least one calendar that supports creating events. Daylight can also observe separate read-only calendars for scheduling conflicts; observation alone does not grant permission to write to them.
+
+## Where do I get help?
+
+Start with [Troubleshooting](/help/troubleshooting) and the [Advanced reference](/help/advanced-reference). You can also [report a reproducible issue](https://github.com/superdingo101/daylight-calendar-import/issues), using fictional sample events and sanitized logs.

@@ -1482,6 +1482,27 @@ async def test_v1_store_migration_preserves_uncertainty_and_history(hass):
         await again.async_process_events("legacy-import", processor)
 
 
+async def test_unflushed_envelope_remains_authoritative_during_storage_load(hass):
+    """A queued valid write must survive load without falling back to disk.
+
+    Home Assistant 2026.11 replaced its storage I/O implementation. Cover
+    the pending in-memory envelope path directly so both fixture packages
+    continue to exercise the no-data-loss behavior.
+    """
+    store = _PendingStore(hass, STORAGE_VERSION, STORAGE_KEY, private=True)
+    pending_data = {"items": []}
+    pending_envelope = {
+        "version": STORAGE_VERSION,
+        "minor_version": 1,
+        "key": STORAGE_KEY,
+        "data": pending_data,
+    }
+    store._data = pending_envelope
+
+    assert await store.async_load() == pending_data
+    assert store._data == pending_envelope
+
+
 async def test_v1_migration_failure_does_not_replace_storage(hass):
     broken = {"items": [{"id": "broken", "events": [{"title": "invalid"}]}]}
     await Store(hass, 1, STORAGE_KEY, private=True).async_save(broken)

@@ -1,3 +1,8 @@
+---
+title: "Synthetic extraction corpus"
+hidden: true
+---
+
 # Extraction corpus
 
 The synthetic fixtures in `tests/fixtures/extraction` contain source text, a fixed

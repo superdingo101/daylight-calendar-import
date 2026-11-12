@@ -1,0 +1,75 @@
+---
+title: "Calendars and routing"
+sidebarTitle: "Calendars and routing"
+description: "Choose writable destinations, set friendly aliases, and optionally check read-only calendars for conflicts."
+---
+
+Daylight never chooses a new calendar destination on its own after you approve an event. Set up the calendars you want available, and review each draft's destination before approval.
+
+## Set up writable calendars
+
+Open **Daylight Imports → Settings → Calendars**. You must be a Home Assistant administrator to change these settings.
+
+<Steps>
+  <Step title="Choose the default calendar">
+    Pick the calendar Daylight suggests when an import does not specify a known destination. Your calendar integration must support creating events.
+  </Step>
+  <Step title="Choose writable calendars">
+    Select the calendars you want to offer in the review editor. The **default calendar must also be checked** in the **Writable calendars** list.
+  </Step>
+  <Step title="Save calendar settings">
+    Select **Save calendar settings**. Submitted drafts still require review and explicit approval before anything is written.
+  </Step>
+</Steps>
+
+For example, you might select **Family** as the default and allow **Family**, **Kids**, and **Work** as destinations.
+
+## Give calendars friendly names
+
+Go to **Daylight Imports → Settings → Routing**. In **Calendar aliases**, enter one exact mapping per line:
+
+```text
+Kids = calendar.kids
+Family = calendar.family
+Work = calendar.work
+```
+
+An alias must point to one of your **selected writable calendars**. You can configure up to 100 distinct aliases. Save with **Save routing settings**.
+
+When pasting an announcement or adding supporting text to an upload, you can include:
+
+```text
+Calendar: Kids
+Soccer game on Saturday, November 21, 2026 at 9:00 AM
+```
+
+Daylight can use that hint to propose `calendar.kids`. An unknown, ambiguous, or contradictory routing hint requires an explicit destination selection before approval. **An alias does not bypass review**.
+
+## Read-only conflict calendars
+
+Under **Settings → Routing**, select up to **15** calendars in **Calendars checked for conflicts (read-only)**. These can include calendars that you want to observe for scheduling conflicts but never edit. Daylight also checks the draft's destination calendar, separately.
+
+A read-only observation calendar does **not** become an allowed destination. It needs readable event data, but Daylight cannot write to it by virtue of being selected for observation.
+
+## What the checks mean
+
+| Result | Meaning | Next step |
+| --- | --- | --- |
+| Exact duplicate | An equivalent event already exists | Inspect the existing event before approving |
+| Possible duplicate | Similar event details were found | Compare title and times |
+| Conflict | Events overlap | Decide whether the overlap is acceptable |
+| Check unavailable/incomplete | Daylight couldn't verify the calendar safely | Restore availability or permissions; do not assume the calendar is clear |
+
+**Check calendars** is available for an on-demand observation of the selected destination and configured conflict calendars. When you select **Approve** or **Approve all** in the review UI, Daylight **also performs this broader advisory observation automatically before confirmation**. Review the results or incomplete-check warnings before confirming. After confirmation, the backend performs a separate, fresh **exact-duplicate preflight on the destination calendar only** immediately before attempting each write. The other conflict-observation calendars are not rechecked at write time. There is no continuous background calendar monitoring.
+
+<Warning>
+  A calendar-provider error or incomplete observation is **not** proof that no conflicting event exists. A calendar write that becomes **uncertain** must be checked directly in the destination calendar before you resolve the write outcome.
+</Warning>
+
+## Permissions and changed settings
+
+Importing and reviewing drafts requires appropriate access to the selected AI Task and allowed calendars. Approval additionally needs **read access** to the destination calendar for duplicate safety. The on-demand check requires read access to every observed calendar. A user without the relevant rights can be denied even if they can see the Home Assistant dashboard.
+
+If you remove a writable calendar that pending drafts still reference, Daylight may refuse the change until those destinations are resolved. Keep your calendars accessible while finishing outstanding imports.
+
+Read [Review and approve](/workflows/review) for the full draft workflow and [Advanced reference](/help/advanced-reference) for the backend permission contract.

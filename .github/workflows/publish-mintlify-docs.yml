@@ -1,0 +1,82 @@
+name: Publish stable Mintlify documentation
+
+# Docs are sourced from the exact *published stable* HACS release tag, never
+# from a development branch. The docs-live branch points at the release commit.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing published stable GitHub release tag (for recovery)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-import-docs-live
+  cancel-in-progress: false
+
+jobs:
+  publish-docs:
+    name: Publish verified stable docs
+    if: ${{ github.event_name == 'workflow_dispatch' || (!github.event.release.draft && !github.event.release.prerelease) }}
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name }}
+    steps:
+      - name: Checkout publisher tooling from public main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Resolve authoritative published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/daylight-release.json"
+          echo "Verified release API response for $RELEASE_TAG"
+
+      - name: Checkout exact published source tree
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          path: released
+
+      - name: Check stable release, ZIP, docs, and Git ancestry
+        run: |
+          python scripts/publish_docs_live.py \
+            --repo released \
+            --release-json "$RUNNER_TEMP/daylight-release.json"
+
+      - name: Set up Node for Mintlify
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install Mintlify CLI
+        run: npm install --global mint@latest
+
+      - name: Validate released Mintlify site
+        working-directory: released/docs
+        run: mint validate
+
+      - name: Reject broken documentation links
+        working-directory: released/docs
+        run: mint broken-links
+
+      - name: Publish only after all validations pass
+        id: publish
+        run: |
+          set -euo pipefail
+          python scripts/publish_docs_live.py \
+            --repo released \
+            --release-json "$RUNNER_TEMP/daylight-release.json" \
+            --publish
+          echo "### Daylight Calendar Import documentation" >> "$GITHUB_STEP_SUMMARY"
+          echo "Published stable release \`$RELEASE_TAG\` on \`docs-live\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Mintlify is configured to deploy from \`docs-live\` / \`docs\`." >> "$GITHUB_STEP_SUMMARY"

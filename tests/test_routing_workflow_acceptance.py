@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.components.calendar import CalendarEvent
 from homeassistant.components.calendar.const import DATA_COMPONENT
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+try:
+    from pytest_homeassistant.common import MockConfigEntry
+except ModuleNotFoundError:
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daylight_calendar_import.const import (
     CONF_AI_TASK_ENTITY, CONF_CALENDAR_ALIASES, CONF_CALENDAR_ENTITIES,

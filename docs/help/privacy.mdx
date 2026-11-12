@@ -1,0 +1,52 @@
+---
+title: "Privacy and retention"
+sidebarTitle: "Privacy and retention"
+description: "Understand which event details leave Home Assistant and what the integration keeps locally."
+---
+
+Daylight Calendar Import runs inside Home Assistant. The self-hosted integration needs **no Daylight Cloud account**, but it is not an entirely offline AI workflow: **your configured AI Task provider may receive the content you ask Daylight to process**.
+
+## Where does information go?
+
+<Steps>
+  <Step title="Source enters Home Assistant">
+    You paste an announcement, upload a file, or optionally let Direct IMAP read a message from your configured mailbox/folder. Private source context can be retained with pending drafts.
+  </Step>
+  <Step title="Your chosen AI Task provider interprets it">
+    Source text, usable extracted PDF text, or supported media attachments may leave Home Assistant for that provider. Consult the provider's own billing, privacy, model-training, and retention policies.
+  </Step>
+  <Step title="You review the proposed events">
+    Titles, dates, destinations, and descriptions remain in local pending-review storage until the work is resolved or otherwise handled under the documented lifecycle.
+  </Step>
+  <Step title="Approval writes to your calendar">
+    The destination calendar integration receives the event details. If that integration syncs with Google Calendar, CalDAV, or another external service, its separate privacy terms also apply.
+  </Step>
+</Steps>
+
+## Special care with email
+
+Direct IMAP can access **all unread, undeleted messages** in the selected folder. Use a dedicated address or folder. An exact-sender filter restricts parsing of nonmatching messages but does **not** authenticate the sender and does not prevent Daylight from fetching headers. See [Optional email intake](/configuration/email).
+
+## What is retained locally?
+
+| Data | Local handling |
+| --- | --- |
+| Unresolved imports and uncertain calendar writes | Preserved until resolved; protected from normal completed-history trimming |
+| Completed activity summaries | Pruned after **30 days** from last transition or beyond the **newest 500** completed records |
+| Completed notification requests | Normally trimmed after **30 days** or beyond the **newest 1,000**; unresolved delivery is protected |
+| Source/event deduplication fingerprints | Up to the **newest 10,000 in each history**, without a new age expiry |
+| Temporary uploads | Removed after processing; pending context and summaries have separate lifecycles |
+
+Some private source details may remain in pending records. A manually entered recurring source that produces no drafts can retain up to **4,096 characters** in authorized private activity detail so the user can handle the schedule manually; that detail is not exposed in notifications or diagnostic downloads. Completion dates and protected in-flight operations can affect pruning.
+
+<Warning>
+  **Do not delete Daylight's private storage to clear errors or duplicates.** That can discard uncertainty checkpoints or deduplication history and lead to duplicate calendar entries. Use [storage recovery](/storage-recovery) only when needed, with a private backup.
+</Warning>
+
+## Diagnostics and notifications
+
+Daylight's native diagnostics export uses a redacted projection of operational counts and declared capabilities. It excludes original source text, event titles, mailbox details, credentials, and event identifiers. Home Assistant may include its own standard download metadata.
+
+Optional push notifications are **off by default** and omit private event details. Notifications may be repeated after interrupted delivery; they do not guarantee a calendar write or display on the receiving device.
+
+For complete exceptions to local retention, see the [local retention reference](/retention). Daylight does not control how long the external AI or calendar provider retains data.

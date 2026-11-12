@@ -1,0 +1,98 @@
+---
+title: "Install Daylight Calendar Import"
+sidebarTitle: "Installation"
+description: "Install Daylight Calendar Import using the built-in Home Assistant Marketplace, HACS on older versions, or a released ZIP."
+---
+
+Daylight Calendar Import is a **custom Home Assistant integration**. It is not yet in the default community catalog, so add the repository as a custom source before installing it. Choose the instructions for your Home Assistant version.
+
+## Before you begin
+
+- Home Assistant **2026.7.4 or later**, with administrator access for installation.
+- A writable Home Assistant calendar, such as Local Calendar or Google Calendar.
+- An [AI Task](https://www.home-assistant.io/integrations/ai_task) entity capable of generating structured data. **A conversation agent is not an AI Task entity.**
+- A Home Assistant backup before upgrading an existing Daylight installation.
+
+<Tabs>
+  <Tab title="Marketplace (Home Assistant 2026.11+)">
+    Home Assistant 2026.11 includes the **Marketplace** under **Settings → Marketplace**. Do not install standalone HACS on this version.
+
+    <Steps>
+      <Step title="Add the custom repository">
+        Open **Settings → Marketplace**, accept the community-content warning if asked, and choose **Add from link** in the top-right corner. Paste:
+
+        https://github.com/superdingo101/daylight-calendar-import
+
+        Choose **Integration** if the repository type is requested. A one-time GitHub connection may be required to add a custom repository.
+      </Step>
+      <Step title="Select the version">
+        Open **Daylight Calendar Import** from the Marketplace repository list. If you're testing **v0.9.0-beta2**, enable **Pre-release** for this repository under **Settings → Devices & services → Marketplace** first, then select **Install another version** from the repository's three-dot menu if needed. Confirm the dialog names the exact release you intend to test.
+      </Step>
+      <Step title="Install and configure">
+        Choose **Install**. On a new installation, Marketplace can open the integration's setup flow **without a restart**. If it doesn't, use **Settings → Devices & services → Add integration**. For an **update**, restart Home Assistant when prompted to load the new integration code.
+      </Step>
+    </Steps>
+
+    For Marketplace behavior and prerelease controls, see the [official Home Assistant Marketplace guide](https://www.home-assistant.io/integrations/marketplace/).
+  </Tab>
+
+  <Tab title="HACS (Home Assistant 2026.7–2026.10)">
+    These versions use the separately installed **Home Assistant Community Store (HACS)**.
+
+    <Steps>
+      <Step title="Add the custom integration repository">
+        Open **HACS** in the sidebar. In the custom-repositories dialog, add:
+
+        https://github.com/superdingo101/daylight-calendar-import
+
+        Select the **Integration** category. Alternatively, try the [Daylight HACS shortcut](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration).
+      </Step>
+      <Step title="Download the intended release">
+        Open **Daylight Calendar Import** in HACS and select the desired release for download. If testing **v0.9.0-beta2**, enable the relevant prerelease option and verify that exact version is selected, rather than relying on the default stable download.
+      </Step>
+      <Step title="Restart and add the integration">
+        **Restart Home Assistant** after installing. Then go to **Settings → Devices & services → Add integration** and choose **Daylight Calendar Import**.
+      </Step>
+    </Steps>
+
+    If you update Home Assistant to 2026.11 or newer, HACS installations migrate into the built-in Marketplace. You do not need to reinstall your custom repositories.
+  </Tab>
+
+  <Tab title="Manual (advanced)">
+    Manual installation requires access to your Home Assistant configuration directory.
+
+    <Steps>
+      <Step title="Choose an exact published version">
+        Visit the [Daylight releases](https://github.com/superdingo101/daylight-calendar-import/releases). Download **daylight-calendar-import.zip** attached to the release you intend to install; do not copy the development repository's current files.
+      </Step>
+      <Step title="Extract the integration">
+        Extract the archive into <code>&lt;config&gt;/custom_components/daylight_calendar_import/</code>. That directory must contain <code>manifest.json</code> and <code>__init__.py</code> at its top level, not an extra nested folder.
+      </Step>
+      <Step title="Restart Home Assistant">
+        Restart Home Assistant, then open **Settings → Devices & services → Add integration**. If upgrading, preserve the existing integration entry and its private <code>.storage</code> files.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Complete initial setup
+
+<Steps>
+  <Step title="Choose your AI Task entity">
+    Select the entity Daylight should use to extract event details. See [AI Task providers](/configuration/ai-task) if you haven't configured one yet.
+  </Step>
+  <Step title="Choose your calendars">
+    Select a **default writable calendar** and the **allowed destination calendars**. The default calendar must be included among the allowed calendars.
+  </Step>
+  <Step title="Open the Daylight Imports sidebar">
+    Select **New import** to test the integration using [your first fictional event](/quickstart). Email setup is optional.
+  </Step>
+</Steps>
+
+<Note>
+  Installation permissions and the permissions needed to submit, review, and approve events are different. A non-administrator may need access to the selected AI Task and calendars. Review the configured calendar permissions in Home Assistant. Read [Review and approve](/workflows/review) for destination-selection and approval behavior.
+</Note>
+
+<Warning>
+  **v0.9.0-beta2 is a prerelease**, not the default stable version. If you're testing an unpublished development commit rather than a published ZIP, use the [developer candidate-installation checklist](/public-beta-checklist) in a disposable Home Assistant instance.
+</Warning>

@@ -1,0 +1,65 @@
+---
+title: "Troubleshooting"
+sidebarTitle: "Troubleshooting"
+description: "Find missing imports, fix provider errors and uploads, and recover safely from uncertain calendar writes."
+---
+
+Start with **Daylight Imports → Recent activity** and **Review inbox**. A failed browser submission and a failed background AI parse can leave different records, so check both before retrying.
+
+<AccordionGroup>
+  <Accordion title="I installed Daylight but cannot find the integration">
+    On **Home Assistant 2026.11+**, open **Settings → Marketplace** and confirm Daylight Calendar Import was installed. First-time Marketplace installation can open the setup flow directly; otherwise use **Settings → Devices & services → Add integration**. On **older HACS installations**, restart Home Assistant after download before adding the integration.
+
+    After the integration is configured, open **Daylight Imports** in the sidebar. See [Installation](/installation).
+  </Accordion>
+
+  <Accordion title="Daylight can't find or use my AI provider">
+    Confirm you selected an **AI Task entity**, not a conversation agent, in **Settings → General**. Test the entity's connectivity, credentials, quota, and structured-generation capabilities. If images or scanned PDFs fail, check whether that exact model supports the media type; a generic attachment flag is insufficient.
+
+    See [AI Task providers](/configuration/ai-task) and [provider error details](/provider-errors).
+  </Accordion>
+
+  <Accordion title="My file was rejected">
+    Confirm the format is JPEG, PNG, WebP, or PDF; renaming a file doesn't convert its contents. Manual uploads allow **10 MiB**, PDFs allow **30 pages** and at most **100,000 extracted-text characters**. An image or scanned PDF requires a compatible AI Task provider/model.
+
+    Browser upload validation can fail before Daylight records any processing activity. See [Text, images, and PDFs](/workflows/manual-import).
+  </Accordion>
+
+  <Accordion title="An import finished, but I don't see any drafts">
+    Check **Review inbox** and **Recent activity**. A valid announcement may contain no sufficiently complete events, or its events may be recognized as already handled. If recurrence was detected, Daylight can withhold drafts for safety. Try a clearer, fictional announcement with explicit dates and times before resubmitting private material.
+  </Accordion>
+
+  <Accordion title="The browser lost its connection during import">
+    **Do not immediately submit the source again.** Daylight may have saved the drafts even though the response was lost. Refresh **Review inbox** and **Recent activity** first. Retry only after confirming the outcome.
+  </Accordion>
+
+  <Accordion title="The destination calendar is wrong or needs confirmation">
+    Open the draft's editor, select a **writable allowed calendar**, save, and review again. Unknown or conflicting `Calendar:` hints require explicit selection before approval. An observation-only calendar cannot become a destination just because it is visible for conflict checks.
+  </Accordion>
+
+  <Accordion title="Check calendars failed or I have an unexpected conflict">
+    Ensure the destination and configured read-only observation calendars are readable. Provider timeouts, permissions, or overly broad results can make a check incomplete; an incomplete check is **not** a clean bill of health. Check the actual calendars and retry the observation when available.
+  </Accordion>
+
+  <Accordion title="An approval says the calendar write is uncertain">
+    **Stop and inspect the destination calendar** for an existing matching event. The external calendar may have completed the write even if Home Assistant did not receive confirmation. In Daylight, explicitly resolve the write outcome only after you know whether the event was created. Avoid approving it again blindly.
+  </Accordion>
+
+  <Accordion title="Emails stay unread or are marked read unexpectedly">
+    Confirm the selected IMAP folder and whether messages are unread and undeleted. A durable terminal validation failure may be marked read even without a draft; transient failures can stay unread for retry. Once a source is durably handled, marking it unread again does not force a fresh extraction. See [Optional email intake](/configuration/email) and the [advanced IMAP reference](/direct-imap).
+  </Accordion>
+
+  <Accordion title="Notifications aren't arriving or appear twice">
+    In **Settings → Notifications**, verify alerts are enabled, a working `notify.*` entity is selected, and the relevant category is checked. Delivery can repeat after an interruption, and submitting a Home Assistant notify call isn't a guarantee of device receipt. The pending queue remains the source of truth.
+  </Accordion>
+
+  <Accordion title="Home Assistant says Daylight storage needs repair">
+    **Stop Home Assistant** and make a private backup of `.storage/daylight_calendar_import.pending_imports` and any `.corrupt.*` copies. Restore a known-good backup or follow the [storage recovery procedure](/storage-recovery); never delete the storage file or erase fingerprints as a quick fix.
+  </Accordion>
+</AccordionGroup>
+
+## Report a reproducible issue
+
+From **Settings → Devices & services → Daylight Calendar Import**, download the integration's **redacted diagnostics** if available. They contain bounded operational counts and provider capability flags rather than your messages or calendar event details. Still inspect all files before sharing, because Home Assistant can add standard metadata.
+
+[Open a GitHub issue](https://github.com/superdingo101/daylight-calendar-import/issues) with your Daylight and Home Assistant versions, steps to reproduce, a **fictional** example, and sanitized logs. Never include passwords, private event descriptions, meeting links, source emails, or full calendar data.

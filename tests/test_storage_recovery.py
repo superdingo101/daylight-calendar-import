@@ -11,7 +11,10 @@ import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+try:
+    from pytest_homeassistant.common import MockConfigEntry
+except ModuleNotFoundError:
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daylight_calendar_import.const import DOMAIN, CONF_AI_TASK_ENTITY, CONF_CALENDAR_ENTITY
 from custom_components.daylight_calendar_import.dedup import event_fingerprint, source_fingerprint

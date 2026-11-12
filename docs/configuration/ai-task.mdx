@@ -1,0 +1,41 @@
+---
+title: "AI Task providers"
+sidebarTitle: "AI Task providers"
+description: "Choose a Home Assistant AI Task entity, test your provider, and understand PDF and image compatibility."
+---
+
+Daylight uses a Home Assistant **AI Task entity** to extract event details. It does **not** use a conversation agent. Before choosing one, configure an AI integration in Home Assistant that exposes an AI Task entity capable of **structured data generation**.
+
+## Configure and test a provider
+
+<Steps>
+  <Step title="Set up the provider in Home Assistant">
+    Follow the [Home Assistant AI Task guide](https://www.home-assistant.io/integrations/ai_task). Confirm that the provider creates an entity in the `ai_task` domain.
+  </Step>
+  <Step title="Select the entity">
+    Open **Daylight Imports → Settings → General** and choose the **AI Task entity**, then select **Save general settings**.
+  </Step>
+  <Step title="Try a fictional text event">
+    Start with the [Quickstart](/quickstart). Confirm the provider can extract a draft without writing to the calendar automatically.
+  </Step>
+  <Step title="Test images and PDFs separately">
+    If you plan to upload screenshots or scanned documents, test each actual file type with that particular provider and model. Attachment support alone does not guarantee PDF support.
+  </Step>
+</Steps>
+
+## What works with each input?
+
+| Input | Provider capability |
+| --- | --- |
+| Pasted text or email body | Structured data generation |
+| PDF with selectable/extractable text | Structured data generation; Daylight extracts bounded text locally |
+| JPEG, PNG, WebP | AI Task attachments **and model image understanding** |
+| Scanned or image-only PDF | AI Task attachments **and actual PDF support** |
+
+A model can have a working text path but reject an image or PDF. This is not proof the whole Daylight integration is broken; choose a compatible model or submit usable text instead.
+
+<Note>
+  AI output may be incomplete or wrong. Verify the year, time zone, duration, and destination calendar in every draft. The external provider may charge for requests and applies its own privacy/retention terms.
+</Note>
+
+If the provider times out, is rate-limited, returns an invalid structured response, or rejects a file, see [Troubleshooting](/help/troubleshooting) and the [technical provider error categories](/provider-errors). The [provider compatibility reference](/provider-compatibility) explains additional limits and the beta evaluation process.

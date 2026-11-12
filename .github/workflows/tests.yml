@@ -102,3 +102,48 @@ jobs:
       # Run it explicitly outside mutation discovery in mutmut's isolated tree.
       - run: pytest tests/hacs_install_upgrade.py
       - run: pytest --cov --cov-branch --cov-fail-under=100
+
+  test-ha-2026-11:
+    name: Test Home Assistant 2026.11.0
+    runs-on: ubuntu-latest
+    # Propagate the plugin exclusion into nested pytest subprocesses as well.
+    env:
+      PYTEST_ADDOPTS: "-p no:respx"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # Cross-layer acceptance runs the shipped frontend transport in Node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - name: Install Home Assistant 2026.11.0 test environment
+        run: >-
+          pip install
+          "homeassistant==2026.11.0"
+          "home-assistant-frontend==20261028.4"
+          "pytest>=8.0"
+          "pytest-asyncio>=0.24"
+          "pytest-cov>=6.0"
+          "pytest-homeassistant==2026.11.0"
+          "hypothesis>=6.168.1,<7"
+          "hassil==3.12.1"
+          "gazetteer-matcher==1.1.0"
+          "home-assistant-intents==2026.9.17"
+          "PyTurboJPEG==1.8.3"
+          "aioimaplib==2.0.1"
+          "pypdf==6.14.2"
+          "jsonschema[format]>=4.23,<5"
+          "referencing>=0.35,<1"
+      - name: Verify installed package dependencies
+        run: python -m pip check
+      # Home Assistant's supported 2026.11 fixtures require disabling the
+      # separate respx plugin so Home Assistant can install its httpx alias.
+      # The installer uses Git release tags and the unmodified repository tree.
+      - run: pytest -p no:respx tests/hacs_install_upgrade.py
+      - run: pytest -p no:respx --cov --cov-branch --cov-fail-under=100
