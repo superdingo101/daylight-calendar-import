@@ -337,8 +337,13 @@ async def test_settings_reload_never_removes_active_panel(
         return await setup_email(*args, **kwargs)
 
     monkeypatch.setattr(integration, "async_setup_email_runtime", delayed_setup)
+    request_fields = dict(fields)
+    if command == WS_UPDATE_CALENDAR_INTELLIGENCE:
+        # Alias writes require the snapshot read by the client, even when
+        # exercising unrelated panel-reload behavior.
+        request_fields["expected_calendar_aliases"] = {}
     try:
-        await client.send_json_auto_id({"type": command, "entry_id": entry.entry_id, **fields})
+        await client.send_json_auto_id({"type": command, "entry_id": entry.entry_id, **request_fields})
         await asyncio.wait_for(entered.wait(), 10)
         await asyncio.sleep(0)
         assert hass.data[frontend.DATA_PANELS][PANEL_PATH] is original_panel
@@ -357,7 +362,9 @@ async def test_settings_reload_never_removes_active_panel(
             assert actual == value
         if not reload_fails:
             # Unchanged submissions must also leave the active panel intact.
-            await success(client, command, entry_id=entry.entry_id, **fields)
+            if command == WS_UPDATE_CALENDAR_INTELLIGENCE:
+                request_fields["expected_calendar_aliases"] = saved["calendar_aliases"]
+            await success(client, command, entry_id=entry.entry_id, **request_fields)
             assert hass.data[frontend.DATA_PANELS][PANEL_PATH] is original_panel
             assert snapshots == []
     finally:
