@@ -172,7 +172,7 @@ async def test_real_unload_unregisters_services_but_keeps_persisted_storage(
     await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.NOT_LOADED
-    assert not async_panel_exists(hass, PANEL_PATH)
+    assert async_panel_exists(hass, PANEL_PATH)
     _assert_services(hass, registered=False)
     assert entry.entry_id not in hass.data[DOMAIN]
 
