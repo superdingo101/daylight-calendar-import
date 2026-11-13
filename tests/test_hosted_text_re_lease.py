@@ -25,8 +25,10 @@ def claim():
     return result
 
 
-async def setup(monkeypatch):
+async def setup(monkeypatch, *, modify=None, prior_attachments=False):
     delivery = claim()
+    if modify is not None:
+        modify(delivery)
     cp = checkpoint()
     canonical = json.dumps(delivery["source"], ensure_ascii=False, sort_keys=True,
                            separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -38,6 +40,21 @@ async def setup(monkeypatch):
         account_id=cp.current.account_id, installation_id=cp.current.installation_id,
         public_source_id=delivery["source_id"],
     )
+    if prior_attachments:
+        # Model an already-accepted source with attachment evidence. A text-only
+        # re-lease must not discard or launder those verified descriptors.
+        descriptor = {"id": "scan.png", "media_type": "image/png",
+                      "size_bytes": 3, "sha256": "a" * 64}
+        verified = {"id": "scan.png", "size_bytes": 3, "sha256": "a" * 64}
+        manifest = json.dumps(
+            {"attachments": [descriptor]}, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"), allow_nan=False,
+        ).encode("utf-8")
+        evidence = replace(
+            evidence, attachment_descriptors=(descriptor,),
+            verified_attachments=(verified,),
+            attachment_manifest_sha256=sha256(manifest).hexdigest(),
+        )
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
     await store.async_add(source_text="hello", events=[], source_id=evidence.source_id,
@@ -48,7 +65,8 @@ async def setup(monkeypatch):
 async def re_lease(store, creds, entry, delivery, **kwargs):
     return await async_re_lease_hosted_text(
         store=store, credentials=creds, claim_checkpoint=kwargs.get("checkpoint", creds.snapshot),
-        service_binding=SERVICE, local_config_entry_id=kwargs.get("local", "entry"),
+        service_binding=kwargs.get("service", SERVICE),
+        local_config_entry_id=kwargs.get("local", "entry"),
         entry=entry, delivery=delivery,
     )
 
@@ -120,3 +138,195 @@ async def test_failed_store_does_not_report_success(monkeypatch):
     backend.save_error = OSError("private storage details")
     with pytest.raises(OSError):
         await re_lease(store, creds, entry, delivery)
+
+
+async def test_accepts_exact_canonical_unicode_source_without_changing_evidence(monkeypatch):
+    """Re-lease hashes the same UTF-8 source bytes as the original acceptance."""
+    def modify(delivery):
+        delivery["source"]["text"] = "Réunion · café"
+        delivery["source"]["metadata"]["sender"] = "école@example.test"
+
+    store, backend, creds, entry, delivery = await setup(monkeypatch, modify=modify)
+    before = entry.evidence
+    result = await re_lease(store, creds, entry, delivery)
+    assert result.evidence.source_evidence_sha256 == before.source_evidence_sha256
+    assert result.evidence.source_expires_at == before.source_expires_at
+    assert result.evidence.attachment_manifest_sha256 == before.attachment_manifest_sha256
+    assert result.evidence.attachment_descriptors == ()
+    assert result.evidence.verified_attachments == ()
+    assert result.evidence.account_id == before.account_id
+    assert result.evidence.installation_id == before.installation_id
+    assert result.evidence.public_source_id == before.public_source_id
+    assert result.evidence.delivery_id == before.delivery_id
+    assert result.evidence.local_config_entry_id == before.local_config_entry_id
+    assert result.evidence.lease_token == delivery["lease_token"]
+    assert backend.saved[-1]["hosted_delivery_journal"][0]["lease_token"] == delivery["lease_token"]
+
+
+async def test_lowercase_utc_re_lease_preserves_original_expiry(monkeypatch):
+    """RFC3339 lowercase 'z' is normalized to the original durable uppercase 'Z'."""
+    def uppercase_expiry(delivery):
+        delivery["source_expires_at"] = delivery["source_expires_at"].replace("+00:00", "Z")
+
+    store, _, creds, entry, delivery = await setup(monkeypatch, modify=uppercase_expiry)
+    original = entry.evidence.source_expires_at
+    assert original.endswith("Z")
+    delivery["source_expires_at"] = original[:-1] + "z"
+    delivery["lease_expires_at"] = delivery["lease_expires_at"].replace("+00:00", "z")
+    result = await re_lease(store, creds, entry, delivery)
+    assert result.evidence.source_expires_at == original
+    assert result.evidence.lease_token == delivery["lease_token"]
+    assert store.hosted_ack_journal()[0] == result
+
+
+@pytest.mark.parametrize("invalid", ["blank_text", "bad_token", "attachment"])
+async def test_invalid_claim_has_stable_sanitized_error(monkeypatch, invalid):
+    store, _, creds, entry, delivery = await setup(monkeypatch)
+    if invalid == "blank_text":
+        delivery["source"]["text"] = "   "
+    elif invalid == "bad_token":
+        delivery["lease_token"] = "!"
+    else:
+        delivery["source"]["attachments"] = [
+            {"id": "scan.png", "media_type": "image/png",
+             "size_bytes": 3, "sha256": "a" * 64},
+        ]
+    with pytest.raises(HostedTextReLeaseError, match=r"^invalid hosted text delivery$"):
+        await re_lease(store, creds, entry, delivery)
+    assert store.hosted_ack_journal() == (entry,)
+
+
+@pytest.mark.parametrize("failure", [
+    "no_credential", "namespace", "disconnect", "reconnect",
+    "candidate", "rotation", "binding", "wrong_service_type",
+])
+async def test_re_lease_requires_every_independent_authority_check(monkeypatch, failure):
+    from custom_components.daylight_calendar_import.hosted_credentials import (
+        CandidateCredential, ReconnectIntent,
+    )
+    from custom_components.daylight_calendar_import.hosted_transport import HostedServiceBinding
+
+    store, _, creds, entry, delivery = await setup(monkeypatch)
+    cp = creds.snapshot
+    service = SERVICE
+    if failure == "no_credential":
+        cp = replace(cp, current=None)
+    elif failure == "namespace":
+        cp = replace(cp, current=replace(cp.current, account_id="b" * 20))
+    elif failure == "disconnect":
+        cp = replace(cp, local_disconnect="unconfirmed")
+    elif failure == "reconnect":
+        cp = replace(
+            cp, pairing_verifier="v" * 43,
+            reconnect=ReconnectIntent(cp.current.account_id, cp.current.installation_id,
+                                      "none", "pending-v2-local-only"),
+        )
+    elif failure == "candidate":
+        deadline = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+        cp = replace(
+            cp, candidate=CandidateCredential(
+                cp.current.installation_id, cp.current.token, deadline, deadline,
+            ),
+        )
+    elif failure == "rotation":
+        cp = replace(
+            cp, rotation_not_before=(datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+        )
+    elif failure == "binding":
+        cp = replace(
+            cp, service_binding=HostedServiceBinding(
+                "https://other.example.test", "https://account.example.test",
+            ),
+        )
+    else:
+        class EqualButUntrustedService:
+            def __eq__(self, other):
+                return other == SERVICE
+
+        service = EqualButUntrustedService()
+        assert cp.service_binding == service
+    creds.snapshot = cp
+    with pytest.raises(
+        HostedTextReLeaseError, match=r"^hosted delivery authority unavailable$",
+    ):
+        await re_lease(store, creds, entry, delivery, checkpoint=cp, service=service)
+    assert store.hosted_ack_journal() == (entry,)
+
+
+@pytest.mark.parametrize("boundary", ["credential", "lease", "source"])
+async def test_re_lease_rejects_exact_expiration_boundary(monkeypatch, boundary):
+    """'Not after' is not sufficient: equality with now must be rejected."""
+    import custom_components.daylight_calendar_import.hosted_text_re_lease as module
+
+    store, _, creds, entry, delivery = await setup(monkeypatch)
+    cp = creds.snapshot
+    if boundary == "source":
+        boundary_time = datetime.fromisoformat(delivery["source_expires_at"])
+        # The claimed source is unexpired at validation and expires precisely
+        # before authority is checked, without changing its persisted evidence.
+        validation_time = boundary_time - timedelta(seconds=1)
+    else:
+        boundary_time = datetime.now(UTC) + timedelta(seconds=10)
+        validation_time = boundary_time
+    if boundary == "credential":
+        cp = replace(cp, current=replace(
+            cp.current, expires_at=boundary_time.isoformat(),
+        ))
+    elif boundary == "lease":
+        delivery["lease_expires_at"] = boundary_time.isoformat()
+
+    class BoundaryClock(datetime):
+        calls = 0
+
+        @classmethod
+        def now(cls, tz=None):
+            cls.calls += 1
+            value = validation_time if cls.calls == 1 else boundary_time
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr(module, "datetime", BoundaryClock)
+    creds.snapshot = cp
+    with pytest.raises(
+        HostedTextReLeaseError, match=r"^hosted delivery authority unavailable$",
+    ):
+        await re_lease(store, creds, entry, delivery, checkpoint=cp)
+    assert store.hosted_ack_journal() == (entry,)
+
+
+async def test_text_only_re_lease_cannot_launder_existing_attachment_evidence(monkeypatch):
+    store, _, creds, entry, delivery = await setup(monkeypatch, prior_attachments=True)
+    assert entry.evidence.attachment_descriptors
+    assert entry.evidence.verified_attachments
+    with pytest.raises(ValueError, match=r"^hosted delivery evidence changed$"):
+        await re_lease(store, creds, entry, delivery)
+    assert store.hosted_ack_journal() == (entry,)
+
+
+async def test_one_shot_validation_receives_delivery_and_single_item_limit(monkeypatch):
+    """Validation must inspect actual claim data, with one-shot page bounds."""
+    import custom_components.daylight_calendar_import.hosted_text_re_lease as module
+
+    store, _, creds, entry, delivery = await setup(monkeypatch)
+    original_page = module._page
+    original_strict = module._strict_strings
+    strict_seen = []
+    page_seen = []
+
+    def strict(value):
+        assert isinstance(value, dict)
+        assert value == delivery
+        strict_seen.append(True)
+        return original_strict(value)
+
+    def one_page(value, limit, now):
+        assert limit == 1
+        assert value == {"schema_version": 1, "deliveries": [delivery]}
+        page_seen.append(True)
+        return original_page(value, limit, now)
+
+    monkeypatch.setattr(module, "_strict_strings", strict)
+    monkeypatch.setattr(module, "_page", one_page)
+    result = await re_lease(store, creds, entry, delivery)
+    assert strict_seen == [True]
+    assert page_seen == [True]
+    assert result.evidence.lease_token == delivery["lease_token"]
