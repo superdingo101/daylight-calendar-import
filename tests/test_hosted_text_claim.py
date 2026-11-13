@@ -97,7 +97,9 @@ async def test_terminal_prior_record_and_ambiguous_record_fail_closed():
     assert not transport.calls
 
 
-@pytest.mark.parametrize("failure", ["not_dict", "missing_id", "binding", "credentials"])
+@pytest.mark.parametrize(
+    "failure", ["not_dict", "missing_id", "missing_lease", "binding", "credentials"]
+)
 async def test_invalid_claim_authority_never_acts(failure):
     from dataclasses import replace
     from custom_components.daylight_calendar_import.hosted_transport import HostedServiceBinding
@@ -110,6 +112,8 @@ async def test_invalid_claim_authority_never_acts(failure):
         delivery = []
     elif failure == "missing_id":
         delivery.pop("delivery_id")
+    elif failure == "missing_lease":
+        delivery.pop("lease_expires_at")
     elif failure == "binding":
         transport.service_binding = HostedServiceBinding(
             "https://other.example.test", "https://account.example.test"
@@ -144,3 +148,46 @@ async def test_credential_change_during_re_lease_never_acknowledges(monkeypatch)
         await handle(store, creds, transport, delivery)
     assert not transport.calls
     assert store.hosted_ack_journal()[0].ack_status == "pending"
+
+
+@pytest.mark.parametrize("re_lease", [False, True])
+async def test_lease_expiry_during_attempt_save_never_acknowledges(monkeypatch, re_lease):
+    from custom_components.daylight_calendar_import import hosted_text_claim
+
+    if re_lease:
+        store, _backend, creds, _entry, delivery = await setup(monkeypatch)
+    else:
+        store = make_store(monkeypatch, FakeStoreBackend())
+        creds = SimpleNamespace(snapshot=checkpoint())
+        delivery = page()["deliveries"][0]
+    original = store.async_reconcile_hosted_ack
+
+    async def expire_after_attempt(**kwargs):
+        result = await original(**kwargs)
+        if kwargs["action"] == "attempt":
+            monkeypatch.setattr(
+                hosted_text_claim, "_date", lambda _: datetime.now(UTC) - timedelta(seconds=1)
+            )
+        return result
+
+    monkeypatch.setattr(store, "async_reconcile_hosted_ack", expire_after_attempt)
+    transport = Transport()
+    with pytest.raises(AckDispatchBlocked):
+        await handle(store, creds, transport, delivery)
+    assert not transport.calls
+    assert store.hosted_ack_journal()[0].ack_status == "pending"
+
+
+async def test_final_transport_fence_rejects_changed_credentials():
+    from dataclasses import replace
+    from custom_components.daylight_calendar_import.hosted_text_claim import _LeaseBoundTransport
+
+    checkpoint_before = checkpoint()
+    creds = SimpleNamespace(snapshot=replace(checkpoint_before, revision=1))
+    transport = Transport()
+    bound = _LeaseBoundTransport(
+        transport, creds, checkpoint_before, (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
+    )
+    with pytest.raises(AckDispatchBlocked):
+        await bound.acknowledge_source(token="private", delivery_id="id", lease_token="secret")
+    assert not transport.calls
