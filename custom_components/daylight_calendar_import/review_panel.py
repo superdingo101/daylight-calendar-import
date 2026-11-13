@@ -34,5 +34,5 @@ async def async_register_review_panel(hass: HomeAssistant) -> None:
 
 
 def async_remove_review_panel(hass: HomeAssistant) -> None:
-    """Remove the sidebar entry when the integration unloads."""
+    """Remove the sidebar entry when the integration is deleted."""
     frontend.async_remove_panel(hass, PANEL_PATH, warn_if_unknown=False)

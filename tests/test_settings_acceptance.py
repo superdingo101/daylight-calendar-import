@@ -233,3 +233,81 @@ async def test_failed_mailbox_validation_redacts_remote_details_and_keeps_every_
     assert refused["error"]["code"] == "alias_target_not_allowed"
     assert dict(entry.options) == before
     assert await success(client, WS_GET_SETTINGS) == baseline
+
+
+@pytest.mark.parametrize("command,fields", [
+    (WS_UPDATE_CORE_SETTINGS, {"calendar_entity": "calendar.work",
+                               "calendar_entities": ["calendar.family", "calendar.work"]}),
+    (WS_UPDATE_CALENDAR_INTELLIGENCE, {"calendar_aliases": {"school": "calendar.family"}}),
+    (WS_UPDATE_EMAIL_SETTINGS, {"enabled": False}),
+])
+@pytest.mark.parametrize("reload_fails", [False, True])
+async def test_settings_reload_never_removes_active_panel(
+    hass, hass_ws_client, settings_runtime, monkeypatch, command, fields, reload_fails,
+):
+    """A delayed/failed reload must never publish a missing active route (#232)."""
+    from homeassistant.components import frontend
+    from homeassistant.const import EVENT_PANELS_UPDATED
+    import custom_components.daylight_calendar_import as integration
+    from custom_components.daylight_calendar_import.review_panel import PANEL_PATH
+
+    entry = settings_runtime.entry
+    client = await hass_ws_client(hass)
+    if command == WS_UPDATE_EMAIL_SETTINGS:
+        await success(client, command, entry_id=entry.entry_id, enabled=True,
+                      host="imap.example.com", username="imports@example.com", password=SECRET)
+    original_panel = hass.data[frontend.DATA_PANELS][PANEL_PATH]
+    snapshots = []
+    unsubscribe = hass.bus.async_listen(
+        EVENT_PANELS_UPDATED,
+        lambda event: snapshots.append(dict(hass.data[frontend.DATA_PANELS])),
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    setup_email = integration.async_setup_email_runtime
+
+    async def delayed_setup(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        if reload_fails:
+            raise ValueError("simulated runtime setup failure")
+        return await setup_email(*args, **kwargs)
+
+    monkeypatch.setattr(integration, "async_setup_email_runtime", delayed_setup)
+    try:
+        await client.send_json_auto_id({"type": command, "entry_id": entry.entry_id, **fields})
+        await asyncio.wait_for(entered.wait(), 10)
+        await asyncio.sleep(0)
+        assert hass.data[frontend.DATA_PANELS][PANEL_PATH] is original_panel
+        assert snapshots == []  # No remove/re-register events, even transiently.
+        release.set()
+        response = await client.receive_json()
+        assert response["success"] is not reload_fails
+        if reload_fails:
+            assert response["error"]["code"] == "reload_failed"
+        await hass.async_block_till_done()
+        assert hass.data[frontend.DATA_PANELS][PANEL_PATH] is original_panel
+        assert snapshots == []
+        saved = await success(client, WS_GET_SETTINGS)
+        for key, value in fields.items():
+            actual = saved["email"][key] if command == WS_UPDATE_EMAIL_SETTINGS else saved[key]
+            assert actual == value
+        if not reload_fails:
+            # Unchanged submissions must also leave the active panel intact.
+            await success(client, command, entry_id=entry.entry_id, **fields)
+            assert hass.data[frontend.DATA_PANELS][PANEL_PATH] is original_panel
+            assert snapshots == []
+    finally:
+        release.set()
+        unsubscribe()
+
+
+async def test_panel_survives_unload_but_is_removed_when_entry_deleted(hass, settings_runtime):
+    from homeassistant.components import frontend
+    from custom_components.daylight_calendar_import.review_panel import PANEL_PATH
+
+    entry = settings_runtime.entry
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert frontend.async_panel_exists(hass, PANEL_PATH)
+    await hass.config_entries.async_remove(entry.entry_id)
+    assert not frontend.async_panel_exists(hass, PANEL_PATH)

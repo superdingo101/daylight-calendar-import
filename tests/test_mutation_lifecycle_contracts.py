@@ -60,7 +60,7 @@ async def test_successful_unload_cleans_handlers_and_all_notification_hooks(monk
     assert store.on_review_ready is None
     assert hass.data[DOMAIN] == {}
     unsubscribe.assert_called_once_with()
-    remove_panel.assert_called_once_with(hass)
+    remove_panel.assert_not_called()
     hass.config_entries.async_unload_platforms.assert_awaited_once_with(
         config, integration.PLATFORMS
     )
