@@ -13,6 +13,9 @@ from tests.test_hosted_text_re_lease import setup
 from tests.test_storage import FakeStoreBackend, draft, make_store
 
 
+BLOCKED_REASON = r"^hosted ACK authority unavailable$"
+
+
 async def handle(store, creds, transport, delivery, *, parse=None):
     async def default_parse(_source):
         return SimpleNamespace(events=[draft()], event_assumptions=(), warnings=[]), None
@@ -78,7 +81,7 @@ async def test_expired_lease_after_persist_does_not_send(monkeypatch):
 
     monkeypatch.setattr(hosted_text_claim, "async_re_lease_hosted_text", slow_save)
     transport = Transport()
-    with pytest.raises(AckDispatchBlocked):
+    with pytest.raises(AckDispatchBlocked, match=BLOCKED_REASON):
         await handle(store, creds, transport, delivery)
     assert not transport.calls
     assert store.hosted_ack_journal()[0].ack_status == "pending"
@@ -92,7 +95,7 @@ async def test_terminal_prior_record_and_ambiguous_record_fail_closed():
     transport = Transport()
     for entries in ((terminal,), (terminal, terminal)):
         store = SimpleNamespace(hosted_ack_journal=lambda: entries)
-        with pytest.raises(AckDispatchBlocked):
+        with pytest.raises(AckDispatchBlocked, match=BLOCKED_REASON):
             await handle(store, creds, transport, delivery)
     assert not transport.calls
 
@@ -121,7 +124,7 @@ async def test_invalid_claim_authority_never_acts(failure):
     else:
         claim = replace(claim, revision=claim.revision + 1)
     store = SimpleNamespace(hosted_ack_journal=lambda: pytest.fail("journal examined"))
-    with pytest.raises(AckDispatchBlocked):
+    with pytest.raises(AckDispatchBlocked, match=BLOCKED_REASON):
         await async_handle_text_claim(
             store=store, credentials=creds, claim_checkpoint=claim, service_binding=SERVICE,
             transport=transport, local_config_entry_id="entry", delivery=delivery,
@@ -143,8 +146,13 @@ async def test_credential_change_during_re_lease_never_acknowledges(monkeypatch)
         return result
 
     monkeypatch.setattr(hosted_text_claim, "async_re_lease_hosted_text", change_after_save)
+
+    async def reject_dispatch(**_kwargs):
+        pytest.fail("changed credentials must be blocked before dispatch")
+
+    monkeypatch.setattr(hosted_text_claim, "async_dispatch_ack", reject_dispatch)
     transport = Transport()
-    with pytest.raises(AckDispatchBlocked):
+    with pytest.raises(AckDispatchBlocked, match=BLOCKED_REASON):
         await handle(store, creds, transport, delivery)
     assert not transport.calls
     assert store.hosted_ack_journal()[0].ack_status == "pending"
@@ -178,6 +186,102 @@ async def test_lease_expiry_during_attempt_save_never_acknowledges(monkeypatch, 
     assert store.hosted_ack_journal()[0].ack_status == "pending"
 
 
+async def test_duplicate_pending_claims_fail_before_re_lease(monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_text_claim
+
+    delivery = page()["deliveries"][0]
+    evidence = SimpleNamespace(local_config_entry_id="entry", delivery_id=delivery["delivery_id"])
+    pending = SimpleNamespace(evidence=evidence, ack_status="pending")
+    store = SimpleNamespace(hosted_ack_journal=lambda: (pending, pending))
+
+    async def unexpected(**kwargs):
+        pytest.fail("ambiguous pending delivery was re-leased")
+
+    monkeypatch.setattr(hosted_text_claim, "async_re_lease_hosted_text", unexpected)
+    transport = Transport()
+    with pytest.raises(AckDispatchBlocked, match=BLOCKED_REASON):
+        await handle(store, SimpleNamespace(snapshot=checkpoint()), transport, delivery)
+    assert not transport.calls
+
+
+@pytest.mark.parametrize("wrong", ["entry", "delivery"])
+async def test_unrelated_journal_evidence_must_not_be_re_leased(monkeypatch, wrong):
+    from custom_components.daylight_calendar_import import hosted_text_claim
+
+    delivery = page()["deliveries"][0]
+    unrelated = SimpleNamespace(
+        evidence=SimpleNamespace(
+            local_config_entry_id="foreign" if wrong == "entry" else "entry",
+            delivery_id=delivery["delivery_id"] if wrong == "entry" else "another-delivery",
+        ),
+        ack_status="pending",
+    )
+    store = SimpleNamespace(hosted_ack_journal=lambda: (unrelated,))
+    accepted = object()
+    calls = []
+
+    async def new_claim(**kwargs):
+        calls.append(kwargs)
+        return accepted
+
+    async def unexpected(**kwargs):
+        pytest.fail("unrelated prior acceptance was re-leased")
+
+    monkeypatch.setattr(hosted_text_claim, "async_accept_and_ack_text", new_claim)
+    monkeypatch.setattr(hosted_text_claim, "async_re_lease_hosted_text", unexpected)
+    transport = Transport()
+    result = await handle(store, SimpleNamespace(snapshot=checkpoint()), transport, delivery)
+    assert result is accepted
+    assert len(calls) == 1
+    assert calls[0]["delivery"] == delivery
+    assert calls[0]["local_config_entry_id"] == "entry"
+    assert not transport.calls
+
+
+async def test_expiry_at_exact_deadline_fences_transport(monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_text_claim
+
+    deadline = datetime.now(UTC) + timedelta(minutes=1)
+
+    class BoundaryClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return deadline if tz is None else deadline.astimezone(tz)
+
+    monkeypatch.setattr(hosted_text_claim, "datetime", BoundaryClock)
+    creds = SimpleNamespace(snapshot=checkpoint())
+    transport = Transport()
+    bound = hosted_text_claim._LeaseBoundTransport(
+        transport, creds, creds.snapshot, deadline.isoformat()
+    )
+    with pytest.raises(AckDispatchBlocked, match=BLOCKED_REASON):
+        await bound.acknowledge_source(token="private", delivery_id="id", lease_token="secret")
+    assert not transport.calls
+
+
+async def test_expiry_at_exact_deadline_fences_post_save_dispatch(monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_text_claim
+
+    store, _backend, creds, _entry, delivery = await setup(monkeypatch)
+    deadline = datetime.fromisoformat(delivery["lease_expires_at"])
+
+    class BoundaryClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return deadline if tz is None else deadline.astimezone(tz)
+
+    async def unexpected(**kwargs):
+        pytest.fail("expired re-lease entered ACK dispatch")
+
+    monkeypatch.setattr(hosted_text_claim, "datetime", BoundaryClock)
+    monkeypatch.setattr(hosted_text_claim, "async_dispatch_ack", unexpected)
+    transport = Transport()
+    with pytest.raises(AckDispatchBlocked, match=BLOCKED_REASON):
+        await handle(store, creds, transport, delivery)
+    assert store.hosted_ack_journal()[0].ack_status == "pending"
+    assert not transport.calls
+
+
 async def test_final_transport_fence_rejects_changed_credentials():
     from dataclasses import replace
     from custom_components.daylight_calendar_import.hosted_text_claim import _LeaseBoundTransport
@@ -188,6 +292,6 @@ async def test_final_transport_fence_rejects_changed_credentials():
     bound = _LeaseBoundTransport(
         transport, creds, checkpoint_before, (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
     )
-    with pytest.raises(AckDispatchBlocked):
+    with pytest.raises(AckDispatchBlocked, match=BLOCKED_REASON):
         await bound.acknowledge_source(token="private", delivery_id="id", lease_token="secret")
     assert not transport.calls
