@@ -42,6 +42,7 @@ from .settings import (
     notification_preferences_patch,
     effective_notification_preferences,
     effective_core_options,
+    effective_calendar_intelligence,
     settings_lock,
     settings_snapshot,
 )
@@ -51,6 +52,7 @@ WS_UPDATE_CORE_SETTINGS = f"{DOMAIN}/settings/core/update"
 WS_UPDATE_EMAIL_SETTINGS = f"{DOMAIN}/settings/email/update"
 WS_UPDATE_CALENDAR_INTELLIGENCE = f"{DOMAIN}/settings/calendar_intelligence/update"
 WS_UPDATE_NOTIFICATIONS = f"{DOMAIN}/settings/notifications/update"
+EXPECTED_CALENDAR_ALIASES = "expected_calendar_aliases"
 
 
 def _entry_for_message(hass: HomeAssistant, msg: dict[str, Any]) -> ConfigEntry:
@@ -208,6 +210,7 @@ async def websocket_update_email_settings(
         "type": WS_UPDATE_CALENDAR_INTELLIGENCE,
         vol.Required("entry_id"): cv.string,
         vol.Optional(CONF_CALENDAR_ALIASES): dict,
+        vol.Optional(EXPECTED_CALENDAR_ALIASES): dict,
         vol.Optional(CONF_CONFLICT_CALENDAR_ENTITIES): [cv.entity_id],
     }
 )
@@ -228,6 +231,19 @@ async def websocket_update_calendar_intelligence(
                 raise SettingsValidationError(
                     "invalid_settings", "Provide calendar aliases or conflict calendars."
                 )
+            if CONF_CALENDAR_ALIASES in msg:
+                if EXPECTED_CALENDAR_ALIASES not in msg:
+                    raise SettingsValidationError(
+                        "calendar_aliases_snapshot_required",
+                        "Reload the Daylight page before saving calendar aliases.",
+                    )
+                current_aliases, _ = effective_calendar_intelligence(entry)
+                if msg[EXPECTED_CALENDAR_ALIASES] != current_aliases:
+                    raise SettingsValidationError(
+                        "calendar_aliases_changed",
+                        "Calendar aliases changed elsewhere. Refresh Routing to review "
+                        "the saved aliases alongside your retained edits.",
+                    )
             patch = calendar_intelligence_patch(entry, msg)
             if patch:
                 await async_save_option_patch(hass, entry, patch)
