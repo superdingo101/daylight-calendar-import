@@ -240,13 +240,15 @@ _FALL_BACK_REVIEW_NOTE = (
 
 _ZONE_KEY = r"[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)*"
 _SOURCE_CLOCK = r"(?:0?[1-9]|1[0-2]):[0-5][0-9][ \t]*[AP]M"
-# A bounded backstop for a single event with a labelled, fully qualified range.
+# The backstop only applies to a single pasted record with a matching title.
 # Free-form prose and multi-event inputs use the per-endpoint extraction fields.
-_NAMED_TIME_LINE = re.compile(
-    rf"^[ \t]*Time:[ \t]*(?P<start>{_SOURCE_CLOCK})[ \t]*(?:to|[-–—])[ \t]*"
+_NAMED_TIME_RECORD = re.compile(
+    r"(?P<title>[^\r\n]+)\r?\nDate:[ \t]*[^\r\n]+\r?\n"
+    rf"Time:[ \t]*(?P<start>{_SOURCE_CLOCK})[ \t]*(?:to|[-–—])[ \t]*"
     rf"(?P<end>{_SOURCE_CLOCK})[ \t]+(?:local[ \t]+(?:[a-z]+[ \t]+)*time[ \t]+)?"
-    r"\((?P<zone>[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)+)\)[ \t]*\r?$",
-    re.IGNORECASE | re.MULTILINE | re.ASCII,
+    r"\((?P<zone>[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)+)\)[ \t]*"
+    r"(?:\r?\nLocation:[^\r\n]*)?(?:\r?\nDescription:[^\r\n]*)?",
+    re.IGNORECASE | re.ASCII,
 )
 
 
@@ -300,14 +302,14 @@ def _reference_zone_endpoint(value: object, zone: ZoneInfo) -> tuple[str, bool]:
             raise DraftValidationError("UTC-formatted inferred local time cannot be safely reinterpreted")
         if abs(chosen.utcoffset() - instant.utcoffset()) > timedelta(hours=2):
             raise DraftValidationError("inferred local time has an unrelated UTC offset")
-    return (value if chosen.utcoffset() == instant.utcoffset() else chosen.isoformat(),
+    return (cast(str, value).strip() if chosen.utcoffset() == instant.utcoffset() else chosen.isoformat(),
             ambiguous)
 
 
 def _named_zone_endpoint(
-    value: object, zone_name: str, source_clock: str | None,
+    value: object, zone_name: str, source_clock: str | None, *, check_offset: bool,
 ) -> bool:
-    """Validate the source wall time and offset without changing either."""
+    """Validate the source wall time and, when required, its supplied offset."""
     if len(zone_name) > 255 or not re.fullmatch(_ZONE_KEY, zone_name, re.ASCII):
         raise DraftValidationError("Source time zone must be an IANA time zone name")
     try:
@@ -326,7 +328,7 @@ def _named_zone_endpoint(
             original = datetime.combine(instant.date(), clock, tzinfo=instant.tzinfo)
             _wall_time_candidates(original.isoformat(), zone)
             raise DraftValidationError("Extracted clock time differs from the source time")
-    if instant.utcoffset() not in candidates:
+    if check_offset and instant.utcoffset() not in candidates:
         raise DraftValidationError("Extracted UTC offset does not match the source time zone")
     return len(candidates) > 1
 
@@ -342,15 +344,28 @@ def _explicit_zones(raw: dict[str, Any]) -> tuple[str, str]:
 
 def _explicit_zone_ambiguity(
     raw: dict[str, Any], zones: tuple[str, str], source_range: re.Match[str] | None,
+    *, check_offset: bool,
 ) -> bool:
     """Validate both named endpoints and report any repeated local hour."""
     if source_range is not None:
         zones = (source_range["zone"], source_range["zone"])
-    ambiguities = [
-        _named_zone_endpoint(raw.get(endpoint), zone, source_range[endpoint] if source_range else None)
-        for endpoint, zone in zip(("start", "end"), zones, strict=True)
-        if zone
-    ]
+    ambiguities = []
+    errors = []
+    for endpoint, zone in zip(("start", "end"), zones, strict=True):
+        if not zone:
+            continue
+        try:
+            ambiguities.append(_named_zone_endpoint(
+                raw.get(endpoint), zone, source_range[endpoint] if source_range else None,
+                check_offset=check_offset,
+            ))
+        except _NonexistentLocalTimeError:
+            raise
+        except DraftValidationError as err:
+            # A spring gap takes priority over another endpoint's bad offset.
+            errors.append(err)
+    if errors:
+        raise errors[0]
     return any(ambiguities)
 
 
@@ -418,12 +433,7 @@ def parse_ai_data(
     drafts: list[EventDraft] = []
     event_assumptions: list[tuple[str, ...]] = []
     warnings: list[str] = []
-    source_range = None
-    if len(events) == 1:
-        ranges = _NAMED_TIME_LINE.finditer(source_text)
-        source_range = next(ranges, None)
-        if source_range is not None and next(ranges, None) is not None:
-            source_range = None
+    source_record = _NAMED_TIME_RECORD.fullmatch(source_text.strip()) if len(events) == 1 else None
     for index, raw in enumerate(events):
         if not isinstance(raw, dict):
             warnings.append(f"event {index} must be an object")
@@ -440,17 +450,29 @@ def parse_ai_data(
             ambiguous = False
             if raw.get("all_day") is False:
                 zones = _explicit_zones(raw)
+                source_range = source_record
+                if source_range is not None and (
+                    not isinstance(raw.get("title"), str)
+                    or raw["title"].strip().casefold() != source_range["title"].strip().casefold()
+                ):
+                    source_range = None
+                repair_inferred = inferred and (
+                    source_range["zone"] == time_zone if source_range is not None else not any(zones)
+                )
                 if source_range is not None or any(zones):
                     if inferred and source_range is None:
                         raise DraftValidationError("Named source time zones conflict with inferred time zone")
-                    ambiguous = _explicit_zone_ambiguity(raw, zones, source_range)
-                elif inferred:
+                    ambiguous = _explicit_zone_ambiguity(
+                        raw, zones, source_range, check_offset=not repair_inferred,
+                    )
+                if repair_inferred:
                     if time_zone is None:
                         raise DraftValidationError("Home Assistant time zone is unavailable")
                     corrected_raw, ambiguous = _correct_inferred_zone(raw, time_zone)
             draft = EventDraft.from_mapping(corrected_raw)
             if corrected_raw is not raw and (
-                corrected_raw["start"] != raw["start"] or corrected_raw["end"] != raw["end"]
+                corrected_raw["start"] != raw["start"].strip()
+                or corrected_raw["end"] != raw["end"].strip()
             ):
                 warnings.append(
                     f"event {index}: corrected inferred UTC offset for {time_zone} "

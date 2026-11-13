@@ -774,6 +774,16 @@ def test_named_source_gap_rejects_only_affected_draft(start, end, source_zone, h
     assert (event[endpoint][:19].replace("T", " ") + f" which does not exist in {source_zone}") in result.warnings[0]
 
 
+def test_named_source_end_gap_takes_priority_over_wrong_start_offset():
+    event = {**VALID, "start": "2027-03-14T01:15:00-07:00", "end": "2027-03-14T02:45:00-07:00",
+             "start_time_zone": "America/Los_Angeles", "end_time_zone": "America/Los_Angeles"}
+    result = parser.parse_ai_data({"events": [event]})
+    assert result.events == []
+    assert len(result.warnings) == 1
+    assert result.warnings[0].startswith("Nonexistent local time:")
+    assert "2027-03-14 02:45:00 which does not exist in America/Los_Angeles" in result.warnings[0]
+
+
 @pytest.mark.parametrize("offset", ["-07:00", "-08:00"])
 def test_named_source_repeated_hour_preserves_offset_and_review_warning(offset):
     event = {**VALID, "start": f"2027-11-07T01:15:00{offset}",
@@ -840,7 +850,8 @@ def test_fixed_offset_endpoint_can_share_event_with_a_different_named_zone():
 )
 def test_labelled_named_source_range_checks_wall_clocks(source_text, start, end, inferred, message):
     event = {**VALID, "start": start, "end": end, "uses_reference_time_zone": inferred}
-    result = parser.parse_ai_data({"events": [event]}, source_text=source_text, time_zone="UTC")
+    record = f"{event['title']}\nDate: March 14, 2027\n{source_text}"
+    result = parser.parse_ai_data({"events": [event]}, source_text=record, time_zone="UTC")
     if message:
         assert not result.events
         assert len(result.warnings) == 1
@@ -848,3 +859,41 @@ def test_labelled_named_source_range_checks_wall_clocks(source_text, start, end,
     else:
         assert (result.events[0].start, result.events[0].end) == (start, end)
         assert not result.warnings
+
+
+@pytest.mark.parametrize("source_text", [
+    "Cancelled meeting\nDate: March 14, 2027\nTime: 9:00 AM to 10:00 AM (Asia/Tokyo)",
+    "Replacement meeting\nDate: March 14, 2027\nTime: 9:00 AM to 10:00 AM (Asia/Tokyo)\n"
+    "Update: the replacement will meet at 11:00 AM to noon.",
+])
+def test_unassociated_labelled_time_does_not_override_extracted_event(source_text):
+    event = {**VALID, "title": "Replacement meeting",
+             "start": "2027-03-14T11:00:00+09:00", "end": "2027-03-14T12:00:00+09:00",
+             "start_time_zone": "Asia/Tokyo", "end_time_zone": "Asia/Tokyo"}
+    result = parser.parse_ai_data({"events": [event]}, source_text=source_text, time_zone="UTC")
+    assert (result.events[0].start, result.events[0].end) == (event["start"], event["end"])
+    assert result.warnings == []
+
+
+@pytest.mark.parametrize("end_zone", ["America/Los_Angeles", "America/Vancouver"])
+def test_labelled_repeated_hour_repairs_inferred_range_only_in_ha_zone(end_zone):
+    event = {**VALID, "start": "2027-11-07T01:50:00-07:00", "end": "2027-11-07T01:10:00-07:00",
+             "uses_reference_time_zone": True}
+    result = parser.parse_ai_data(
+        {"events": [event]}, time_zone="America/Los_Angeles",
+        source_text=f"{event['title']}\nDate: November 7, 2027\nTime: 1:50 AM to 1:10 AM ({end_zone})",
+    )
+    if end_zone == "America/Los_Angeles":
+        assert (result.events[0].start, result.events[0].end) == (event["start"], "2027-11-07T01:10:00-08:00")
+        assert result.event_assumptions == [(parser._FALL_BACK_REVIEW_NOTE,)]
+    else:
+        assert result.events == []
+        assert "end must be after start" in result.warnings[0]
+
+
+def test_inferred_repeated_hour_normalizes_whitespace_without_losing_sibling():
+    event = {**VALID, "start": " 2027-11-07T01:15:00-07:00 ", "end": "2027-11-07T01:45:00-07:00",
+             "uses_reference_time_zone": True}
+    result = parser.parse_ai_data({"events": [event, VALID]}, time_zone="America/Los_Angeles")
+    assert [draft.start for draft in result.events] == [event["start"].strip(), VALID["start"]]
+    assert result.warnings == [f"event 0: {parser._FALL_BACK_REVIEW_NOTE}"]
