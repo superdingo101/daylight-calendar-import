@@ -88,6 +88,32 @@ def test_deterministic_manifest_covers_source_exactly_once(sample):
     ms.verify_manifest(m)
 
 
+@pytest.mark.parametrize("new_module_size", [1, 80_000])
+def test_init_split_shard_stays_exclusive_when_modules_are_added(sample, new_module_size):
+    root, _ = sample
+    init_module = SOURCE + "__init__.py"
+    make(root, init_module, "async def async_setup_entry():\n    return True\n" * 200)
+    git("add", ".")
+    git("commit", "-qm", "add large init module")
+    initial = ms.create_manifest(git("rev-parse", "HEAD"), 8)
+    assert initial["shards"][1]["modules"] == [init_module]
+
+    # Both tiny and disproportionately large new modules used to destabilize
+    # the weight-balanced shard assignment, breaking the exact init split.
+    new_module = SOURCE + "hosted_text_claim.py"
+    make(root, new_module, "#" * new_module_size + "\n")
+    git("add", ".")
+    git("commit", "-qm", "add hosted text claim module")
+    updated = ms.create_manifest(git("rev-parse", "HEAD"), 8)
+    assert updated["shards"][1]["modules"] == [init_module]
+    assert updated["manifest_sha256"] != initial["manifest_sha256"]
+    assert all(shard["modules"] for shard in updated["shards"])
+    assigned = [module for shard in updated["shards"] for module in shard["modules"]]
+    assert sorted(assigned) == ms.source_paths()
+    assert len(assigned) == len(set(assigned))
+    ms.verify_manifest(updated)
+
+
 def test_mismatched_exact_sha_is_rejected(sample):
     with pytest.raises(ValueError, match="exact"):
         ms.create_manifest("a" * 40)

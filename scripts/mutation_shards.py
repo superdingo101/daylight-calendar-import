@@ -99,8 +99,20 @@ def create_manifest(sha: str, count: int = SHARDS) -> dict:
     # can be used to rebalance in a later measurement-only change.
     weighted = [(p, max(1, Path(p).stat().st_size)) for p in paths]
     bins = [{"modules": [], "estimated_weight": 0} for _ in range(count)]
+    # The five-worker init split requires shard 1 to contain only __init__.py.
+    # Reserve that shard before balancing the remaining modules, so an added
+    # or resized source file cannot silently invalidate the split catalog.
+    init_module = SOURCE + "__init__.py"
+    reserve_init = count > 1 and init_module in paths
+    if reserve_init:
+        init_weight = next(weight for path, weight in weighted if path == init_module)
+        bins[1]["modules"].append(init_module)
+        bins[1]["estimated_weight"] = init_weight
+    eligible = [i for i in range(count) if not reserve_init or i != 1]
     for path, weight in sorted(weighted, key=lambda item: (-item[1], item[0])):
-        dest = min(range(count), key=lambda i: (bins[i]["estimated_weight"], i))
+        if reserve_init and path == init_module:
+            continue
+        dest = min(eligible, key=lambda i: (bins[i]["estimated_weight"], i))
         bins[dest]["modules"].append(path)
         bins[dest]["estimated_weight"] += weight
     for entry in bins:
