@@ -25,13 +25,21 @@ except ModuleNotFoundError:
     from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daylight_calendar_import.const import (
-    CONF_AI_TASK_ENTITY, CONF_CALENDAR_ENTITY, DOMAIN,
+    CONF_AI_TASK_ENTITY, CONF_CALENDAR_ALIASES, CONF_CALENDAR_ENTITIES,
+    CONF_CALENDAR_ENTITY, DOMAIN,
 )
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=")
 
 FRONTEND = Path(__file__).resolve().parents[1] / "custom_components/daylight_calendar_import/frontend"
 TEXT = "School concert November 12, 2026, 7:00–8:00 PM at School gym. Bring tickets."
+DST_SOURCE = """Calendar: ReleaseTest
+
+Daylight Release Test - DST Spring Forward 8D
+Date: March 14, 2027
+Time: 2:15 AM to 2:45 AM local Pacific time (America/Los_Angeles)
+Location: Test Conference Room
+Description: Synthetic event during the spring daylight-saving transition. Do not substitute a different time."""
 DRAFT = {
     "title": "School concert", "start": "2026-11-12T19:00:00-08:00",
     "end": "2026-11-12T20:00:00-08:00", "all_day": False,
@@ -52,7 +60,7 @@ async def _frontend(script, payload):
     return json.loads(stdout)
 
 
-async def _request(kind="text", *, file_id=None, data=b"", source_id="manual-acceptance"):
+async def _request(kind="text", *, file_id=None, data=b"", source_id="manual-acceptance", text=TEXT):
     return await _frontend('''
       import {submitText} from './manual_submission.js';
       import {submitFile} from './upload_transport.js';
@@ -70,7 +78,7 @@ async def _request(kind="text", *, file_id=None, data=b"", source_id="manual-acc
         {text: p.text, sourceId: p.source_id});
       process.stdout.write(JSON.stringify(request));
     ''', {"kind": kind, "file_id": file_id, "data": base64.b64encode(data).decode(),
-          "text": TEXT, "source_id": source_id})
+          "text": text, "source_id": source_id})
 
 
 async def _call(client, request):
@@ -91,7 +99,12 @@ async def _response(client, request):
 
 
 @pytest.fixture
-async def manual_runtime(hass, monkeypatch, tmp_path):
+def manual_options():
+    return {}
+
+
+@pytest.fixture
+async def manual_runtime(hass, monkeypatch, tmp_path, manual_options):
     # HA defaults to one process-global /tmp upload path. Isolate real HTTP
     # uploads so concurrent test environments cannot remove each other's files.
     monkeypatch.setattr("homeassistant.components.file_upload.TEMP_DIR_NAME", str(tmp_path / "ha-uploads"))
@@ -105,12 +118,13 @@ async def manual_runtime(hass, monkeypatch, tmp_path):
     writes = AsyncMock()
     hass.services.async_register("calendar", "create_event", writes)
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_classify_conflicts", AsyncMock(return_value=[]))
-    entry = MockConfigEntry(domain=DOMAIN, data={CONF_AI_TASK_ENTITY: "ai_task.test", CONF_CALENDAR_ENTITY: "calendar.family"})
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_AI_TASK_ENTITY: "ai_task.test", CONF_CALENDAR_ENTITY: "calendar.family"},
+                            options=manual_options)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     # No IMAP options, credentials or mailbox integration are configured.
-    assert entry.options == {}
+    assert entry.options == manual_options
     return SimpleNamespace(entry=entry, store=hass.data[DOMAIN][entry.entry_id], generate=generate,
                            writes=writes, entity=entity)
 
@@ -261,6 +275,50 @@ async def test_no_events_and_event_duplicate_results_never_write_calendar(hass, 
     assert repeated["duplicate_source"] is False
     assert repeated["pending"] is None
     assert len(runtime.store.list()) == 1
+    runtime.writes.assert_not_awaited()
+
+
+@pytest.mark.parametrize("manual_options", [{
+    CONF_CALENDAR_ENTITIES: ["calendar.family", "calendar.mike_test"],
+    CONF_CALENDAR_ALIASES: {"ReleaseTest": "calendar.mike_test"},
+}])
+async def test_manual_named_zone_spring_gap_is_rejected(hass, hass_ws_client, manual_runtime):
+    hass.config.time_zone = "America/Los_Angeles"
+    runtime = manual_runtime
+    client = await hass_ws_client(hass)
+    # Reconstructed from the reported display and the beta prompt, without
+    # assuming access to the original Gemini response.
+    runtime.generate.return_value = SimpleNamespace(data={
+        "unsupported_recurrence": False,
+        "events": [{
+            "title": "Daylight Release Test - DST Spring Forward 8D",
+            "start": "2027-03-14T02:15:00-07:00",
+            "end": "2027-03-14T02:45:00-07:00",
+            "all_day": False,
+            "uses_reference_time_zone": False,
+            "location": "Test Conference Room",
+            "description": "Synthetic event during the spring daylight-saving transition.",
+            "confidence": 1,
+            "assumptions": [],
+        }],
+    })
+    response = await _response(client, await _request(text=DST_SOURCE))
+    runtime.generate.assert_awaited_once()
+    assert response["status"] == "no_events"
+    assert response["pending"] is None
+    assert len(response["warnings"]) == 1
+    assert "does not exist" in response["warnings"][0]
+    assert "America/Los_Angeles" in response["warnings"][0]
+    assert "valid local time" in response["warnings"][0]
+    assert runtime.store.list() == ()
+    activity = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "get_activity",
+        "service_data": {"pending_id": response["activity_id"]}, "return_response": True,
+    })
+    assert activity["success"], activity
+    record = activity["result"]["response"]["activity"]
+    assert record["guidance"] == response["warnings"][0]
+    assert record["manual_source_text"] == DST_SOURCE
     runtime.writes.assert_not_awaited()
 
 

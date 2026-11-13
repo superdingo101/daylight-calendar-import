@@ -692,6 +692,8 @@ async def test_provider_normalizes_inferred_offset_before_returning_draft(monkey
     assert "corrected inferred UTC offset" in outcome.warnings[0]
     fields = generate.await_args.kwargs["structure"].schema["events"].config["fields"]
     assert fields["uses_reference_time_zone"]["required"] is True
+    assert fields["start_time_zone"]["required"] is True
+    assert fields["end_time_zone"]["required"] is True
     instructions = generate.await_args.kwargs["instructions"]
     assert "Set uses_reference_time_zone to true" in instructions
     assert "Preserve explicit source zones" in instructions
@@ -749,3 +751,100 @@ def test_fall_back_does_not_rescue_truly_reversed_or_explicitly_zoned_range():
     )
     assert result.events == []
     assert "end must be after start" in result.warnings[0]
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "source_zone", "ha_zone", "endpoint"),
+    [
+        ("2027-03-14T02:15:00-07:00", "2027-03-14T02:45:00-07:00",
+         "America/Los_Angeles", "America/Los_Angeles", "start"),
+        ("2027-03-14T01:15:00-08:00", "2027-03-14T02:45:00-08:00",
+         "America/Los_Angeles", "UTC", "end"),
+        ("2027-03-28T02:15:00+01:00", "2027-03-28T02:45:00+02:00",
+         "Europe/Berlin", "America/Los_Angeles", "start"),
+    ],
+)
+def test_named_source_gap_rejects_only_affected_draft(start, end, source_zone, ha_zone, endpoint):
+    event = {**VALID, "start": start, "end": end, "uses_reference_time_zone": False,
+             "start_time_zone": source_zone, "end_time_zone": source_zone}
+    result = parser.parse_ai_data({"events": [event, VALID]}, time_zone=ha_zone)
+    assert [draft.as_dict() for draft in result.events] == [{**VALID}]
+    assert result.event_assumptions == [()]
+    assert len(result.warnings) == 1
+    assert (event[endpoint][:19].replace("T", " ") + f" which does not exist in {source_zone}") in result.warnings[0]
+
+
+@pytest.mark.parametrize("offset", ["-07:00", "-08:00"])
+def test_named_source_repeated_hour_preserves_offset_and_review_warning(offset):
+    event = {**VALID, "start": f"2027-11-07T01:15:00{offset}",
+             "end": f"2027-11-07T01:45:00{offset}",
+             "start_time_zone": "America/Los_Angeles", "end_time_zone": "America/Los_Angeles",
+             "uses_reference_time_zone": False}
+    result = parser.parse_ai_data({"events": [event]}, time_zone="America/New_York")
+    assert (result.events[0].start, result.events[0].end) == (event["start"], event["end"])
+    assert result.event_assumptions == [(parser._FALL_BACK_REVIEW_NOTE,)]
+    assert result.warnings == [f"event 0: {parser._FALL_BACK_REVIEW_NOTE}"]
+
+
+@pytest.mark.parametrize(
+    ("start_zone", "end_zone", "inferred", "message"),
+    [
+        ("../etc/passwd", "", False, "must be an IANA time zone name"),
+        ("x" * 256, "", False, "must be an IANA time zone name"),
+        ("Unknown/Zone", "", False, "IANA time zone is unavailable"),
+        (None, "", False, "must be a string"),
+        ("", [], False, "must be a string"),
+        ("America/Los_Angeles", "", True, "conflict with inferred time zone"),
+        ("", "America/Los_Angeles", True, "conflict with inferred time zone"),
+        ("Europe/Berlin", "", False, "offset does not match the source time zone"),
+    ],
+)
+def test_invalid_named_zone_metadata_cannot_bypass_validation(start_zone, end_zone, inferred, message):
+    event = {**VALID, "start_time_zone": start_zone, "end_time_zone": end_zone,
+             "uses_reference_time_zone": inferred}
+    result = parser.parse_ai_data({"events": [event]}, time_zone="America/Los_Angeles")
+    assert not result.events
+    assert len(result.warnings) == 1
+    assert message in result.warnings[0]
+
+
+def test_fixed_offset_endpoint_can_share_event_with_a_different_named_zone():
+    # This start falls in the Los Angeles gap as a wall time but is explicitly
+    # fixed at UTC-07:00. The end is expressed in Tokyo's local time.
+    event = {**VALID, "start": "2027-03-14T02:15:00-07:00",
+             "end": "2027-03-14T19:00:00+09:00", "start_time_zone": "",
+             "end_time_zone": "Asia/Tokyo", "uses_reference_time_zone": False}
+    result = parser.parse_ai_data({"events": [event]}, time_zone="America/Los_Angeles")
+    assert (result.events[0].start, result.events[0].end) == (event["start"], event["end"])
+    assert result.warnings == []
+
+
+@pytest.mark.parametrize(
+    ("source_text", "start", "end", "inferred", "message"),
+    [
+        ("Time: 2:15 AM to 2:45 AM local Pacific time (America/Los_Angeles)",
+         "2027-03-14T03:15:00-07:00", "2027-03-14T03:45:00-07:00", False, "does not exist"),
+        ("Time: 2:15 AM to 2:45 AM (America/Los_Angeles)",
+         "2027-03-14T02:15:00-07:00", "2027-03-14T02:45:00-07:00", True, "does not exist"),
+        ("Time: 12:15 PM–12:45 PM (America/Los_Angeles)",
+         "2027-03-14T12:15:00-07:00", "2027-03-14T12:45:00-07:00", False, None),
+        ("Time: 12:15 AM–12:45 AM (America/Los_Angeles)",
+         "2027-03-14T00:15:00-08:00", "2027-03-14T00:45:00-08:00", False, None),
+        ("Time: 4:15 AM to 4:45 AM (America/Los_Angeles)",
+         "2027-03-14T03:15:00-07:00", "2027-03-14T03:45:00-07:00", False, "differs from the source"),
+        ("Time: 2:15 AM to 2:45 AM (-07:00)",
+         "2027-03-14T02:15:00-07:00", "2027-03-14T02:45:00-07:00", False, None),
+        ("Time: 9:00 AM to 10:00 AM (Asia/Tokyo)\nTime: 2:15 AM to 2:45 AM (America/Los_Angeles)",
+         "2027-03-14T09:00:00+09:00", "2027-03-14T10:00:00+09:00", False, None),
+    ],
+)
+def test_labelled_named_source_range_checks_wall_clocks(source_text, start, end, inferred, message):
+    event = {**VALID, "start": start, "end": end, "uses_reference_time_zone": inferred}
+    result = parser.parse_ai_data({"events": [event]}, source_text=source_text, time_zone="UTC")
+    if message:
+        assert not result.events
+        assert len(result.warnings) == 1
+        assert message in result.warnings[0]
+    else:
+        assert (result.events[0].start, result.events[0].end) == (start, end)
+        assert not result.warnings

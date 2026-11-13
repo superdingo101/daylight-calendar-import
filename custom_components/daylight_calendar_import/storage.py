@@ -24,7 +24,10 @@ from .dedup import (
     event_fingerprint,
     source_fingerprint as build_source_fingerprint,
 )
-from .models import UNSUPPORTED_RECURRENCE_WARNING, EventDraft, normalize_date_time_assumptions
+from .models import (
+    EventDraft, NONEXISTENT_LOCAL_TIME_PREFIX, UNSUPPORTED_RECURRENCE_WARNING,
+    normalize_date_time_assumptions,
+)
 from .notification_journal import NotificationRecord, notification_record
 from .notification_preferences import NotificationPreferences, DELIVERABLE_NOTIFICATION_CLASSES
 from .source_routing import LEGACY_UNRESOLVED_WARNINGS
@@ -1596,15 +1599,17 @@ class PendingImportStore:
 
             if not accepted_events:
                 status = "duplicate" if duplicate_events else "no_events"
-                activity = self._finish_submission(
-                    activity_id, status,
+                guidance = (
                     UNSUPPORTED_RECURRENCE_WARNING
-                    if UNSUPPORTED_RECURRENCE_WARNING in warnings else None,
+                    if UNSUPPORTED_RECURRENCE_WARNING in warnings else next(
+                        (warning for warning in warnings
+                         if warning.startswith(NONEXISTENT_LOCAL_TIME_PREFIX)), None,
+                    )
                 )
-                # Only manual text is retained, only for unsupported recurrence,
-                # and only in authorized activity detail under normal retention.
-                if (source_kind == "manual_text"
-                        and UNSUPPORTED_RECURRENCE_WARNING in warnings):
+                activity = self._finish_submission(activity_id, status, guidance)
+                # Keep the rejected input available in authorized activity
+                # detail so the user can correct and resubmit the source.
+                if source_kind == "manual_text" and guidance is not None:
                     activity = tuple(
                         {**record, "manual_source_text": source_text[:4096]}
                         if record["id"] == activity_id else record for record in activity
