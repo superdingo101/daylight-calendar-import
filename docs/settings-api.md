@@ -55,7 +55,15 @@ with more selected calendars remain readable and can be reduced in Settings.
 
 New or replacement alias sets are limited to 100 entries. Larger legacy sets remain readable and usable; unrelated settings updates preserve them, and clients can replace them with a set of 100 or fewer without editing Home Assistant storage.
 
-Use `calendar_aliases: {}` to clear aliases. When removing a writable calendar
+When supplying `calendar_aliases`, include `expected_calendar_aliases` with the
+unchanged, normalized alias map from the settings snapshot you edited. The server
+compares it to the current aliases under the settings lock. If the snapshot is
+missing or stale, the entire update is rejected with
+`calendar_aliases_snapshot_required` or `calendar_aliases_changed`, respectively.
+Read current settings and review your changes before retrying. An update that
+only supplies `conflict_calendar_entities` needs no alias snapshot.
+
+Use `calendar_aliases: {}` with the current snapshot to clear aliases. When removing a writable calendar
 used by an alias, remove/remap that alias first in a separate settings request.
 
 **Pending-event destination changes:** configuration never silently

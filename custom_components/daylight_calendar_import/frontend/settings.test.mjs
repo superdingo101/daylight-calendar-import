@@ -118,12 +118,14 @@ test("calendar intelligence settings only send explicit changes", async () => {
   const result = await saveCalendarIntelligenceSettings(hass, {
     entry_id: "entry-1",
     calendar_aliases: {kids: "calendar.family"},
+    expected_calendar_aliases: {},
     conflict_calendar_entities: ["calendar.work"],
   });
   assert.deepEqual(calls, [{
     type: "daylight_calendar_import/settings/calendar_intelligence/update",
     entry_id: "entry-1",
     calendar_aliases: {kids: "calendar.family"},
+    expected_calendar_aliases: {},
     conflict_calendar_entities: ["calendar.work"],
   }]);
   assert.deepEqual(result.calendar_aliases, {kids: "calendar.family"});

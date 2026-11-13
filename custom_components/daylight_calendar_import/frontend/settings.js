@@ -86,7 +86,7 @@ export async function saveCalendarIntelligenceSettings(hass, settings) {
     type: SETTINGS_CALENDAR_INTELLIGENCE_UPDATE,
     entry_id: settings.entry_id,
   };
-  for (const key of ["calendar_aliases", "conflict_calendar_entities"]) {
+  for (const key of ["calendar_aliases", "expected_calendar_aliases", "conflict_calendar_entities"]) {
     if (settings[key] !== undefined) payload[key] = settings[key];
   }
   return validateSettings(await hass.callWS(payload));

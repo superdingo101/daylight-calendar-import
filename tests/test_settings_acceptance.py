@@ -84,6 +84,7 @@ async def test_all_settings_tabs_survive_real_entry_reload(hass, hass_ws_client,
                   calendar_entity="calendar.work", calendar_entities=["calendar.work", "calendar.family"])
     await success(client, WS_UPDATE_CALENDAR_INTELLIGENCE, entry_id=entry.entry_id,
                   calendar_aliases={" School ": "calendar.family"},
+                  expected_calendar_aliases=initial["calendar_aliases"],
                   conflict_calendar_entities=["calendar.observation"])
     await success(client, WS_UPDATE_EMAIL_SETTINGS, entry_id=entry.entry_id, enabled=True,
                   host="imap.example.com", username="imports@example.com", password=SECRET,
@@ -114,7 +115,7 @@ async def test_all_settings_tabs_survive_real_entry_reload(hass, hass_ws_client,
     (WS_GET_SETTINGS, {}),
     (WS_UPDATE_CORE_SETTINGS, {"ai_task_entity": "ai_task.other"}),
     (WS_UPDATE_EMAIL_SETTINGS, {"enabled": False}),
-    (WS_UPDATE_CALENDAR_INTELLIGENCE, {"calendar_aliases": {}}),
+    (WS_UPDATE_CALENDAR_INTELLIGENCE, {"calendar_aliases": {}, "expected_calendar_aliases": {}}),
     (WS_UPDATE_NOTIFICATIONS, {"expected_notifications": {}, "notifications": POLICY}),
 ])
 async def test_every_settings_endpoint_requires_admin(
@@ -179,10 +180,72 @@ async def test_concurrent_tabs_merge_disjoint_changes_and_reject_stale_policy(
     assert (await success(email_client, WS_GET_SETTINGS))["notifications"] == POLICY
 
 
+async def test_stale_routing_tab_cannot_overwrite_saved_aliases(
+    hass, hass_ws_client, settings_runtime,
+):
+    entry_id = settings_runtime.entry.entry_id
+    tab_a = await hass_ws_client(hass)
+    tab_b = await hass_ws_client(hass)
+    await success(
+        tab_a, WS_UPDATE_CORE_SETTINGS, entry_id=entry_id,
+        calendar_entities=["calendar.family", "calendar.work"],
+    )
+    baseline = await success(
+        tab_a, WS_UPDATE_CALENDAR_INTELLIGENCE, entry_id=entry_id,
+        calendar_aliases={"  ＳＣＨＯＯＬ  ": "calendar.family"},
+        expected_calendar_aliases={},
+    )
+    assert baseline["calendar_aliases"] == {"school": "calendar.family"}
+    stale = await success(tab_b, WS_GET_SETTINGS)
+    saved = await success(
+        tab_a, WS_UPDATE_CALENDAR_INTELLIGENCE, entry_id=entry_id,
+        calendar_aliases={**baseline["calendar_aliases"], "RaceTest10C": "calendar.work"},
+        expected_calendar_aliases=baseline["calendar_aliases"],
+    )
+
+    rejected = await call(
+        tab_b, WS_UPDATE_CALENDAR_INTELLIGENCE, entry_id=entry_id,
+        calendar_aliases={**stale["calendar_aliases"], "RaceTest10C_B": "calendar.family"},
+        expected_calendar_aliases=stale["calendar_aliases"],
+        conflict_calendar_entities=["calendar.observation"],
+    )
+    assert rejected["success"] is False
+    assert rejected["error"]["code"] == "calendar_aliases_changed"
+    assert "Refresh" in rejected["error"]["message"]
+
+    cached_panel = await call(
+        tab_b, WS_UPDATE_CALENDAR_INTELLIGENCE, entry_id=entry_id,
+        calendar_aliases={},
+    )
+    assert cached_panel["success"] is False
+    assert cached_panel["error"]["code"] == "calendar_aliases_snapshot_required"
+
+    fresh_tab = await hass_ws_client(hass)
+    assert await success(fresh_tab, WS_GET_SETTINGS) == saved
+    conflict_only = await success(
+        tab_b, WS_UPDATE_CALENDAR_INTELLIGENCE, entry_id=entry_id,
+        conflict_calendar_entities=["calendar.observation"],
+    )
+    assert conflict_only == {**saved, "conflict_calendar_entities": ["calendar.observation"]}
+    assert conflict_only["calendar_aliases"] == {
+        "school": "calendar.family", "racetest10c": "calendar.work",
+    }
+    assert conflict_only["calendar_entities"] == ["calendar.family", "calendar.work"]
+
+    # A deliberate replacement can still delete an alias after reading the current map.
+    cleared = await success(
+        fresh_tab, WS_UPDATE_CALENDAR_INTELLIGENCE, entry_id=entry_id,
+        calendar_aliases={}, expected_calendar_aliases=saved["calendar_aliases"],
+    )
+    assert cleared == {**conflict_only, "calendar_aliases": {}}
+
+
 @pytest.mark.parametrize("command,fields,code", [
     (WS_UPDATE_CORE_SETTINGS, {"ai_task_entity": "sensor.invalid"}, "invalid_ai_task"),
     (WS_UPDATE_CORE_SETTINGS, {"calendar_entity": "calendar.other"}, "default_not_allowed"),
-    (WS_UPDATE_CALENDAR_INTELLIGENCE, {"calendar_aliases": {"School": "calendar.other"}}, "alias_target_not_allowed"),
+    (WS_UPDATE_CALENDAR_INTELLIGENCE,
+     {"calendar_aliases": {"School": "calendar.other"}, "expected_calendar_aliases": {}},
+     "alias_target_not_allowed"),
     (WS_UPDATE_EMAIL_SETTINGS, {"enabled": True, "host": "imap.example.com"}, "invalid_email_config"),
     (WS_UPDATE_NOTIFICATIONS, {"expected_notifications": {}, "notifications": {"enabled": True}}, "invalid_notifications"),
 ])
@@ -211,7 +274,7 @@ async def test_failed_mailbox_validation_redacts_remote_details_and_keeps_every_
     entry = settings_runtime.entry
     client = await hass_ws_client(hass)
     await success(client, WS_UPDATE_CALENDAR_INTELLIGENCE, entry_id=entry.entry_id,
-                  calendar_aliases={"School": "calendar.family"})
+                  calendar_aliases={"School": "calendar.family"}, expected_calendar_aliases={})
     baseline = await success(client, WS_GET_SETTINGS)
     before = deepcopy(dict(entry.options))
     store = hass.data[DOMAIN][entry.entry_id]

@@ -3480,6 +3480,7 @@ test("routing tab saves aliases and read-only conflict calendar scope separately
     type: "daylight_calendar_import/settings/calendar_intelligence/update",
     entry_id: "entry-1",
     calendar_aliases: {Kids: "calendar.family"},
+    expected_calendar_aliases: {},
     conflict_calendar_entities: ["calendar.busy"],
   });
   assert.deepEqual(panel._settings.calendar_aliases, {Kids: "calendar.family"});
@@ -3591,6 +3592,67 @@ test("routing preserves unfinished text and conflict selection across tabs", asy
   assert.equal(form.elements.namedItem("calendar_aliases").value, "Unfinished = ");
   assert.equal(form.querySelectorAll("input")
     .find(input => input.value === "calendar.personal").checked, true);
+});
+
+test("routing preserves a rejected stale alias draft until the saved aliases are reviewed", async () => {
+  let current = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.openai",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    calendar_aliases: {school: "calendar.family"},
+    conflict_calendar_entities: ["calendar.family"],
+    notifications: {enabled: false, target: null, classes: []},
+    email: {},
+  };
+  const updates = [];
+  const makePanel = () => {
+    const panel = new DaylightImportPanel();
+    panel.hass = {user: {is_admin: true}, states: {}, callWS: async message => {
+      if (message.type === "call_service") return {response: {imports: []}};
+      if (message.type.endsWith("/settings/get")) return current;
+      if (message.type.endsWith("/settings/calendar_intelligence/update")) {
+        updates.push(message);
+        assert.ok(Object.hasOwn(message, "expected_calendar_aliases"));
+        if (JSON.stringify(message.expected_calendar_aliases) !== JSON.stringify(current.calendar_aliases)) {
+          throw {code: "calendar_aliases_changed", message: "Calendar aliases changed elsewhere. Refresh Routing."};
+        }
+        current = {...current, calendar_aliases: message.calendar_aliases};
+        return current;
+      }
+      throw Error("Unexpected request");
+    }};
+    return panel;
+  };
+  const [tabA, tabB] = [makePanel(), makePanel()];
+  await flush();
+  await Promise.all([tabA.showSettings("routing"), tabB.showSettings("routing")]);
+  const form = panel => find(panel._content, "form");
+  const aliasField = panel => form(panel).elements.namedItem("calendar_aliases");
+  aliasField(tabA).value += "\nracetest10c = calendar.family";
+  await tabA.saveRoutingSettings(form(tabA));
+  const saved = current.calendar_aliases;
+
+  const staleText = "school = calendar.family\nracetest10c_b = calendar.family";
+  aliasField(tabB).value = staleText;
+  aliasField(tabB).input();
+  await tabB.saveRoutingSettings(form(tabB));
+  assert.deepEqual(updates[1].expected_calendar_aliases, {school: "calendar.family"});
+  assert.match(tabB._content.querySelector("[data-settings-save-error]").textContent, /Refresh Routing/);
+  assert.equal(aliasField(tabB).value, staleText);
+  assert.deepEqual(current.calendar_aliases, saved);
+
+  await tabB.showSettings("routing", true);
+  assert.equal(aliasField(tabB).value, staleText);
+  assert.match(find(tabB._content, "pre").textContent, /racetest10c = calendar.family/);
+  await tabB.saveRoutingSettings(form(tabB));
+  assert.equal(updates.length, 2);
+
+  aliasField(tabB).value = staleText + "\nracetest10c = calendar.family";
+  aliasField(tabB).input();
+  tabB._content.querySelectorAll("button")
+    .find(button => button.textContent === "Confirm alias replacement").click();
+  await tabB.saveRoutingSettings(form(tabB));
+  assert.deepEqual(updates[2].expected_calendar_aliases, saved);
+  assert.deepEqual(current.calendar_aliases, {...saved, racetest10c_b: "calendar.family"});
 });
 
 test("routing lost response conservatively retains canonicalized alias draft", async () => {
