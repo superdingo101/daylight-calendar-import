@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import json
 from typing import Protocol
@@ -186,7 +187,8 @@ class AITaskParserProvider:
         try:
             if not isinstance(result.data.get("unsupported_recurrence"), bool):
                 raise ValueError("AI Task result must declare unsupported_recurrence")
-            return parse_ai_data(result.data, source_text=text, time_zone=time_zone)
+            # Looking up a named source zone can read the system tz database.
+            return await asyncio.to_thread(parse_ai_data, result.data, source_text=text, time_zone=time_zone)
         except Exception:
             raise ProviderError(
                 "provider_invalid_response", "AI Task returned an invalid result"

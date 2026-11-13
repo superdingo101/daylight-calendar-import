@@ -12,6 +12,7 @@ UNSUPPORTED_RECURRENCE_WARNING = (
     "New drafts from this source are withheld and existing drafts cannot be approved. "
     "Reject existing drafts and submit independent one-off dates separately, or enter the schedule manually."
 )
+NONEXISTENT_LOCAL_TIME_PREFIX = "Nonexistent local time:"
 
 class DraftValidationError(ValueError):
     """Raised when an AI-produced event draft is not safe to import."""
