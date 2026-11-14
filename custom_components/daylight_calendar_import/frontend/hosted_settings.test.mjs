@@ -780,3 +780,28 @@ test("expired reconnect is classified automatically and uncertain exchange never
   assert.deepEqual(h.calls.filter(call => call.action).map(call => call.action), ["poll"]);
   h.settings.stop();
 });
+
+test("expired Cloud access keeps the account link and offers a status recheck", async () => {
+  const {settings, getHass, setHandler, calls} = setup({...snapshot, state: "checking_access"});
+  let notify;
+  getHass().connection.subscribeMessage = async callback => {
+    notify = callback;
+    return () => {};
+  };
+  await settings.load("entry-1");
+  const unavailable = {...snapshot, state: "access_unavailable"};
+  setHandler(async () => unavailable);
+  notify({entry_id: "entry-1"});
+  await flush();
+
+  assert.match(settings.element.querySelector("[role=status]").textContent, /connection is saved.*access is unavailable/i);
+  assert.equal(settings.element.querySelector("a").href, snapshot.account_origin + "/account");
+  assert.equal(findButton(settings.element, "Check and recover connection"), undefined);
+  assert.equal(settings.element.querySelector("[data-hosted-connect]"), null);
+
+  setHandler(async () => ({...snapshot, state: "connected"}));
+  findButton(settings.element, "Check access again").click();
+  await flush();
+  assert.equal(calls.at(-1).action, "reconcile");
+  assert.match(settings.element.querySelector("[role=status]").textContent, /securely connected/i);
+});
