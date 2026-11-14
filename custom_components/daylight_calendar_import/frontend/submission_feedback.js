@@ -73,6 +73,13 @@ export function submissionOutcomeUncertain(error, submitted = true) {
     !submissionPreprocessingFailure(error);
 }
 
+/** Do not repeat instructions already supplied by local validation or HA. */
+function appendMissingGuidance(detail, guidance) {
+  // Ignore case and the final period so a server-supplied equivalent is enough.
+  const phrase = guidance.replace(/\.$/, "").toLowerCase();
+  return detail.toLowerCase().includes(phrase) ? detail : `${detail} ${guidance}`;
+}
+
 /** Separate rejected work from a transport failure whose result is unknown. */
 export function submissionErrorMessage(error, submitted = true) {
   const detail = typeof error?.message === "string" && error.message.trim() ? error.message.trim() : "Could not submit this import.";
@@ -104,7 +111,7 @@ export function submissionErrorMessage(error, submitted = true) {
   }
   if (pdfFailure === "format") return `${detail} Use an unencrypted PDF with no more than 30 pages, or paste its event details as text.`;
   if (/source_too_large|size limit|file size/i.test(identifier)) {
-    return `${detail} Choose a file no larger than 10 MiB.`;
+    return appendMissingGuidance(detail, "Choose a file no larger than 10 MiB.");
   }
   if (/unsupported_capability|does not support.*attachment|attachments.*not supported/i.test(identifier)) {
     return `${detail} Choose an AI task provider that supports attachments, or paste the event details as text.`;
@@ -112,7 +119,7 @@ export function submissionErrorMessage(error, submitted = true) {
   if (/AI task.*(unavailable|not found)|provider.*unavailable/i.test(identifier)) {
     return `${detail} Check the configured AI task entity in Settings, then try again.`;
   }
-  if (/unsupported_media/.test(identifier)) return `${detail} Choose a JPEG, PNG, WebP image or PDF.`;
+  if (/unsupported_media/.test(identifier)) return appendMissingGuidance(detail, "Choose a JPEG, PNG, WebP image or PDF.");
   if (/pdf.*(page|encrypted|password)|(?:page|encrypted|password).*pdf/i.test(identifier)) {
     return `${detail} Use an unencrypted PDF with no more than 30 pages, or paste its event details as text.`;
   }

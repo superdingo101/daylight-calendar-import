@@ -49,7 +49,7 @@ export async function inspectUpload(file) {
     return {kind: "image", mediaType: "image/webp"};
   }
   if (matches([0x25, 0x50, 0x44, 0x46, 0x2d])) return {kind: "pdf", mediaType: "application/pdf"};
-  throw new UploadError("unsupported_media", "Choose a JPEG, PNG, WebP image or PDF.");
+  throw new UploadError("unsupported_media", "The selected file\'s contents are unsupported. Choose a JPEG, PNG, WebP image or PDF.");
 }
 
 async function removeUpload(hass, fileId) {
