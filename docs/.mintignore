@@ -1,6 +1,7 @@
 # Internal project/deployment documentation, never part of public Mintlify.
 AGENTS.md
 PUBLISHING.md
+public-beta-checklist.md
 adr/
 hosted-api.md
 hosted-account-api.md
