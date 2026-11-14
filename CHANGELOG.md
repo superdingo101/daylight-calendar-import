@@ -1,52 +1,51 @@
 # Changelog
 
-## 0.9.0 (unreleased)
+## 0.9.0
 
-The `v0.9.0-beta0` prerelease is available for testing. Final v0.9.0
-remains subject to release validation.
+v0.9.0 brings the public-beta improvements into the stable **self-hosted**
+Daylight Calendar Import release. No hosted account or subscription is required.
 
-- **New import workflow (#172):** Open **New import** from anywhere in
-  **Daylight Imports** to paste event details or upload an image/PDF on a
-  dedicated screen. Keep the Review inbox separate, with a compact refresh
-  control and consistent navigation.
-- **Better conflict review (#167, #168):** Show existing event start/end and
-  overlap times, and automatically check configured conflict-observation
-  calendars before approval confirmation. Incomplete observations remain
-  visible; overlaps are advisory.
-- **Recurring-announcement safeguards (#170):** Flag detected recurring
-  schedules and durably block approval rather than silently creating a
-  one-off event. Automatic recurring-event creation is still unsupported.
-- **Visible notification delivery failures (#171):** Surface terminal
-  delivery failures and settings guidance in Recent activity without
-  changing the underlying calendar outcome.
-- **Safer extraction and bounded inputs (#166, #169):** Mark imported
-  text/media as untrusted evidence in AI Task prompts, cap submitted source
-  text at 1,000,000 Unicode characters, and limit new or replacement
-  routing-alias sets to 100.
-- **Beta regression coverage (#153–#165):** Expand HACS installation and
-  historical upgrade, settings/permission, desktop/mobile, routing,
-  conflict, review/recovery, IMAP, AI Task, privacy, and concurrency tests;
-  add the public beta validation checklist. Recorded AI responses and
-  simulated browser tests are not substitutes for live-provider and
-  real-installation evaluation.
+### Highlights
 
-Existing v0.8.0 paste/image/PDF and optional Direct IMAP workflows remain
-supported. Drafts still require explicit review and approval before calendar
-creation; a Daylight Cloud account is not needed.
+- **Import and review:** Add the global **New import** flow for pasted text and
+  images/PDFs (#172). Group source events in a compact review inbox, streamline
+  event actions, and show destination calendars without expanding cards
+  (#190, #191, #196). Calendar creation still requires explicit approval.
+- **Calendar safety:** Show conflicting event and overlap times; observe the
+  configured conflict calendars before approval confirmation (#167, #168).
+  Guard unsupported recurring announcements (#170), isolate untrusted source
+  evidence in AI Task prompts (#166), and bound source-text and routing-alias
+  inputs (#169). Observation results can be incomplete and are advisory.
+- **Recovery and reliability:** Surface terminal notification-delivery failures
+  in Recent activity (#171), and preserve existing uncertain-write recovery.
+- **Beta fixes:** Correct inferred DST offsets (#175) and reject nonexistent
+  local times associated with named source time zones (#241); repair image/PDF
+  imports with unsafe filenames (#189) and duplicate upload validation
+  messages (#245); support explicit re-import of duplicate manual submissions
+  for review (#176); keep the panel visible across settings reloads (#239);
+  and prevent stale Routing tabs from silently erasing other saved aliases
+  (#240).
+- **Compatibility and documentation:** Add one-click HACS/Marketplace
+  installation guidance (#215), CI coverage for Home Assistant 2026.11.0
+  alongside the 2026.7.4 minimum (#216), and standalone Mintlify docs
+  with reviewed navigation and branding (#217–#220, #222–#228).
+  Expand installation, browser, provider, routing, privacy, recovery and
+  HACS regression coverage (#153–#165).
 
-### Upgrade from 0.8.0
+### Upgrade from v0.8.0 or a v0.9.0 prerelease
 
-Back up Home Assistant, update through HACS and restart. Preserve the
-existing integration entry, AI Task configuration, allowed/default calendars
-and private pending-review storage. Inspect uncertain writes in the
-destination calendar before recording their recovery outcome. Do not remove
-and re-add the integration or blindly resend sources: doing so can lose
-pending/history/deduplication data and lead to duplicates.
+Back up Home Assistant and update the existing integration through HACS or
+Marketplace. Restart when required; preserve AI Task setup, allowed calendars,
+routing settings and private pending-review storage. **Do not remove and re-add
+the integration as an upgrade method**: doing so can delete pending history
+and deduplication data while leaving calendar events in place. Inspect any
+uncertain calendar write before resolving it.
 
-Final publication still requires the recorded manual/provider checks,
-candidate CI/HACS/Hassfest/ZIP results and matching clean mutation release
-proof. See [v0.9.0 release notes](docs/releases/v0.9.0.md) and the
-[public beta checklist](docs/public-beta-checklist.md).
+Automatic recurring-event creation, automatic event approval, and hosted
+Daylight services are not part of this release. AI extraction and calendar
+observation still require human review. See the
+[v0.9.0 release notes](docs/releases/v0.9.0.md) and
+[release acceptance checklist](docs/public-beta-checklist.md).
 
 ## 0.8.0
 

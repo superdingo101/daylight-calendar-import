@@ -7,8 +7,10 @@ network access, or production docs-live branch can be modified by this suite.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from scripts.publish_docs_live import (
     check_release,
     check_site,
     publish,
+    _page_path,
 )
 
 
@@ -147,6 +150,54 @@ class DocsPublicationTest(unittest.TestCase):
         (self.released / "docs/logo/daylight-dark.svg").write_text("<svg/>")
         with self.assertRaisesRegex(PublicationError, "do not match"):
             check_site(self.released, "v0.9.1")
+
+    def test_mutation_workspace_copies_docs_for_release_validation(self) -> None:
+        """Keep real release-docs regression coverage active inside mutmut."""
+        project_root = Path(__file__).resolve().parents[1]
+        settings = tomllib.loads(
+            (project_root / "pyproject.toml").read_text(encoding="utf-8"),
+        )
+        also_copy = settings["tool"]["mutmut"]["also_copy"]
+        self.assertIn("docs/", also_copy)
+        self.assertIn("scripts/", also_copy)
+
+    def test_actual_versioned_release_navigation_publishes_safely(self) -> None:
+        """Validate the authored docs.json and its actual page/link files."""
+        source = Path(__file__).resolve().parents[1] / "docs"
+        self.assertTrue((source / "releases/v0.9.0.md").is_file())
+        shutil.copytree(source, self.released / "docs", dirs_exist_ok=True)
+        config = json.loads((source / "docs.json").read_text(encoding="utf-8"))
+        routes = [
+            page
+            for group in config["navigation"]["groups"]
+            for page in group["pages"]
+        ]
+        self.assertIn("releases/v0.9.0", routes)
+        self.assertEqual(len(check_site(self.released, "v0.9.0")), len(routes))
+        self.assertIn("Validated", publish(self.released, release(), check_only=True))
+        self.assertIsNone(self.docs_live_sha())
+
+    def test_versioned_page_routes_do_not_allow_dot_segments_or_files(self) -> None:
+        page_dir = self.released / "docs/releases"
+        page_dir.mkdir(parents=True, exist_ok=True)
+        (page_dir / "v0.9.0.md").write_text(
+            "---\ntitle: v0.9.0\n---\n# v0.9.0\n", encoding="utf-8",
+        )
+        self.assertEqual(
+            _page_path(self.released / "docs", "releases/v0.9.0"),
+            page_dir / "v0.9.0.md",
+        )
+        for bad_route in (
+            "../secrets", "releases/../secrets", "releases/./v0.9.0",
+            "releases/v0.9.0/extra", "releases/v0.9.0.md",
+            "releases/v0.9", "releases/v0.09.0", "releases/v0.9.0-beta2",
+            "releases//v0.9.0", "/releases/v0.9.0",
+            "https://example.com", "releases/.env",
+        ):
+            with self.subTest(route=bad_route), self.assertRaisesRegex(
+                PublicationError, "Invalid Mintlify page route",
+            ):
+                _page_path(self.released / "docs", bad_route)
 
     def test_pinned_calendar_card_branding_passes_release_validation(self) -> None:
         config_path = self.work / "docs/docs.json"

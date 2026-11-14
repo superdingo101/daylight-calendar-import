@@ -26,7 +26,7 @@ Daylight Calendar Import is a **custom Home Assistant integration**. It is not y
         Choose **Integration** if the repository type is requested. A one-time GitHub connection may be required to add a custom repository.
       </Step>
       <Step title="Select the version">
-        Open **Daylight Calendar Import** from the Marketplace repository list. If you're testing **v0.9.0-beta2**, enable **Pre-release** for this repository under **Settings → Devices & services → Marketplace** first, then select **Install another version** from the repository's three-dot menu if needed. Confirm the dialog names the exact release you intend to test.
+        Open **Daylight Calendar Import** from the Marketplace repository list. For the stable **v0.9.0** release, select that version once published. If intentionally testing an older beta (such as **v0.9.0-beta2**), enable **Pre-release** for this repository under **Settings → Devices & services → Marketplace** and select **Install another version** from the three-dot menu if needed. Confirm the dialog names the exact version.
       </Step>
       <Step title="Install and configure">
         Choose **Install**. On a new installation, Marketplace can open the integration's setup flow **without a restart**. If it doesn't, use **Settings → Devices & services → Add integration**. For an **update**, restart Home Assistant when prompted to load the new integration code.
@@ -48,7 +48,7 @@ Daylight Calendar Import is a **custom Home Assistant integration**. It is not y
         Select the **Integration** category. Alternatively, try the [Daylight HACS shortcut](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration).
       </Step>
       <Step title="Download the intended release">
-        Open **Daylight Calendar Import** in HACS and select the desired release for download. If testing **v0.9.0-beta2**, enable the relevant prerelease option and verify that exact version is selected, rather than relying on the default stable download.
+        Open **Daylight Calendar Import** in HACS and select the desired release for download. For the final release, choose **v0.9.0** once available. If testing a beta, enable the relevant prerelease option and verify that exact version is selected rather than relying on the default stable download.
       </Step>
       <Step title="Restart and add the integration">
         **Restart Home Assistant** after installing. Then go to **Settings → Devices & services → Add integration** and choose **Daylight Calendar Import**.
@@ -94,5 +94,9 @@ Daylight Calendar Import is a **custom Home Assistant integration**. It is not y
 </Note>
 
 <Warning>
-  **v0.9.0-beta2 is a prerelease**, not the default stable version. If you're testing an unpublished development commit rather than a published ZIP, use the [developer candidate-installation checklist](/public-beta-checklist) in a disposable Home Assistant instance.
+  Beta tags (including **v0.9.0-beta2**) are prereleases, not the final **v0.9.0** release. If you're testing an unpublished commit rather than a published ZIP, use the [developer candidate-installation checklist](/public-beta-checklist) in a disposable Home Assistant instance.
 </Warning>
+
+## Upgrading from v0.8.0 or a v0.9.0 beta
+
+Update the existing integration rather than removing it. Back up Home Assistant first, preserve the existing entry and private storage, restart when required, and verify pending drafts and calendar destinations before approval. Removal can erase pending/history/deduplication data without removing the events already written to calendars. See [What's new in v0.9.0](/releases/v0.9.0) for fixes, limitations and upgrade guidance.
