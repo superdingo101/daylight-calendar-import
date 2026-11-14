@@ -170,7 +170,7 @@ class DocsPublicationTest(unittest.TestCase):
         page_dir = self.released / "docs/releases"
         page_dir.mkdir(parents=True, exist_ok=True)
         (page_dir / "v0.9.0.md").write_text(
-            "---\\ntitle: v0.9.0\\n---\\n# v0.9.0\\n", encoding="utf-8",
+            "---\ntitle: v0.9.0\n---\n# v0.9.0\n", encoding="utf-8",
         )
         self.assertEqual(
             _page_path(self.released / "docs", "releases/v0.9.0"),
