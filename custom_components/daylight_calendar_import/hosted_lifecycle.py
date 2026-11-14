@@ -113,6 +113,10 @@ class HostedLifecycleController:
         return bound
 
     @staticmethod
+    def _access_unavailable(error: HostedTransportError) -> bool:
+        return error.status == 403 and error.code == "entitlement_required"
+
+    @staticmethod
     def _unauthorized(error: HostedTransportError) -> bool:
         return (
             error.status == 401
@@ -120,6 +124,12 @@ class HostedLifecycleController:
             or error.status == 403
             and error.code == "forbidden"
         )
+
+    async def async_verify_saved(self) -> HostedConnectionResult:
+        """Read the bound credential at startup without recovering a mutation."""
+        async with self._lock:
+            self._require_service(self._store.snapshot)
+            return await self._previous()
 
     async def async_reconcile(self) -> HostedConnectionResult:
         """Recover rotation/first connection after restart, without mutation replay."""
@@ -421,6 +431,8 @@ class HostedLifecycleController:
             try:
                 status = await self._transport.installation_status(current.token)
             except HostedTransportError as error:
+                if self._access_unavailable(error):
+                    return HostedConnectionResult("access_unavailable")
                 if self._unauthorized(error):
                     return HostedConnectionResult("repair_required")
                 raise
@@ -483,7 +495,7 @@ class HostedLifecycleController:
                     return self._disconnected("unconfirmed")
                 result = await self._transport.disconnect(stopped.current.token)
             except HostedTransportError as error:
-                if self._unauthorized(error):
+                if self._unauthorized(error) or self._access_unavailable(error):
                     return self._disconnected("unconfirmed")
                 raise
             if result["installation_id"] != stopped.current.installation_id:
@@ -534,6 +546,8 @@ class HostedLifecycleController:
         try:
             status = await self._transport.installation_status(previous.token)
         except HostedTransportError as error:
+            if self._access_unavailable(error):
+                return HostedConnectionResult("access_unavailable")
             if self._unauthorized(error):
                 return HostedConnectionResult("repair_required")
             raise
