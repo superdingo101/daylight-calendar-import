@@ -981,6 +981,7 @@ async def test_calendar_intelligence_admin_update_and_writable_scope():
         {"id": 60, "entry_id": config_entry.entry_id,
          "type": settings_api.WS_UPDATE_CALENDAR_INTELLIGENCE,
          "calendar_aliases": {" Kids ": "calendar.work"},
+         "expected_calendar_aliases": {},
          "conflict_calendar_entities": ["calendar.observation"]},
     )
     assert not connection.errors
@@ -990,7 +991,8 @@ async def test_calendar_intelligence_admin_update_and_writable_scope():
         settings_api.websocket_update_calendar_intelligence, hass, connection,
         {"id": 61, "entry_id": config_entry.entry_id,
          "type": settings_api.WS_UPDATE_CALENDAR_INTELLIGENCE,
-         "calendar_aliases": {"bad": "calendar.observation"}},
+         "calendar_aliases": {"bad": "calendar.observation"},
+         "expected_calendar_aliases": {"kids": "calendar.work"}},
     )
     assert connection.errors[-1][1] == "alias_target_not_allowed"
 
@@ -1055,7 +1057,8 @@ async def test_calendar_intelligence_rejects_empty_update_and_noops():
     await invoke(
         settings_api.websocket_update_calendar_intelligence, hass, connection,
         {"id": 82, "type": settings_api.WS_UPDATE_CALENDAR_INTELLIGENCE,
-         "entry_id": config_entry.entry_id, "calendar_aliases": {}},
+         "entry_id": config_entry.entry_id, "calendar_aliases": {},
+         "expected_calendar_aliases": {}},
     )
     assert connection.results[-1][0] == 82
     assert hass.config_entries.reloads == []
@@ -1692,6 +1695,7 @@ async def test_legacy_alias_count_does_not_block_reads_unrelated_edits_or_recove
         "id": 202, "entry_id": configured.entry_id,
         "type": settings_api.WS_UPDATE_CALENDAR_INTELLIGENCE,
         "calendar_aliases": aliases,
+        "expected_calendar_aliases": aliases,
     })
     assert connection.errors[-1][1] == "too_many_aliases"
     assert configured.options["calendar_aliases"] == aliases
@@ -1701,6 +1705,7 @@ async def test_legacy_alias_count_does_not_block_reads_unrelated_edits_or_recove
         "id": 203, "entry_id": configured.entry_id,
         "type": settings_api.WS_UPDATE_CALENDAR_INTELLIGENCE,
         "calendar_aliases": reduced,
+        "expected_calendar_aliases": aliases,
     })
     assert connection.results[-1][0] == 203
     assert configured.options["calendar_aliases"] == reduced

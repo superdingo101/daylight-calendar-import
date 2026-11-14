@@ -2201,7 +2201,7 @@ async def test_unload_blocks_new_service_calls_and_drains_accepted_before_store_
     assert hass.services.handlers == {}
 
 
-async def test_email_setup_failure_cleans_registered_services_and_panel(monkeypatch):
+async def test_email_setup_failure_cleans_services_but_preserves_panel(monkeypatch):
     hass = FakeHass()
     _fake_lifecycle_store(monkeypatch)
     config_entry = entry()
@@ -2218,7 +2218,7 @@ async def test_email_setup_failure_cleans_registered_services_and_panel(monkeypa
         await async_setup_entry(hass, config_entry)
     assert hass.services.handlers == {}
     assert config_entry.entry_id not in hass.data[DOMAIN]
-    remove_panel.assert_called_once_with(hass)
+    remove_panel.assert_not_called()
     hass.config_entries.async_forward_entry_setups.assert_not_awaited()
     hass.config_entries.async_unload_platforms.assert_awaited_once_with(
         config_entry, ["sensor"]

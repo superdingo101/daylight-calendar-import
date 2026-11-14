@@ -67,6 +67,51 @@ test("selection shows filename as text and rejects invalid or oversized content"
   assert.equal(form.status.textContent, "");
 });
 
+
+test("invalid file contents and size give one message at selection and submit, without uploading", async () => {
+  const supported = "Choose a JPEG, PNG, WebP image or PDF.";
+  const tooLarge = "Choose a file no larger than 10 MiB.";
+  const cases = [
+    [new File(["This is plain text"], "renamed.pdf", {type: "application/pdf"}),
+      `The selected file's contents are unsupported. ${supported}`, supported],
+    [new File(["Not a JPEG"], "picture.jpg", {type: "image/jpeg"}),
+      `The selected file's contents are unsupported. ${supported}`, supported],
+    [{name: "oversized.png", size: 10 * 1024 * 1024 + 1,
+      slice() { throw new Error("The oversized file should not be read"); }}, tooLarge, tooLarge],
+  ];
+  for (const [selected, expected, advice] of cases) {
+    const {form, uploads, services} = setup(pending, {onActivity() {}});
+    form.file.files = [selected];
+    await form.file.change();
+    assert.equal(form.status.textContent, expected);
+    assert.equal(form.status.textContent.split(advice).length - 1, 1);
+    await form.form.submit(event);
+    assert.equal(form.status.textContent, expected);
+    assert.equal(form.status.textContent.split(advice).length - 1, 1);
+    assert.equal(uploads.length, 0);
+    assert.equal(services.length, 0);
+    assert.equal(form.feedback.actions.children.length, 0);
+    assert.equal(form.file.files[0], selected);
+    assert.equal(form.button.disabled, false);
+  }
+});
+
+test("HTTP 413 preserves the rejection detail without repeating size guidance", async () => {
+  const {form, hass, uploads, services} = setup(pending, {onActivity() {}});
+  hass.fetchWithAuth = async (url, options) => {
+    uploads.push({url, options});
+    return {status: 413};
+  };
+  form.file.files = [image()];
+  await form.form.submit(event);
+  assert.equal(form.status.textContent,
+    "Home Assistant rejected the file size. Choose a file no larger than 10 MiB.");
+  assert.equal(uploads.length, 1);
+  assert.equal(services.length, 0);
+  assert.equal(form.feedback.actions.children.length, 0);
+  assert.equal(form.button.disabled, false);
+});
+
 test("images and PDFs use multipart intake with optional context", async () => {
   for (const [selected, service, uploadedName] of [[image(), "submit_image", "daylight-upload.png"], [pdf(), "submit_pdf", "daylight-upload.pdf"]]) {
     const {form, uploads, services} = setup();

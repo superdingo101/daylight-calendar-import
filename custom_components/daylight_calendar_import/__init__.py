@@ -1069,7 +1069,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except (Exception, asyncio.CancelledError):
             cleanup_ok = False
             _LOGGER.exception("Failed to roll back sensor setup")
-        async_remove_review_panel(hass)
         if cleanup_ok:
             hass.data[DOMAIN].pop(entry.entry_id, None)
         else:
@@ -1124,7 +1123,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         getattr(store, "notification_unsubscribe", lambda: None)()
         store.on_notifications = None
         _unregister_entry_services(hass)
-        async_remove_review_panel(hass)
         email_runtime = getattr(store, "email_runtime", None)
         if email_runtime is not None:
             await email_runtime.async_stop()
@@ -1147,6 +1145,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Remove persisted data and retire this entry's notification task set."""
+    # The panel belongs to the configured integration, not one runtime. Removing
+    # it during reload makes HA redirect clients currently viewing its route.
+    async_remove_review_panel(hass)
     registry_key = f"{DOMAIN}_notification_tasks"
     registry = hass.data.get(registry_key)
     tasks = registry.get(entry.entry_id) if registry is not None else None
