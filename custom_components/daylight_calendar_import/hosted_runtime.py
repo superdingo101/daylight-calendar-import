@@ -76,7 +76,8 @@ def service_from_options(options: Any) -> HostedServiceBinding | None:
 def _transport_state(error: HostedTransportError) -> str:
     return (
         "service_repair" if error.code == "service_reconciliation_required"
-        else "repair_required" if error.status in (401, 403)
+        else "access_unavailable" if error.status == 403 and error.code == "entitlement_required"
+        else "repair_required" if error.code == "identity_mismatch" or error.status in (401, 403)
         else "service_unavailable"
     )
 
@@ -156,6 +157,10 @@ class HostedConnectionRuntime:
             state = "remote_disconnect_unconfirmed"
         elif checkpoint.local_disconnect == "none" and checkpoint.processing_consent:
             state = "recovery_required"
+            if (not self._automatic and checkpoint.service_binding == self._service
+                    and checkpoint.current is not None and checkpoint.candidate is None
+                    and checkpoint.pairing_verifier is None):
+                state = "checking_access"
         self._state = HostedConnectionResult(state)
         if self._automatic:
             self._automation = HostedAutomationPolicy(store, self._controller, self._service)
@@ -254,6 +259,8 @@ class HostedConnectionRuntime:
                 )
             if not self._automatic:
                 ir.async_delete_issue(self._hass, DOMAIN, f"hosted_lifecycle_{self._entry_id}")
+            if self._state.state == "checking_access" and not self.busy:
+                self._start_work("verify_saved", {})
             self._schedule_automation()
 
     async def _async_ha_stop(self, _event) -> None:
@@ -341,7 +348,7 @@ class HostedConnectionRuntime:
         if not task.cancelled():
             task.exception()
         self._schedule_automation()
-        if self.accepting and self._automatic:
+        if self.accepting:
             async_dispatcher_send(self._hass, hosted_signal(self._entry_id))
 
     async def _perform(self, action: str, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -354,6 +361,8 @@ class HostedConnectionRuntime:
                 result = await self._automation.async_step(self._state)
                 if result is None:
                     return self.snapshot()
+            elif action == "verify_saved":
+                result = await self._controller.async_verify_saved()
             else:
                 try:
                     result = await getattr(self._controller, _ACTIONS[action])(**kwargs)
@@ -399,7 +408,7 @@ class HostedConnectionRuntime:
                 return {**self.snapshot(), "pairing": asdict(result)}
             self._state = result
             if self._automatic and (result.credential_status in ("current", "overlap")
-                                    or result.state == "disconnected"):
+                                    or result.state in ("access_unavailable", "disconnected")):
                 ir.async_delete_issue(self._hass, DOMAIN, f"hosted_lifecycle_{self._entry_id}")
         if self._automation is not None:
             plan = self._automation.plan(self._state)
