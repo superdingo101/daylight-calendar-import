@@ -185,8 +185,8 @@ jobs:
           source = Path("docs/releases") / f"{tag}.md"
           if source.is_file():
               content = source.read_text(encoding="utf-8")
-              if content.startswith("---\\n"):
-                  pieces = content.split("---\\n", 2)
+              if content.startswith("---\n"):
+                  pieces = content.split("---\n", 2)
                   if len(pieces) != 3:
                       raise SystemExit("Malformed curated release notes frontmatter")
                   content = pieces[2].lstrip()
