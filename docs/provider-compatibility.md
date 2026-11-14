@@ -1,11 +1,11 @@
-# AI Task provider compatibility for public beta
+# AI Task provider compatibility
 
 Daylight uses a Home Assistant **AI Task entity**, not a conversation agent.
 Choose an entity that supports generating structured data. Set it in Daylight
 Settings → General. A provider's name alone does not establish model or media
 compatibility; record the integration, model and version used in each live run.
 
-| Input | Required capability | Beta behavior |
+| Input | Required capability | Behavior |
 | --- | --- | --- |
 | Pasted text or email text | Structured data generation | Uses the production extraction instructions and event schema. |
 | Text-layer PDF | Structured data generation | Local bounded PDF extraction supplies text; attachment support is unnecessary when local extraction succeeds. |
