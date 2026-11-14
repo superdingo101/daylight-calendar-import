@@ -16,7 +16,14 @@ from typing import Any
 
 TAG_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 BETA_TAG_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-beta(0|[1-9]\d*)$")
-PAGE_RE = re.compile(r"^[a-zA-Z0-9/_-]+$")
+# Regular page slugs exclude dots. Stable release pages may use a terminal
+# semantic-version segment (e.g. releases/v0.9.0), but no arbitrary file
+# extensions, dot segments or path traversal.
+PAGE_RE = re.compile(r"^[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)*$")
+VERSIONED_PAGE_RE = re.compile(
+    r"^[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)*/v"
+    r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$"
+)
 ASSET = "daylight-calendar-import.zip"
 TARGET = "docs-live"
 REHEARSAL_TARGET = "docs-rehearsal"
@@ -92,7 +99,7 @@ def _navigation_pages(value: Any) -> list[str]:
 
 
 def _page_path(docs: Path, route: str) -> Path:
-    if not PAGE_RE.fullmatch(route) or ".." in route.split("/"):
+    if not (PAGE_RE.fullmatch(route) or VERSIONED_PAGE_RE.fullmatch(route)):
         raise PublicationError(f"Invalid Mintlify page route: {route!r}")
     for ext in (".mdx", ".md"):
         path = docs / (route + ext)

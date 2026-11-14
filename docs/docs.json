@@ -76,6 +76,7 @@
         "group": "Help and Reference",
         "icon": "life-buoy",
         "pages": [
+          "releases/v0.9.0",
           "help/troubleshooting",
           "help/faq",
           "help/privacy",

@@ -8,8 +8,9 @@ hidden: true
 Use this checklist on an isolated Home Assistant installation and dedicated test
 calendars. Record the candidate Git SHA, installed version, HA version, browser,
 provider/model and date with each result. Test the minimum supported HA 2026.7.4
-and the pinned HA 2026.9 line covered by CI. An unchecked item is pending, not a
-passing result. Keep private sources, mailbox credentials and meeting links out
+and HA 2026.11.0, the additional version covered by CI. Record actual
+2026.11.1 installation evidence separately; a passing 2026.11.0 job does not
+establish it. An unchecked item is pending, not a passing result. Keep private sources, mailbox credentials and meeting links out
 of the public evidence record.
 
 ## Installation and upgrade
@@ -86,6 +87,8 @@ navigation. See [Manual imports](manual-import.md) for the supported UI journey.
   model, also submit an image and multipage scanned PDF. Verify both PDF pages'
   events and descriptions survive. Check progress, disabled repeated submit and
   focus/navigation behavior while the request is in flight.
+- [ ] Confirm a renamed invalid PDF and a file over 10 MiB each show one
+  actionable validation message, without uploading invalid bytes (#245).
 - [ ] Exercise empty text, unsupported files, oversized input, provider failure
   and a dropped browser connection. Verify actionable errors and retry retained
   input. Check inbox/activity before retrying an uncertain browser submission.
@@ -95,7 +98,11 @@ navigation. See [Manual imports](manual-import.md) for the supported UI journey.
 ## Settings, routing and calendar safety
 
 - [ ] Save General, Calendars, Routing, Email and Notifications settings, reload,
-  then verify persistence. Test two simultaneous settings pages and stale saves.
+  then verify persistence. Confirm Calendars and Routing saves keep the panel
+  visible through entry reload, including on Android (#239).
+- [ ] In two Routing tabs, save alias A, then attempt to replace aliases from
+  a stale tab with alias B. Verify a conflict is shown and A remains saved;
+  review the current value before intentionally confirming a replacement (#240).
 - [ ] Confirm a regular user cannot change administrator-only settings or read
   secrets through settings responses. Calendar review requires the appropriate
   HA permissions; test with a restricted account as well as an administrator.
@@ -111,6 +118,16 @@ navigation. See [Manual imports](manual-import.md) for the supported UI journey.
 - [ ] On a development instance, interrupt an external write and restart. Inspect
   the actual destination calendar before resolving the uncertain result as
   created, not created or discarded. A restart must never blindly retry it.
+
+## Dates and daylight-saving transitions
+
+- [ ] Re-run the March 14, 2027, 2:15–2:45 AM `America/Los_Angeles`
+  spring-forward example from #236, including when the source explicitly names
+  the time zone. Verify it cannot become an approvable draft, that correction
+  guidance is visible, and that no calendar write occurs (#241).
+- [ ] Recheck an explicit numeric UTC offset, a valid time in another named
+  zone, and the repeated fall-back hour with its review warning. Record the
+  actual AI Task provider/model response separately from deterministic tests.
 
 ## Optional Direct IMAP
 
@@ -179,7 +196,7 @@ create duplicates. It is not a repair or safe upgrade method.
 | Evidence | Result to record before release |
 | --- | --- |
 | Exact source/version and release ZIP | Candidate SHA/version, packaging checks and release artifact |
-| Normal CI | Passing supported-HA, frontend, packaging, HACS and Hassfest checks |
+| Normal CI | Passing 2026.7.4 and 2026.11.0, frontend, browser, packaging, HACS, Hassfest and Mintlify checks |
 | Code review | Clean Codex result after the final substantive commit on each PR |
 | Mutation release gate | Clean proof for the final release source tree under the existing workflow |
 | Real installation/upgrade | Dates, HA versions, install path and checklist results |
@@ -190,3 +207,35 @@ This document starts as a procedure, not a claim that those manual checks have
 already passed. Data loss, duplicate-write risk, privacy regressions and failed
 core journeys block release. Hosted-service, billing and SMS/MMS work is outside
 this beta milestone.
+
+## Final v0.9.0 publication procedure
+
+1. Merge all release-documentation corrections into PR #164, then re-run the
+   full required PR checks and address any remaining review findings. The
+   candidate must contain only intended public self-hosted changes.
+2. Merge #164 into `main`. Record the resulting **full main commit SHA** and
+   verify both `manifest.json` and `pyproject.toml` say `0.9.0`. Ensure normal
+   post-merge CI is green. Do not merge hosted runtime code.
+3. In Actions, dispatch **Clean mutation validation** on **main** with
+   `target_sha=<full-final-main-SHA>`, `release_tag=v0.9.0` and
+   `rehearsal=false`. Wait for every comprehensive shard, score gate,
+   diagnostics and release proof to succeed. A PR-scoped mutation run or an
+   unrelated nightly run is insufficient.
+4. Dispatch **Publish HACS Release** from **main**. It verifies the matching
+   proof, HACS, Hassfest, versions and ZIP before creating a **draft** GitHub
+   release with `daylight-calendar-import.zip`. A workflow success does **not**
+   mean the release is public.
+5. Inspect the draft release title, notes, release target SHA, attached ZIP
+   and prerelease flag. The workflow generates notes from GitHub PR history
+   and optionally polishes them with Copilot; compare the draft with the
+   reviewed v0.9.0 changelog and documentation and correct any inaccuracies.
+   Publish the stable release manually only after the manual/provider
+   acceptance evidence and all blocking issues are resolved.
+6. Verify the published release is stable, the tag points to the intended
+   source, and HACS/Marketplace can install its ZIP. Publishing triggers the
+   stable Mintlify docs workflow; check that `docs-live` advances to that
+   release commit and the public docs render correctly. If docs publication
+   fails, use the documented recovery procedure; do not force `docs-live`.
+
+A clean mutation result does not substitute for manual acceptance of fixes
+found during beta2 testing, especially #232, #234, #236 and #238.
