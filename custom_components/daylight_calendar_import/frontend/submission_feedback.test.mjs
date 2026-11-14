@@ -91,6 +91,32 @@ test("errors give actionable permissions, provider, size, PDF and transport reco
   for (const [error, submitted, expected] of checks) assert.match(submissionErrorMessage(error, submitted), expected);
 });
 
+
+test("file validation guidance appears once, without losing detail or fallback advice", () => {
+  const cases = [
+    [{code: "source_too_large", message: "Choose a file no larger than 10 MiB."},
+      "Choose a file no larger than 10 MiB."],
+    [{code: "source_too_large", message: "Home Assistant rejected the file size. Choose a file no larger than 10 MiB."},
+      "Choose a file no larger than 10 MiB."],
+    [{code: "unsupported_media", message: "The selected file's contents are unsupported. Choose a JPEG, PNG, WebP image or PDF."},
+      "Choose a JPEG, PNG, WebP image or PDF."],
+  ];
+  for (const [error, guidance] of cases) {
+    for (const submitted of [false, true]) {
+      const output = submissionErrorMessage(error, submitted);
+      assert.equal(output, error.message);
+      assert.equal(output.split(guidance).length - 1, 1);
+    }
+  }
+  // No period and different case still count as existing guidance.
+  assert.equal(submissionErrorMessage({code: "source_too_large", message: "choose a file no larger than 10 mib"}, false),
+    "choose a file no larger than 10 mib");
+  assert.equal(submissionErrorMessage({code: "source_too_large", message: "Attachments exceed the size limit"}, false),
+    "Attachments exceed the size limit Choose a file no larger than 10 MiB.");
+  assert.equal(submissionErrorMessage({code: "unsupported_media", message: "Unrecognized file contents"}, false),
+    "Unrecognized file contents Choose a JPEG, PNG, WebP image or PDF.");
+});
+
 test("upload authentication failures do not advise changing AI task permissions", () => {
   const message = submissionErrorMessage({code: "unauthorized", message: "Upload denied"}, false);
   assert.match(message, /Sign in to Home Assistant again.*connection permissions/);
