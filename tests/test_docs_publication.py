@@ -10,6 +10,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -152,8 +153,6 @@ class DocsPublicationTest(unittest.TestCase):
 
     def test_mutation_workspace_copies_docs_for_release_validation(self) -> None:
         """Keep real release-docs regression coverage active inside mutmut."""
-        import tomllib
-
         project_root = Path(__file__).resolve().parents[1]
         settings = tomllib.loads(
             (project_root / "pyproject.toml").read_text(encoding="utf-8"),
