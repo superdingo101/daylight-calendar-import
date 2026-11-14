@@ -42,9 +42,11 @@ Do not edit `docs-live` directly, force-push it, or point Mintlify to `main`.
    HACS release gates, including full mutation validation.
 2. Run **Publish HACS Release** from `main` after the exact-tree clean mutation
    proof passes. The workflow creates a **draft**, not a published release.
-   For v0.9.0 it uses curated `docs/releases/v0.9.0.md` notes instead of the
-   generated fallback. Verify the draft notes, title, intended tag/commit,
-   ZIP asset and stable (non-prerelease) designation before manually publishing.
+   It generates release notes from GitHub's PR history, optionally polishes
+   them with Copilot, and falls back to the generated notes if polishing fails.
+   Compare the draft notes with the reviewed v0.9.0 changelog and documentation;
+   correct omissions or inaccuracies before publishing. Verify the draft
+   title, intended tag/commit, ZIP asset and stable (non-prerelease) designation.
    The published release's manifest and pyproject versions must match the tag.
 3. The `release.published` event triggers the publishing workflow:
    verify authoritative release metadata, tag identity and main ancestry,

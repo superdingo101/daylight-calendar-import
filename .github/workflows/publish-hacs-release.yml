@@ -170,38 +170,6 @@ jobs:
           echo "" >> RELEASE_NOTES.md
           echo "_Generated from GitHub release notes. Please verify before publishing this draft._" >> RELEASE_NOTES.md
 
-      # Stable release notes in the repository are reviewed alongside the
-      # release-prep PR. Keep GitHub/Copilot generation for versions without
-      # a curated note, but do not discard reviewed v0.9.0 release notes.
-      - name: Prefer checked-in release notes
-        env:
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          python - <<'PY'
-          import os
-          from pathlib import Path
-
-          tag = os.environ["RELEASE_TAG"]
-          source = Path("docs/releases") / f"{tag}.md"
-          if source.is_file():
-              content = source.read_text(encoding="utf-8")
-              if content.startswith("---\n"):
-                  pieces = content.split("---\n", 2)
-                  if len(pieces) != 3:
-                      raise SystemExit("Malformed curated release notes frontmatter")
-                  content = pieces[2].lstrip()
-              if not content.startswith(f"# {tag}"):
-                  raise SystemExit("Curated release notes do not match release tag")
-              if any(marker in content.lower() for marker in (
-                  "(unreleased)", "release candidate", "pending publication"
-              )):
-                  raise SystemExit("Curated notes contain prerelease-only wording")
-              Path("RELEASE_NOTES.md").write_text(content, encoding="utf-8")
-              print(f"Using curated notes from {source}")
-          else:
-              print("No curated notes for this tag; retaining generated draft notes")
-          PY
-
       - name: Run release packaging regression tests
         run: python -m unittest discover -s tests -p 'test_hacs_release_package.py' -v
 

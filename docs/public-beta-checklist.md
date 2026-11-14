@@ -226,10 +226,11 @@ this beta milestone.
    release with `daylight-calendar-import.zip`. A workflow success does **not**
    mean the release is public.
 5. Inspect the draft release title, notes, release target SHA, attached ZIP
-   and prerelease flag. The workflow prefers the checked-in
-   `docs/releases/v0.9.0.md` notes for this version. Publish the stable
-   release manually only after the manual/provider acceptance evidence and
-   all blocking issues are resolved.
+   and prerelease flag. The workflow generates notes from GitHub PR history
+   and optionally polishes them with Copilot; compare the draft with the
+   reviewed v0.9.0 changelog and documentation and correct any inaccuracies.
+   Publish the stable release manually only after the manual/provider
+   acceptance evidence and all blocking issues are resolved.
 6. Verify the published release is stable, the tag points to the intended
    source, and HACS/Marketplace can install its ZIP. Publishing triggers the
    stable Mintlify docs workflow; check that `docs-live` advances to that
