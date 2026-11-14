@@ -22,7 +22,7 @@ BETA_TAG_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-beta(0|[1-
 PAGE_RE = re.compile(r"^[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)*$")
 VERSIONED_PAGE_RE = re.compile(
     r"^[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_-]+)*/v"
-    r"(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)$"
+    r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$"
 )
 ASSET = "daylight-calendar-import.zip"
 TARGET = "docs-live"
