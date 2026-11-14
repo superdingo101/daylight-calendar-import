@@ -15,6 +15,8 @@ Daylight uses your existing **Home Assistant AI Task provider** to extract event
 
 ---
 
+![Daylight Calendar Import converting a school flyer into three reviewable Home Assistant calendar drafts](docs/images/daylight-calendar-import-example.png)
+
 ## ✨ Features
 
 - 📧 **Email imports:** Collect announcements and attachments from a dedicated IMAP mailbox.
