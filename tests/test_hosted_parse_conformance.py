@@ -27,13 +27,11 @@ from custom_components.daylight_calendar_import.hosted_credentials import (
     HostedCredentialStore,
     _ImmediatePrivateStore,
 )
-from custom_components.daylight_calendar_import.hosted_lifecycle import (
-    HostedConnectionResult,
-)
 from custom_components.daylight_calendar_import.hosted_parse_transport import (
     HostedParseTransport,
 )
 from custom_components.daylight_calendar_import.hosted_runtime import CONF_HOSTED_SERVICE
+from custom_components.daylight_calendar_import.hosted_transport import HostedLifecycleTransport
 from custom_components.daylight_calendar_import.models import EventDraft
 from custom_components.daylight_calendar_import.storage import _PendingStore
 
@@ -102,24 +100,34 @@ async def conformance_runtime(hass, monkeypatch, tmp_path, socket_enabled, aioht
         "x" * 60,
         (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
     )
+    async def installation_status(_transport, token):
+        assert token == credential.token
+        return {
+            "account_id": credential.account_id,
+            "installation_id": credential.installation_id,
+            "credential_status": "current",
+            "credential_expires_at": credential.expires_at,
+        }
+
+    monkeypatch.setattr(HostedLifecycleTransport, "installation_status", installation_status)
     await credentials.async_checkpoint(initial, replace(
         initial, current=credential, processing_consent=True, service_binding=SERVICE,
     ))
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    def verify():
-        # M2 suites own remote verification. Exercise the unmodified M3 factory
-        # using an actually loaded, persisted credential after each HA reload.
+    async def verify():
+        await hass.async_block_till_done()
+        # The reloaded runtime verifies the persisted credential before parsing.
         store = hass.data[DOMAIN][entry.entry_id]
         connection = store.hosted_runtime
         assert connection._credential_store.snapshot.current == credential
-        connection._verified_parse_credential = credential
-        connection._state = HostedConnectionResult("connected", "current")
+        assert connection._verified_parse_credential == credential
+        assert connection.snapshot()["state"] == "connected"
         return store
 
     return SimpleNamespace(
-        entry=entry, store=verify(), verify=verify, wire=wire, writes=writes, generate=generate,
+        entry=entry, store=await verify(), verify=verify, wire=wire, writes=writes, generate=generate,
     )
 
 
@@ -170,7 +178,7 @@ async def test_mixed_http_result_survives_reload_and_authorized_review(
     assert request["source"]["attachments"] == []
     assert request["time_zone"] == hass.config.time_zone
     assert await hass.config_entries.async_reload(runtime.entry.entry_id)
-    reloaded = runtime.verify()
+    reloaded = await runtime.verify()
     assert reloaded is not runtime.store
     assert reloaded.get(pending_id) == pending
     review = await call(client, "get_pending", pending_id=pending_id)
@@ -207,7 +215,7 @@ async def test_zero_event_http_success_is_durable_without_automatic_replay(
     assert not runtime.store.list()
     assert len(runtime.wire.received) == 1
     assert await hass.config_entries.async_reload(runtime.entry.entry_id)
-    reloaded = runtime.verify()
+    reloaded = await runtime.verify()
     assert reloaded is not runtime.store
     assert reloaded.get_activity(activity_id) == activity
     assert not reloaded.list()
@@ -238,7 +246,7 @@ async def test_malformed_http_success_remains_retryable_after_reload(
     assert failed_activity["failure_code"] == "hosted_parse_failed"
     assert len(runtime.wire.received) == 1
     assert await hass.config_entries.async_reload(runtime.entry.entry_id)
-    reloaded = runtime.verify()
+    reloaded = await runtime.verify()
     assert reloaded.get_activity(failed_activity["id"])["status"] == "failed"
     assert not reloaded.is_source_durable(source_id)
     assert not reloaded.list()
