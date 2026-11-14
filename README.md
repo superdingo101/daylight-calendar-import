@@ -11,7 +11,7 @@ Turn school newsletters, event emails, flyers, screenshots, and PDFs into Home A
 
 Daylight uses your existing **Home Assistant AI Task provider** to extract event details. You review and edit each draft before it goes onto your calendar.
 
-**Self-hosted in Home Assistant.** No Daylight Cloud account or subscription is required. Your chosen AI provider may have its own charges and privacy policies.
+**Runs in your own Home Assistant instance.** Your chosen AI provider may have its own charges and privacy policies.
 
 ---
 
