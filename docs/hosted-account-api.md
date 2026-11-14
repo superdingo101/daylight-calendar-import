@@ -283,7 +283,13 @@ token expiry, nullable forwarding address and trusted HTTPS `account_url` on the
 An otherwise valid bearer for a suspended account receives 403 `forbidden`
 before any installation status is returned; the human owner uses GET account
 status to distinguish suspension and repair access. Invalid/expired/revoked
-bearers receive 401. It contains no source bodies, human session, provider IDs,
+bearers receive 401. A valid bearer for an enabled account and installation with
+no current access grant receives 403 `entitlement_required` from the status
+endpoint. This error contains no installation snapshot and grants no access.
+Preserve the saved credential and recheck status when access changes. A generic
+403 still conveys no verified connection or entitlement status.
+
+The snapshot contains no source bodies, human session, provider IDs,
 invitation details, token value or private configuration. The address is nullable until provisioned;
 HA must not invent one. `credential_expires_at` is the presenting token's
 effective authorization deadline, bounded by its original expiry and any
@@ -301,6 +307,7 @@ and use `retryable`, not message text, for decisions.
 | 400 | `invalid_request` | false | Invalid schema/transport |
 | 401 | `unauthenticated` | false | Invalid, expired or revoked authority |
 | 403 | `forbidden` | false | Wrong credential class or insufficient authority |
+| 403 | `entitlement_required` | false | Live credential for an enabled installation whose Cloud access is unavailable |
 | 403 | `enrollment_required` / `enrollment_unavailable` | false | Human enrollment needed/unavailable |
 | 404 | `not_found` | false | Unknown or non-owned pairing/resource |
 | 409 | `pairing_pending` | true | Poll at bounded interval; do not retry exchange automatically |

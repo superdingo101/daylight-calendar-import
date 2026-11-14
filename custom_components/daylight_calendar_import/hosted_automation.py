@@ -21,6 +21,7 @@ _ATTENTION = "automatic_attention_required"
 _TERMINAL = {
     "repair_required", "service_repair", "storage_repair", "reconciliation_required",
     "disconnected", "remote_disconnect_unconfirmed", "fresh_pairing_required", "not_configured",
+    "access_unavailable",
 }
 _METHODS = {"reconcile": "async_reconcile", "poll": "async_poll_pairing", "rotate": "async_rotate"}
 

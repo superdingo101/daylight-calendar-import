@@ -450,9 +450,9 @@ async def verified_runtime(hass, monkeypatch):
         },
     )
     runtime = await async_setup_hosted_runtime(hass, entry)
-    runtime.resume()
     runtime._state = HostedConnectionResult("connected", "current")
     runtime._verified_parse_credential = checkpoint.current
+    runtime.resume()
     return runtime, store
 
 

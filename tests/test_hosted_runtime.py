@@ -1,12 +1,14 @@
 """Entry-owned hosted actions retain uncertainty and keep local setup available."""
 
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
 from custom_components.daylight_calendar_import.hosted_credentials import (
+    BoundCredential,
     CredentialCheckpoint,
     HostedCredentialConflict,
     HostedCredentialStorageError,
@@ -156,6 +158,9 @@ async def test_invalid_actions_do_not_enter_controller(runtime, action, kwargs):
     (HostedTransportError("service_reconciliation_required"), "service_repair"),
     (HostedTransportError("private", status=401), "repair_required"),
     (HostedTransportError("private", status=403), "repair_required"),
+    (HostedTransportError("entitlement_required", status=403), "access_unavailable"),
+    (HostedTransportError("entitlement_required", status=503), "service_unavailable"),
+    (HostedTransportError("identity_mismatch"), "repair_required"),
     (HostedTransportError("private", status=503), "service_unavailable"),
 ])
 async def test_failure_projection_excludes_raw_errors(runtime, error, state):
@@ -460,3 +465,74 @@ async def test_snapshot_reports_safe_saved_reconnect_progress(runtime):
     assert r.snapshot()["reconnect_in_progress"] is True
     r._controller.reconnect_in_progress = False
     assert r.snapshot()["reconnect_in_progress"] is False
+
+
+async def test_startup_checks_saved_access_and_recovers_without_repair(hass, monkeypatch):
+    binding = HostedServiceBinding(**SERVICE)
+    credential = BoundCredential(
+        "account_1234567890", "installation_1234567890", "x" * 60,
+        "2099-12-01T00:00:00+00:00",
+    )
+    checkpoint = CredentialCheckpoint(
+        processing_consent=True, current=credential, service_binding=binding,
+    )
+    store = AsyncMock()
+    store.snapshot = checkpoint
+    store.async_load.return_value = checkpoint
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.hosted_runtime.HostedCredentialStore",
+        lambda *_: store,
+    )
+    transport = AsyncMock(service_binding=binding)
+    transport.installation_status.side_effect = HostedTransportError(
+        "entitlement_required", status=403,
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.hosted_runtime.HostedLifecycleTransport",
+        lambda *_, **__: transport,
+    )
+
+    runtime = await async_setup_hosted_runtime(hass, entry({CONF_HOSTED_SERVICE: SERVICE}))
+    assert runtime.snapshot()["state"] == "checking_access"
+    runtime.resume()
+    runtime.resume()
+    await hass.async_block_till_done()
+    assert runtime.snapshot()["state"] == "access_unavailable"
+    assert runtime.snapshot()["credential_status"] is None
+    assert runtime._verified_parse_credential is None
+    assert transport.mock_calls == [call.installation_status(credential.token)]
+    store.async_checkpoint.assert_not_called()
+
+    transport.installation_status.side_effect = None
+    transport.installation_status.return_value = {
+        "account_id": credential.account_id,
+        "installation_id": credential.installation_id,
+        "credential_status": "current",
+        "credential_expires_at": credential.expires_at,
+    }
+    assert (await runtime.async_action("reconcile"))["state"] == "connected"
+    assert runtime._verified_parse_credential == credential
+    store.async_checkpoint.assert_not_called()
+    assert store.snapshot is checkpoint
+    await runtime.async_stop()
+
+
+@pytest.mark.parametrize("field", ["service_binding", "candidate", "pairing_verifier"])
+async def test_startup_does_not_recover_incomplete_connections(hass, monkeypatch, field):
+    from tests.test_hosted_lifecycle import CANDIDATE, CURRENT
+
+    checkpoint = CredentialCheckpoint(
+        processing_consent=True, current=CURRENT, service_binding=HostedServiceBinding(**SERVICE),
+    )
+    value = {"service_binding": None, "candidate": CANDIDATE, "pairing_verifier": "v" * 43}[field]
+    store = AsyncMock()
+    store.snapshot = store.async_load.return_value = replace(checkpoint, **{field: value})
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.hosted_runtime.HostedCredentialStore",
+        lambda *_: store,
+    )
+    runtime = await async_setup_hosted_runtime(hass, entry({CONF_HOSTED_SERVICE: SERVICE}))
+    runtime.resume()
+    assert runtime.snapshot()["state"] == "recovery_required"
+    assert not runtime.busy
+    await runtime.async_stop()

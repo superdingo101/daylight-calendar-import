@@ -135,6 +135,8 @@ const EXPLANATIONS = {
   service_unavailable: "Daylight could not be reached. Check status when the service is available.",
   operation_finishing: "A previous operation is still finishing. Use Check and recover connection after it settles.",
   reconnect_pending: "A fresh owner-approved reconnect is in progress. Approve the new attempt in the account portal, then return here to finish automatically. Previous credentials and local stop remain preserved until verification.",
+  checking_access: "Checking your saved Daylight connection…",
+  access_unavailable: "Your connection is saved. Daylight Cloud access is unavailable for this installation. Check your access in the account portal.",
   recovery_required: "Verifying your saved connection…",
   repair_required: "This installation needs owner attention. Open the account portal and reconcile the existing installation.",
   reconciliation_required: "An existing installation needs explicit owner and journal reconciliation before a new connection.",
@@ -374,7 +376,7 @@ export class HostedConnectionSettings {
 
   _subscribe() {
     const connection = this.getHass()?.connection;
-    if (!this.snapshot?.automatic_lifecycle || !connection?.subscribeMessage) {
+    if ((!this.snapshot?.automatic_lifecycle && this.snapshot?.state !== "checking_access") || !connection?.subscribeMessage) {
       this._unsubscribe();
       return;
     }
@@ -557,9 +559,9 @@ export class HostedConnectionSettings {
       section.append(migrate);
     }
 
-    if (state.account_url) {
+    if (state.account_url || state.state === "access_unavailable") {
       const accountLink = node("a", "Open account portal");
-      accountLink.href = state.account_url;
+      accountLink.href = state.account_url || state.account_origin + "/account";
       accountLink.target = "_blank";
       accountLink.rel = "noopener noreferrer";
       accountLink.referrerPolicy = "no-referrer";
@@ -586,6 +588,7 @@ export class HostedConnectionSettings {
     const neededActions = [
       ...(["recovery_required", "repair_required", "reconciliation_required", "operation_finishing", "service_unavailable", "automatic_attention_required", "previous_retained", "candidate_saved"].includes(state.state)
         ? [["reconcile", "Check and recover connection"]] : []),
+      ...(state.state === "access_unavailable" ? [["reconcile", "Check access again"]] : []),
       ...(["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending"].includes(state.state)
         ? [["poll", "Check pairing approval"]] : []),
       ...(["automatic_attention_required", "rotation_wait"].includes(state.state) && state.credential_status === "current"
@@ -598,9 +601,9 @@ export class HostedConnectionSettings {
         !(["connected", "automatic_attention_required"].includes(state.state) && state.credential_status === "current") ||
         action === "poll" && !["pairing_pending", "pairing_wait", "pairing_retry", "reconnect_pending", "recovery_required"].includes(state.state);
       button.addEventListener("click", () => void this.submit(action));
-      actions.append(button);
+      (state.state === "access_unavailable" ? section : actions).append(button);
     }
-    if (neededActions.length) diagnostics.append(actions);
+    if (actions.children.length) diagnostics.append(actions);
     if (!state.reconnect_in_progress && (["disconnected", "first_connection_required", "fresh_pairing_required", "consent_required"].includes(state.state) ||
         ["pairing_pending", "pairing_wait", "pairing_retry"].includes(state.state) && this.pairing === null)) {
       const connection = document.createElement("form");

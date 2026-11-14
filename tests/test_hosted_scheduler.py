@@ -258,7 +258,7 @@ async def test_due_work_is_scheduled_one_second_in_future(scheduled, monkeypatch
 
 
 @pytest.mark.parametrize("enabled,accepting", [(False, True), (True, False), (True, True)])
-async def test_completion_invalidates_only_active_automatic_entry(scheduled, monkeypatch, enabled, accepting):
+async def test_completion_invalidates_active_entry_regardless_of_automatic_opt_in(scheduled, monkeypatch, enabled, accepting):
     from unittest.mock import Mock
 
     r, _store, _controller = scheduled
@@ -271,7 +271,7 @@ async def test_completion_invalidates_only_active_automatic_entry(scheduled, mon
     r._tasks.add(task)
     r._finished(task)
     assert task not in r._tasks
-    if enabled and accepting:
+    if accepting:
         send.assert_called_once_with(r._hass, module.hosted_signal("hosted-entry"))
     else:
         send.assert_not_called()
@@ -360,3 +360,17 @@ async def test_transient_live_pairing_failure_reports_retry_without_losing_attem
     result = await r.async_action("poll")
     assert result["state"] == "pairing_retry" and "pairing" not in result
     assert store.snapshot.pairing == attempt
+
+
+async def test_entitlement_denial_stops_automatic_maintenance_without_repair(scheduled, hass, freezer):
+    r, store, controller = scheduled
+    controller.async_reconcile.return_value = HostedConnectionResult("access_unavailable")
+    r.resume()
+    await tick(hass, freezer, 1)
+    assert r.snapshot()["state"] == "access_unavailable"
+    assert store.snapshot.current is not None
+    assert r._cancel_timer is None
+    assert ir.async_get(hass).async_get_issue(DOMAIN, "hosted_lifecycle_hosted-entry") is None
+    await tick(hass, freezer, 30)
+    controller.async_reconcile.assert_awaited_once()
+    controller.async_rotate.assert_not_called()

@@ -143,7 +143,7 @@ async def test_ineligible_state_has_no_network(rotation, kind):
     assert not transport.mock_calls
 
 
-@pytest.mark.parametrize("code,http_status", [("unauthenticated", 401), ("forbidden", 403), ("service_unavailable", 503)])
+@pytest.mark.parametrize("code,http_status", [("unauthenticated", 401), ("forbidden", 403), ("entitlement_required", 403), ("service_unavailable", 503)])
 async def test_authority_failure_never_issues(rotation, code, http_status):
     c, store, transport = rotation
     original = store.snapshot
@@ -152,7 +152,9 @@ async def test_authority_failure_never_issues(rotation, code, http_status):
         with pytest.raises(HostedTransportError):
             await c.async_rotate()
     else:
-        assert (await c.async_rotate()).state == "repair_required"
+        assert (await c.async_rotate()).state == (
+            "access_unavailable" if code == "entitlement_required" else "repair_required"
+        )
     assert store.snapshot is original
     transport.rotate.assert_not_called()
 

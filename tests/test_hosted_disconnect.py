@@ -82,7 +82,7 @@ async def test_stop_is_committed_before_network_then_success_removes_private_mat
 
 @pytest.mark.parametrize("at", ["status", "disconnect"])
 @pytest.mark.parametrize(
-    "http_status,code", [(401, "unauthenticated"), (403, "forbidden")]
+    "http_status,code", [(401, "unauthenticated"), (403, "forbidden"), (403, "entitlement_required")]
 )
 async def test_unauthorized_never_proves_remote_disconnect(at, http_status, code):
     c, store, transport = setup()
