@@ -63,7 +63,7 @@ async def test_claim_error_never_retries():
 async def test_changed_credential_after_claim_never_processes():
     creds = SimpleNamespace(snapshot=checkpoint())
     client = Claim([{}], callback=lambda: setattr(creds, "snapshot", CredentialCheckpoint()))
-    with pytest.raises(AckDispatchBlocked, match="authority changed"):
+    with pytest.raises(AckDispatchBlocked, match="^hosted claim authority changed$"):
         await call(creds, client)
     assert len(client.calls) == 1
 
@@ -78,7 +78,7 @@ async def test_changed_credential_between_deliveries_stops(monkeypatch):
         creds.snapshot = CredentialCheckpoint()
 
     monkeypatch.setattr(batch, "async_handle_text_claim", handle)
-    with pytest.raises(AckDispatchBlocked, match="authority unavailable"):
+    with pytest.raises(AckDispatchBlocked, match="^hosted claim authority unavailable$"):
         await call(creds, client)
     assert len(calls) == 1
 
@@ -97,12 +97,22 @@ async def test_processing_failure_never_claims_again_or_processes_remaining(monk
     assert len(calls) == len(client.calls) == 1
 
 
-@pytest.mark.parametrize("kind", ["missing", "binding", "claim_service", "ack_service",
+@pytest.mark.parametrize("kind", ["missing", "no_current", "no_consent", "binding", "claim_service", "ack_service",
                                  "expired", "disconnect", "rotation", "candidate", "reconnect"])
 async def test_unavailable_authority_never_claims(kind):
     cp = checkpoint()
     if kind == "missing":
         cp = CredentialCheckpoint()
+    elif kind == "no_current":
+        cp = replace(cp, current=None)
+    elif kind == "no_consent":
+        # Deliberately malformed checkpoint tests the batch boundary independently
+        # of credential persistence validation.
+        cp = SimpleNamespace(**{name: getattr(cp, name) for name in (
+            "current", "service_binding", "processing_consent", "local_disconnect",
+            "rotation_not_before", "candidate", "reconnect",
+        )})
+        cp.processing_consent = False
     elif kind == "binding":
         cp = replace(cp, service_binding=None)
     elif kind == "expired":
@@ -124,6 +134,91 @@ async def test_unavailable_authority_never_claims(kind):
         client.service_binding = object()
     if kind == "ack_service":
         ack.service_binding = object()
-    with pytest.raises(AckDispatchBlocked, match="authority unavailable"):
+    with pytest.raises(AckDispatchBlocked, match="^hosted claim authority unavailable$"):
         await call(SimpleNamespace(snapshot=cp), client, ack)
     assert client.calls == []
+
+
+async def test_batch_forwards_complete_delivery_context_and_default_limit(monkeypatch):
+    """A delivery must receive every caller-owned authority and processor object."""
+    creds = SimpleNamespace(snapshot=checkpoint())
+    deliveries = [{"delivery_id": "one"}, {"delivery_id": "two"}]
+    client = Claim(deliveries)
+    ack = SimpleNamespace(service_binding=SERVICE)
+    store, route_source, parse_source = object(), object(), object()
+    seen = []
+
+    async def handle(**kwargs):
+        seen.append(kwargs)
+        return kwargs["delivery"]["delivery_id"]
+
+    monkeypatch.setattr(batch, "async_handle_text_claim", handle)
+    result = await batch.async_process_text_batch(
+        store=store, credentials=creds, claim_transport=client,
+        ack_transport=ack, local_config_entry_id="other-entry",
+        route_source=route_source, parse_source=parse_source,
+    )
+    assert result == ["one", "two"]
+    assert client.calls == [{"token": TOKEN, "limit": 20}]
+    common = {
+        "store": store,
+        "credentials": creds,
+        "claim_checkpoint": creds.snapshot,
+        "service_binding": SERVICE,
+        "transport": ack,
+        "local_config_entry_id": "other-entry",
+        "route_source": route_source,
+        "parse_source": parse_source,
+    }
+    # Exact dictionaries reject missing, renamed, or silently replaced inputs.
+    assert seen == [
+        {**common, "delivery": deliveries[0]},
+        {**common, "delivery": deliveries[1]},
+    ]
+
+
+async def test_expiry_at_exact_claim_boundary_blocks_before_network(monkeypatch):
+    """A token is invalid at, not only after, its expiration instant."""
+    deadline = datetime.now(UTC) + timedelta(days=1)
+    cp = checkpoint()
+    cp = replace(cp, current=replace(cp.current, expires_at=deadline.isoformat()))
+
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return deadline
+
+    monkeypatch.setattr(batch, "datetime", FixedClock)
+    client = Claim()
+    with pytest.raises(AckDispatchBlocked, match="^hosted claim authority unavailable$"):
+        await call(SimpleNamespace(snapshot=cp), client)
+    assert client.calls == []
+
+
+async def test_expiry_at_exact_delivery_boundary_leaves_later_lease(monkeypatch):
+    """An expiry occurring in one handler must prevent the following delivery."""
+    deadline = datetime.now(UTC) + timedelta(days=1)
+    cp = checkpoint()
+    cp = replace(cp, current=replace(cp.current, expires_at=deadline.isoformat()))
+
+    class AdvancingClock(datetime):
+        current = deadline - timedelta(seconds=1)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    monkeypatch.setattr(batch, "datetime", AdvancingClock)
+    processed = []
+
+    async def handle(**kwargs):
+        processed.append(kwargs["delivery"]["delivery_id"])
+        AdvancingClock.current = deadline
+        return "done"
+
+    monkeypatch.setattr(batch, "async_handle_text_claim", handle)
+    client = Claim([{"delivery_id": "one"}, {"delivery_id": "two"}])
+    with pytest.raises(AckDispatchBlocked, match="^hosted claim authority unavailable$"):
+        await call(SimpleNamespace(snapshot=cp), client)
+    assert processed == ["one"]
+    assert client.calls == [{"token": TOKEN, "limit": 2}]
