@@ -36,7 +36,7 @@ A failed calendar approval is separate from a failed submission. If approval rep
 
 Manual submission requires control permission on the selected AI Task entity. Reading the private inbox and approving drafts also requires control permission on the configured calendars; duplicate-safe approval requires read permission on the destination. A read-only Home Assistant user cannot submit or approve drafts. If an action is denied, ask your Home Assistant administrator to review entity permissions.
 
-Text and file contents are sent to the AI Task provider you configured. Review that provider's privacy and billing terms. Daylight uses Home Assistant's authenticated temporary upload transport; image/PDF staging files are removed after processing. Pending drafts and local activity history remain until resolved or removed by the configured retention policy. No Daylight Cloud account is needed.
+Text and file contents are sent to the AI Task provider you configured. Review that provider's privacy and billing terms. Daylight uses Home Assistant's authenticated temporary upload transport; image/PDF staging files are removed after processing. Pending drafts and local activity history remain until resolved or removed by the configured retention policy.
 
 Unsupported recurring schedules require manual calendar entry. The AI provider
 reports recurrence, with a best-effort backstop for common English schedule
