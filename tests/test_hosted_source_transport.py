@@ -63,7 +63,9 @@ def test_invalid_pages_are_never_empty(modify):
 async def test_one_claim_and_no_transparent_retries():
     session = MagicMock(spec=aiohttp.ClientSession)
     session.request.return_value = Response(value=page(), headers={"Cache-Control": "no-store"})
-    result = await HostedSourceTransport(session, SERVICE).async_claim(token=TOKEN)
+    client = HostedSourceTransport(session, SERVICE)
+    assert client.service_binding == SERVICE
+    result = await client.async_claim(token=TOKEN)
     assert len(result["deliveries"]) == 1
     args, kwargs = session.request.call_args
     assert args == ("POST", "https://api.daylight.test/v1/sources/claim")

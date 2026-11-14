@@ -122,6 +122,11 @@ class HostedSourceTransport:
             raise ValueError("invalid trusted service")
         self._session, self._service = session, service
 
+    @property
+    def service_binding(self) -> HostedServiceBinding:
+        """The trusted service to which this client sends credentials."""
+        return self._service
+
     async def async_claim(self, *, token: str, limit: int = 20) -> dict[str, Any]:
         """Perform one claim; a lost response leaves an unknown, expiring lease."""
         if type(limit) is not int or not 1 <= limit <= 50 or type(token) is not str or re.fullmatch(r"[A-Za-z0-9._~-]{43,256}", token) is None:
