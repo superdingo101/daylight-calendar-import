@@ -150,6 +150,18 @@ class DocsPublicationTest(unittest.TestCase):
         with self.assertRaisesRegex(PublicationError, "do not match"):
             check_site(self.released, "v0.9.1")
 
+    def test_mutation_workspace_copies_docs_for_release_validation(self) -> None:
+        """Keep real release-docs regression coverage active inside mutmut."""
+        import tomllib
+
+        project_root = Path(__file__).resolve().parents[1]
+        settings = tomllib.loads(
+            (project_root / "pyproject.toml").read_text(encoding="utf-8"),
+        )
+        also_copy = settings["tool"]["mutmut"]["also_copy"]
+        self.assertIn("docs/", also_copy)
+        self.assertIn("scripts/", also_copy)
+
     def test_actual_versioned_release_navigation_publishes_safely(self) -> None:
         """Validate the authored docs.json and its actual page/link files."""
         source = Path(__file__).resolve().parents[1] / "docs"
