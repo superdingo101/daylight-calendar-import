@@ -45,14 +45,14 @@ jobs:
           missing = []
           # This guard checks Markdown image syntax, not JSX <img> tags,
           # imported assets, or dynamically generated paths.
-          image_start = re.compile(r'!\\[[^\\]]*\\]\\(')
+          image_start = re.compile(r'!\[[^\]]*\]\(')
 
           def image_destinations(content):
-              # Consume the balanced image target rather than stopping at the
-              # first ')'. Supports parenthesized filenames and escaped ')'.
+              # Consume balanced destinations, including filenames with
+              # parentheses and Markdown-escaped closing parentheses.
               for match in image_start.finditer(content):
                   pos = match.end()
-                  while pos < len(content) and content[pos] in " \\t":
+                  while pos < len(content) and content[pos] in " \t":
                       pos += 1
                   if pos >= len(content):
                       continue
@@ -66,7 +66,7 @@ jobs:
                   depth = 0
                   while pos < len(content):
                       char = content[pos]
-                      if char == "\\\\" and pos + 1 < len(content):
+                      if char == "\\" and pos + 1 < len(content):
                           pos += 2
                           continue
                       if char == "(":
@@ -79,18 +79,16 @@ jobs:
                           break
                       pos += 1
                   if depth == 0 and pos > start:
-                      yield content[start:pos].replace(r"\\(", "(").replace(r"\\)", ")")
+                      yield content[start:pos].replace(r"\(", "(").replace(r"\)", ")")
 
-          # Regression coverage: filenames containing balanced parentheses
-          # must be extracted completely, including escaped parentheses.
           assert list(image_destinations(
               "![Screenshot](/images/screenshot(1).png)"
           )) == ["/images/screenshot(1).png"]
           assert list(image_destinations(
-              r"![Screenshot](/images/screenshot\\(1\\).png)"
+              r"![Screenshot](/images/screenshot\(1\).png)"
           )) == ["/images/screenshot(1).png"]
           assert list(image_destinations(
-              "![Screenshot](</images/a file(1).png> \\"title\\")"
+              '![Screenshot](</images/a file(1).png> "title")'
           )) == ["/images/a file(1).png"]
 
           for page in sorted((*root.rglob("*.md"), *root.rglob("*.mdx"))):
