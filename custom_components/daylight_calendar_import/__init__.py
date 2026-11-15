@@ -129,7 +129,6 @@ def _submission_response(
     }
 
 
-
 def _with_original_filename(source: SourceDocument, filename: str | None) -> SourceDocument:
     """Use the submitted filename only for review metadata, never for disk paths."""
     if filename is None:
