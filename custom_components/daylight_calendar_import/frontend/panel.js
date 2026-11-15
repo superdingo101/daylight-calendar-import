@@ -677,6 +677,7 @@ export class DaylightImportPanel extends HTMLElement {
     // Folded source-event previews are view-local; never share expansion across imports.
     this._expandedEventIds = new Set();
     this._view = "inbox";
+    this._routePath = null;
     this._newImportMode = null;
     this._newImportOrigin = null;
     this._activity = [];
@@ -849,12 +850,52 @@ export class DaylightImportPanel extends HTMLElement {
     else this.removeAttribute("data-own-safe-area");
   }
 
+  set route(value) {
+    const path = value?.path || "/";
+    if (path === this._routePath) return;
+    this._routePath = path;
+    if (this._loaded) void this._openRoute(path);
+  }
+
+  async _openRoute(path) {
+    if (this._saving || this._settingsSaving || this._editingId || this._decision ||
+        this._batchAction || this._resolution || this._manualSubmission.busy ||
+        this._fileSubmission.busy) return;
+    if (path === "/new/file") {
+      this.showNewImport();
+      this.selectImportMethod("file");
+      return;
+    }
+    if (path === "/" || path === "" || path === "/review") {
+      await this.showReview();
+      return;
+    }
+    const match = /^\/review\/([^/]+)$/.exec(path);
+    if (match) {
+      try {
+        const id = decodeURIComponent(match[1]);
+        if (id && !/[\/\\\x00-\x1f\x7f]/.test(id)) {
+          this._view = "inbox";
+          await this.showImport(id);
+          return;
+        }
+      } catch { /* Invalid path encoding. */ }
+    }
+    this._view = "inbox";
+    this._selectedId = null;
+    this._detail = null;
+    ++this._generation;
+    this._status = "This import link is invalid. Return to the review inbox.";
+    this.render();
+  }
+
   set hass(value) {
     this._hass = value;
     this._syncMenuButton();
     if (!this._loaded) {
       this._loaded = true;
-      void this.refresh();
+      if (this._routePath !== null) void this._openRoute(this._routePath);
+      else void this.refresh();
     }
   }
 

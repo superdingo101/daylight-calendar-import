@@ -6349,3 +6349,29 @@ test("collapsed source rows disclose their actual calendar without expanding", (
   assert.match(style, /\.event-more-menu \{[\s\S]*position: absolute/);
   assert.doesNotMatch(style, /\.event-more\[open\] \{ flex-basis: 100%/);
 });
+
+test("direct routes select upload and review workflows", async () => {
+  const requests = [];
+  const panel = new DaylightImportPanel();
+  panel.route = {path: "/new/file"};
+  panel.hass = {callWS: async request => {
+    requests.push(request);
+    return request.service === "get_pending"
+      ? {response: {pending: {id: request.service_data.pending_id, events: []}}}
+      : {response: {imports: []}};
+  }};
+  await flush();
+  assert.equal(panel._view, "new");
+  assert.equal(panel._newImportMode, "file");
+  panel.route = {path: "/review/abc%20123"};
+  await flush();
+  assert.equal(panel._selectedId, "abc 123");
+  assert.equal(requests.at(-1).service_data.pending_id, "abc 123");
+  panel.route = {path: "/review"};
+  await flush();
+  assert.equal(panel._selectedId, null);
+  assert.equal(panel._status, "ready");
+  panel.route = {path: "/review/%2f"};
+  await flush();
+  assert.match(panel._status, /invalid/);
+});
