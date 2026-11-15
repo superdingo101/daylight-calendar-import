@@ -2240,6 +2240,7 @@ export class DaylightImportPanel extends HTMLElement {
       if (alert) { alert.tabIndex = -1; alert.focus(); }
       else this._refreshButton.focus();
     } finally {
+      if (!this._selectedId && this._view === "inbox") this._syncRoute("/review");
       this._saving = false;
       this._routeBusy = false;
       this._refreshButton.disabled = false;
