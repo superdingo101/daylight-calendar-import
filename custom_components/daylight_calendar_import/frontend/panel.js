@@ -2674,7 +2674,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._returnSession) {
       const back = element("button", "Return to calendar", "import-back");
       back.type = "button";
-      back.disabled = this._saving || this._settingsSaving || this._manualSubmission.busy || this._fileSubmission.busy;
+      back.disabled = this._routeBusy || this._saving || this._settingsSaving || this._manualSubmission.busy || this._fileSubmission.busy;
       back.addEventListener("click", () => {
         if (!this._returnToCalendar(this._returnComplete ? "completed" : "cancelled")) {
           this._announcement.replaceChildren(element("span", "Could not return to the calendar. Use your dashboard navigation."));
