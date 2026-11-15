@@ -116,6 +116,7 @@ jobs:
         id: create-pr
         uses: peter-evans/create-pull-request@v7
         with:
+          token: ${{ secrets.RELEASE_PREP_TOKEN }}
           branch: release-prep/${{ steps.version.outputs.tag }}
           base: main
           delete-branch: true
