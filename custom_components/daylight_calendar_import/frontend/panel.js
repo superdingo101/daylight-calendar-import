@@ -860,20 +860,24 @@ export class DaylightImportPanel extends HTMLElement {
 
   set route(value) {
     const path = value?.path || "/";
+    this._loadReturnSession();
     if (path === this._routePath) return;
     this._routePath = path;
-    this._loadReturnSession();
     if (path !== "/" && path !== "") this._routeMode = true;
     this._pendingRoute = path;
     if (this._loaded) void this._openRoute(path);
   }
 
   _loadReturnSession() {
-    if (this._returnSession || typeof window === "undefined") return;
+    if (typeof window === "undefined") return;
     try {
       const id = new URL(window.location.href).searchParams.get("dl_return");
+      if (id !== this._returnSession?.id) {
+        this._returnTargetId = null;
+        this._returnComplete = false;
+      }
       this._returnSession = readReturnSession(window.sessionStorage, id, window.location.origin);
-    } catch { /* Storage can be unavailable in a private browser. */ }
+    } catch { this._returnSession = null; }
   }
 
   _returnToCalendar(status = "cancelled") {
