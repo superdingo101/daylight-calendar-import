@@ -6428,3 +6428,56 @@ test("linked review navigation updates browser history and retains the return to
     globalThis.CustomEvent = priorCustomEvent;
   }
 });
+
+test("linked new-import method routes restore their own views", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async () => ({response: {imports: []}})};
+  await flush();
+  panel.route = {path: '/new/text'};
+  await flush();
+  assert.equal(panel._view, 'new');
+  assert.equal(panel._newImportMode, 'text');
+  panel.route = {path: '/new'};
+  await flush();
+  assert.equal(panel._view, 'new');
+  assert.equal(panel._newImportMode, null);
+});
+
+test("newer external routes wait through post-action work and take precedence", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => request.service === 'get_pending'
+    ? {response: {pending: {id: request.service_data.pending_id, events: []}}}
+    : {response: {imports: []}}};
+  await flush();
+  panel._routeBusy = true;
+  panel.route = {path: '/review/newer'};
+  await flush();
+  assert.equal(panel._selectedId, null);
+  panel._routeBusy = false;
+  panel._syncNewImportButton();
+  await flush();
+  assert.equal(panel._selectedId, 'newer');
+});
+
+test("route-driven detail loading does not normalize the incoming history entry", async () => {
+  const previousWindow = globalThis.window;
+  const previousCustomEvent = globalThis.CustomEvent;
+  let pushes = 0;
+  globalThis.CustomEvent = class { constructor(type) { this.type = type; } };
+  globalThis.window = {location: new URL('https://ha.test/daylight-calendar-import/review/%61bc'),
+    history: {pushState() { pushes++; }}, dispatchEvent() {}};
+  try {
+    const panel = new DaylightImportPanel();
+    panel.hass = {callWS: async request => request.service === 'get_pending'
+      ? {response: {pending: {id: request.service_data.pending_id, events: []}}}
+      : {response: {imports: []}}};
+    await flush();
+    panel.route = {path: '/review/%61bc'};
+    await flush();
+    assert.equal(panel._selectedId, 'abc');
+    assert.equal(pushes, 0);
+    panel.isConnected = false;
+    await panel.showImport('other');
+    assert.equal(pushes, 0);
+  } finally { globalThis.window = previousWindow; globalThis.CustomEvent = previousCustomEvent; }
+});
