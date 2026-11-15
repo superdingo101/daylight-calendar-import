@@ -36,5 +36,30 @@ jobs:
         run: mint broken-links
       - name: Install MDX parsing dependencies
         run: npm install --no-save --no-package-lock --prefix .github/scripts unified@11 remark-parse@11 remark-mdx@3
+      - name: Regression-check MDX image detection
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          mkdir -p "$root/images"
+          cat > "$root/example.mdx" <<'MDX'
+          <Step title="Screenshot">
+            ![actual](/images/actual.png)
+            ![reference][shot]
+
+            [shot]: /images/actual.png
+          </Step>
+
+          `![literal](/images/literal-does-not-exist.png)`
+
+          ```md
+          ![fenced](/images/fenced-does-not-exist.png)
+          ```
+          MDX
+          if node .github/scripts/validate-doc-images.mjs "$root"; then
+            echo "Missing component image was not detected"
+            exit 1
+          fi
+          touch "$root/images/actual.png"
+          node .github/scripts/validate-doc-images.mjs "$root"
       - name: Verify local Markdown and MDX images
         run: node .github/scripts/validate-doc-images.mjs docs
