@@ -126,7 +126,7 @@ test("images and PDFs use multipart intake with optional context", async () => {
     assert.equal(sent.name, uploadedName);
     assert.deepEqual(new Uint8Array(await sent.arrayBuffer()), new Uint8Array(await selected.arrayBuffer()));
     assert.equal(services[0].service, service);
-    assert.deepEqual(services[0].service_data, {file_id: fileId, text: form.text.value, source_id: form.attempt.sourceId});
+    assert.deepEqual(services[0].service_data, {file_id: fileId, text: form.text.value, original_filename: selected.name, source_id: form.attempt.sourceId});
     assert.match(services[0].service_data.source_id, /^manual-[a-f0-9]{32}$/);
     assert.match(form.status.textContent, /ready for review/);
     assert.equal(form.file.files[0], selected);
