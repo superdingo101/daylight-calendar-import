@@ -6427,3 +6427,37 @@ test("linked review navigation updates browser history and retains the return to
     globalThis.CustomEvent = priorCustomEvent;
   }
 });
+
+test("returnable review returns only after the launched import leaves a confirmed inbox", async () => {
+  const priorWindow = globalThis.window;
+  const token = "a".repeat(32);
+  const key = `daylight:return:v1:${token}`;
+  let stored = JSON.stringify({version: 1, id: token, created_at: Date.now(),
+    expires_at: Date.now() + 60000, return_path: "/dashboard-family/calendar"});
+  let destination = null;
+  const url = new URL(`https://ha.test/daylight-calendar-import/review?dl_return=${token}`);
+  url.assign = path => { destination = path; };
+  globalThis.window = {location: url, sessionStorage: {
+    getItem: k => k === key ? stored : null,
+    setItem: (k, value) => {assert.equal(k, key); stored = value;},
+  }};
+  try {
+    const panel = new DaylightImportPanel();
+    panel.hass = {callWS: async () => ({response: {imports: []}})};
+    await flush();
+    assert.ok(panel._returnSession);
+    panel._returnTargetId = "import";
+    panel._items = [{id: "import"}];
+    panel._status = "ready";
+    panel._reviewCompleted("import");
+    assert.equal(destination, null);
+    panel._items = [{id: "another"}];
+    panel._reviewCompleted("import");
+    assert.equal(destination, null);
+    assert.equal(panel._returnComplete, true);
+    panel._items = [];
+    panel._reviewCompleted("import");
+    assert.equal(destination, "/dashboard-family/calendar");
+    assert.equal(JSON.parse(stored).result.status, "completed");
+  } finally { globalThis.window = priorWindow; }
+});

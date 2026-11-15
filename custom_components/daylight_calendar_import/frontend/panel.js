@@ -4,6 +4,7 @@ import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, 
 
 import {ManualSubmission} from "./manual_submission.js";
 import {FileSubmission} from "./upload_submission.js";
+import {readReturnSession, saveReturnResult} from "./return_session.js";
 
 const CALENDAR_CHECK_TIMEOUT_MS = 30_000;
 
@@ -680,6 +681,9 @@ export class DaylightImportPanel extends HTMLElement {
     this._routePath = null;
     this._pendingRoute = null;
     this._routeMode = false;
+    this._returnSession = null;
+    this._returnTargetId = null;
+    this._returnComplete = false;
     this._newImportMode = null;
     this._newImportOrigin = null;
     this._activity = [];
@@ -858,9 +862,46 @@ export class DaylightImportPanel extends HTMLElement {
     const path = value?.path || "/";
     if (path === this._routePath) return;
     this._routePath = path;
+    this._loadReturnSession();
     if (path !== "/" && path !== "") this._routeMode = true;
     this._pendingRoute = path;
     if (this._loaded) void this._openRoute(path);
+  }
+
+  _loadReturnSession() {
+    if (this._returnSession || typeof window === "undefined") return;
+    try {
+      const id = new URL(window.location.href).searchParams.get("dl_return");
+      this._returnSession = readReturnSession(window.sessionStorage, id, window.location.origin);
+    } catch { /* Storage can be unavailable in a private browser. */ }
+  }
+
+  _returnToCalendar(status = "cancelled") {
+    if (!this._returnSession || typeof window === "undefined") return false;
+    let session;
+    try {
+      session = readReturnSession(window.sessionStorage, this._returnSession.id, window.location.origin);
+      if (!session || !saveReturnResult(window.sessionStorage, session, status)) return false;
+      window.location.assign(session.returnPath);
+      return true;
+    } catch {
+      try {
+        if (session) window.sessionStorage.setItem(session.key, JSON.stringify(session.value));
+      } catch { /* The user can still navigate using Home Assistant. */ }
+      return false;
+    }
+  }
+
+  _reviewCompleted(id) {
+    if (!this._returnSession || this._returnTargetId !== id || this._status !== "ready" ||
+        this._items.some(item => item.id === id)) return;
+    if (this._items.length) {
+      this._returnComplete = true;
+      this.render();
+    } else if (!this._returnToCalendar("completed")) {
+      this._returnComplete = true;
+      this.render();
+    }
   }
 
   _syncRoute(path) {
@@ -910,6 +951,7 @@ export class DaylightImportPanel extends HTMLElement {
   set hass(value) {
     this._hass = value;
     this._syncMenuButton();
+    this._loadReturnSession();
     if (!this._loaded) {
       this._loaded = true;
       if (this._routePath !== null) void this._openRoute(this._routePath);
@@ -2023,6 +2065,10 @@ export class DaylightImportPanel extends HTMLElement {
   async showImport(id) {
     if (this._saving || this._editingId || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
+    if (this._returnSession) {
+      this._returnTargetId = id;
+      this._returnComplete = false;
+    }
     this._syncRoute(`/review/${encodeURIComponent(id)}`);
     const generation = ++this._generation;
     if (id !== this._selectedId) this._expandedEventIds.clear();
@@ -2116,6 +2162,7 @@ export class DaylightImportPanel extends HTMLElement {
     }
     this.render();
     this._content.querySelector(".batch-results")?.focus();
+    if (results.every(result => result.outcome === "success")) this._reviewCompleted(pendingId);
   }
 
   async runDecision(event, action) {
@@ -2136,6 +2183,7 @@ export class DaylightImportPanel extends HTMLElement {
       await this.refresh();
       if (this._status === "ready") {
         this._announcement.replaceChildren(element("span", `Event ${action === "approve" ? "approved" : "rejected"}`));
+        this._reviewCompleted(pendingId);
       }
       (Array.from(this._content.querySelectorAll("button")).find(button => button.dataset.pendingId) || this._refreshButton).focus();
     } catch (error) {
@@ -2585,6 +2633,18 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     const content = document.createDocumentFragment();
+    if (this._returnSession) {
+      const back = element("button", "Return to calendar", "import-back");
+      back.type = "button";
+      back.disabled = this._saving || this._settingsSaving || this._manualSubmission.busy || this._fileSubmission.busy;
+      back.addEventListener("click", () => {
+        if (!this._returnToCalendar(this._returnComplete ? "completed" : "cancelled")) {
+          this._announcement.replaceChildren(element("span", "Could not return to the calendar. Use your dashboard navigation."));
+        }
+      });
+      content.append(back);
+      if (this._returnComplete) content.append(element("p", "Review complete. Return to the calendar or review another import."));
+    }
     const navigation = this._navigation;
     navigation.replaceChildren();
     const review = element("button", "Review inbox");

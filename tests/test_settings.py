@@ -928,7 +928,9 @@ def test_capabilities_reports_only_active_entries_without_private_data():
     connection = FakeConnection(admin=False)
     settings_api.websocket_capabilities(hass, connection, {"id": 31})
     assert connection.results == [(31, {
-        "entry_ids": ["active"], "capabilities": {"queue_metadata": 1},
+        "entry_ids": ["active"], "capabilities": {
+            "queue_metadata": 1, "direct_routes": 1, "return_sessions": 1,
+        },
     })]
 
 
