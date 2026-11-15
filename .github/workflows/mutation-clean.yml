@@ -2,8 +2,8 @@ name: Clean mutation validation
 
 on:
   schedule:
-    # 02:00 PDT / 01:00 PST. GitHub schedules are UTC and may be delayed.
-    - cron: "0 9 * * *"
+    # 02:17 PDT / 01:17 PST. Offset from minute zero to reduce scheduler contention.
+    - cron: "17 9 * * *"
   workflow_dispatch:
     inputs:
       target_sha:
