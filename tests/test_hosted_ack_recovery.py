@@ -96,3 +96,56 @@ async def test_stale_lease_is_left_pending_and_other_acks_recovered(monkeypatch)
     assert await run(store, transport) == []
     assert len(transport.calls) == 2
     assert all(item.ack_status == "pending" for item in store.hosted_ack_journal())
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [(409, "some_other_conflict"), (503, "lease_not_current")],
+)
+async def test_only_definitive_stale_lease_allows_recovery_to_continue(
+    monkeypatch, status, code,
+):
+    """A matching code alone or HTTP conflict alone is not sufficient evidence."""
+    store = make_store(monkeypatch, FakeStoreBackend())
+    await accepted(store, "first")
+    await accepted(store, "second")
+    transport = Transport(error=HostedTransportError(code, status=status))
+    with pytest.raises(HostedTransportError) as failure:
+        await run(store, transport)
+    assert failure.value.code == code
+    assert failure.value.status == status
+    assert [call["delivery_id"] for call in transport.calls] == ["first"]
+    assert [item.ack_status for item in store.hosted_ack_journal()] == [
+        "pending", "pending",
+    ]
+
+
+async def test_recovery_default_limit_is_exactly_twenty(monkeypatch):
+    """Recovery must not accidentally drain a larger journal on one pass."""
+    store = make_store(monkeypatch, FakeStoreBackend())
+    for index in range(21):
+        await accepted(store, f"delivery-{index:02}")
+    transport = Transport()
+    completed = await async_recover_pending_acks(
+        store=store,
+        credentials=SimpleNamespace(snapshot=checkpoint()),
+        transport=transport,
+        local_config_entry_id="entry",
+    )
+    assert len(completed) == 20
+    assert len(transport.calls) == 20
+    assert transport.calls[0]["delivery_id"] == "delivery-00"
+    assert transport.calls[-1]["delivery_id"] == "delivery-19"
+    assert [item.ack_status for item in store.hosted_ack_journal()].count("pending") == 1
+
+
+async def test_recovery_allows_documented_maximum_limit(monkeypatch):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    assert await run(store, Transport(), limit=50) == []
+
+
+async def test_recovery_invalid_limit_error_is_stable(monkeypatch):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    with pytest.raises(ValueError) as failure:
+        await run(store, Transport(), limit=51)
+    assert str(failure.value) == "ACK recovery limit must be 1 to 50"
