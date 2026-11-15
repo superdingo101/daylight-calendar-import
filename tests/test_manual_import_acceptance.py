@@ -60,7 +60,7 @@ async def _frontend(script, payload):
     return json.loads(stdout)
 
 
-async def _request(kind="text", *, file_id=None, data=b"", source_id="manual-acceptance", text=TEXT):
+async def _request(kind="text", *, file_id=None, data=b"", source_id="manual-acceptance", text=TEXT, filename=None):
     return await _frontend('''
       import {submitText} from './manual_submission.js';
       import {submitFile} from './upload_transport.js';
@@ -74,11 +74,11 @@ async def _request(kind="text", *, file_id=None, data=b"", source_id="manual-acc
       };
       if (p.kind === 'text') await submitText(hass, p.text, {sourceId: p.source_id});
       else await submitFile(hass, new File([Buffer.from(p.data, 'base64')],
-        p.kind === 'pdf' ? 'concert.pdf' : 'concert.png'),
+        p.filename ?? (p.kind === 'pdf' ? 'concert.pdf' : 'concert.png')),
         {text: p.text, sourceId: p.source_id});
       process.stdout.write(JSON.stringify(request));
     ''', {"kind": kind, "file_id": file_id, "data": base64.b64encode(data).decode(),
-          "text": text, "source_id": source_id})
+          "text": text, "source_id": source_id, "filename": filename})
 
 
 async def _call(client, request):
@@ -137,6 +137,10 @@ async def test_browser_intake_review_approve_without_email(
     client = await hass_ws_client(hass)
     file_id = "a" * 32
     data = b""
+    original_filename = {
+        "image": "Maple Grove December Family Events.png",
+        "pdf": "Screenshot_20261024-123658~2.pdf",
+    }.get(kind)
     if kind != "text":
         if kind == "pdf":
             writer = PdfWriter()
@@ -151,7 +155,7 @@ async def test_browser_intake_review_approve_without_email(
             data = PNG
         http = await hass_client()
         multipart = FormData()
-        multipart.add_field("file", data, filename="concert.pdf" if kind == "pdf" else "concert.png",
+        multipart.add_field("file", data, filename="daylight-upload.pdf" if kind == "pdf" else "daylight-upload.png",
                             content_type="application/pdf" if kind == "pdf" else "image/png")
         uploaded = await http.post("/api/file_upload", data=multipart)
         assert uploaded.status == 200
@@ -159,13 +163,16 @@ async def test_browser_intake_review_approve_without_email(
         upload_dir = hass.data["file_upload"].file_dir(file_id)
         media_dir = tmp_path / "media"
         hass.config.media_dirs = {"local": str(media_dir)}
-    response = await _response(client, await _request(kind, file_id=file_id, data=data))
+    response = await _response(client, await _request(kind, file_id=file_id, data=data, filename=original_filename))
     assert response["status"] == "pending_review"
     runtime.writes.assert_not_awaited()
     runtime.generate.assert_awaited_once()
     pending_id = response["pending"]["id"]
     assert runtime.store.get(pending_id).events[0].draft.title == DRAFT["title"]
     if kind != "text":
+        assert response["pending"]["source_title"] == original_filename
+        assert runtime.store.get(pending_id).source_title == original_filename
+        assert any(item["source_title"] == original_filename for item in runtime.store.list_activity())
         assert not upload_dir.exists()
         assert not hass.data["file_upload"].files
         assert not list(media_dir.glob("**/*"))
@@ -176,6 +183,8 @@ async def test_browser_intake_review_approve_without_email(
                                  "service_data": {"pending_id": pending_id}, "return_response": True})
     assert review["success"], review
     assert review["result"]["response"]["pending"]["events"][0]["title"] == DRAFT["title"]
+    if kind != "text":
+        assert review["result"]["response"]["pending"]["source_title"] == original_filename
     event_id = response["pending"]["events"][0]["id"]
     approval = await _call(client, {"type": "call_service", "domain": DOMAIN, "service": "approve_pending_event",
                                    "service_data": {"pending_id": pending_id, "event_id": event_id}, "return_response": True})
@@ -356,3 +365,39 @@ async def test_text_layer_pdf_works_with_text_only_provider(
     assert "School concert November 12, 2026, 7-8 PM" in runtime.generate.await_args.kwargs["instructions"]
     assert not directory.exists()
     runtime.writes.assert_not_awaited()
+
+
+def test_original_filename_only_changes_review_metadata():
+    """An unsafe filename is never used for a staged filesystem path."""
+    from datetime import UTC, datetime
+
+    from custom_components.daylight_calendar_import import _with_original_filename
+    from custom_components.daylight_calendar_import.sources import (
+        SourceAttachment, SourceDocument, SourceKind,
+    )
+
+    attachment = SourceAttachment(
+        id="attachment", media_type="image/png", size_bytes=3,
+        content_ref="media-source://media_source/local/daylight-safe.png",
+        filename="daylight-upload.png",
+    )
+    source = SourceDocument(
+        id="source", kind=SourceKind.IMAGE, received_at=datetime.now(UTC),
+        title="daylight-upload.png", attachments=(attachment,),
+    )
+    assert _with_original_filename(source, None) is source
+    original = "Screenshot_20261024-123658~2.png"
+    updated = _with_original_filename(source, original)
+    assert updated.title == original
+    assert updated.attachments[0].filename == original
+    assert updated.attachments[0].content_ref == attachment.content_ref
+    assert source.title == "daylight-upload.png"
+    assert source.attachments[0].filename == "daylight-upload.png"
+
+    text_pdf = SourceDocument(
+        id="pdf", kind=SourceKind.PDF, received_at=datetime.now(UTC),
+        text="Event details", title="daylight-upload.pdf",
+    )
+    updated_pdf = _with_original_filename(text_pdf, "School Newsletter.pdf")
+    assert updated_pdf.title == "School Newsletter.pdf"
+    assert updated_pdf.attachments == ()
