@@ -270,8 +270,8 @@ test("explicit retries upload fresh IDs while keeping stable source ID", async (
   await submitFile(hass, PDF(), {sourceId: "stable"});
   await submitFile(hass, PDF(), {sourceId: "stable"});
   assert.deepEqual(hass.ws.map(request => request.service_data), [
-    {file_id: "1".padStart(32, "0"), text: "", source_id: "stable"},
-    {file_id: "2".padStart(32, "0"), text: "", source_id: "stable"},
+    {file_id: "1".padStart(32, "0"), text: "", original_filename: "schedule.pdf", source_id: "stable"},
+    {file_id: "2".padStart(32, "0"), text: "", original_filename: "schedule.pdf", source_id: "stable"},
   ]);
 });
 
