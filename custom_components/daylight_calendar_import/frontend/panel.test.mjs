@@ -6461,3 +6461,22 @@ test("returnable review returns only after the launched import leaves a confirme
     assert.equal(JSON.parse(stored).result.status, "completed");
   } finally { globalThis.window = priorWindow; }
 });
+
+test('removing a return token leaves the ordinary Import panel without return controls', async () => {
+  const previous = globalThis.window;
+  const id = 'b'.repeat(32);
+  const url = new URL(`https://ha.test/daylight-calendar-import/review?dl_return=${id}`);
+  const record = JSON.stringify({version: 1, id, created_at: Date.now(), expires_at: Date.now() + 60000, return_path: '/lovelace/home'});
+  globalThis.window = {location: url, sessionStorage: {getItem: () => record}};
+  try {
+    const panel = new DaylightImportPanel();
+    panel.route = {path: '/review'};
+    panel.hass = {callWS: async () => ({response: {imports: []}})};
+    await flush();
+    assert.ok(panel._returnSession);
+    url.search = '';
+    panel.route = {path: '/review'};
+    assert.equal(panel._returnSession, null);
+    assert.equal(panel._content.querySelectorAll('button').some(button => button.textContent === 'Return to calendar'), false);
+  } finally { globalThis.window = previous; }
+});
