@@ -103,7 +103,7 @@ for (const [filename, service, mimeType, uploadedName] of [
     await expect(form.getByRole("status")).toContainText("Extracting events for review");
     await expect(form.getByLabel("Image or PDF file")).toBeDisabled();
     await expect.poll(() => calls(page).then(result => result.length)).toBe(1);
-    expect((await calls(page))[0]).toMatchObject({service, service_data: {file_id: "a".repeat(32), text: "Family calendar"}});
+    expect((await calls(page))[0]).toMatchObject({service, service_data: {file_id: "a".repeat(32), text: "Family calendar", original_filename: filename}});
     await page.evaluate(() => window.fixture.release());
     await expect(page.getByRole("heading", {name: "School picnic", exact: true})).toBeVisible();
     await expect(page.getByRole("heading", {name: "School picnic", exact: true})).toBeVisible();
