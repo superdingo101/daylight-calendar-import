@@ -797,7 +797,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   showNewImport(fromRoute = false) {
-    if (this._view === "new" || this._saving || this._settingsSaving ||
+    if (this._view === "new" || this._routeBusy || this._saving || this._settingsSaving ||
         this._editingId || this._decision || this._batchAction || this._resolution ||
         this._manualSubmission.busy || this._fileSubmission.busy) return;
     this._clearEmailDraftPassword();
@@ -815,7 +815,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   selectImportMethod(mode) {
-    if (this._view !== "new" || !["text", "file", null].includes(mode) ||
+    if (this._routeBusy || this._view !== "new" || !["text", "file", null].includes(mode) ||
         this._manualSubmission.busy || this._fileSubmission.busy) return;
     this._newImportMode = mode;
     this._syncRoute(mode ? `/new/${mode}` : "/new");
@@ -1017,7 +1017,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async showActivity(id = null) {
-    if (this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
+    if (this._routeBusy || this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
     this._syncRoute("/");
     const generation = ++this._generation;
@@ -1043,7 +1043,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async showReview() {
-    if (this._saving || this._settingsSaving) return;
+    if (this._routeBusy || this._saving || this._settingsSaving) return;
     this._clearEmailDraftPassword();
     this._view = "inbox";
     if (this._routePath !== "/") this._syncRoute("/review");
@@ -1059,7 +1059,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async showSettings(tab = this._settingsTab, reload = false) {
-    if (this._saving || this._settingsSaving || this._editingId ||
+    if (this._routeBusy || this._saving || this._settingsSaving || this._editingId ||
         this._decision || this._batchAction || this._resolution) return;
     this._syncRoute("/");
     const generation = ++this._generation;
@@ -2085,7 +2085,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async showImport(id, fromRoute = false) {
-    if (this._saving || this._editingId || this._batchAction || this._resolution) return;
+    if (this._routeBusy || this._saving || this._editingId || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
     if (this._returnSession) {
       this._returnTargetId = id;
@@ -2125,7 +2125,7 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   showInbox() {
-    if (this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
+    if (this._routeBusy || this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
     this._syncRoute("/review");
     this._batchResults = [];
@@ -2653,7 +2653,7 @@ export class DaylightImportPanel extends HTMLElement {
     }
     // Update only this control after an intake request settles. Rerendering
     // the detail here would discard its focused heading.
-    this._newImportButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
+    this._newImportButton.disabled = this._view === "new" || this._routeBusy || this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution) ||
       Boolean(this._manualSubmission.busy || this._fileSubmission.busy);
   }
