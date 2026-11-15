@@ -796,7 +796,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._editingId || this._decision || this._batchAction || this._resolution ||
         this._manualSubmission.busy || this._fileSubmission.busy) return;
     this._clearEmailDraftPassword();
-    if (!fromRoute) this._syncRoute("/");
+    if (!fromRoute) this._syncRoute("/new");
     this._newImportOrigin = {
       view: this._view, selectedId: this._selectedId, activityId: this._activityId,
       settingsTab: this._settingsTab,
@@ -813,8 +813,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._view !== "new" || !["text", "file", null].includes(mode) ||
         this._manualSubmission.busy || this._fileSubmission.busy) return;
     this._newImportMode = mode;
-    if (mode === "file") this._syncRoute("/new/file");
-    else this._syncRoute("/");
+    this._syncRoute(mode ? `/new/${mode}` : "/new");
     this.render();
     (mode === "text" ? this._manualSubmission.text :
       mode === "file" ? this._fileSubmission.file : this._content.querySelector("h2"))?.focus();
@@ -865,7 +864,9 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   _syncRoute(path) {
-    if (!this._routeMode || this._routePath === path || typeof window === "undefined") return;
+    if (!this._routeMode || this._pendingRoute !== null || this._routePath === path ||
+        typeof window === "undefined" || this.isConnected === false ||
+        !/^\/daylight-calendar-import(?:\/|$)/.test(window.location.pathname)) return;
     const url = new URL(window.location.href);
     url.pathname = `/daylight-calendar-import${path === "/" ? "" : path}`;
     const from = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -875,14 +876,14 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async _openRoute(path) {
-    if (this._saving || this._settingsSaving || this._editingId || this._decision ||
+    if (this._routeBusy || this._saving || this._settingsSaving || this._editingId || this._decision ||
         this._batchAction || this._resolution || this._manualSubmission.busy ||
         this._fileSubmission.busy) return;
     if (path !== this._routePath) return;
     this._pendingRoute = null;
-    if (path === "/new/file") {
+    if (["/new", "/new/file", "/new/text"].includes(path)) {
       this.showNewImport(true);
-      this.selectImportMethod("file");
+      this.selectImportMethod(path === "/new" ? null : path.slice(5));
       return;
     }
     if (path === "/" || path === "" || path === "/review") {
@@ -895,7 +896,7 @@ export class DaylightImportPanel extends HTMLElement {
         const id = decodeURIComponent(match[1]);
         if (id && !/[\/\\\x00-\x1f\x7f]/.test(id)) {
           this._view = "inbox";
-          await this.showImport(id);
+          await this.showImport(id, true);
           return;
         }
       } catch { /* Invalid path encoding. */ }
@@ -2023,10 +2024,10 @@ export class DaylightImportPanel extends HTMLElement {
       button => button.dataset.calendarCheckEventId === eventId)?.focus();
   }
 
-  async showImport(id) {
+  async showImport(id, fromRoute = false) {
     if (this._saving || this._editingId || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
-    this._syncRoute(`/review/${encodeURIComponent(id)}`);
+    if (!fromRoute) this._syncRoute(`/review/${encodeURIComponent(id)}`);
     const generation = ++this._generation;
     if (id !== this._selectedId) this._expandedEventIds.clear();
     if (id !== this._selectedId) this._openEventMenuId = null;
@@ -2080,6 +2081,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._batchAction !== action ||
         (action === "approve" && this._approvalObservation?.loading)) return;
     const pendingId = this._selectedId;
+    this._routeBusy = true;
     const events = this._detail.events.filter(event => event.status === "pending");
     this._batchContext = {pendingId, action, title: this._detail.source_title || "Import"};
     this._saving = true;
@@ -2111,12 +2113,14 @@ export class DaylightImportPanel extends HTMLElement {
       } else {
         this._selectedId = null;
         this._detail = null;
+        this._syncRoute("/review");
       }
       this._status = "ready";
     } catch (error) {
       this._detail = null;
       this._status = typeof error?.message === "string" ? error.message : "Could not reload imports after bulk review.";
     }
+    this._routeBusy = false;
     this.render();
     this._content.querySelector(".batch-results")?.focus();
   }
@@ -2125,6 +2129,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._decision?.id !== event.id || this._decision.action !== action ||
         (action === "approve" && this._approvalObservation?.loading)) return;
     const pendingId = this._selectedId;
+    this._routeBusy = true;
     const generation = this._generation;
     this._saving = true;
     this._refreshButton.disabled = true;
@@ -2136,6 +2141,7 @@ export class DaylightImportPanel extends HTMLElement {
       this._decision = null;
       this._selectedId = null;
       this._detail = null;
+      this._syncRoute("/review");
       await this.refresh();
       if (this._status === "ready") {
         this._announcement.replaceChildren(element("span", `Event ${action === "approve" ? "approved" : "rejected"}`));
@@ -2159,13 +2165,16 @@ export class DaylightImportPanel extends HTMLElement {
       else (this._content.querySelector("[data-import-back]") || this._refreshButton).focus();
     } finally {
       this._saving = false;
+      this._routeBusy = false;
       this._refreshButton.disabled = Boolean(this._editingId || this._decision);
+      this._syncNewImportButton();
     }
   }
 
   async runResolution(event, resolution) {
     if (this._saving || this._resolution?.id !== event.id || this._resolution.choice !== resolution) return;
     const pendingId = this._selectedId;
+    this._routeBusy = true;
     const generation = this._generation;
     this._saving = true;
     this._refreshButton.disabled = true;
@@ -2183,6 +2192,7 @@ export class DaylightImportPanel extends HTMLElement {
       } else {
         this._selectedId = null;
         this._detail = null;
+        this._syncRoute("/review");
       }
       if (generation !== this._generation) return;
       this._status = "ready";
@@ -2231,7 +2241,9 @@ export class DaylightImportPanel extends HTMLElement {
       else this._refreshButton.focus();
     } finally {
       this._saving = false;
+      this._routeBusy = false;
       this._refreshButton.disabled = false;
+      this._syncNewImportButton();
     }
   }
 
@@ -2324,6 +2336,7 @@ export class DaylightImportPanel extends HTMLElement {
     } finally {
       this._saving = false;
       this._refreshButton.disabled = Boolean(this._editingId);
+      this._syncNewImportButton();
     }
   }
 
@@ -2563,7 +2576,7 @@ export class DaylightImportPanel extends HTMLElement {
 
   _syncNewImportButton() {
     if (this._pendingRoute !== null && !this._routePendingScheduled &&
-        !this._saving && !this._settingsSaving && !this._editingId && !this._decision &&
+        !this._routeBusy && !this._saving && !this._settingsSaving && !this._editingId && !this._decision &&
         !this._batchAction && !this._resolution && !this._manualSubmission.busy &&
         !this._fileSubmission.busy) {
       this._routePendingScheduled = true;
