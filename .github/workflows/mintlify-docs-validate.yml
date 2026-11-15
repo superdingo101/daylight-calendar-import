@@ -5,11 +5,13 @@ on:
     paths:
       - "docs/**"
       - ".github/workflows/mintlify-docs-validate.yml"
+      - ".github/scripts/validate-doc-images.mjs"
   push:
     branches: [main, docs-live]
     paths:
       - "docs/**"
       - ".github/workflows/mintlify-docs-validate.yml"
+      - ".github/scripts/validate-doc-images.mjs"
   workflow_dispatch:
 
 permissions:
@@ -32,64 +34,7 @@ jobs:
       - name: Check documentation links
         working-directory: docs
         run: mint broken-links
-      - name: Install CommonMark image parser
-        run: python3 -m pip install --disable-pip-version-check "markdown-it-py==4.0.0"
-      - name: Verify local Markdown images
-        working-directory: docs
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import sys
-          from urllib.parse import unquote, urlsplit
-          from markdown_it import MarkdownIt
-
-          root = Path.cwd().resolve()
-          markdown = MarkdownIt("commonmark")
-          missing = []
-
-          def image_sources(source):
-              # CommonMark resolves inline, full, collapsed, and shortcut
-              # references and excludes code spans, fences, and escaped images.
-              for token in markdown.parse(source):
-                  for child in token.children or ():
-                      if child.type == "image":
-                          yield child.attrGet("src")
-
-          fixtures = {
-              "![shot](/images/shot(1).png)": ["/images/shot(1).png"],
-              r"![shot](/images/shot\(1\).png)": ["/images/shot(1).png"],
-              '![shot](</images/a file(1).png> "title")': ["/images/a%20file(1).png"],
-              "![shot][ref]\n\n[ref]: /images/missing.png": ["/images/missing.png"],
-              "![shot][]\n\n[shot]: /images/missing.png": ["/images/missing.png"],
-              "![shot]\n\n[shot]: /images/missing.png": ["/images/missing.png"],
-              chr(96) + "![example](/images/example.png)" + chr(96): [],
-              "~~~md\n![example](/images/example.png)\n~~~": [],
-              "    ![example](/images/example.png)": [],
-              r"\![example](/images/example.png)": [],
-          }
-          for source, expected in fixtures.items():
-              actual = list(image_sources(source))
-              if actual != expected:
-                  raise AssertionError(f"Image parser: {source!r}: {actual!r} != {expected!r}")
-
-          for page in sorted((*root.rglob("*.md"), *root.rglob("*.mdx"))):
-              for src in image_sources(page.read_text(encoding="utf-8")):
-                  if not src:
-                      continue
-                  parsed = urlsplit(src)
-                  if parsed.scheme or parsed.netloc or src.startswith("#"):
-                      continue
-                  path = unquote(parsed.path)
-                  if not path:
-                      continue
-                  target = (root / path.lstrip("/") if path.startswith("/")
-                            else page.parent / path).resolve()
-                  if not target.is_relative_to(root) or not target.is_file():
-                      missing.append(f"{page.relative_to(root)}: {src}")
-
-          if missing:
-              for reference in missing:
-                  print(f"Missing local documentation image: {reference}")
-              sys.exit(1)
-          print("All local Markdown image references exist")
-          PY
+      - name: Install MDX parsing dependencies
+        run: npm install --no-save --no-package-lock --prefix .github/scripts unified@11 remark-parse@11 remark-mdx@3
+      - name: Verify local Markdown and MDX images
+        run: node .github/scripts/validate-doc-images.mjs docs
