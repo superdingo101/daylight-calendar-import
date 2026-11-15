@@ -129,6 +129,18 @@ def _submission_response(
     }
 
 
+
+def _with_original_filename(source: SourceDocument, filename: str | None) -> SourceDocument:
+    """Use the submitted filename only for review metadata, never for disk paths."""
+    if filename is None:
+        return source
+    return replace(
+        source,
+        title=filename,
+        attachments=tuple(replace(attachment, filename=filename) for attachment in source.attachments),
+    )
+
+
 def _unregister_entry_services(hass: HomeAssistant) -> None:
     """Remove each registered service; safe for partial entry setup."""
     for name in _ENTRY_SERVICES:
@@ -167,6 +179,7 @@ SUBMIT_IMAGE_SCHEMA = vol.Schema(
             cv.string, lambda value: value.strip(), vol.Length(min=1, max=2048)
         ),
         vol.Optional("reimport_duplicates", default=False): bool,
+        vol.Optional("original_filename"): vol.All(cv.string, vol.Length(min=1, max=1024)),
     }
 )
 SUBMIT_PDF_SCHEMA = SUBMIT_IMAGE_SCHEMA
@@ -519,8 +532,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_submit_image(call: ServiceCall) -> ServiceResponse:
         """Queue event drafts from an uploaded image and optional source text."""
         async with async_image_source(hass, call.data[ATTR_FILE_ID]) as image:
-            source = replace(image, text=call.data.get(ATTR_TEXT, "").strip() or None,
-                             upstream_source_id=call.data.get(ATTR_SOURCE_ID))
+            source = _with_original_filename(
+                replace(image, text=call.data.get(ATTR_TEXT, "").strip() or None,
+                        upstream_source_id=call.data.get(ATTR_SOURCE_ID)),
+                call.data.get("original_filename"),
+            )
             return await submit_attachment_source(
                 source, reimport_duplicates=call.data.get("reimport_duplicates", False),
             )
@@ -528,9 +544,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_submit_pdf(call: ServiceCall) -> ServiceResponse:
         """Queue event drafts from a text PDF or attachment-capable parser."""
         async with async_pdf_source(hass, call.data[ATTR_FILE_ID], call.data.get(ATTR_TEXT, "")) as pdf:
-            return await submit_attachment_source(
+            source = _with_original_filename(
                 replace(pdf, upstream_source_id=call.data.get(ATTR_SOURCE_ID)),
-                reimport_duplicates=call.data.get("reimport_duplicates", False),
+                call.data.get("original_filename"),
+            )
+            return await submit_attachment_source(
+                source, reimport_duplicates=call.data.get("reimport_duplicates", False),
             )
 
     class CalendarApprovalWriter:
