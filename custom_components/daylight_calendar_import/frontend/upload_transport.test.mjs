@@ -66,7 +66,7 @@ test("authenticated multipart upload sends only file ID and text context over we
     assert.ok(hass.http[0].body instanceof FormData);
     assert.equal(hass.http[0].body.get("file").name, uploadedName);
     assert.deepEqual(hass.ws[0], {type: "call_service", domain: "daylight_calendar_import", service,
-      service_data: {file_id: ID, text: "  family calendar  ", source_id: "stable"}, return_response: true});
+      service_data: {file_id: ID, text: "  family calendar  ", original_filename: file.name, source_id: "stable"}, return_response: true});
     assert.deepEqual(hass.http[1], {path: "/api/file_upload", method: "DELETE", headers: {"Content-Type": "application/json"}, body: JSON.stringify({file_id: ID})});
   }
 });
@@ -91,6 +91,7 @@ test("uploaded filenames are safe and based on signatures, without modifying ori
     assert.doesNotMatch(uploadedFile.name, /~|\.\.|[/\\]/);
     assert.deepEqual(new Uint8Array(await uploadedFile.arrayBuffer()), new Uint8Array(await file.arrayBuffer()));
     assert.equal(file.name, originalName);
+    assert.equal(hass.ws[0].service_data.original_filename, originalName);
     assert.equal(hass.ws[0].service, expectedService);
   }
 });
