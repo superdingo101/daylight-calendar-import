@@ -678,6 +678,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._expandedEventIds = new Set();
     this._view = "inbox";
     this._routePath = null;
+    this._pendingRoute = null;
+    this._routeMode = false;
     this._newImportMode = null;
     this._newImportOrigin = null;
     this._activity = [];
@@ -810,6 +812,8 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._view !== "new" || !["text", "file", null].includes(mode) ||
         this._manualSubmission.busy || this._fileSubmission.busy) return;
     this._newImportMode = mode;
+    if (mode === "file") this._syncRoute("/new/file");
+    else this._syncRoute("/");
     this.render();
     (mode === "text" ? this._manualSubmission.text :
       mode === "file" ? this._fileSubmission.file : this._content.querySelector("h2"))?.focus();
@@ -854,13 +858,27 @@ export class DaylightImportPanel extends HTMLElement {
     const path = value?.path || "/";
     if (path === this._routePath) return;
     this._routePath = path;
+    if (path !== "/" && path !== "") this._routeMode = true;
+    this._pendingRoute = path;
     if (this._loaded) void this._openRoute(path);
+  }
+
+  _syncRoute(path) {
+    if (!this._routeMode || this._routePath === path || typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.pathname = `/daylight-calendar-import${path === "/" ? "" : path}`;
+    const from = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    window.history.pushState({...window.history.state, from}, "", `${url.pathname}${url.search}${url.hash}`);
+    this._routePath = path;
+    window.dispatchEvent(new CustomEvent("location-changed", {detail: {replace: false}}));
   }
 
   async _openRoute(path) {
     if (this._saving || this._settingsSaving || this._editingId || this._decision ||
         this._batchAction || this._resolution || this._manualSubmission.busy ||
         this._fileSubmission.busy) return;
+    if (path !== this._routePath) return;
+    this._pendingRoute = null;
     if (path === "/new/file") {
       this.showNewImport();
       this.selectImportMethod("file");
@@ -965,6 +983,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._settingsSaving) return;
     this._clearEmailDraftPassword();
     this._view = "inbox";
+    if (this._routePath !== "/") this._syncRoute("/review");
     this._selectedId = null;
     this._detail = null;
     this._calendarCheck = null;
@@ -2004,6 +2023,7 @@ export class DaylightImportPanel extends HTMLElement {
   async showImport(id) {
     if (this._saving || this._editingId || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
+    this._syncRoute(`/review/${encodeURIComponent(id)}`);
     const generation = ++this._generation;
     if (id !== this._selectedId) this._expandedEventIds.clear();
     if (id !== this._selectedId) this._openEventMenuId = null;
@@ -2039,6 +2059,7 @@ export class DaylightImportPanel extends HTMLElement {
   showInbox() {
     if (this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
+    this._syncRoute("/review");
     this._batchResults = [];
     this._batchContext = null;
     this._returnFocusId = this._selectedId;
@@ -2538,6 +2559,16 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   _syncNewImportButton() {
+    if (this._pendingRoute !== null && !this._routePendingScheduled &&
+        !this._saving && !this._settingsSaving && !this._editingId && !this._decision &&
+        !this._batchAction && !this._resolution && !this._manualSubmission.busy &&
+        !this._fileSubmission.busy) {
+      this._routePendingScheduled = true;
+      queueMicrotask(() => {
+        this._routePendingScheduled = false;
+        if (this._pendingRoute !== null) void this._openRoute(this._pendingRoute);
+      });
+    }
     // Update only this control after an intake request settles. Rerendering
     // the detail here would discard its focused heading.
     this._newImportButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
@@ -2742,6 +2773,12 @@ export class DaylightImportPanel extends HTMLElement {
     } else if (this._status !== "ready") {
       const error = element("p", this._status, "error");
       content.append(error);
+      if (this._status === "This import link is invalid. Return to the review inbox.") {
+        const back = element("button", "Return to review inbox");
+        back.type = "button";
+        back.addEventListener("click", () => void this.showReview());
+        content.append(back);
+      }
     } else if (this._selectedId && this._detail) {
       const detail = this._detail;
       const back = element("button", "Back to inbox");
