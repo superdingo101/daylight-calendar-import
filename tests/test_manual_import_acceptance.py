@@ -129,18 +129,20 @@ async def manual_runtime(hass, monkeypatch, tmp_path, manual_options):
                            writes=writes, entity=entity)
 
 
-@pytest.mark.parametrize("kind", ["text", "image", "pdf"])
+@pytest.mark.parametrize(("kind", "original_filename"), [
+    ("text", None),
+    ("image", "Maple Grove December Family Events.png"),
+    ("image", "Weekly meeting.png"),
+    ("pdf", "Screenshot_20261024-123658~2.pdf"),
+    ("pdf", "Weekly meeting.pdf"),
+])
 async def test_browser_intake_review_approve_without_email(
-    hass, hass_ws_client, hass_client, manual_runtime, tmp_path, kind,
+    hass, hass_ws_client, hass_client, manual_runtime, tmp_path, kind, original_filename,
 ):
     runtime = manual_runtime
     client = await hass_ws_client(hass)
     file_id = "a" * 32
     data = b""
-    original_filename = {
-        "image": "Maple Grove December Family Events.png",
-        "pdf": "Screenshot_20261024-123658~2.pdf",
-    }.get(kind)
     if kind != "text":
         if kind == "pdf":
             writer = PdfWriter()
@@ -178,6 +180,11 @@ async def test_browser_intake_review_approve_without_email(
         assert not list(media_dir.glob("**/*"))
         assert runtime.generate.await_args.kwargs["attachments"][0]["media_content_type"] == (
             "application/pdf" if kind == "pdf" else "image/png")
+        # A filename that looks like a recurrence is display metadata only.
+        # The recurrence guard must receive the safe upload title instead.
+        instructions = runtime.generate.await_args.kwargs["instructions"]
+        assert f"Source title: daylight-upload.{ 'pdf' if kind == 'pdf' else 'png' }" in instructions
+        assert original_filename not in instructions
 
     review = await _call(client, {"type": "call_service", "domain": DOMAIN, "service": "get_pending",
                                  "service_data": {"pending_id": pending_id}, "return_response": True})
@@ -366,38 +373,3 @@ async def test_text_layer_pdf_works_with_text_only_provider(
     assert not directory.exists()
     runtime.writes.assert_not_awaited()
 
-
-def test_original_filename_only_changes_review_metadata():
-    """An unsafe filename is never used for a staged filesystem path."""
-    from datetime import UTC, datetime
-
-    from custom_components.daylight_calendar_import import _with_original_filename
-    from custom_components.daylight_calendar_import.sources import (
-        SourceAttachment, SourceDocument, SourceKind,
-    )
-
-    attachment = SourceAttachment(
-        id="attachment", media_type="image/png", size_bytes=3,
-        content_ref="media-source://media_source/local/daylight-safe.png",
-        filename="daylight-upload.png",
-    )
-    source = SourceDocument(
-        id="source", kind=SourceKind.IMAGE, received_at=datetime.now(UTC),
-        title="daylight-upload.png", attachments=(attachment,),
-    )
-    assert _with_original_filename(source, None) is source
-    original = "Screenshot_20261024-123658~2.png"
-    updated = _with_original_filename(source, original)
-    assert updated.title == original
-    assert updated.attachments[0].filename == original
-    assert updated.attachments[0].content_ref == attachment.content_ref
-    assert source.title == "daylight-upload.png"
-    assert source.attachments[0].filename == "daylight-upload.png"
-
-    text_pdf = SourceDocument(
-        id="pdf", kind=SourceKind.PDF, received_at=datetime.now(UTC),
-        text="Event details", title="daylight-upload.pdf",
-    )
-    updated_pdf = _with_original_filename(text_pdf, "School Newsletter.pdf")
-    assert updated_pdf.title == "School Newsletter.pdf"
-    assert updated_pdf.attachments == ()
