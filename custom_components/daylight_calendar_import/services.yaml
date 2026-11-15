@@ -67,6 +67,11 @@ submit_image:
       description: Optional stable upstream identifier for deduplication.
       selector:
         text:
+    original_filename:
+      name: Original filename
+      description: Optional original image filename shown in the review inbox. The temporary upload name stays safe for Home Assistant.
+      selector:
+        text:
     reimport_duplicates:
       name: Re-import duplicates for review
       description: Explicitly queue existing events again for manual review. Use a fresh source ID. Calendar duplicate checks still apply at approval.
@@ -93,6 +98,11 @@ submit_pdf:
     source_id:
       name: Source ID
       description: Optional stable upstream identifier for deduplication.
+      selector:
+        text:
+    original_filename:
+      name: Original filename
+      description: Optional original PDF filename shown in the review inbox. The temporary upload name stays safe for Home Assistant.
       selector:
         text:
     reimport_duplicates:
