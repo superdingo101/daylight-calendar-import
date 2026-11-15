@@ -869,7 +869,7 @@ export class DaylightImportPanel extends HTMLElement {
     const url = new URL(window.location.href);
     url.pathname = `/daylight-calendar-import${path === "/" ? "" : path}`;
     const from = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    window.history.pushState({...window.history.state, from}, "", `${url.pathname}${url.search}${url.hash}`);
+    window.history.pushState({from}, "", `${url.pathname}${url.search}${url.hash}`);
     this._routePath = path;
     window.dispatchEvent(new CustomEvent("location-changed", {detail: {replace: false}}));
   }
