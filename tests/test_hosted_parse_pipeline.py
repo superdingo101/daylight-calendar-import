@@ -1200,14 +1200,16 @@ async def test_delivery_pass_propagates_exact_owned_dependencies_and_limit(hass,
     ack_factory = Mock(return_value=ack)
     monkeypatch.setattr(hosted_source_transport, "HostedSourceTransport", source_factory)
     monkeypatch.setattr(hosted_runtime, "HostedLifecycleTransport", ack_factory)
-    original_create = hass.async_create_task
+    # Patch the class, not the HA instance: HomeAssistant may use slots.
+    original_create = type(hass).async_create_task
     created = []
 
-    def create_task(coro, *args, **kwargs):
-        created.append((args, kwargs))
-        return original_create(coro, *args, **kwargs)
+    def create_task(instance, coro, *args, **kwargs):
+        if instance is hass:
+            created.append((args, kwargs))
+        return original_create(instance, coro, *args, **kwargs)
 
-    monkeypatch.setattr(hass, "async_create_task", create_task)
+    monkeypatch.setattr(type(hass), "async_create_task", create_task)
     runtime.configure_delivery(store=store, route_source=route, parse_source=parse)
     generation = runtime._parse_generation
     assert await runtime.async_delivery_pass(limit=7) == ["result"]
