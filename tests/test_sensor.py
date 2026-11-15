@@ -29,6 +29,12 @@ async def test_two_entities_are_registered_and_read_live_counts(hass):
     assert events.unique_id == "unit-entry_pending_events"
     assert imports._key == "pending_imports"
     assert events._key == "pending_events"
+    for entity, kind in ((imports, "pending_imports"), (events, "pending_events")):
+        assert entity.extra_state_attributes == {
+            "daylight_import_kind": kind,
+            "daylight_import_contract_version": 1,
+            "daylight_import_config_entry_id": "unit-entry",
+        }
     # Entity names and MDI icons are public HA UI and automation metadata.
     assert imports.name == "Daylight Calendar Import Pending Imports"
     assert events.name == "Daylight Calendar Import Pending Events"

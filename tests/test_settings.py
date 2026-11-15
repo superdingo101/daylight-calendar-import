@@ -920,6 +920,18 @@ def test_settings_commands_require_admin():
         )
 
 
+def test_capabilities_reports_only_active_entries_without_private_data():
+    hass = SimpleNamespace(data={settings_api.DOMAIN: {
+        "active": SimpleNamespace(accepting_services=True),
+        "inactive": SimpleNamespace(accepting_services=False),
+    }})
+    connection = FakeConnection(admin=False)
+    settings_api.websocket_capabilities(hass, connection, {"id": 31})
+    assert connection.results == [(31, {
+        "entry_ids": ["active"], "capabilities": {"queue_metadata": 1},
+    })]
+
+
 def test_register_settings_api_registers_all_commands(monkeypatch):
     register = Mock()
     monkeypatch.setattr(settings_api.websocket_api, "async_register_command", register)
@@ -929,6 +941,7 @@ def test_register_settings_api_registers_all_commands(monkeypatch):
 
     assert [call.args for call in register.call_args_list] == [
         (hass, settings_api.websocket_get_settings),
+        (hass, settings_api.websocket_capabilities),
         (hass, settings_api.websocket_update_core_settings),
         (hass, settings_api.websocket_update_email_settings),
         (hass, settings_api.websocket_update_calendar_intelligence),

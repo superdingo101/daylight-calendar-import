@@ -31,6 +31,11 @@ class _QueueSensor(SensorEntity):
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_name = name
         self._attr_icon = icon
+        self._attr_extra_state_attributes = {
+            "daylight_import_kind": key,
+            "daylight_import_contract_version": 1,
+            "daylight_import_config_entry_id": entry.entry_id,
+        }
 
     @property
     def native_value(self) -> int:
