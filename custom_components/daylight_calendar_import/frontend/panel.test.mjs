@@ -6415,7 +6415,8 @@ test("linked review navigation updates browser history and retains the return to
     await flush();
     await panel.showImport("a b");
     assert.equal(states[0].url, "/daylight-calendar-import/review/a%20b?dl_return=opaque");
-    assert.equal(states[0].state.root, true);
+    assert.equal(states[0].state.from, '/daylight-calendar-import/review?dl_return=opaque');
+    assert.equal(states[0].state.root, undefined);
     panel.showInbox();
     await flush();
     assert.equal(states[1].url, "/daylight-calendar-import/review?dl_return=opaque");
