@@ -6,12 +6,13 @@ This module does not schedule work, retry automatically, or acquire new leases.
 from __future__ import annotations
 
 from .hosted_ack_dispatch import async_dispatch_ack
+from .hosted_transport import HostedTransportError
 
 
 async def async_recover_pending_acks(
     *, store, credentials, transport, local_config_entry_id: str, limit: int = 20,
 ):
-    """Attempt each selected durable pending ACK once and stop on any failure.
+    """Attempt selected durable ACKs once; allow only stale leases to await re-claim.
 
     A stale lease may be rejected by the server. Its journal stays pending for
     later evidence-checked re-lease; this pass must not reparse the source.
@@ -23,8 +24,14 @@ async def async_recover_pending_acks(
                and entry.evidence.local_config_entry_id == local_config_entry_id]
     results = []
     for entry in pending[:limit]:
-        results.append(await async_dispatch_ack(
-            store=store, credentials=credentials, transport=transport, entry=entry,
-            local_config_entry_id=local_config_entry_id,
-        ))
+        try:
+            results.append(await async_dispatch_ack(
+                store=store, credentials=credentials, transport=transport, entry=entry,
+                local_config_entry_id=local_config_entry_id,
+            ))
+        except HostedTransportError as error:
+            # A definitive stale lease needs a fresh claim; all other failures
+            # are ambiguous and must prevent new claims in this pass.
+            if error.status != 409 or error.code != "lease_not_current":
+                raise
     return results
