@@ -860,8 +860,12 @@ export class DaylightImportPanel extends HTMLElement {
 
   set route(value) {
     const path = value?.path || "/";
+    const previousReturnId = this._returnSession?.id;
     this._loadReturnSession();
-    if (path === this._routePath) return;
+    if (path === this._routePath) {
+      if (this._loaded && previousReturnId !== this._returnSession?.id) this.render();
+      return;
+    }
     this._routePath = path;
     if (path !== "/" && path !== "") this._routeMode = true;
     this._pendingRoute = path;
