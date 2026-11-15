@@ -53,6 +53,21 @@ WS_UPDATE_EMAIL_SETTINGS = f"{DOMAIN}/settings/email/update"
 WS_UPDATE_CALENDAR_INTELLIGENCE = f"{DOMAIN}/settings/calendar_intelligence/update"
 WS_UPDATE_NOTIFICATIONS = f"{DOMAIN}/settings/notifications/update"
 EXPECTED_CALENDAR_ALIASES = "expected_calendar_aliases"
+WS_CAPABILITIES = f"{DOMAIN}/capabilities"
+
+
+@websocket_api.websocket_command({"type": WS_CAPABILITIES})
+@callback
+def websocket_capabilities(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any],
+) -> None:
+    """Report active entries and implemented public integration capabilities."""
+    entries = [entry_id for entry_id, store in hass.data.get(DOMAIN, {}).items()
+               if getattr(store, "accepting_services", False)]
+    connection.send_result(msg["id"], {
+        "entry_ids": sorted(entries),
+        "capabilities": {"queue_metadata": 1},
+    })
 
 
 def _entry_for_message(hass: HomeAssistant, msg: dict[str, Any]) -> ConfigEntry:
@@ -301,6 +316,7 @@ async def websocket_update_notifications(
 def async_register_settings_api(hass: HomeAssistant) -> None:
     """Register the Daylight settings WebSocket commands once."""
     websocket_api.async_register_command(hass, websocket_get_settings)
+    websocket_api.async_register_command(hass, websocket_capabilities)
     websocket_api.async_register_command(hass, websocket_update_core_settings)
     websocket_api.async_register_command(hass, websocket_update_email_settings)
     websocket_api.async_register_command(hass, websocket_update_calendar_intelligence)
