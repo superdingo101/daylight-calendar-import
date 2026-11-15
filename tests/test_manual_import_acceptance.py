@@ -183,7 +183,8 @@ async def test_browser_intake_review_approve_without_email(
         # A filename that looks like a recurrence is display metadata only.
         # The recurrence guard must receive the safe upload title instead.
         instructions = runtime.generate.await_args.kwargs["instructions"]
-        assert f"Source title: daylight-upload.{ 'pdf' if kind == 'pdf' else 'png' }" in instructions
+        safe_filename = "daylight-upload.pdf" if kind == "pdf" else "daylight-upload.png"
+        assert f"Source title: {safe_filename}" in instructions
         assert original_filename not in instructions
 
     review = await _call(client, {"type": "call_service", "domain": DOMAIN, "service": "get_pending",
