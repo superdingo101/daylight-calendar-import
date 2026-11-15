@@ -6375,3 +6375,55 @@ test("direct routes select upload and review workflows", async () => {
   await flush();
   assert.match(panel._status, /invalid/);
 });
+
+test("route changes wait until editing ends without discarding the edit", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async () => ({response: {imports: []}})};
+  await flush();
+  panel._editingId = "event";
+  panel.route = {path: "/new/file"};
+  await flush();
+  assert.equal(panel._editingId, "event");
+  assert.equal(panel._view, "inbox");
+  panel._editingId = null;
+  panel.render();
+  await flush();
+  assert.equal(panel._view, "new");
+  assert.equal(panel._newImportMode, "file");
+});
+
+test("linked review navigation updates browser history and retains the return token", async () => {
+  const priorWindow = globalThis.window;
+  const priorCustomEvent = globalThis.CustomEvent;
+  const address = new URL("https://ha.test/daylight-calendar-import/review?dl_return=opaque");
+  const states = [];
+  globalThis.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options.detail; } };
+  globalThis.window = {
+    location: address,
+    history: {state: {root: true}, pushState(state, _title, url) {
+      states.push({state, url});
+      address.href = new URL(url, address).href;
+    }},
+    dispatchEvent() {},
+  };
+  try {
+    const panel = new DaylightImportPanel();
+    panel.route = {path: "/review"};
+    panel.hass = {callWS: async request => request.service === "get_pending"
+      ? {response: {pending: {id: request.service_data.pending_id, events: []}}}
+      : {response: {imports: []}}};
+    await flush();
+    await panel.showImport("a b");
+    assert.equal(states[0].url, "/daylight-calendar-import/review/a%20b?dl_return=opaque");
+    assert.equal(states[0].state.root, true);
+    panel.showInbox();
+    await flush();
+    assert.equal(states[1].url, "/daylight-calendar-import/review?dl_return=opaque");
+    panel.route = {path: "/review/a%20b"};
+    await flush();
+    assert.equal(panel._selectedId, "a b");
+  } finally {
+    globalThis.window = priorWindow;
+    globalThis.CustomEvent = priorCustomEvent;
+  }
+});
