@@ -256,6 +256,28 @@ class HostedConnectionRuntime:
         async def run():
             self._delivery_owner = asyncio.current_task()
             try:
+                owner = self._delivery_owner
+                generation = self._parse_generation
+
+                def guard_delivery():
+                    if (not self.accepting or owner is None or owner.cancelling()
+                            or asyncio.current_task() is not owner
+                            or self._delivery_owner is not owner or self._tasks != {owner}
+                            or self._parse_generation != generation):
+                        raise HostedRuntimeError("hosted_unavailable")
+
+                async def guarded_parse(source):
+                    guard_delivery()
+                    outcome, parser_guard = await parse_source(source)
+                    guard_delivery()
+
+                    def acceptance_guard():
+                        guard_delivery()
+                        if parser_guard is not None:
+                            parser_guard()
+
+                    return outcome, acceptance_guard
+
                 session = async_get_clientsession(self._hass)
                 claim = HostedSourceTransport(session, self._service)
                 ack = HostedLifecycleTransport(
@@ -266,11 +288,12 @@ class HostedConnectionRuntime:
                     store=store, credentials=self._credential_store, transport=ack,
                     local_config_entry_id=self._entry_id, limit=limit,
                 )
+                guard_delivery()
                 return await async_process_text_batch(
                     store=store, credentials=self._credential_store,
                     claim_transport=claim, ack_transport=ack,
                     local_config_entry_id=self._entry_id, route_source=route_source,
-                    parse_source=parse_source, limit=limit,
+                    parse_source=guarded_parse, limit=limit,
                 )
             finally:
                 self._delivery_owner = None

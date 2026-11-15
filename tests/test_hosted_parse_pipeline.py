@@ -1021,14 +1021,18 @@ async def test_delivery_pass_recovers_before_claim_and_owns_parser(hass, monkeyp
 
     async def batch(**kwargs):
         order.append("claim")
+        result, guard = await kwargs["parse_source"]("source")
+        assert result == "parsed"
+        guard()
         return ["done"]
 
     monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", recover)
     monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
-    runtime.configure_delivery(store=store, route_source=object(), parse_source=object())
+    parse = AsyncMock(return_value=("parsed", lambda: order.append("guard")))
+    runtime.configure_delivery(store=store, route_source=object(), parse_source=parse)
     assert order == []
     assert await runtime.async_delivery_pass() == ["done"]
-    assert order == ["recover", "claim"]
+    assert order == ["recover", "claim", "guard"]
     await runtime.async_stop()
 
 
