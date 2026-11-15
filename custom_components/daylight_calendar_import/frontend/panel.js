@@ -893,7 +893,8 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   _returnToCalendar(status = "cancelled") {
-    if (!this._returnSession || typeof window === "undefined") return false;
+    if (!this._returnSession || this.isConnected === false || typeof window === "undefined" ||
+        !/^\/daylight-calendar-import(?:\/|$)/.test(window.location.pathname)) return false;
     let session;
     try {
       session = readReturnSession(window.sessionStorage, this._returnSession.id, window.location.origin);
