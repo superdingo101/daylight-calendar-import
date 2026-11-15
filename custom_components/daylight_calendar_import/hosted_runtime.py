@@ -248,6 +248,10 @@ class HostedConnectionRuntime:
             raise HostedRuntimeError("hosted_unavailable")
         if self._credential_store is None or self._service is None or self._delivery_handlers is None:
             raise HostedRuntimeError("hosted_unavailable")
+        if (self._state.credential_status not in ("current", "overlap")
+                or self._credential_store.snapshot.current is None
+                or self._credential_store.snapshot.current != self._verified_parse_credential):
+            raise HostedRuntimeError("hosted_unavailable")
         store, route_source, parse_source = self._delivery_handlers
         from .hosted_ack_recovery import async_recover_pending_acks
         from .hosted_source_transport import HostedSourceTransport

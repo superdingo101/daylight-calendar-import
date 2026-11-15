@@ -1063,6 +1063,9 @@ async def test_delivery_admission_and_configuration(hass, monkeypatch):
     runtime.configure_delivery(store=object(), route_source=object(), parse_source=object())
     with pytest.raises(HostedRuntimeError, match="hosted_already_configured"):
         runtime.configure_delivery(store=object(), route_source=object(), parse_source=object())
+    runtime._verified_parse_credential = None
+    with pytest.raises(HostedRuntimeError, match="hosted_unavailable"):
+        await runtime.async_delivery_pass()
     runtime.pause()
     with pytest.raises(HostedRuntimeError, match="hosted_unavailable"):
         await runtime.async_delivery_pass()
