@@ -791,11 +791,12 @@ export class DaylightImportPanel extends HTMLElement {
     return this.showImport(id);
   }
 
-  showNewImport() {
+  showNewImport(fromRoute = false) {
     if (this._view === "new" || this._saving || this._settingsSaving ||
         this._editingId || this._decision || this._batchAction || this._resolution ||
         this._manualSubmission.busy || this._fileSubmission.busy) return;
     this._clearEmailDraftPassword();
+    if (!fromRoute) this._syncRoute("/");
     this._newImportOrigin = {
       view: this._view, selectedId: this._selectedId, activityId: this._activityId,
       settingsTab: this._settingsTab,
@@ -880,7 +881,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (path !== this._routePath) return;
     this._pendingRoute = null;
     if (path === "/new/file") {
-      this.showNewImport();
+      this.showNewImport(true);
       this.selectImportMethod("file");
       return;
     }
@@ -957,6 +958,7 @@ export class DaylightImportPanel extends HTMLElement {
   async showActivity(id = null) {
     if (this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
+    this._syncRoute("/");
     const generation = ++this._generation;
     this._view = "activity";
     this._calendarCheck = null;
@@ -998,6 +1000,7 @@ export class DaylightImportPanel extends HTMLElement {
   async showSettings(tab = this._settingsTab, reload = false) {
     if (this._saving || this._settingsSaving || this._editingId ||
         this._decision || this._batchAction || this._resolution) return;
+    this._syncRoute("/");
     const generation = ++this._generation;
     this._view = "settings";
     this._settingsTab = tab;
