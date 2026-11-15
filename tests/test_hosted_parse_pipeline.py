@@ -1045,3 +1045,51 @@ async def test_delivery_pass_stops_on_recovery_failure(hass, monkeypatch):
         await runtime.async_delivery_pass()
     batch.assert_not_awaited()
     await runtime.async_stop()
+
+
+async def test_delivery_admission_and_configuration(hass, monkeypatch):
+    from custom_components.daylight_calendar_import.hosted_runtime import HostedRuntimeError
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    with pytest.raises(HostedRuntimeError, match="hosted_unavailable"):
+        await runtime.async_delivery_pass()
+    runtime.configure_delivery(store=object(), route_source=object(), parse_source=object())
+    with pytest.raises(HostedRuntimeError, match="hosted_already_configured"):
+        runtime.configure_delivery(store=object(), route_source=object(), parse_source=object())
+    runtime.pause()
+    with pytest.raises(HostedRuntimeError, match="hosted_unavailable"):
+        await runtime.async_delivery_pass()
+    await runtime.async_stop()
+
+
+async def test_delivery_cancellation_keeps_owner_until_task_finishes(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_ack_recovery
+    from custom_components.daylight_calendar_import.hosted_runtime import HostedRuntimeError
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def recovery(**kwargs):
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            raise
+
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", recovery)
+    runtime.configure_delivery(store=object(), route_source=object(), parse_source=object())
+    waiter = asyncio.create_task(runtime.async_delivery_pass())
+    await started.wait()
+    with pytest.raises(ProviderError):
+        runtime.parse_session(delivery_owner=True)
+    with pytest.raises(HostedRuntimeError, match="hosted_unavailable"):
+        await runtime.async_delivery_pass()
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert runtime.busy
+    release.set()
+    await asyncio.sleep(0)
+    await runtime.async_stop()
