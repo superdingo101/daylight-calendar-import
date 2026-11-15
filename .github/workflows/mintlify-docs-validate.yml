@@ -32,67 +32,50 @@ jobs:
       - name: Check documentation links
         working-directory: docs
         run: mint broken-links
+      - name: Install CommonMark image parser
+        run: python3 -m pip install --disable-pip-version-check "markdown-it-py==4.0.0"
       - name: Verify local Markdown images
         working-directory: docs
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
           import sys
           from urllib.parse import unquote, urlsplit
+          from markdown_it import MarkdownIt
 
           root = Path.cwd().resolve()
+          markdown = MarkdownIt("commonmark")
           missing = []
-          # This guard checks Markdown image syntax, not JSX <img> tags,
-          # imported assets, or dynamically generated paths.
-          image_start = re.compile(r'!\[[^\]]*\]\(')
 
-          def image_destinations(content):
-              # Consume balanced destinations, including filenames with
-              # parentheses and Markdown-escaped closing parentheses.
-              for match in image_start.finditer(content):
-                  pos = match.end()
-                  while pos < len(content) and content[pos] in " \t":
-                      pos += 1
-                  if pos >= len(content):
-                      continue
-                  if content[pos] == "<":
-                      end = content.find(">", pos + 1)
-                      if end != -1:
-                          yield content[pos + 1:end]
-                      continue
+          def image_sources(source):
+              # CommonMark resolves inline, full, collapsed, and shortcut
+              # references and excludes code spans, fences, and escaped images.
+              for token in markdown.parse(source):
+                  for child in token.children or ():
+                      if child.type == "image":
+                          yield child.attrGet("src")
 
-                  start = pos
-                  depth = 0
-                  while pos < len(content):
-                      char = content[pos]
-                      if char == "\\" and pos + 1 < len(content):
-                          pos += 2
-                          continue
-                      if char == "(":
-                          depth += 1
-                      elif char == ")":
-                          if depth == 0:
-                              break
-                          depth -= 1
-                      elif char.isspace() and depth == 0:
-                          break
-                      pos += 1
-                  if depth == 0 and pos > start:
-                      yield content[start:pos].replace(r"\(", "(").replace(r"\)", ")")
-
-          assert list(image_destinations(
-              "![Screenshot](/images/screenshot(1).png)"
-          )) == ["/images/screenshot(1).png"]
-          assert list(image_destinations(
-              r"![Screenshot](/images/screenshot\(1\).png)"
-          )) == ["/images/screenshot(1).png"]
-          assert list(image_destinations(
-              '![Screenshot](</images/a file(1).png> "title")'
-          )) == ["/images/a file(1).png"]
+          fixtures = {
+              "![shot](/images/shot(1).png)": ["/images/shot(1).png"],
+              r"![shot](/images/shot\(1\).png)": ["/images/shot(1).png"],
+              '![shot](</images/a file(1).png> "title")': ["/images/a%20file(1).png"],
+              "![shot][ref]\n\n[ref]: /images/missing.png": ["/images/missing.png"],
+              "![shot][]\n\n[shot]: /images/missing.png": ["/images/missing.png"],
+              "![shot]\n\n[shot]: /images/missing.png": ["/images/missing.png"],
+              chr(96) + "![example](/images/example.png)" + chr(96): [],
+              "~~~md\n![example](/images/example.png)\n~~~": [],
+              "    ![example](/images/example.png)": [],
+              r"\![example](/images/example.png)": [],
+          }
+          for source, expected in fixtures.items():
+              actual = list(image_sources(source))
+              if actual != expected:
+                  raise AssertionError(f"Image parser: {source!r}: {actual!r} != {expected!r}")
 
           for page in sorted((*root.rglob("*.md"), *root.rglob("*.mdx"))):
-              for src in image_destinations(page.read_text(encoding="utf-8")):
+              for src in image_sources(page.read_text(encoding="utf-8")):
+                  if not src:
+                      continue
                   parsed = urlsplit(src)
                   if parsed.scheme or parsed.netloc or src.startswith("#"):
                       continue
