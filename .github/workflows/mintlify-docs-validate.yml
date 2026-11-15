@@ -61,5 +61,25 @@ jobs:
           fi
           touch "$root/images/actual.png"
           node .github/scripts/validate-doc-images.mjs "$root"
+          cat > "$root/duplicate.mdx" <<'MDX'
+          ![shot][shot]
+
+          [shot]: /images/missing.png
+          [shot]: /images/actual.png
+          MDX
+          if node .github/scripts/validate-doc-images.mjs "$root"; then
+            echo "Duplicate reference incorrectly used last definition"
+            exit 1
+          fi
+          rm "$root/duplicate.mdx"
+          cat > "$root/directory.mdx" <<'MDX'
+          ![shot](/images)
+          MDX
+          if node .github/scripts/validate-doc-images.mjs "$root"; then
+            echo "Directory incorrectly accepted as an image"
+            exit 1
+          fi
+          rm "$root/directory.mdx"
+          node .github/scripts/validate-doc-images.mjs "$root"
       - name: Verify local Markdown and MDX images
         run: node .github/scripts/validate-doc-images.mjs docs
