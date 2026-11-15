@@ -682,6 +682,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._pendingRoute = null;
     this._routeMode = false;
     this._returnSession = null;
+    this._returnSessionError = false;
     this._returnTargetId = null;
     this._returnComplete = false;
     this._newImportMode = null;
@@ -862,9 +863,10 @@ export class DaylightImportPanel extends HTMLElement {
   set route(value) {
     const path = value?.path || "/";
     const previousReturnId = this._returnSession?.id;
+    const previousReturnError = this._returnSessionError;
     this._loadReturnSession();
     if (path === this._routePath) {
-      if (this._loaded && previousReturnId !== this._returnSession?.id) this.render();
+      if (this._loaded && (previousReturnId !== this._returnSession?.id || previousReturnError !== this._returnSessionError)) this.render();
       return;
     }
     this._routePath = path;
@@ -881,8 +883,14 @@ export class DaylightImportPanel extends HTMLElement {
         this._returnTargetId = null;
         this._returnComplete = false;
       }
+      if (!id) {
+        this._returnSession = null;
+        this._returnSessionError = false;
+        return;
+      }
       this._returnSession = readReturnSession(window.sessionStorage, id, window.location.origin);
-    } catch { this._returnSession = null; }
+      this._returnSessionError = Boolean(id && !this._returnSession);
+    } catch { this._returnSession = null; this._returnSessionError = true; }
   }
 
   _returnToCalendar(status = "cancelled") {
@@ -918,7 +926,7 @@ export class DaylightImportPanel extends HTMLElement {
     const url = new URL(window.location.href);
     url.pathname = `/daylight-calendar-import${path === "/" ? "" : path}`;
     const from = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    window.history.pushState({...window.history.state, from}, "", `${url.pathname}${url.search}${url.hash}`);
+    window.history.pushState({from}, "", `${url.pathname}${url.search}${url.hash}`);
     this._routePath = path;
     window.dispatchEvent(new CustomEvent("location-changed", {detail: {replace: false}}));
   }
@@ -2644,6 +2652,9 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     const content = document.createDocumentFragment();
+    if (this._returnSessionError) {
+      content.append(element("p", "Calendar return is unavailable. Use Home Assistant navigation to return to your dashboard.", "warning"));
+    }
     if (this._returnSession) {
       const back = element("button", "Return to calendar", "import-back");
       back.type = "button";
