@@ -1003,3 +1003,45 @@ async def test_real_hosted_guard_blocks_cancelled_reprocess_before_acceptance(ha
     assert store.get(original.id) is original
     assert store.get(original.id).warnings == original.warnings
     await runtime.async_stop()
+
+
+async def test_delivery_pass_recovers_before_claim_and_owns_parser(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_ack_recovery, hosted_text_batch
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    order = []
+    store = object()
+
+    async def recover(**kwargs):
+        order.append("recover")
+        assert kwargs["store"] is store
+        runtime.parse_session(delivery_owner=True)[1]()
+        with pytest.raises(ProviderError):
+            runtime.parse_session()
+
+    async def batch(**kwargs):
+        order.append("claim")
+        return ["done"]
+
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", recover)
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
+    runtime.configure_delivery(store=store, route_source=object(), parse_source=object())
+    assert order == []
+    assert await runtime.async_delivery_pass() == ["done"]
+    assert order == ["recover", "claim"]
+    await runtime.async_stop()
+
+
+async def test_delivery_pass_stops_on_recovery_failure(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_ack_recovery, hosted_text_batch
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    recovery = AsyncMock(side_effect=RuntimeError("uncertain"))
+    batch = AsyncMock()
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", recovery)
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
+    runtime.configure_delivery(store=object(), route_source=object(), parse_source=object())
+    with pytest.raises(RuntimeError, match="uncertain"):
+        await runtime.async_delivery_pass()
+    batch.assert_not_awaited()
+    await runtime.async_stop()

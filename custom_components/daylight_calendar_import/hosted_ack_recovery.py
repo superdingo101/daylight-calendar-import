@@ -6,6 +6,7 @@ This module does not schedule work, retry automatically, or acquire new leases.
 from __future__ import annotations
 
 from .hosted_ack_dispatch import async_dispatch_ack
+from .hosted_transport import HostedTransportError
 
 
 async def async_recover_pending_acks(
@@ -23,8 +24,14 @@ async def async_recover_pending_acks(
                and entry.evidence.local_config_entry_id == local_config_entry_id]
     results = []
     for entry in pending[:limit]:
-        results.append(await async_dispatch_ack(
-            store=store, credentials=credentials, transport=transport, entry=entry,
-            local_config_entry_id=local_config_entry_id,
-        ))
+        try:
+            results.append(await async_dispatch_ack(
+                store=store, credentials=credentials, transport=transport, entry=entry,
+                local_config_entry_id=local_config_entry_id,
+            ))
+        except HostedTransportError as error:
+            # A definitive stale lease needs a fresh claim; all other failures
+            # are ambiguous and must prevent new claims in this pass.
+            if error.status != 409 or error.code != "lease_not_current":
+                raise
     return results

@@ -390,6 +390,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def selected_parse(
         source: SourceDocument, *, reference_datetime: datetime | None = None,
+        delivery_owner: bool = False,
     ) -> tuple[ParseOutcome, Callable[[], None] | None]:
         """Capture one selected provider; never fall back to retained BYO AI."""
         if ai_task_entity is not None:
@@ -403,7 +404,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise ProviderError(
                 "hosted_connection_changed", "Daylight Cloud connection needs verification. Open Daylight Cloud settings before retrying.",
             )
-        provider, check_runtime = runtime.parse_session()
+        provider, check_runtime = runtime.parse_session(delivery_owner=True) if delivery_owner else runtime.parse_session()
 
         def guard() -> None:
             if (not pending_store.accepting_services
@@ -1134,6 +1135,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             process_email_document,
         )
         pending_store.hosted_runtime = await async_setup_hosted_runtime(hass, entry)
+        async def parse_hosted_delivery(source):
+            return await selected_parse(source, delivery_owner=True)
+
+        pending_store.hosted_runtime.configure_delivery(
+            store=pending_store, route_source=route_review_source,
+            parse_source=parse_hosted_delivery,
+        )
         # Forward last: a failing email configuration cannot strand sensor entities.
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         pending_store.accepting_services = True

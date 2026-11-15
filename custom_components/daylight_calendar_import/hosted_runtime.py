@@ -102,6 +102,8 @@ class HostedConnectionRuntime:
         self._stopped = False
         self._loaded = False
         self._task: asyncio.Task | None = None
+        self._delivery_owner: asyncio.Task | None = None
+        self._delivery_handlers = None
         registry = hass.data.setdefault(f"{DOMAIN}_hosted_tasks", {})
         self._tasks: set[asyncio.Task] = registry.setdefault(entry.entry_id, set())
         self._options = entry.options
@@ -181,7 +183,7 @@ class HostedConnectionRuntime:
             "account_url": self._state.account_url,
         }
 
-    def parse_session(self) -> tuple[ParserProvider, Callable[[], None]]:
+    def parse_session(self, *, delivery_owner: bool = False) -> tuple[ParserProvider, Callable[[], None]]:
         """Create one private, generation-fenced parser and acceptance guard.
 
         No credential is added to the public settings snapshot. A previously
@@ -196,7 +198,10 @@ class HostedConnectionRuntime:
 
         def active() -> bool:
             return (
-                self.accepting and not self.busy
+                self.accepting and (not self.busy or (
+                    delivery_owner and task is self._delivery_owner
+                    and self._tasks == {task}
+                ))
                 and self._parse_generation == generation
                 and self._state.credential_status in ("current", "overlap")
                 and store is not None and self._credential_store is store
@@ -230,6 +235,60 @@ class HostedConnectionRuntime:
         return DaylightHostedParserProvider(
             self._hass, service_binding=service, checkpoint=checkpoint, active=active,
         ), guard
+
+    def configure_delivery(self, *, store, route_source, parse_source) -> None:
+        """Bind entry-local routing and parsing without starting delivery."""
+        if self._delivery_handlers is not None:
+            raise HostedRuntimeError("hosted_already_configured")
+        self._delivery_handlers = (store, route_source, parse_source)
+
+    async def async_delivery_pass(self, *, limit=20):
+        """Run one explicitly requested recovery-first pass; never schedule it."""
+        if not self.accepting or self.busy or self._controller is None:
+            raise HostedRuntimeError("hosted_unavailable")
+        if self._credential_store is None or self._service is None or self._delivery_handlers is None:
+            raise HostedRuntimeError("hosted_unavailable")
+        store, route_source, parse_source = self._delivery_handlers
+        from .hosted_ack_recovery import async_recover_pending_acks
+        from .hosted_source_transport import HostedSourceTransport
+        from .hosted_text_batch import async_process_text_batch
+
+        async def run():
+            self._delivery_owner = asyncio.current_task()
+            try:
+                session = async_get_clientsession(self._hass)
+                claim = HostedSourceTransport(session, self._service)
+                ack = HostedLifecycleTransport(
+                    session, api_origin=self._service.api_origin,
+                    account_origin=self._service.account_origin,
+                )
+                await async_recover_pending_acks(
+                    store=store, credentials=self._credential_store, transport=ack,
+                    local_config_entry_id=self._entry_id, limit=limit,
+                )
+                return await async_process_text_batch(
+                    store=store, credentials=self._credential_store,
+                    claim_transport=claim, ack_transport=ack,
+                    local_config_entry_id=self._entry_id, route_source=route_source,
+                    parse_source=parse_source, limit=limit,
+                )
+            finally:
+                self._delivery_owner = None
+
+        self._parse_generation += 1
+        if self._cancel_timer is not None:
+            self._cancel_timer()
+            self._cancel_timer = None
+        task = self._hass.async_create_task(run(), "Daylight hosted delivery", eager_start=False)
+        self._task = task
+        self._tasks.add(task)
+        task.add_done_callback(self._finished)
+        try:
+            await asyncio.wait({task})
+            return task.result()
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
 
     @property
     def accepting(self) -> bool:

@@ -86,3 +86,13 @@ async def test_expired_pending_is_marked_without_credential_or_network(monkeypat
     result = await run(store, transport, credentials=SimpleNamespace(snapshot=None))
     assert result[0].ack_status == "expired"
     assert not transport.calls
+
+
+async def test_stale_lease_is_left_pending_and_other_acks_recovered(monkeypatch):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    await accepted(store, "first")
+    await accepted(store, "second")
+    transport = Transport(error=HostedTransportError("lease_not_current", status=409))
+    assert await run(store, transport) == []
+    assert len(transport.calls) == 2
+    assert all(item.ack_status == "pending" for item in store.hosted_ack_journal())
