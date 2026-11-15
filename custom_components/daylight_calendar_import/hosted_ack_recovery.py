@@ -12,7 +12,7 @@ from .hosted_transport import HostedTransportError
 async def async_recover_pending_acks(
     *, store, credentials, transport, local_config_entry_id: str, limit: int = 20,
 ):
-    """Attempt each selected durable pending ACK once and stop on any failure.
+    """Attempt selected durable ACKs once; allow only stale leases to await re-claim.
 
     A stale lease may be rejected by the server. Its journal stays pending for
     later evidence-checked re-lease; this pass must not reparse the source.

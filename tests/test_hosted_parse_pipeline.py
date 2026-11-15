@@ -1031,8 +1031,11 @@ async def test_delivery_pass_recovers_before_claim_and_owns_parser(hass, monkeyp
     parse = AsyncMock(return_value=("parsed", lambda: order.append("guard")))
     runtime.configure_delivery(store=store, route_source=object(), parse_source=parse)
     assert order == []
+    timer_cancel = Mock()
+    runtime._cancel_timer = timer_cancel
     assert await runtime.async_delivery_pass() == ["done"]
     assert order == ["recover", "claim", "guard"]
+    timer_cancel.assert_called_once()
     await runtime.async_stop()
 
 
@@ -1096,4 +1099,49 @@ async def test_delivery_cancellation_keeps_owner_until_task_finishes(hass, monke
     assert runtime.busy
     release.set()
     await asyncio.sleep(0)
+    await runtime.async_stop()
+
+
+async def test_delivery_guard_blocks_acceptance_after_pause(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_ack_recovery, hosted_text_batch
+    from custom_components.daylight_calendar_import.hosted_runtime import HostedRuntimeError
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", AsyncMock())
+
+    async def batch(**kwargs):
+        _, guard = await kwargs["parse_source"]("source")
+        guard()  # No provider guard is valid for a BYO parser.
+        runtime.pause()
+        guard()
+
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
+    runtime.configure_delivery(
+        store=object(), route_source=object(), parse_source=AsyncMock(return_value=(None, None)),
+    )
+    with pytest.raises(HostedRuntimeError, match="hosted_unavailable"):
+        await runtime.async_delivery_pass()
+    await runtime.async_stop()
+
+
+async def test_delivery_pass_runs_real_acceptance_and_ack(hass, hosted_review, monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_runtime, hosted_source_transport
+    from tests.test_hosted_ack_dispatch import Transport, checkpoint
+    from tests.test_hosted_text_acceptance import page
+
+    review = hosted_review
+    runtime = review.store.hosted_runtime
+    credential = checkpoint()
+    runtime._service = SERVICE
+    runtime._credential_store = SimpleNamespace(snapshot=credential)
+    runtime._controller = object()
+    ack = Transport()
+    claim = SimpleNamespace(service_binding=SERVICE, async_claim=AsyncMock(return_value=page()))
+    monkeypatch.setattr(hosted_source_transport, "HostedSourceTransport", lambda *_: claim)
+    monkeypatch.setattr(hosted_runtime, "HostedLifecycleTransport", lambda *_, **__: ack)
+    results = await runtime.async_delivery_pass()
+    assert len(results) == 1
+    assert review.provider.async_parse.await_count == 1
+    assert len(ack.calls) == 1
+    assert review.store.hosted_ack_journal()[0].ack_status == "confirmed"
     await runtime.async_stop()

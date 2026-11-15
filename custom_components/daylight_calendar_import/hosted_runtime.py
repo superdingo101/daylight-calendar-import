@@ -259,17 +259,17 @@ class HostedConnectionRuntime:
                 owner = self._delivery_owner
                 generation = self._parse_generation
 
-                def guard_delivery():
+                def guard_delivery(*, require_owner=False):
                     if (not self.accepting or owner is None or owner.cancelling()
-                            or asyncio.current_task() is not owner
+                            or (require_owner and asyncio.current_task() is not owner)
                             or self._delivery_owner is not owner or self._tasks != {owner}
                             or self._parse_generation != generation):
                         raise HostedRuntimeError("hosted_unavailable")
 
                 async def guarded_parse(source):
-                    guard_delivery()
+                    guard_delivery(require_owner=True)
                     outcome, parser_guard = await parse_source(source)
-                    guard_delivery()
+                    guard_delivery(require_owner=True)
 
                     def acceptance_guard():
                         guard_delivery()
@@ -288,7 +288,7 @@ class HostedConnectionRuntime:
                     store=store, credentials=self._credential_store, transport=ack,
                     local_config_entry_id=self._entry_id, limit=limit,
                 )
-                guard_delivery()
+                guard_delivery(require_owner=True)
                 return await async_process_text_batch(
                     store=store, credentials=self._credential_store,
                     claim_transport=claim, ack_transport=ack,
