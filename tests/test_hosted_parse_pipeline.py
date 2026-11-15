@@ -1135,13 +1135,22 @@ async def test_delivery_pass_runs_real_acceptance_and_ack(hass, hosted_review, m
     runtime._service = SERVICE
     runtime._credential_store = SimpleNamespace(snapshot=credential)
     runtime._controller = object()
+    runtime._verified_parse_credential = credential.current
+    runtime._state = HostedConnectionResult("connected", "current")
+    monkeypatch.setattr(HostedConnectionRuntime, "parse_session", REAL_PARSE_SESSION)
+    wire = AsyncMock(return_value={
+        "schema_version": 1,
+        "events": [{"draft": DRAFT.as_dict(), "warnings": []}],
+        "rejected": [], "warnings": [], "provider_metadata": None,
+    })
+    monkeypatch.setattr(HostedParseTransport, "async_parse", wire)
     ack = Transport()
     claim = SimpleNamespace(service_binding=SERVICE, async_claim=AsyncMock(return_value=page()))
     monkeypatch.setattr(hosted_source_transport, "HostedSourceTransport", lambda *_: claim)
     monkeypatch.setattr(hosted_runtime, "HostedLifecycleTransport", lambda *_, **__: ack)
     results = await runtime.async_delivery_pass()
     assert len(results) == 1
-    assert review.provider.async_parse.await_count == 1
+    assert wire.await_count == 1
     assert len(ack.calls) == 1
     assert review.store.hosted_ack_journal()[0].ack_status == "confirmed"
     await runtime.async_stop()
