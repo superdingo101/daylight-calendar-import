@@ -91,7 +91,7 @@ export async function submitFile(hass, file, {text = "", sourceId, onUploaded, r
     throw new UploadError("invalid_upload_response", "The file upload returned an unexpected response.");
   }
   // Preserve the raw context so server-side bounds count whitespace before normalization.
-  const serviceData = {file_id: fileId, text};
+  const serviceData = {file_id: fileId, text, original_filename: file.name};
   if (sourceId !== undefined) serviceData.source_id = sourceId;
   if (reimportDuplicates) serviceData.reimport_duplicates = true;
   // Avoid user callbacks escaping between upload and cleanup.
