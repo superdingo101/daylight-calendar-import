@@ -1157,3 +1157,238 @@ async def test_delivery_pass_runs_real_acceptance_and_ack(hass, hosted_review, m
     assert len(ack.calls) == 1
     assert review.store.hosted_ack_journal()[0].ack_status == "confirmed"
     await runtime.async_stop()
+
+
+async def test_delivery_pass_propagates_exact_owned_dependencies_and_limit(hass, monkeypatch):
+    """ACK recovery and claims share the same credential, transport, entry and bounds."""
+    from custom_components.daylight_calendar_import import (
+        hosted_ack_recovery, hosted_runtime, hosted_source_transport, hosted_text_batch,
+    )
+
+    runtime, credentials = await verified_runtime(hass, monkeypatch)
+    store = object()
+    route = object()
+    parse = AsyncMock()
+    session = object()
+    claim = object()
+    ack = object()
+    order = []
+
+    async def recover(**kwargs):
+        order.append("recover")
+        assert kwargs == {
+            "store": store, "credentials": credentials, "transport": ack,
+            "local_config_entry_id": runtime._entry_id, "limit": 7,
+        }
+
+    async def batch(**kwargs):
+        order.append("claim")
+        assert kwargs["store"] is store
+        assert kwargs["credentials"] is credentials
+        assert kwargs["claim_transport"] is claim
+        assert kwargs["ack_transport"] is ack
+        assert kwargs["local_config_entry_id"] == runtime._entry_id
+        assert kwargs["route_source"] is route
+        assert callable(kwargs["parse_source"])
+        assert kwargs["limit"] == 7
+        return ["result"]
+
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", recover)
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
+    monkeypatch.setattr(hosted_runtime, "async_get_clientsession", lambda _: session)
+    source_factory = Mock(return_value=claim)
+    ack_factory = Mock(return_value=ack)
+    monkeypatch.setattr(hosted_source_transport, "HostedSourceTransport", source_factory)
+    monkeypatch.setattr(hosted_runtime, "HostedLifecycleTransport", ack_factory)
+    original_create = hass.async_create_task
+    created = []
+
+    def create_task(coro, *args, **kwargs):
+        created.append((args, kwargs))
+        return original_create(coro, *args, **kwargs)
+
+    monkeypatch.setattr(hass, "async_create_task", create_task)
+    runtime.configure_delivery(store=store, route_source=route, parse_source=parse)
+    generation = runtime._parse_generation
+    assert await runtime.async_delivery_pass(limit=7) == ["result"]
+    assert order == ["recover", "claim"]
+    source_factory.assert_called_once_with(session, SERVICE)
+    ack_factory.assert_called_once_with(
+        session, api_origin=SERVICE.api_origin, account_origin=SERVICE.account_origin,
+    )
+    assert created == [(("Daylight hosted delivery",), {"eager_start": False})]
+    assert runtime._parse_generation == generation + 1
+    assert runtime._delivery_owner is None
+    assert runtime._task.done()
+    parse.assert_not_awaited()
+    await runtime.async_stop()
+
+
+async def test_delivery_pass_uses_default_limit_of_twenty(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_ack_recovery, hosted_text_batch
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    recover = AsyncMock()
+    batch = AsyncMock(return_value=[])
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", recover)
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
+    runtime.configure_delivery(store=object(), route_source=object(), parse_source=AsyncMock())
+    assert await runtime.async_delivery_pass() == []
+    assert recover.await_args.kwargs["limit"] == 20
+    assert batch.await_args.kwargs["limit"] == 20
+    await runtime.async_stop()
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["controller", "credentials", "service", "handlers", "status", "current", "unverified"],
+)
+async def test_delivery_pass_requires_each_verified_dependency(hass, monkeypatch, missing):
+    from custom_components.daylight_calendar_import.hosted_runtime import HostedRuntimeError
+
+    runtime, credentials = await verified_runtime(hass, monkeypatch)
+    if missing != "handlers":
+        runtime.configure_delivery(
+            store=object(), route_source=object(), parse_source=AsyncMock(),
+        )
+    if missing == "controller":
+        runtime._controller = None
+    elif missing == "credentials":
+        runtime._credential_store = None
+    elif missing == "service":
+        runtime._service = None
+    elif missing == "status":
+        runtime._state = HostedConnectionResult("connected", "not_current")
+    elif missing == "current":
+        credentials.snapshot = replace(credentials.snapshot, current=None)
+    elif missing == "unverified":
+        runtime._verified_parse_credential = None
+
+    with pytest.raises(HostedRuntimeError) as failure:
+        await runtime.async_delivery_pass()
+    assert str(failure.value) == "hosted_unavailable"
+    assert not runtime.busy
+    await runtime.async_stop()
+
+
+async def test_delivery_pass_accepts_verified_overlap_credentials(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_ack_recovery, hosted_text_batch
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    runtime._state = HostedConnectionResult("connected", "overlap")
+    recovery = AsyncMock()
+    batch = AsyncMock(return_value=["ok"])
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", recovery)
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
+    runtime.configure_delivery(store=object(), route_source=object(), parse_source=AsyncMock())
+    assert await runtime.async_delivery_pass() == ["ok"]
+    recovery.assert_awaited_once()
+    batch.assert_awaited_once()
+    await runtime.async_stop()
+
+
+@pytest.mark.parametrize("invalidation", ["pause", "owner", "extra_task", "generation"])
+async def test_delivery_pass_rechecks_owner_after_ack_recovery(
+    hass, monkeypatch, invalidation,
+):
+    """Do not claim work when admission or exclusive ownership changes during I/O."""
+    from custom_components.daylight_calendar_import import hosted_ack_recovery, hosted_text_batch
+    from custom_components.daylight_calendar_import.hosted_runtime import HostedRuntimeError
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    extra_task = None
+
+    async def recover(**kwargs):
+        nonlocal extra_task
+        assert runtime._delivery_owner is asyncio.current_task()
+        if invalidation == "pause":
+            runtime.pause()
+        elif invalidation == "owner":
+            runtime._delivery_owner = None
+        elif invalidation == "extra_task":
+            extra_task = asyncio.create_task(asyncio.sleep(60))
+            runtime._tasks.add(extra_task)
+        elif invalidation == "generation":
+            runtime._parse_generation += 1
+
+    batch = AsyncMock()
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", recover)
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
+    runtime.configure_delivery(store=object(), route_source=object(), parse_source=AsyncMock())
+    try:
+        with pytest.raises(HostedRuntimeError) as failure:
+            await runtime.async_delivery_pass()
+        assert str(failure.value) == "hosted_unavailable"
+        batch.assert_not_awaited()
+    finally:
+        if extra_task is not None:
+            runtime._tasks.discard(extra_task)
+            extra_task.cancel()
+            await asyncio.gather(extra_task, return_exceptions=True)
+        await runtime.async_stop()
+
+
+async def test_delivery_parser_cannot_be_called_from_an_unowned_task(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_ack_recovery, hosted_text_batch
+    from custom_components.daylight_calendar_import.hosted_runtime import HostedRuntimeError
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    parser = AsyncMock(return_value=("parsed", None))
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", AsyncMock())
+
+    async def batch(**kwargs):
+        with pytest.raises(HostedRuntimeError, match="hosted_unavailable"):
+            await asyncio.create_task(kwargs["parse_source"]("unowned"))
+        parser.assert_not_awaited()
+        result, guard = await kwargs["parse_source"]("owned")
+        assert result == "parsed"
+        guard()
+        return ["accepted"]
+
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
+    runtime.configure_delivery(store=object(), route_source=object(), parse_source=parser)
+    assert await runtime.async_delivery_pass() == ["accepted"]
+    parser.assert_awaited_once_with("owned")
+    await runtime.async_stop()
+
+
+@pytest.mark.parametrize("invalidation", ["generation", "owner", "extra_task", "pause"])
+async def test_delivery_acceptance_guard_rechecks_fence_after_parse(
+    hass, monkeypatch, invalidation,
+):
+    from custom_components.daylight_calendar_import import hosted_ack_recovery, hosted_text_batch
+    from custom_components.daylight_calendar_import.hosted_runtime import HostedRuntimeError
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    additional = None
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", AsyncMock())
+
+    async def batch(**kwargs):
+        nonlocal additional
+        _, guard = await kwargs["parse_source"]("source")
+        if invalidation == "generation":
+            runtime._parse_generation += 1
+        elif invalidation == "owner":
+            runtime._delivery_owner = None
+        elif invalidation == "extra_task":
+            additional = asyncio.create_task(asyncio.sleep(60))
+            runtime._tasks.add(additional)
+        elif invalidation == "pause":
+            runtime.pause()
+        with pytest.raises(HostedRuntimeError) as failure:
+            guard()
+        assert str(failure.value) == "hosted_unavailable"
+        return []
+
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
+    runtime.configure_delivery(
+        store=object(), route_source=object(), parse_source=AsyncMock(return_value=(None, None)),
+    )
+    try:
+        assert await runtime.async_delivery_pass() == []
+    finally:
+        if additional is not None:
+            runtime._tasks.discard(additional)
+            additional.cancel()
+            await asyncio.gather(additional, return_exceptions=True)
+        await runtime.async_stop()
