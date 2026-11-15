@@ -129,17 +129,6 @@ def _submission_response(
     }
 
 
-def _with_original_filename(source: SourceDocument, filename: str | None) -> SourceDocument:
-    """Use the submitted filename only for review metadata, never for disk paths."""
-    if filename is None:
-        return source
-    return replace(
-        source,
-        title=filename,
-        attachments=tuple(replace(attachment, filename=filename) for attachment in source.attachments),
-    )
-
-
 def _unregister_entry_services(hass: HomeAssistant) -> None:
     """Remove each registered service; safe for partial entry setup."""
     for name in _ENTRY_SERVICES:
@@ -496,13 +485,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def submit_attachment_source(
         source: SourceDocument, *, reimport_duplicates: bool = False,
+        original_filename: str | None = None,
     ) -> ServiceResponse:
-        """Send a normalized upload through parsing and pending review."""
+        """Parse the safe uploaded source, retaining its original name only for display."""
+        review_title = original_filename if original_filename is not None else source.title
         if source.upstream_source_id is not None and pending_store.is_source_duplicate(source.upstream_source_id):
             return _submission_response(PendingImportAddResult(None, True, 0), [], None)
         route = route_review_source(source)
         activity_id = await pending_store.async_begin_submission(
-            source_kind=source.kind.value, source_title=source.title, received_at=source.received_at
+            source_kind=source.kind.value, source_title=review_title, received_at=source.received_at
         )
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
@@ -519,7 +510,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 calendar_entity=route.calendar_entity,
                 **({"reimport_duplicates": True} if reimport_duplicates else {}),
                 source_kind=source.kind.value,
-                source_title=source.title,
+                source_title=review_title,
                 warnings=[*outcome.warnings, *route.warnings],
                 routing_unresolved=route.requires_confirmation,
                 activity_id=activity_id,
@@ -531,24 +522,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_submit_image(call: ServiceCall) -> ServiceResponse:
         """Queue event drafts from an uploaded image and optional source text."""
         async with async_image_source(hass, call.data[ATTR_FILE_ID]) as image:
-            source = _with_original_filename(
-                replace(image, text=call.data.get(ATTR_TEXT, "").strip() or None,
-                        upstream_source_id=call.data.get(ATTR_SOURCE_ID)),
-                call.data.get("original_filename"),
-            )
+            source = replace(image, text=call.data.get(ATTR_TEXT, "").strip() or None,
+                             upstream_source_id=call.data.get(ATTR_SOURCE_ID))
             return await submit_attachment_source(
                 source, reimport_duplicates=call.data.get("reimport_duplicates", False),
+                original_filename=call.data.get("original_filename"),
             )
 
     async def handle_submit_pdf(call: ServiceCall) -> ServiceResponse:
         """Queue event drafts from a text PDF or attachment-capable parser."""
         async with async_pdf_source(hass, call.data[ATTR_FILE_ID], call.data.get(ATTR_TEXT, "")) as pdf:
-            source = _with_original_filename(
-                replace(pdf, upstream_source_id=call.data.get(ATTR_SOURCE_ID)),
-                call.data.get("original_filename"),
-            )
             return await submit_attachment_source(
-                source, reimport_duplicates=call.data.get("reimport_duplicates", False),
+                replace(pdf, upstream_source_id=call.data.get(ATTR_SOURCE_ID)),
+                reimport_duplicates=call.data.get("reimport_duplicates", False),
+                original_filename=call.data.get("original_filename"),
             )
 
     class CalendarApprovalWriter:
