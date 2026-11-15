@@ -1,5 +1,5 @@
 // Check local image files using a real MDX parser, not regex over source text.
-import { readFileSync, existsSync, readdirSync, realpathSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { resolve, relative, dirname, extname, isAbsolute, sep } from "node:path";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
@@ -36,7 +36,8 @@ function check(src, page) {
   const target = path.startsWith("/") ? resolve(docs, "." + path) : resolve(dirname(page), path);
   const rel = relative(docs, target);
   if (rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel) ||
-      !existsSync(target) || !realpathSync(target).startsWith(docs + sep)) {
+      !existsSync(target) || !statSync(target).isFile() ||
+      !realpathSync(target).startsWith(docs + sep)) {
     errors.push(relative(docs, page) + ": missing or out-of-root image " + src);
   }
 }
@@ -44,7 +45,9 @@ for (const page of pages(docs)) {
   const ast = parser.parse(readFileSync(page, "utf8"));
   const definitions = new Map();
   visit(ast, node => {
-    if (node.type === "definition") definitions.set(identifier(node.identifier), node.url);
+    if (node.type === "definition" && !definitions.has(identifier(node.identifier))) {
+      definitions.set(identifier(node.identifier), node.url);
+    }
   });
   visit(ast, node => {
     if (node.type === "image") check(node.url, page);
