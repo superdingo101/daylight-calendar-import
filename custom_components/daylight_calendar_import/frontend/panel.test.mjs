@@ -6481,3 +6481,26 @@ test("route-driven detail loading does not normalize the incoming history entry"
     assert.equal(pushes, 0);
   } finally { globalThis.window = previousWindow; globalThis.CustomEvent = previousCustomEvent; }
 });
+
+test('failed automatic detail load restores the new-import URL', async () => {
+  const previousWindow = globalThis.window;
+  const previousEvent = globalThis.CustomEvent;
+  const url = new URL('https://ha.test/daylight-calendar-import/new/text?dl_return=token');
+  const paths = [];
+  globalThis.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options.detail; } };
+  globalThis.window = {location: url, history: {pushState(_state, _title, path) {
+    paths.push(path); url.href = new URL(path, url).href;
+  }}, dispatchEvent() {}};
+  try {
+    const panel = new DaylightImportPanel();
+    panel.route = {path: '/new/text'};
+    panel.hass = {callWS: async request => {
+      if (request.service === 'get_pending') throw new Error('unavailable');
+      return {response: {imports: []}};
+    }};
+    await flush();
+    await assert.rejects(panel._afterSubmission({pending: {id: 'new-id'}}));
+    assert.equal(panel._view, 'new');
+    assert.deepEqual(paths, ['/daylight-calendar-import/review/new-id?dl_return=token', '/daylight-calendar-import/new/text?dl_return=token']);
+  } finally { globalThis.window = previousWindow; globalThis.CustomEvent = previousEvent; }
+});

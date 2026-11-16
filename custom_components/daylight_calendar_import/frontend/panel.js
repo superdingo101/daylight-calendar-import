@@ -775,6 +775,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._view = "new";
         this._selectedId = null;
         this._detail = null;
+        this._syncRoute(this._newImportMode ? `/new/${this._newImportMode}` : "/new");
         this.render();
         // showImport focused a Back button which was removed by this fallback.
         // Restore focus to the retained success feedback for an explicit retry.
