@@ -677,6 +677,9 @@ export class DaylightImportPanel extends HTMLElement {
     // Folded source-event previews are view-local; never share expansion across imports.
     this._expandedEventIds = new Set();
     this._view = "inbox";
+    this._routePath = null;
+    this._pendingRoute = null;
+    this._routeMode = false;
     this._newImportMode = null;
     this._newImportOrigin = null;
     this._activity = [];
@@ -772,6 +775,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._view = "new";
         this._selectedId = null;
         this._detail = null;
+        this._syncRoute(this._newImportMode ? `/new/${this._newImportMode}` : "/new");
         this.render();
         // showImport focused a Back button which was removed by this fallback.
         // Restore focus to the retained success feedback for an explicit retry.
@@ -788,11 +792,12 @@ export class DaylightImportPanel extends HTMLElement {
     return this.showImport(id);
   }
 
-  showNewImport() {
-    if (this._view === "new" || this._saving || this._settingsSaving ||
+  showNewImport(fromRoute = false) {
+    if (this._view === "new" || this._routeBusy || this._saving || this._settingsSaving ||
         this._editingId || this._decision || this._batchAction || this._resolution ||
         this._manualSubmission.busy || this._fileSubmission.busy) return;
     this._clearEmailDraftPassword();
+    if (!fromRoute) this._syncRoute("/new");
     this._newImportOrigin = {
       view: this._view, selectedId: this._selectedId, activityId: this._activityId,
       settingsTab: this._settingsTab,
@@ -806,9 +811,10 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   selectImportMethod(mode) {
-    if (this._view !== "new" || !["text", "file", null].includes(mode) ||
+    if (this._routeBusy || this._view !== "new" || !["text", "file", null].includes(mode) ||
         this._manualSubmission.busy || this._fileSubmission.busy) return;
     this._newImportMode = mode;
+    this._syncRoute(mode ? `/new/${mode}` : "/new");
     this.render();
     (mode === "text" ? this._manualSubmission.text :
       mode === "file" ? this._fileSubmission.file : this._content.querySelector("h2"))?.focus();
@@ -849,12 +855,68 @@ export class DaylightImportPanel extends HTMLElement {
     else this.removeAttribute("data-own-safe-area");
   }
 
+  set route(value) {
+    const path = value?.path || "/";
+    if (path === this._routePath) return;
+    this._routePath = path;
+    if (path !== "/" && path !== "") this._routeMode = true;
+    this._pendingRoute = path;
+    if (this._loaded) void this._openRoute(path);
+  }
+
+  _syncRoute(path) {
+    if (!this._routeMode || this._pendingRoute !== null || this._routePath === path ||
+        typeof window === "undefined" || this.isConnected === false ||
+        !/^\/daylight-calendar-import(?:\/|$)/.test(window.location.pathname)) return;
+    const url = new URL(window.location.href);
+    url.pathname = `/daylight-calendar-import${path === "/" ? "" : path}`;
+    const from = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    window.history.pushState({from}, "", `${url.pathname}${url.search}${url.hash}`);
+    this._routePath = path;
+    window.dispatchEvent(new CustomEvent("location-changed", {detail: {replace: false}}));
+  }
+
+  async _openRoute(path) {
+    if (this._routeBusy || this._saving || this._settingsSaving || this._editingId || this._decision ||
+        this._batchAction || this._resolution || this._manualSubmission.busy ||
+        this._fileSubmission.busy) return;
+    if (path !== this._routePath) return;
+    this._pendingRoute = null;
+    if (["/new", "/new/file", "/new/text"].includes(path)) {
+      this.showNewImport(true);
+      this.selectImportMethod(path === "/new" ? null : path.slice(5));
+      return;
+    }
+    if (path === "/" || path === "" || path === "/review") {
+      await this.showReview();
+      return;
+    }
+    const match = /^\/review\/([^/]+)$/.exec(path);
+    if (match) {
+      try {
+        const id = decodeURIComponent(match[1]);
+        if (id && !/[\/\\\x00-\x1f\x7f]/.test(id)) {
+          this._view = "inbox";
+          await this.showImport(id, true);
+          return;
+        }
+      } catch { /* Invalid path encoding. */ }
+    }
+    this._view = "inbox";
+    this._selectedId = null;
+    this._detail = null;
+    ++this._generation;
+    this._status = "This import link is invalid. Return to the review inbox.";
+    this.render();
+  }
+
   set hass(value) {
     this._hass = value;
     this._syncMenuButton();
     if (!this._loaded) {
       this._loaded = true;
-      void this.refresh();
+      if (this._routePath !== null) void this._openRoute(this._routePath);
+      else void this.refresh();
     }
   }
 
@@ -896,8 +958,9 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async showActivity(id = null) {
-    if (this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
+    if (this._routeBusy || this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
+    this._syncRoute("/");
     const generation = ++this._generation;
     this._view = "activity";
     this._calendarCheck = null;
@@ -921,9 +984,10 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async showReview() {
-    if (this._saving || this._settingsSaving) return;
+    if (this._routeBusy || this._saving || this._settingsSaving) return;
     this._clearEmailDraftPassword();
     this._view = "inbox";
+    if (this._routePath !== "/") this._syncRoute("/review");
     this._selectedId = null;
     this._detail = null;
     this._calendarCheck = null;
@@ -936,8 +1000,9 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async showSettings(tab = this._settingsTab, reload = false) {
-    if (this._saving || this._settingsSaving || this._editingId ||
+    if (this._routeBusy || this._saving || this._settingsSaving || this._editingId ||
         this._decision || this._batchAction || this._resolution) return;
+    this._syncRoute("/");
     const generation = ++this._generation;
     this._view = "settings";
     this._settingsTab = tab;
@@ -1960,9 +2025,10 @@ export class DaylightImportPanel extends HTMLElement {
       button => button.dataset.calendarCheckEventId === eventId)?.focus();
   }
 
-  async showImport(id) {
-    if (this._saving || this._editingId || this._batchAction || this._resolution) return;
+  async showImport(id, fromRoute = false) {
+    if (this._routeBusy || this._saving || this._editingId || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
+    if (!fromRoute) this._syncRoute(`/review/${encodeURIComponent(id)}`);
     const generation = ++this._generation;
     if (id !== this._selectedId) this._expandedEventIds.clear();
     if (id !== this._selectedId) this._openEventMenuId = null;
@@ -1996,8 +2062,9 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   showInbox() {
-    if (this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
+    if (this._routeBusy || this._saving || this._settingsSaving || this._editingId || this._decision || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
+    this._syncRoute("/review");
     this._batchResults = [];
     this._batchContext = null;
     this._returnFocusId = this._selectedId;
@@ -2015,6 +2082,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._batchAction !== action ||
         (action === "approve" && this._approvalObservation?.loading)) return;
     const pendingId = this._selectedId;
+    this._routeBusy = true;
     const events = this._detail.events.filter(event => event.status === "pending");
     this._batchContext = {pendingId, action, title: this._detail.source_title || "Import"};
     this._saving = true;
@@ -2046,12 +2114,14 @@ export class DaylightImportPanel extends HTMLElement {
       } else {
         this._selectedId = null;
         this._detail = null;
+        this._syncRoute("/review");
       }
       this._status = "ready";
     } catch (error) {
       this._detail = null;
       this._status = typeof error?.message === "string" ? error.message : "Could not reload imports after bulk review.";
     }
+    this._routeBusy = false;
     this.render();
     this._content.querySelector(".batch-results")?.focus();
   }
@@ -2060,6 +2130,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._decision?.id !== event.id || this._decision.action !== action ||
         (action === "approve" && this._approvalObservation?.loading)) return;
     const pendingId = this._selectedId;
+    this._routeBusy = true;
     const generation = this._generation;
     this._saving = true;
     this._refreshButton.disabled = true;
@@ -2071,6 +2142,7 @@ export class DaylightImportPanel extends HTMLElement {
       this._decision = null;
       this._selectedId = null;
       this._detail = null;
+      this._syncRoute("/review");
       await this.refresh();
       if (this._status === "ready") {
         this._announcement.replaceChildren(element("span", `Event ${action === "approve" ? "approved" : "rejected"}`));
@@ -2094,13 +2166,16 @@ export class DaylightImportPanel extends HTMLElement {
       else (this._content.querySelector("[data-import-back]") || this._refreshButton).focus();
     } finally {
       this._saving = false;
+      this._routeBusy = false;
       this._refreshButton.disabled = Boolean(this._editingId || this._decision);
+      this._syncNewImportButton();
     }
   }
 
   async runResolution(event, resolution) {
     if (this._saving || this._resolution?.id !== event.id || this._resolution.choice !== resolution) return;
     const pendingId = this._selectedId;
+    this._routeBusy = true;
     const generation = this._generation;
     this._saving = true;
     this._refreshButton.disabled = true;
@@ -2118,6 +2193,7 @@ export class DaylightImportPanel extends HTMLElement {
       } else {
         this._selectedId = null;
         this._detail = null;
+        this._syncRoute("/review");
       }
       if (generation !== this._generation) return;
       this._status = "ready";
@@ -2165,8 +2241,11 @@ export class DaylightImportPanel extends HTMLElement {
       if (alert) { alert.tabIndex = -1; alert.focus(); }
       else this._refreshButton.focus();
     } finally {
+      if (!this._selectedId && this._view === "inbox") this._syncRoute("/review");
       this._saving = false;
+      this._routeBusy = false;
       this._refreshButton.disabled = false;
+      this._syncNewImportButton();
     }
   }
 
@@ -2259,6 +2338,7 @@ export class DaylightImportPanel extends HTMLElement {
     } finally {
       this._saving = false;
       this._refreshButton.disabled = Boolean(this._editingId);
+      this._syncNewImportButton();
     }
   }
 
@@ -2497,9 +2577,19 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   _syncNewImportButton() {
+    if (this._pendingRoute !== null && !this._routePendingScheduled &&
+        !this._routeBusy && !this._saving && !this._settingsSaving && !this._editingId && !this._decision &&
+        !this._batchAction && !this._resolution && !this._manualSubmission.busy &&
+        !this._fileSubmission.busy) {
+      this._routePendingScheduled = true;
+      queueMicrotask(() => {
+        this._routePendingScheduled = false;
+        if (this._pendingRoute !== null) void this._openRoute(this._pendingRoute);
+      });
+    }
     // Update only this control after an intake request settles. Rerendering
     // the detail here would discard its focused heading.
-    this._newImportButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
+    this._newImportButton.disabled = this._view === "new" || this._routeBusy || this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution) ||
       Boolean(this._manualSubmission.busy || this._fileSubmission.busy);
   }
@@ -2701,6 +2791,12 @@ export class DaylightImportPanel extends HTMLElement {
     } else if (this._status !== "ready") {
       const error = element("p", this._status, "error");
       content.append(error);
+      if (this._status === "This import link is invalid. Return to the review inbox.") {
+        const back = element("button", "Return to review inbox");
+        back.type = "button";
+        back.addEventListener("click", () => void this.showReview());
+        content.append(back);
+      }
     } else if (this._selectedId && this._detail) {
       const detail = this._detail;
       const back = element("button", "Back to inbox");

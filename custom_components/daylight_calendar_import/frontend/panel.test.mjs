@@ -6349,3 +6349,158 @@ test("collapsed source rows disclose their actual calendar without expanding", (
   assert.match(style, /\.event-more-menu \{[\s\S]*position: absolute/);
   assert.doesNotMatch(style, /\.event-more\[open\] \{ flex-basis: 100%/);
 });
+
+test("direct routes select upload and review workflows", async () => {
+  const requests = [];
+  const panel = new DaylightImportPanel();
+  panel.route = {path: "/new/file"};
+  panel.hass = {callWS: async request => {
+    requests.push(request);
+    return request.service === "get_pending"
+      ? {response: {pending: {id: request.service_data.pending_id, events: []}}}
+      : {response: {imports: []}};
+  }};
+  await flush();
+  assert.equal(panel._view, "new");
+  assert.equal(panel._newImportMode, "file");
+  panel.route = {path: "/review/abc%20123"};
+  await flush();
+  assert.equal(panel._selectedId, "abc 123");
+  assert.equal(requests.at(-1).service_data.pending_id, "abc 123");
+  panel.route = {path: "/review"};
+  await flush();
+  assert.equal(panel._selectedId, null);
+  assert.equal(panel._status, "ready");
+  panel.route = {path: "/review/%2f"};
+  await flush();
+  assert.match(panel._status, /invalid/);
+});
+
+test("route changes wait until editing ends without discarding the edit", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async () => ({response: {imports: []}})};
+  await flush();
+  panel._editingId = "event";
+  panel.route = {path: "/new/file"};
+  await flush();
+  assert.equal(panel._editingId, "event");
+  assert.equal(panel._view, "inbox");
+  panel._editingId = null;
+  panel.render();
+  await flush();
+  assert.equal(panel._view, "new");
+  assert.equal(panel._newImportMode, "file");
+});
+
+test("linked review navigation updates browser history and retains the return token", async () => {
+  const priorWindow = globalThis.window;
+  const priorCustomEvent = globalThis.CustomEvent;
+  const address = new URL("https://ha.test/daylight-calendar-import/review?dl_return=opaque");
+  const states = [];
+  globalThis.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options.detail; } };
+  globalThis.window = {
+    location: address,
+    history: {state: {root: true}, pushState(state, _title, url) {
+      states.push({state, url});
+      address.href = new URL(url, address).href;
+    }},
+    dispatchEvent() {},
+  };
+  try {
+    const panel = new DaylightImportPanel();
+    panel.route = {path: "/review"};
+    panel.hass = {callWS: async request => request.service === "get_pending"
+      ? {response: {pending: {id: request.service_data.pending_id, events: []}}}
+      : {response: {imports: []}}};
+    await flush();
+    await panel.showImport("a b");
+    assert.equal(states[0].url, "/daylight-calendar-import/review/a%20b?dl_return=opaque");
+    assert.equal(states[0].state.from, '/daylight-calendar-import/review?dl_return=opaque');
+    assert.equal(states[0].state.root, undefined);
+    panel.showInbox();
+    await flush();
+    assert.equal(states[1].url, "/daylight-calendar-import/review?dl_return=opaque");
+    panel.route = {path: "/review/a%20b"};
+    await flush();
+    assert.equal(panel._selectedId, "a b");
+  } finally {
+    globalThis.window = priorWindow;
+    globalThis.CustomEvent = priorCustomEvent;
+  }
+});
+
+test("linked new-import method routes restore their own views", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async () => ({response: {imports: []}})};
+  await flush();
+  panel.route = {path: '/new/text'};
+  await flush();
+  assert.equal(panel._view, 'new');
+  assert.equal(panel._newImportMode, 'text');
+  panel.route = {path: '/new'};
+  await flush();
+  assert.equal(panel._view, 'new');
+  assert.equal(panel._newImportMode, null);
+});
+
+test("newer external routes wait through post-action work and take precedence", async () => {
+  const panel = new DaylightImportPanel();
+  panel.hass = {callWS: async request => request.service === 'get_pending'
+    ? {response: {pending: {id: request.service_data.pending_id, events: []}}}
+    : {response: {imports: []}}};
+  await flush();
+  panel._routeBusy = true;
+  panel.route = {path: '/review/newer'};
+  await flush();
+  assert.equal(panel._selectedId, null);
+  panel._routeBusy = false;
+  panel._syncNewImportButton();
+  await flush();
+  assert.equal(panel._selectedId, 'newer');
+});
+
+test("route-driven detail loading does not normalize the incoming history entry", async () => {
+  const previousWindow = globalThis.window;
+  const previousCustomEvent = globalThis.CustomEvent;
+  let pushes = 0;
+  globalThis.CustomEvent = class { constructor(type) { this.type = type; } };
+  globalThis.window = {location: new URL('https://ha.test/daylight-calendar-import/review/%61bc'),
+    history: {pushState() { pushes++; }}, dispatchEvent() {}};
+  try {
+    const panel = new DaylightImportPanel();
+    panel.hass = {callWS: async request => request.service === 'get_pending'
+      ? {response: {pending: {id: request.service_data.pending_id, events: []}}}
+      : {response: {imports: []}}};
+    await flush();
+    panel.route = {path: '/review/%61bc'};
+    await flush();
+    assert.equal(panel._selectedId, 'abc');
+    assert.equal(pushes, 0);
+    panel.isConnected = false;
+    await panel.showImport('other');
+    assert.equal(pushes, 0);
+  } finally { globalThis.window = previousWindow; globalThis.CustomEvent = previousCustomEvent; }
+});
+
+test('failed automatic detail load restores the new-import URL', async () => {
+  const previousWindow = globalThis.window;
+  const previousEvent = globalThis.CustomEvent;
+  const url = new URL('https://ha.test/daylight-calendar-import/new/text?dl_return=token');
+  const paths = [];
+  globalThis.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options.detail; } };
+  globalThis.window = {location: url, history: {pushState(_state, _title, path) {
+    paths.push(path); url.href = new URL(path, url).href;
+  }}, dispatchEvent() {}};
+  try {
+    const panel = new DaylightImportPanel();
+    panel.route = {path: '/new/text'};
+    panel.hass = {callWS: async request => {
+      if (request.service === 'get_pending') throw new Error('unavailable');
+      return {response: {imports: []}};
+    }};
+    await flush();
+    await assert.rejects(panel._afterSubmission({pending: {id: 'new-id'}}));
+    assert.equal(panel._view, 'new');
+    assert.deepEqual(paths, ['/daylight-calendar-import/review/new-id?dl_return=token', '/daylight-calendar-import/new/text?dl_return=token']);
+  } finally { globalThis.window = previousWindow; globalThis.CustomEvent = previousEvent; }
+});
