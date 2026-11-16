@@ -28,7 +28,7 @@
           "properties": {
             "email": {
               "type": "string",
-              "maxLength": 302,
+              "maxLength": 254,
               "pattern": "^[a-f0-9]{48}@[a-z0-9.-]+(?![\\s\\S])"
             },
             "revision": {
@@ -55,7 +55,7 @@
             "type": "string",
             "minLength": 3,
             "maxLength": 254,
-            "pattern": "^[!-~]+@[!-~]+(?![\\s\\S])"
+            "pattern": "^(?=.{1,64}@)[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+(?![\\s\\S])"
           }
         },
         "revision": {
