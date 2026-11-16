@@ -18,7 +18,8 @@ export function readReturnSession(storage, id, origin, now = Date.now()) {
     const decoded = decodeURIComponent(value.return_path);
     if (/[\\\x00-\x1f\x7f]/.test(decoded) || decoded.startsWith("//")) return null;
     const url = new URL(value.return_path, origin);
-    if (url.origin !== origin || url.username || url.password ||
+    if (url.origin !== origin || url.username || url.password || url.pathname.startsWith("//") ||
+        decodeURIComponent(url.pathname).startsWith("//") ||
         /^\/(?:daylight-calendar-import|auth|redirect)(?:\/|$)/i.test(decodeURIComponent(url.pathname))) return null;
     return {id, key: KEY_PREFIX + id, value, returnPath: url.pathname + url.search + url.hash};
   } catch {

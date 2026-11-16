@@ -780,6 +780,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._view = "new";
         this._selectedId = null;
         this._detail = null;
+        this._syncRoute(this._newImportMode ? `/new/${this._newImportMode}` : "/new");
         this.render();
         // showImport focused a Back button which was removed by this fallback.
         // Restore focus to the retained success feedback for an explicit retry.
@@ -878,7 +879,8 @@ export class DaylightImportPanel extends HTMLElement {
     if (typeof window === "undefined") return;
     try {
       const id = new URL(window.location.href).searchParams.get("dl_return");
-      if (id !== this._returnSession?.id) {
+      const changed = id !== this._returnSession?.id;
+      if (changed) {
         this._returnTargetId = null;
         this._returnComplete = false;
       }
@@ -889,11 +891,17 @@ export class DaylightImportPanel extends HTMLElement {
       }
       this._returnSession = readReturnSession(window.sessionStorage, id, window.location.origin);
       this._returnSessionError = Boolean(id && !this._returnSession);
+      if (changed && this._returnSession && this._selectedId) {
+        const match = /^\/review\/([^/]+)$/.exec(this._routePath || "");
+        if (match && decodeURIComponent(match[1]) === this._selectedId) this._returnTargetId = this._selectedId;
+      }
     } catch { this._returnSession = null; this._returnSessionError = true; }
   }
 
   _returnToCalendar(status = "cancelled") {
-    if (!this._returnSession || this.isConnected === false || typeof window === "undefined" ||
+    if (!this._returnSession || this._routeBusy || this._saving || this._settingsSaving ||
+        this._manualSubmission.busy || this._fileSubmission.busy ||
+        this.isConnected === false || typeof window === "undefined" ||
         !/^\/daylight-calendar-import(?:\/|$)/.test(window.location.pathname)) return false;
     let session;
     try {
@@ -2194,6 +2202,7 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._decision?.id !== event.id || this._decision.action !== action ||
         (action === "approve" && this._approvalObservation?.loading)) return;
     const pendingId = this._selectedId;
+    let confirmed = false;
     this._routeBusy = true;
     const generation = this._generation;
     this._saving = true;
@@ -2210,7 +2219,7 @@ export class DaylightImportPanel extends HTMLElement {
       await this.refresh();
       if (this._status === "ready") {
         this._announcement.replaceChildren(element("span", `Event ${action === "approve" ? "approved" : "rejected"}`));
-        this._reviewCompleted(pendingId);
+        confirmed = true;
       }
       (Array.from(this._content.querySelectorAll("button")).find(button => button.dataset.pendingId) || this._refreshButton).focus();
     } catch (error) {
@@ -2234,6 +2243,7 @@ export class DaylightImportPanel extends HTMLElement {
       this._routeBusy = false;
       this._refreshButton.disabled = Boolean(this._editingId || this._decision);
       this._syncNewImportButton();
+      if (confirmed) this._reviewCompleted(pendingId);
     }
   }
 
@@ -2246,6 +2256,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton.disabled = true;
     for (const button of this._content.querySelectorAll("button")) button.disabled = true;
     let saved = false;
+    let confirmed = false;
     try {
       await resolveEvent(this._hass, pendingId, event, resolution);
       saved = true;
@@ -2262,6 +2273,7 @@ export class DaylightImportPanel extends HTMLElement {
       }
       if (generation !== this._generation) return;
       this._status = "ready";
+      confirmed = true;
       this._batchResults = [];
       this._batchContext = null;
       this.render();
@@ -2311,6 +2323,7 @@ export class DaylightImportPanel extends HTMLElement {
       this._routeBusy = false;
       this._refreshButton.disabled = false;
       this._syncNewImportButton();
+      if (confirmed) this._reviewCompleted(pendingId);
     }
   }
 
@@ -2657,6 +2670,9 @@ export class DaylightImportPanel extends HTMLElement {
     this._newImportButton.disabled = this._view === "new" || this._routeBusy || this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution) ||
       Boolean(this._manualSubmission.busy || this._fileSubmission.busy);
+    const returnButton = this._viewContent.querySelector("[data-return-calendar]");
+    if (returnButton) returnButton.disabled = this._routeBusy || this._saving || this._settingsSaving ||
+      this._manualSubmission.busy || this._fileSubmission.busy;
   }
 
   render() {
@@ -2673,6 +2689,7 @@ export class DaylightImportPanel extends HTMLElement {
     }
     if (this._returnSession) {
       const back = element("button", "Return to calendar", "import-back");
+      back.setAttribute("data-return-calendar", "");
       back.type = "button";
       back.disabled = this._routeBusy || this._saving || this._settingsSaving || this._manualSubmission.busy || this._fileSubmission.busy;
       back.addEventListener("click", () => {

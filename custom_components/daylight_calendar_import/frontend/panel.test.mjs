@@ -6535,3 +6535,102 @@ test("route-driven detail loading does not normalize the incoming history entry"
     assert.equal(pushes, 0);
   } finally { globalThis.window = previousWindow; globalThis.CustomEvent = previousCustomEvent; }
 });
+
+test('failed automatic detail load restores the new-import URL', async () => {
+  const previousWindow = globalThis.window;
+  const previousEvent = globalThis.CustomEvent;
+  const url = new URL('https://ha.test/daylight-calendar-import/new/text?dl_return=token');
+  const paths = [];
+  globalThis.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options.detail; } };
+  globalThis.window = {location: url, history: {pushState(_state, _title, path) {
+    paths.push(path); url.href = new URL(path, url).href;
+  }}, dispatchEvent() {}};
+  try {
+    const panel = new DaylightImportPanel();
+    panel.route = {path: '/new/text'};
+    panel.hass = {callWS: async request => {
+      if (request.service === 'get_pending') throw new Error('unavailable');
+      return {response: {imports: []}};
+    }};
+    await flush();
+    await assert.rejects(panel._afterSubmission({pending: {id: 'new-id'}}));
+    assert.equal(panel._view, 'new');
+    assert.deepEqual(paths, ['/daylight-calendar-import/review/new-id?dl_return=token', '/daylight-calendar-import/new/text?dl_return=token']);
+  } finally { globalThis.window = previousWindow; globalThis.CustomEvent = previousEvent; }
+});
+
+test('return remains blocked while a submission is busy and works after settling', async () => {
+  const prior = globalThis.window, id = 'c'.repeat(32);
+  let stored = JSON.stringify({version: 1, id, created_at: Date.now(), expires_at: Date.now() + 60000, return_path: '/lovelace/home'});
+  let destination = null;
+  const url = new URL(`https://ha.test/daylight-calendar-import/new/file?dl_return=${id}`);
+  url.assign = path => {destination = path;};
+  globalThis.window = {location: url, sessionStorage: {getItem: () => stored, setItem: (_key, value) => {stored = value;}}};
+  try {
+    const panel = new DaylightImportPanel();
+    panel.hass = {callWS: async () => ({response: {imports: []}})};
+    await flush();
+    panel._fileSubmission.busy = true;
+    assert.equal(panel._returnToCalendar(), false);
+    assert.equal(destination, null);
+    assert.equal(JSON.parse(stored).result, undefined);
+    panel._fileSubmission.busy = false;
+    assert.equal(panel._returnToCalendar(), true);
+    assert.equal(destination, '/lovelace/home');
+  } finally {globalThis.window = prior;}
+});
+
+test('a return token added to an already-open review binds the selected import', async () => {
+  const prior = globalThis.window, id = 'd'.repeat(32);
+  const url = new URL('https://ha.test/daylight-calendar-import/review/one');
+  const stored = JSON.stringify({version: 1, id, created_at: Date.now(), expires_at: Date.now() + 60000, return_path: '/lovelace/home'});
+  globalThis.window = {location: url, sessionStorage: {getItem: () => stored}};
+  try {
+    const panel = new DaylightImportPanel();
+    panel.route = {path: '/review/one'};
+    panel.hass = {callWS: async request => request.service === 'get_pending'
+      ? {response: {pending: {id: 'one', events: []}}} : {response: {imports: []}}};
+    await flush();
+    url.search = `?dl_return=${id}`;
+    panel.hass = panel._hass;
+    panel.route = {path: '/review/one'};
+    assert.equal(panel._returnTargetId, 'one');
+  } finally {globalThis.window = prior;}
+});
+
+for (const recovery of [false, true]) {
+  test(`confirmed ${recovery ? 'recovery' : 'decision'} makes return available after reload`, async () => {
+    const prior = globalThis.window, id = 'e'.repeat(32);
+    let stored = JSON.stringify({version: 1, id, created_at: Date.now(), expires_at: Date.now() + 60000, return_path: '/lovelace/home'});
+    let destination = null;
+    const url = new URL(`https://ha.test/daylight-calendar-import/review/one?dl_return=${id}`);
+    url.assign = path => {destination = path;};
+    globalThis.window = {location: url, sessionStorage: {getItem: () => stored, setItem: (_key, value) => {stored = value;}}};
+    const event = {id: 'event', title: 'Practice', start: '2026-10-01', end: '2026-10-02', all_day: true, status: recovery ? 'write_uncertain' : 'pending'};
+    try {
+      const panel = new DaylightImportPanel();
+      panel.hass = {callWS: async request => {
+        if (request.service === 'list_pending') return {response: {imports: recovery ? [] : [{id: 'other'}]}};
+        if (request.service === 'resolve_pending_event') return {response: request.service_data};
+        return {response: {pending_id: 'one', event_id: 'event', approved: true}};
+      }};
+      await flush();
+      panel._selectedId = 'one';
+      panel._returnTargetId = 'one';
+      panel._detail = {id: 'one', events: [event]};
+      if (recovery) {
+        panel._resolution = {id: 'event', choice: 'created'};
+        await panel.runResolution(event, 'created');
+        assert.equal(destination, '/lovelace/home');
+        assert.equal(JSON.parse(stored).result.status, 'completed');
+      } else {
+        panel._decision = {id: 'event', action: 'approve'};
+        await panel.runDecision(event, 'approve');
+        const button = panel._viewContent.querySelector('[data-return-calendar]');
+        assert.equal(panel._returnComplete, true);
+        assert.equal(Boolean(button.disabled), false);
+        assert.equal(destination, null);
+      }
+    } finally {globalThis.window = prior;}
+  });
+}

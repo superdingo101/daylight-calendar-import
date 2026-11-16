@@ -22,7 +22,7 @@ test("return sessions preserve a validated same-origin dashboard and result", ()
 });
 
 test("return sessions reject malformed, unsafe, missing and expired data", () => {
-  for (const path of ["https://evil.test", "//evil.test", "/%2f%2fevil.test", "/\\evil.test", "/%5cevil.test", "/auth/authorize", "/daylight-calendar-import/review", "/bad%zz"]) {
+  for (const path of ["https://evil.test", "//evil.test", "/a/..//evil.test", "/a/%2e%2e//evil.test", "/%2f%2fevil.test", "/\\evil.test", "/%5cevil.test", "/auth/authorize", "/daylight-calendar-import/review", "/bad%zz"]) {
     assert.equal(readReturnSession(store({...record, return_path: path}), id, "https://ha.test", now), null, path);
   }
   for (const changes of [{expires_at: now}, {created_at: now + 1}, {version: 2}, {id: "b"}]) {
