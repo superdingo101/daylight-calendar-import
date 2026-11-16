@@ -66,7 +66,7 @@ def websocket_capabilities(
                if getattr(store, "accepting_services", False)]
     connection.send_result(msg["id"], {
         "entry_ids": sorted(entries),
-        "capabilities": {"queue_metadata": 1},
+        "capabilities": {"queue_metadata": 1, "direct_routes": 1, "return_sessions": 1},
     })
 
 

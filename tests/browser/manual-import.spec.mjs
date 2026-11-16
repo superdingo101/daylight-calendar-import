@@ -331,3 +331,27 @@ test("uncertain calendar write keeps the left-edge overflow actions on screen", 
   await check.click();
   await expect(page.getByRole("region", {name: "Calendar check results"})).toContainText("Scheduling conflict");
 });
+
+test('returnable review navigates back after confirmed approval', async ({page}) => {
+  await page.route('**/dashboard/calendar', route => route.fulfill({status: 200, contentType: 'text/html', body: '<h1>Calendar dashboard</h1>'}));
+  await page.evaluate(() => {
+    const id = 'a'.repeat(32);
+    const now = Date.now();
+    sessionStorage.setItem(`daylight:return:v1:${id}`, JSON.stringify({
+      version: 1, id, created_at: now, expires_at: now + 60000,
+      return_path: '/dashboard/calendar', card_instance_id: 'family', card_state: {}, result: null,
+    }));
+    window.fixture.imports = [window.fixture.pending];
+    history.replaceState({}, '', `/daylight-calendar-import/review/import-1?dl_return=${id}`);
+    document.querySelector('daylight-import-panel').route = {path: '/review/import-1'};
+  });
+  await expect(page.getByRole('heading', {name: 'School picnic', exact: true})).toBeVisible();
+  await page.getByRole('button', {name: 'Approve School picnic', exact: true}).click();
+  const confirm = page.getByRole('button', {name: 'Confirm approve: School picnic', exact: true});
+  await expect(confirm).toBeEnabled();
+  await confirm.click();
+  await expect(page).toHaveURL(/\/dashboard\/calendar$/);
+  await expect(page.getByRole('heading', {name: 'Calendar dashboard'})).toBeVisible();
+  const result = await page.evaluate(() => JSON.parse(sessionStorage.getItem(`daylight:return:v1:${'a'.repeat(32)}`)).result);
+  expect(result.status).toBe('completed');
+});

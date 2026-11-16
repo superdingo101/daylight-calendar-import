@@ -4,6 +4,7 @@ import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, 
 
 import {ManualSubmission} from "./manual_submission.js";
 import {FileSubmission} from "./upload_submission.js";
+import {readReturnSession, saveReturnResult} from "./return_session.js";
 
 const CALENDAR_CHECK_TIMEOUT_MS = 30_000;
 
@@ -680,6 +681,11 @@ export class DaylightImportPanel extends HTMLElement {
     this._routePath = null;
     this._pendingRoute = null;
     this._routeMode = false;
+    this._returnSession = null;
+    this._returnSessionError = false;
+    this._returnSessionRenderPending = false;
+    this._returnTargetId = null;
+    this._returnComplete = false;
     this._newImportMode = null;
     this._newImportOrigin = null;
     this._activity = [];
@@ -857,11 +863,83 @@ export class DaylightImportPanel extends HTMLElement {
 
   set route(value) {
     const path = value?.path || "/";
-    if (path === this._routePath) return;
+    const previousReturnId = this._returnSession?.id;
+    const previousReturnError = this._returnSessionError;
+    this._loadReturnSession();
+    if (path === this._routePath) {
+      this._returnSessionChanged(previousReturnId, previousReturnError);
+      return;
+    }
     this._routePath = path;
     if (path !== "/" && path !== "") this._routeMode = true;
     this._pendingRoute = path;
     if (this._loaded) void this._openRoute(path);
+  }
+
+  _returnSessionChanged(previousId, previousError) {
+    if (!this._loaded || (previousId === this._returnSession?.id && previousError === this._returnSessionError)) return;
+    if (this._routeBusy || this._saving || this._settingsSaving || this._editingId || this._decision ||
+        this._batchAction || this._resolution || this._manualSubmission.busy || this._fileSubmission.busy) {
+      this._returnSessionRenderPending = true;
+    } else {
+      this._returnSessionRenderPending = false;
+      this.render();
+    }
+  }
+
+  _loadReturnSession() {
+    if (typeof window === "undefined") return;
+    try {
+      const id = new URL(window.location.href).searchParams.get("dl_return");
+      const changed = id !== this._returnSession?.id;
+      if (changed) {
+        this._returnTargetId = null;
+        this._returnComplete = false;
+      }
+      if (!id) {
+        this._returnSession = null;
+        this._returnSessionError = false;
+        return;
+      }
+      this._returnSession = readReturnSession(window.sessionStorage, id, window.location.origin);
+      this._returnSessionError = Boolean(id && !this._returnSession);
+      if (changed && this._returnSession && this._selectedId) {
+        const match = /^\/review\/([^/]+)$/.exec(this._routePath || "");
+        if (match && decodeURIComponent(match[1]) === this._selectedId) this._returnTargetId = this._selectedId;
+      }
+    } catch { this._returnSession = null; this._returnSessionError = true; }
+  }
+
+  _returnToCalendar(status = "cancelled") {
+    if (!this._returnSession || this._routeBusy || this._saving || this._settingsSaving ||
+        this._manualSubmission.busy || this._fileSubmission.busy ||
+        this.isConnected === false || typeof window === "undefined" ||
+        !/^\/daylight-calendar-import(?:\/|$)/.test(window.location.pathname)) return false;
+    let session;
+    try {
+      session = readReturnSession(window.sessionStorage, this._returnSession.id, window.location.origin);
+      if (!session || !saveReturnResult(window.sessionStorage, session, status)) return false;
+      window.location.assign(session.returnPath);
+      return true;
+    } catch {
+      try {
+        if (session) window.sessionStorage.setItem(session.key, JSON.stringify(session.value));
+      } catch { /* The user can still navigate using Home Assistant. */ }
+      return false;
+    }
+  }
+
+  _reviewCompleted(id) {
+    if (!this._returnSession || this._pendingRoute !== null || this.isConnected === false ||
+        this._returnTargetId !== id || this._status !== "ready" ||
+        this._items.some(item => item.id === id)) return;
+    if (this._items.length) {
+      this._returnComplete = true;
+      this.render();
+    } else if (!this._returnToCalendar("completed")) {
+      this._returnComplete = true;
+      this.render();
+    }
   }
 
   _syncRoute(path) {
@@ -911,8 +989,12 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   set hass(value) {
+    const previousReturnId = this._returnSession?.id;
+    const previousReturnError = this._returnSessionError;
     this._hass = value;
     this._syncMenuButton();
+    this._loadReturnSession();
+    this._returnSessionChanged(previousReturnId, previousReturnError);
     if (!this._loaded) {
       this._loaded = true;
       if (this._routePath !== null) void this._openRoute(this._routePath);
@@ -2028,6 +2110,10 @@ export class DaylightImportPanel extends HTMLElement {
   async showImport(id, fromRoute = false) {
     if (this._routeBusy || this._saving || this._editingId || this._batchAction || this._resolution) return;
     this._clearEmailDraftPassword();
+    if (this._returnSession) {
+      this._returnTargetId = id;
+      this._returnComplete = false;
+    }
     if (!fromRoute) this._syncRoute(`/review/${encodeURIComponent(id)}`);
     const generation = ++this._generation;
     if (id !== this._selectedId) this._expandedEventIds.clear();
@@ -2124,12 +2210,14 @@ export class DaylightImportPanel extends HTMLElement {
     this._routeBusy = false;
     this.render();
     this._content.querySelector(".batch-results")?.focus();
+    if (results.every(result => result.outcome === "success")) this._reviewCompleted(pendingId);
   }
 
   async runDecision(event, action) {
     if (this._saving || this._decision?.id !== event.id || this._decision.action !== action ||
         (action === "approve" && this._approvalObservation?.loading)) return;
     const pendingId = this._selectedId;
+    let confirmed = false;
     this._routeBusy = true;
     const generation = this._generation;
     this._saving = true;
@@ -2146,6 +2234,7 @@ export class DaylightImportPanel extends HTMLElement {
       await this.refresh();
       if (this._status === "ready") {
         this._announcement.replaceChildren(element("span", `Event ${action === "approve" ? "approved" : "rejected"}`));
+        confirmed = true;
       }
       (Array.from(this._content.querySelectorAll("button")).find(button => button.dataset.pendingId) || this._refreshButton).focus();
     } catch (error) {
@@ -2169,6 +2258,7 @@ export class DaylightImportPanel extends HTMLElement {
       this._routeBusy = false;
       this._refreshButton.disabled = Boolean(this._editingId || this._decision);
       this._syncNewImportButton();
+      if (confirmed) this._reviewCompleted(pendingId);
     }
   }
 
@@ -2181,6 +2271,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton.disabled = true;
     for (const button of this._content.querySelectorAll("button")) button.disabled = true;
     let saved = false;
+    let confirmed = false;
     try {
       await resolveEvent(this._hass, pendingId, event, resolution);
       saved = true;
@@ -2197,6 +2288,7 @@ export class DaylightImportPanel extends HTMLElement {
       }
       if (generation !== this._generation) return;
       this._status = "ready";
+      confirmed = true;
       this._batchResults = [];
       this._batchContext = null;
       this.render();
@@ -2246,6 +2338,7 @@ export class DaylightImportPanel extends HTMLElement {
       this._routeBusy = false;
       this._refreshButton.disabled = false;
       this._syncNewImportButton();
+      if (confirmed) this._reviewCompleted(pendingId);
     }
   }
 
@@ -2577,6 +2670,19 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   _syncNewImportButton() {
+    if (this._returnSessionRenderPending && !this._returnRenderScheduled &&
+        !this._routeBusy && !this._saving && !this._settingsSaving && !this._editingId && !this._decision &&
+        !this._batchAction && !this._resolution && !this._manualSubmission.busy && !this._fileSubmission.busy) {
+      this._returnRenderScheduled = true;
+      queueMicrotask(() => {
+        this._returnRenderScheduled = false;
+        if (!this._returnSessionRenderPending) return;
+        if (this._routeBusy || this._saving || this._settingsSaving || this._editingId || this._decision ||
+            this._batchAction || this._resolution || this._manualSubmission.busy || this._fileSubmission.busy) return;
+        this._returnSessionRenderPending = false;
+        this.render();
+      });
+    }
     if (this._pendingRoute !== null && !this._routePendingScheduled &&
         !this._routeBusy && !this._saving && !this._settingsSaving && !this._editingId && !this._decision &&
         !this._batchAction && !this._resolution && !this._manualSubmission.busy &&
@@ -2592,6 +2698,9 @@ export class DaylightImportPanel extends HTMLElement {
     this._newImportButton.disabled = this._view === "new" || this._routeBusy || this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution) ||
       Boolean(this._manualSubmission.busy || this._fileSubmission.busy);
+    const returnButton = this._viewContent.querySelector("[data-return-calendar]");
+    if (returnButton) returnButton.disabled = this._routeBusy || this._saving || this._settingsSaving ||
+      this._manualSubmission.busy || this._fileSubmission.busy;
   }
 
   render() {
@@ -2603,6 +2712,22 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton.disabled = this._view === "new" || this._saving || this._settingsSaving ||
       Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
     const content = document.createDocumentFragment();
+    if (this._returnSessionError) {
+      content.append(element("p", "Calendar return is unavailable. Use Home Assistant navigation to return to your dashboard.", "warning"));
+    }
+    if (this._returnSession) {
+      const back = element("button", "Return to calendar", "import-back");
+      back.setAttribute("data-return-calendar", "");
+      back.type = "button";
+      back.disabled = this._routeBusy || this._saving || this._settingsSaving || this._manualSubmission.busy || this._fileSubmission.busy;
+      back.addEventListener("click", () => {
+        if (!this._returnToCalendar(this._returnComplete ? "completed" : "cancelled")) {
+          this._announcement.replaceChildren(element("span", "Could not return to the calendar. Use your dashboard navigation."));
+        }
+      });
+      content.append(back);
+      if (this._returnComplete) content.append(element("p", "Review complete. Return to the calendar or review another import."));
+    }
     const navigation = this._navigation;
     navigation.replaceChildren();
     const review = element("button", "Review inbox");
