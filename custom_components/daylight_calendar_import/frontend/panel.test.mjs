@@ -6595,6 +6595,7 @@ test('a return token added to an already-open review binds the selected import',
     panel.hass = panel._hass;
     panel.route = {path: '/review/one'};
     assert.equal(panel._returnTargetId, 'one');
+    assert.ok(panel._viewContent.querySelector('[data-return-calendar]'));
   } finally {globalThis.window = prior;}
 });
 
@@ -6634,3 +6635,28 @@ for (const recovery of [false, true]) {
     } finally {globalThis.window = prior;}
   });
 }
+
+test('a newly linked return session waits for an active edit before rerendering', async () => {
+  const prior = globalThis.window, id = 'f'.repeat(32);
+  const url = new URL('https://ha.test/daylight-calendar-import/review/one');
+  const stored = JSON.stringify({version: 1, id, created_at: Date.now(), expires_at: Date.now() + 60000, return_path: '/lovelace/home'});
+  globalThis.window = {location: url, sessionStorage: {getItem: () => stored}};
+  try {
+    const panel = new DaylightImportPanel();
+    panel.route = {path: '/review/one'};
+    panel.hass = {callWS: async request => request.service === 'get_pending'
+      ? {response: {pending: {id: 'one', events: []}}} : {response: {imports: []}}};
+    await flush();
+    panel._editingId = 'draft';
+    const oldContent = panel._viewContent.children[0];
+    url.search = `?dl_return=${id}`;
+    panel.hass = panel._hass;
+    panel.route = {path: '/review/one'};
+    assert.equal(panel._viewContent.children[0], oldContent);
+    assert.equal(panel._returnSessionRenderPending, true);
+    panel._editingId = null;
+    panel._syncNewImportButton();
+    await flush();
+    assert.ok(panel._viewContent.querySelector('[data-return-calendar]'));
+  } finally {globalThis.window = prior;}
+});

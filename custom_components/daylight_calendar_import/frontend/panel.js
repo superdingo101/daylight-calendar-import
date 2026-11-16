@@ -683,6 +683,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._routeMode = false;
     this._returnSession = null;
     this._returnSessionError = false;
+    this._returnSessionRenderPending = false;
     this._returnTargetId = null;
     this._returnComplete = false;
     this._newImportMode = null;
@@ -866,13 +867,24 @@ export class DaylightImportPanel extends HTMLElement {
     const previousReturnError = this._returnSessionError;
     this._loadReturnSession();
     if (path === this._routePath) {
-      if (this._loaded && (previousReturnId !== this._returnSession?.id || previousReturnError !== this._returnSessionError)) this.render();
+      this._returnSessionChanged(previousReturnId, previousReturnError);
       return;
     }
     this._routePath = path;
     if (path !== "/" && path !== "") this._routeMode = true;
     this._pendingRoute = path;
     if (this._loaded) void this._openRoute(path);
+  }
+
+  _returnSessionChanged(previousId, previousError) {
+    if (!this._loaded || (previousId === this._returnSession?.id && previousError === this._returnSessionError)) return;
+    if (this._routeBusy || this._saving || this._settingsSaving || this._editingId || this._decision ||
+        this._batchAction || this._resolution || this._manualSubmission.busy || this._fileSubmission.busy) {
+      this._returnSessionRenderPending = true;
+    } else {
+      this._returnSessionRenderPending = false;
+      this.render();
+    }
   }
 
   _loadReturnSession() {
@@ -977,9 +989,12 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   set hass(value) {
+    const previousReturnId = this._returnSession?.id;
+    const previousReturnError = this._returnSessionError;
     this._hass = value;
     this._syncMenuButton();
     this._loadReturnSession();
+    this._returnSessionChanged(previousReturnId, previousReturnError);
     if (!this._loaded) {
       this._loaded = true;
       if (this._routePath !== null) void this._openRoute(this._routePath);
@@ -2655,6 +2670,19 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   _syncNewImportButton() {
+    if (this._returnSessionRenderPending && !this._returnRenderScheduled &&
+        !this._routeBusy && !this._saving && !this._settingsSaving && !this._editingId && !this._decision &&
+        !this._batchAction && !this._resolution && !this._manualSubmission.busy && !this._fileSubmission.busy) {
+      this._returnRenderScheduled = true;
+      queueMicrotask(() => {
+        this._returnRenderScheduled = false;
+        if (!this._returnSessionRenderPending) return;
+        if (this._routeBusy || this._saving || this._settingsSaving || this._editingId || this._decision ||
+            this._batchAction || this._resolution || this._manualSubmission.busy || this._fileSubmission.busy) return;
+        this._returnSessionRenderPending = false;
+        this.render();
+      });
+    }
     if (this._pendingRoute !== null && !this._routePendingScheduled &&
         !this._routeBusy && !this._saving && !this._settingsSaving && !this._editingId && !this._decision &&
         !this._batchAction && !this._resolution && !this._manualSubmission.busy &&
