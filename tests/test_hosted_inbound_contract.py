@@ -54,7 +54,7 @@ def test_sender_policy_requires_unique_bounded_values_and_revision():
 @pytest.mark.parametrize("sender", [
     "a@@example.test", "a@.", "a@example.test,b@example.test",
     ".a@example.test", "a..b@example.test", "a@-example.test",
-    "a@example..test", "a" * 65 + "@example.test",
+    "a@example..test", "a@example.123", "a" * 65 + "@example.test",
 ])
 def test_sender_is_one_valid_ascii_mailbox(sender):
     request = {"schema_version": 1, "expected_revision": None, "allowed_senders": [sender]}
@@ -76,6 +76,6 @@ def test_forwarding_address_matches_installation_status_limit():
         encoding="utf-8"))
     assert validate("account-inbound-settings", settings)
     assert Draft202012Validator(schema, format_checker=FormatChecker()).is_valid(installation)
-    settings["address"]["email"] = "a" * 48 + "@" + "a" * 63 + "." + "b" * 63 + "." + "c" * 63 + "." + "d" * 13
+    settings["address"]["email"] = "a" * 48 + "@" + "a" * 63 + "." + "b" * 63 + "." + "c" * 63 + "." + "d" * 14
     assert len(settings["address"]["email"]) > 254
     assert not validate("account-inbound-settings", settings)
