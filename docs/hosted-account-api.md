@@ -325,3 +325,41 @@ CSRF/session verification, credential-response loss, expiry/rotation/disconnect
 races and restart persistence. P02 must test real HA secure storage, candidate
 recovery and explicit journal reconciliation. M2 exit additionally requires
 live passwordless mail and deployed connect/restart/rotate/disconnect/reconnect.
+
+
+## Owner inbound email controls
+
+These contracts do not activate hosted email. Endpoints require a verified owner
+session and recent re-authentication, including reads because the forwarding
+address is a private routing credential. Derive the household and its active
+installation from that session, never from an account or installation selector.
+A missing or disabled installation does not issue an address. Preserve all
+transport, admission, no-store, rate-limit, and error rules above.
+
+| Endpoint | Request | Success |
+|---|---|---|
+| `GET /v1/account/inbound` | No body | 200 `account-inbound-settings` |
+| `POST /v1/account/inbound/address` | `account-inbound-address-request` | 200 `account-inbound-settings` |
+| `POST /v1/account/inbound/senders` | `account-inbound-senders-request` | 200 `account-inbound-settings` |
+
+The settings response contains the current forwarding address and its opaque
+revision, or null before issuance, plus the sender policy and its revision. A
+null policy revision means no policy has yet been explicitly saved. The address
+is secret: never include it or the revision in a URL, telemetry, browser history,
+referrer, or ordinary logs. An empty `allowed_senders` accepts any sender.
+
+Address issue or rotation compares `expected_revision` with the current value
+under the same ownership and installation locks as the mutation. Null issues the
+first address only; otherwise the revision must match. A stale comparison returns
+409 `address_changed`. Read settings after an ambiguous response; do not blindly
+retry rotation. New addresses use a cryptographically random server-generated
+local part; retirement is immediate and must serialize with incoming delivery.
+
+Sender updates compare `expected_revision` with the current policy revision
+under the same locks used by admission. Null means there is no saved policy.
+A stale comparison returns 409 `sender_policy_changed`. Cap the list at 50
+unique ASCII mailboxes, reject malformed values and unknown fields, and apply
+changes to incoming messages transactionally at delivery creation. The sender
+field is untrusted and can be forged; this filter is a convenience, not identity
+verification or a substitute for the private forwarding address, entitlement,
+or abuse controls. Never use message To/Cc/Bcc/Received headers for ownership.
