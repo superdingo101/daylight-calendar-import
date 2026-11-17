@@ -1,4 +1,4 @@
-name: Publish HACS Release
+name: 2 Publish HACS Release
 
 on:
   workflow_dispatch:
