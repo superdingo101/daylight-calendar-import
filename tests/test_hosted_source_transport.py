@@ -452,10 +452,12 @@ async def test_attachment_download_is_bounded_and_lease_authenticated():
 
 
 @pytest.mark.parametrize("override", [
-    {"token": "bad"}, {"delivery_id": "../bad"}, {"lease_token": "bad"},
+    {"token": "bad"}, {"token": None}, {"delivery_id": "../bad"}, {"delivery_id": None},
+    {"lease_token": "bad"}, {"lease_token": None},
     {"descriptor": None}, {"descriptor": {"id": "../bad"}},
     {"descriptor": {"id": "..", "media_type": "image/png", "size_bytes": 1, "sha256": "a" * 64}},
     {"descriptor": {"id": "a", "media_type": "text/html", "size_bytes": 1, "sha256": "a" * 64}},
+    {"descriptor": {"id": "a", "media_type": 1, "size_bytes": 1, "sha256": "a" * 64}},
     {"descriptor": {"id": "a", "media_type": "image/png", "size_bytes": True, "sha256": "a" * 64}},
     {"descriptor": {"id": "a", "media_type": "image/png", "size_bytes": 0, "sha256": "a" * 64}},
     {"descriptor": {"id": "a", "media_type": "image/png", "size_bytes": 10_485_761, "sha256": "a" * 64}},
