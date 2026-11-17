@@ -804,8 +804,8 @@ def test_named_source_repeated_hour_preserves_offset_and_review_warning(offset):
         ("Unknown/Zone", "", False, "IANA time zone is unavailable"),
         (None, "", False, "must be a string"),
         ("", [], False, "must be a string"),
-        ("America/Los_Angeles", "", True, "conflict with inferred time zone"),
-        ("", "America/Los_Angeles", True, "conflict with inferred time zone"),
+        ("America/New_York", "", True, "offset does not match the source time zone"),
+        ("", "America/New_York", True, "offset does not match the source time zone"),
         ("Europe/Berlin", "", False, "offset does not match the source time zone"),
     ],
 )
