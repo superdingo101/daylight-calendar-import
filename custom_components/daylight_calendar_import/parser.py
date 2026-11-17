@@ -314,6 +314,7 @@ def _reference_zone_endpoint(value: object, zone: ZoneInfo) -> tuple[str, bool]:
 
 def _named_zone_endpoint(
     value: object, zone_name: str, source_clock: str | None, *, check_offset: bool,
+    origin: str = "provider_named",
 ) -> bool:
     """Validate the source wall time and, when required, its supplied offset."""
     if len(zone_name) > 255 or not re.fullmatch(_ZONE_KEY, zone_name, re.ASCII):
@@ -326,8 +327,8 @@ def _named_zone_endpoint(
         raise DraftValidationError("Source IANA time zone is unavailable") from err
 
     instant, candidates = _wall_time_candidates(value, zone)
-    _LOGGER.debug("Timezone candidate validated: origin=provider_named zone=%s offsets=%s",
-                  zone.key, tuple(str(offset) for offset in candidates))
+    _LOGGER.debug("Timezone candidate validated: origin=%s zone=%s offsets=%s",
+                  origin, zone.key, tuple(str(offset) for offset in candidates))
     if source_clock is not None:
         # The source pattern guarantees an English 12-hour clock and minutes.
         hour, minute = source_clock.split(":")
@@ -358,11 +359,12 @@ def _explicit_zones(raw: dict[str, Any]) -> tuple[str, str]:
 
 def _explicit_zone_ambiguity(
     raw: dict[str, Any], zones: tuple[str, str], source_range: re.Match[str] | None,
-    *, check_offset: bool,
+    *, check_offset: bool, origin: str = "provider_named",
 ) -> bool:
     """Validate both named endpoints and report any repeated local hour."""
     if source_range is not None:
         zones = (source_range["zone"], source_range["zone"])
+        origin = "source_text_record"
     ambiguities = []
     errors = []
     for endpoint, zone in zip(("start", "end"), zones, strict=True):
@@ -371,7 +373,7 @@ def _explicit_zone_ambiguity(
         try:
             ambiguities.append(_named_zone_endpoint(
                 raw.get(endpoint), zone, source_range[endpoint] if source_range else None,
-                check_offset=check_offset,
+                check_offset=check_offset, origin=origin,
             ))
         except _NonexistentLocalTimeError:
             raise
@@ -506,6 +508,7 @@ def parse_ai_data(
                                     )
                         reference_ambiguous = _explicit_zone_ambiguity(
                             raw, (time_zone, time_zone), None, check_offset=True,
+                            origin="ha_fallback",
                         )
                         ambiguous = reference_ambiguous or ambiguous
                         note = "Time zone metadata also names a zone compatible with the inferred Home Assistant zone; confirm the source time zone before approval."
