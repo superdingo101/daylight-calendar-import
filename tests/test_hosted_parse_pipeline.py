@@ -1416,7 +1416,11 @@ async def test_delivery_pass_surfaces_expired_ack_without_reparse(hass, monkeypa
     await runtime.async_stop()
 
 
-@pytest.mark.parametrize("failure", ["uncertain", "rate_limited", "invalid_local", "success"])
+@pytest.mark.parametrize("failure", [
+    "uncertain", "rate_limited", "invalid_local", "success", "bad_request",
+    "unauthorized", "forbidden", "payload_too_large", "not_definitive",
+    "uncertain_bad_request",
+])
 async def test_managed_delivery_parse_fences_attempt_before_io(hass, monkeypatch, failure):
     from custom_components.daylight_calendar_import import hosted_ack_recovery, hosted_text_batch
     from custom_components.daylight_calendar_import.hosted_parse_transport import HostedParseError
@@ -1432,6 +1436,12 @@ async def test_managed_delivery_parse_fences_attempt_before_io(hass, monkeypatch
         "uncertain": HostedParseError("provider_timeout", uncertain=True),
         "rate_limited": HostedParseError("rate_limited", status=429, retry_after=300),
         "invalid_local": SourceValidationError("invalid_source", "Invalid source"),
+        "bad_request": HostedParseError("bad_request", status=400),
+        "unauthorized": HostedParseError("unauthorized", status=401),
+        "forbidden": HostedParseError("forbidden", status=403),
+        "payload_too_large": HostedParseError("payload_too_large", status=413),
+        "not_definitive": HostedParseError("not_found", status=404),
+        "uncertain_bad_request": HostedParseError("provider_timeout", status=400, uncertain=True),
     }.get(failure)
 
     async def parse(got):
@@ -1452,7 +1462,9 @@ async def test_managed_delivery_parse_fences_attempt_before_io(hass, monkeypatch
     runtime._delivery_poll_running = True
     await runtime._async_delivery_poll()
     assert await_called == [True]
-    assert store.hosted_parse_uncertain == (failure in {"uncertain", "success"})
+    assert store.hosted_parse_uncertain == (failure in {
+        "uncertain", "success", "not_definitive", "uncertain_bad_request",
+    })
     if failure == "rate_limited":
         assert (runtime._delivery_due_at - datetime.now(UTC)).total_seconds() > 295
     restarted = make_store(monkeypatch, FakeStoreBackend(load_result=backend.saved[-1]))
