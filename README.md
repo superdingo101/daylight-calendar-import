@@ -1,4 +1,6 @@
-[![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/superdingo101/daylight-calendar-import#install-with-hacs)
+<!-- ha-marketplace:exclude-start -->
+[![Home Assistant Marketplace](https://img.shields.io/badge/Home%20Assistant-Marketplace-41BDF5?logo=homeassistant&logoColor=white)](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration)
+<!-- ha-marketplace:exclude-end -->
 [![GitHub release](https://img.shields.io/github/v/release/superdingo101/daylight-calendar-import.svg)](https://github.com/superdingo101/daylight-calendar-import/releases)
 [![GitHub stars](https://img.shields.io/github/stars/superdingo101/daylight-calendar-import.svg)](https://github.com/superdingo101/daylight-calendar-import/stargazers)
 ![GitHub downloads](https://img.shields.io/github/downloads/superdingo101/daylight-calendar-import/total.svg)
@@ -60,27 +62,26 @@ A dedicated IMAP mailbox is **optional**. You can get started with a pasted anno
 
 ---
 
+<!-- ha-marketplace:exclude-start -->
 ## 🚀 Installation
 
 ### Home Assistant 2026.11+: Marketplace
 
-1. Open **Settings → Marketplace**.
-2. Add `https://github.com/superdingo101/daylight-calendar-import` as a custom **Integration** repository using **Add from link**.
-3. Select **Daylight Calendar Import** and install the latest stable release.
-4. Go to **Settings → Devices & services → Add integration** if setup does not open automatically.
+1. Open **Settings → Marketplace** and accept the community-content warning if prompted.
+2. Search for **Daylight Calendar Import** and open its listing.
+3. Open the listing, select **Install**, and confirm the latest stable release.
+4. Complete the setup flow when it opens. If it does not, go to **Settings → Devices & services → Add integration** and select **Daylight Calendar Import**. Restart Home Assistant if the Marketplace prompts you.
 5. Choose your AI Task entity, default calendar, and allowed writable calendars.
 
-### Install with HACS
+### Home Assistant 2026.7–2026.10: HACS
 
-For Home Assistant 2026.7 through 2026.10, use HACS:
+On these versions, use the separately installed HACS. Daylight Calendar Import is in the default HACS catalog.
 
 [![Open Daylight Calendar Import in Home Assistant](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration)
 
-1. Open the [HACS repository shortcut](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration), or add the [GitHub repository](https://github.com/superdingo101/daylight-calendar-import) under **HACS → Custom repositories → Integration**.
-2. Install **Daylight Calendar Import** and restart Home Assistant.
+1. Open **HACS** and search for **Daylight Calendar Import**, or use the [HACS repository shortcut](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration).
+2. Install the latest stable release and **restart Home Assistant**.
 3. Go to **Settings → Devices & services → Add integration** and configure your AI Task entity and calendars.
-
-The integration is not yet in the default catalog, so the custom repository step is currently required.
 
 <details>
 <summary>Manual installation (advanced)</summary>
@@ -91,11 +92,12 @@ Download `daylight-calendar-import.zip` from a [published release](https://githu
 
 For complete version-specific instructions, see the [installation guide](https://import.daylightcalendar.com/installation).
 
+<!-- ha-marketplace:exclude-end -->
 ---
 
 ## ⚡ Quick start
 
-Try a text import first. No email setup is needed.
+Try a text import first using a pasted announcement.
 
 1. Open **Daylight Imports** in the Home Assistant sidebar.
 2. Select **New import → Paste event details**.

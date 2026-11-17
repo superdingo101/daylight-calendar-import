@@ -4,7 +4,7 @@ sidebarTitle: "Installation"
 description: "Install Daylight Calendar Import using the built-in Home Assistant Marketplace, HACS on older versions, or a released ZIP."
 ---
 
-Daylight Calendar Import is a **custom Home Assistant integration**. It is not yet in the default community catalog, so add the repository as a custom source before installing it. Choose the instructions for your Home Assistant version.
+Daylight Calendar Import is listed in the **Home Assistant Marketplace catalog**. On Home Assistant 2026.11 or newer, find it by name and install it directly. On older supported versions, use HACS.
 
 ## Before you begin
 
@@ -15,21 +15,17 @@ Daylight Calendar Import is a **custom Home Assistant integration**. It is not y
 
 <Tabs>
   <Tab title="Marketplace (Home Assistant 2026.11+)">
-    Home Assistant 2026.11 includes the **Marketplace** under **Settings → Marketplace**. Do not install standalone HACS on this version.
+    Home Assistant 2026.11 includes the **Marketplace** under **Settings → Marketplace**.
 
     <Steps>
-      <Step title="Add the custom repository">
-        Open **Settings → Marketplace**, accept the community-content warning if asked, and choose **Add from link** in the top-right corner. Paste:
-
-        https://github.com/superdingo101/daylight-calendar-import
-
-        Choose **Integration** if the repository type is requested. A one-time GitHub connection may be required to add a custom repository.
+      <Step title="Find Daylight in the catalog">
+        Open **Settings → Marketplace** and accept the community-content warning if asked. Search for **Daylight Calendar Import** and open its listing.
       </Step>
       <Step title="Install the stable release">
-        Open **Daylight Calendar Import** from the Marketplace repository list and choose the latest stable release (**v0.9.0** or newer). Leave prerelease versions disabled unless you are deliberately testing one.
+        Select **Install** and confirm the latest stable release (**v0.9.0** or newer).
       </Step>
-      <Step title="Install and configure">
-        Choose **Install**. On a new installation, Marketplace can open the integration's setup flow **without a restart**. If it doesn't, use **Settings → Devices & services → Add integration**. For an **update**, restart Home Assistant when prompted to load the new integration code.
+      <Step title="Configure the integration">
+        On a new installation, Marketplace can open the integration's setup flow **without a restart**. If it doesn't, use **Settings → Devices & services → Add integration** and select **Daylight Calendar Import**. Restart if Marketplace prompts you. After an **update**, restart Home Assistant to load the new code.
       </Step>
     </Steps>
 
@@ -40,12 +36,8 @@ Daylight Calendar Import is a **custom Home Assistant integration**. It is not y
     These versions use the separately installed **Home Assistant Community Store (HACS)**.
 
     <Steps>
-      <Step title="Add the custom integration repository">
-        Open **HACS** in the sidebar. In the custom-repositories dialog, add:
-
-        https://github.com/superdingo101/daylight-calendar-import
-
-        Select the **Integration** category. Alternatively, try the [Daylight HACS shortcut](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration).
+      <Step title="Find Daylight in HACS">
+        Open **HACS** in the sidebar and search for **Daylight Calendar Import**. Alternatively, use the [Daylight HACS shortcut](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration).
       </Step>
       <Step title="Download the stable release">
         Open **Daylight Calendar Import** in HACS and choose the latest stable version (**v0.9.0** or newer).
@@ -55,7 +47,6 @@ Daylight Calendar Import is a **custom Home Assistant integration**. It is not y
       </Step>
     </Steps>
 
-    If you update Home Assistant to 2026.11 or newer, HACS installations migrate into the built-in Marketplace. You do not need to reinstall your custom repositories.
   </Tab>
 
   <Tab title="Manual (advanced)">
@@ -63,7 +54,7 @@ Daylight Calendar Import is a **custom Home Assistant integration**. It is not y
 
     <Steps>
       <Step title="Choose an exact published version">
-        Visit the [Daylight releases](https://github.com/superdingo101/daylight-calendar-import/releases). Download **daylight-calendar-import.zip** attached to the release you intend to install; do not copy the development repository's current files.
+        Visit the [Daylight releases](https://github.com/superdingo101/daylight-calendar-import/releases). Download **daylight-calendar-import.zip** attached to the release you intend to install.
       </Step>
       <Step title="Extract the integration">
         Extract the archive into <code>&lt;config&gt;/custom_components/daylight_calendar_import/</code>. That directory must contain <code>manifest.json</code> and <code>__init__.py</code> at its top level, not an extra nested folder.
