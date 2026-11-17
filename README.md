@@ -68,7 +68,7 @@ A dedicated IMAP mailbox is **optional**. You can get started with a pasted anno
 ### Home Assistant 2026.11+: Marketplace
 
 1. Open **Settings → Marketplace** and accept the community-content warning if prompted.
-2. Search the catalog for **Daylight Calendar Import**. It is listed by default, so you do not need **Add from link** or a GitHub account.
+2. Search for **Daylight Calendar Import** and open its listing.
 3. Open the listing, select **Install**, and confirm the latest stable release.
 4. Complete the setup flow when it opens. If it does not, go to **Settings → Devices & services → Add integration** and select **Daylight Calendar Import**. Restart Home Assistant if the Marketplace prompts you.
 5. Choose your AI Task entity, default calendar, and allowed writable calendars.
@@ -79,11 +79,9 @@ On these versions, use the separately installed HACS. Daylight Calendar Import i
 
 [![Open Daylight Calendar Import in Home Assistant](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration)
 
-1. Open **HACS** and search for **Daylight Calendar Import**, or use the [HACS repository shortcut](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration). You do not need to add a custom repository.
+1. Open **HACS** and search for **Daylight Calendar Import**, or use the [HACS repository shortcut](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration).
 2. Install the latest stable release and **restart Home Assistant**.
 3. Go to **Settings → Devices & services → Add integration** and configure your AI Task entity and calendars.
-
-If you installed Daylight from a custom repository before its catalog listing, **do not uninstall or reinstall it**. Home Assistant 2026.11+ recognizes it as a catalog repository automatically.
 
 <details>
 <summary>Manual installation (advanced)</summary>
@@ -99,7 +97,7 @@ For complete version-specific instructions, see the [installation guide](https:/
 
 ## ⚡ Quick start
 
-Try a text import first. No email setup is needed.
+Try a text import first using a pasted announcement.
 
 1. Open **Daylight Imports** in the Home Assistant sidebar.
 2. Select **New import → Paste event details**.
