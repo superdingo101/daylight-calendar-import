@@ -128,8 +128,9 @@ def validate(notes: str, generated: str, tag: str) -> None:
     # The summary must appear before the first subsection.
     if not " ".join(stripped.splitlines()[1:]).strip() or not stripped.split("### ", 1)[0].split("\n", 1)[-1].strip():
         raise ValueError("Missing release summary")
-    if not re.search(r"(?m)^\s*-\s+\S", stripped):
-        raise ValueError("Release notes have no change bullets")
+    for section in re.split(r"(?m)^### ", stripped)[1:-1]:
+        if not re.search(r"(?m)^\s*-\s+\S", section):
+            raise ValueError("Release notes contain an empty change section")
     changelog = stripped.split(f"### {LAST_SECTION}", 1)[1].strip()
     expected = f"[{link.split('/compare/')[-1]}]({link})"
     if changelog != expected:
