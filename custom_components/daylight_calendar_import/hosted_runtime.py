@@ -156,7 +156,7 @@ class HostedConnectionRuntime:
             self._state = HostedConnectionResult("storage_repair")
             return
         pending = self._hass.data.get(DOMAIN, {}).get(self._entry_id)
-        kwargs = ({"reconciler": LocalOnlyNamespaceReconciler(pending)}
+        kwargs = ({"reconciler": LocalOnlyNamespaceReconciler(pending, allow_delivery=True)}
                   if type(pending) is PendingImportStore else {})
         self._credential_store = store
         self._verified_parse_credential = None
@@ -324,12 +324,20 @@ class HostedConnectionRuntime:
                 guard_delivery(require_owner=True)
                 if recovered and any(item.ack_status == "expired" for item in recovered):
                     self._delivery_attention_issue("hosted_delivery_expired")
-                return await async_process_text_batch(
-                    store=store, credentials=self._credential_store,
-                    claim_transport=claim, ack_transport=ack,
-                    local_config_entry_id=self._entry_id, route_source=route_source,
-                    parse_source=guarded_parse, limit=limit,
-                )
+                try:
+                    return await async_process_text_batch(
+                        store=store, credentials=self._credential_store,
+                        claim_transport=claim, ack_transport=ack,
+                        local_config_entry_id=self._entry_id, route_source=route_source,
+                        parse_source=guarded_parse, limit=limit,
+                    )
+                finally:
+                    if type(store) is PendingImportStore and not store._storage_blocked and any(
+                        item.ack_status == "expired"
+                        and item.evidence.local_config_entry_id == self._entry_id
+                        for item in store.hosted_ack_journal()
+                    ):
+                        self._delivery_attention_issue("hosted_delivery_expired")
             finally:
                 self._delivery_owner = None
 

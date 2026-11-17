@@ -1504,3 +1504,30 @@ async def test_real_delivery_retry_preserves_parse_transport_evidence(hosted_rev
     if rate_limited:
         assert (runtime._delivery_due_at - datetime.now(UTC)).total_seconds() > 295
     await runtime.async_stop()
+
+
+async def test_fresh_delivery_batch_surfaces_its_terminal_ack_expiry(hass, hosted_review, monkeypatch):
+    from custom_components.daylight_calendar_import import (
+        hosted_ack_recovery, hosted_runtime, hosted_text_batch,
+    )
+    from tests.test_hosted_delivery_journal import evidence
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    store = hosted_review.store
+    item = replace(evidence(), local_config_entry_id=runtime._entry_id)
+    await store.async_add(source_text="Private source", events=[], source_id=item.source_id,
+                          hosted_evidence=item)
+    entry = store.hosted_ack_journal()[0]
+
+    async def batch(**_kwargs):
+        store._hosted_delivery_journal = (replace(entry, ack_status="expired"),)
+        return []
+
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", AsyncMock(return_value=[]))
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
+    repair = Mock()
+    monkeypatch.setattr(hosted_runtime.ir, "async_create_issue", repair)
+    runtime.configure_delivery(store=store, route_source=object(), parse_source=AsyncMock())
+    assert await runtime.async_delivery_pass() == []
+    assert repair.call_args.kwargs["translation_key"] == "hosted_delivery_expired"
+    await runtime.async_stop()

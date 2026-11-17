@@ -753,3 +753,17 @@ def test_staged_attachment_read_is_bounded_by_declared_size_plus_one(tmp_path, m
     monkeypatch.setattr(module.os, "fdopen", fdopen)
     assert module._attachment_bytes({"local": str(tmp_path)}, item) == b"\x89PNG\r\n\x1a\nbody"
     assert read_sizes == [item.size_bytes + 1]
+
+
+async def test_authority_failure_after_response_is_uncertain(provider):
+    client, saved, _ = provider
+
+    async def disconnected(*args, **kwargs):
+        saved[0] = None
+        return result()
+
+    client._transport.async_parse.side_effect = disconnected
+    with pytest.raises(HostedParseError) as error:
+        await client.async_parse(TextSourceAdapter().create("school"), reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
+    assert error.value.uncertain is True
+    assert error.value.status == 401

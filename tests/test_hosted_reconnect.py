@@ -90,8 +90,10 @@ async def stage(reconnect, freezer):
 
 
 @pytest.mark.parametrize("marker", ["none", "unconfirmed", "confirmed"])
-async def test_real_disk_preserves_stop_namespace_and_candidate_until_authenticated_promotion(reconnect, hass, freezer, marker):
+@pytest.mark.parametrize("contract", [CONTRACT, "pending-v2-hosted-delivery"])
+async def test_real_disk_preserves_stop_namespace_and_candidate_until_authenticated_promotion(reconnect, hass, freezer, marker, contract):
     c, store, transport, adapter = reconnect
+    adapter.async_receipt.return_value = contract
     old = store.snapshot
     await store.async_checkpoint(old, replace(
         old, local_disconnect=marker, current=None if marker == "confirmed" else CURRENT,
