@@ -93,6 +93,14 @@ This release improves imports and documentation.
         with self.assertRaisesRegex(ValueError, "link or label"):
             validate(notes.replace("v0.9.1...v0.9.2]", "v0.9.0...v0.9.2]"), GENERATED, TAG)
 
+    def test_rejects_empty_section(self) -> None:
+        notes = fallback(GENERATED, TAG).replace(
+            "### 🆕 New Features\n\n- Add calendar preview by @alice in https://github.com/superdingo101/daylight-calendar-import/pull/300",
+            "### 🆕 New Features",
+        )
+        with self.assertRaisesRegex(ValueError, "empty change section"):
+            validate(notes, GENERATED, TAG)
+
     def test_rejects_unsupported_breaking_change_claims(self) -> None:
         notes = fallback(GENERATED, TAG).replace(
             "### 🔗 Full Changelog",
