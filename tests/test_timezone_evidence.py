@@ -400,3 +400,54 @@ def test_mutation_named_zone_validates_wall_time_and_offset_policy(
 def test_mutation_named_zone_rejects_conflicts(zone, value, clock, message):
     with pytest.raises(parser.DraftValidationError, match=message):
         parser._named_zone_endpoint(value, zone, clock, check_offset=True)
+
+
+@pytest.mark.parametrize(("zone", "value", "condition"), [
+    ("America/Los_Angeles", "2026-03-08T02:15:00-08:00", "nonexistent_wall_time"),
+])
+def test_mutation_dst_gap_diagnostic_is_specific(caplog, zone, value, condition):
+    with caplog.at_level(logging.DEBUG, logger=parser.__name__):
+        with pytest.raises(parser.DraftValidationError):
+            parser._wall_time_candidates(value, ZoneInfo(zone))
+    assert f"Timezone validation failed: condition={condition} zone={zone}" in caplog.text
+
+
+@pytest.mark.parametrize(("zone", "value", "expected"), [
+    ("../etc/passwd", "malformed_named_identifier", "Source time zone must be an IANA time zone name"),
+    ("Unknown/Zone", "unsupported_named_identifier", "Source IANA time zone is unavailable"),
+    ("America/Los_Angeles", "named_offset_mismatch", "Extracted UTC offset does not match the source time zone"),
+])
+def test_mutation_named_zone_failure_diagnostics(caplog, zone, value, expected):
+    instant = ("2026-12-05T10:00:00-07:00" if zone == "America/Los_Angeles"
+               else "2026-12-05T10:00:00-08:00")
+    with caplog.at_level(logging.DEBUG, logger=parser.__name__):
+        with pytest.raises(parser.DraftValidationError) as exc:
+            parser._named_zone_endpoint(instant, zone, None, check_offset=True)
+    assert str(exc.value).startswith(expected)
+    assert f"Timezone validation failed: condition={value}" in caplog.text
+
+
+@pytest.mark.parametrize(("zone", "value", "offsets"), [
+    ("America/Los_Angeles", "2026-12-05T10:00:00-08:00", ("-1 day, 16:00:00",)),
+    ("America/Los_Angeles", "2026-11-01T01:15:00-07:00",
+     ("-1 day, 17:00:00", "-1 day, 16:00:00")),
+])
+def test_mutation_named_zone_candidate_diagnostics(caplog, zone, value, offsets):
+    with caplog.at_level(logging.DEBUG, logger=parser.__name__):
+        parser._named_zone_endpoint(value, zone, None, check_offset=True)
+    assert "Timezone candidate validated: origin=provider_named zone=" + zone in caplog.text
+    for offset in offsets:
+        assert offset in caplog.text
+
+
+@pytest.mark.parametrize(("zone", "clock"), [
+    ("America/Los_Angeles", "10:00AM"),
+    ("America/Los_Angeles", "10:00PM"),
+])
+def test_mutation_named_zone_clock_matching_is_exact(zone, clock):
+    value = "2026-12-05T10:00:00-08:00"
+    if clock == "10:00AM":
+        assert parser._named_zone_endpoint(value, zone, clock, check_offset=True) is False
+    else:
+        with pytest.raises(parser.DraftValidationError, match="Extracted clock time differs"):
+            parser._named_zone_endpoint(value, zone, clock, check_offset=True)
