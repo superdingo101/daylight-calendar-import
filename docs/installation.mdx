@@ -15,21 +15,19 @@ Daylight Calendar Import is listed in the **Home Assistant Marketplace catalog**
 
 <Tabs>
   <Tab title="Marketplace (Home Assistant 2026.11+)">
-    Home Assistant 2026.11 includes the **Marketplace** under **Settings → Marketplace**. Do not install standalone HACS on this version.
+    Home Assistant 2026.11 includes the **Marketplace** under **Settings → Marketplace**.
 
     <Steps>
       <Step title="Find Daylight in the catalog">
-        Open **Settings → Marketplace** and accept the community-content warning if asked. Search for **Daylight Calendar Import** and open its listing. You do not need **Add from link** or a GitHub connection for catalog integrations.
+        Open **Settings → Marketplace** and accept the community-content warning if asked. Search for **Daylight Calendar Import** and open its listing.
       </Step>
       <Step title="Install the stable release">
-        Select **Install** and confirm the latest stable release (**v0.9.0** or newer). Leave prerelease versions disabled unless you are deliberately testing one.
+        Select **Install** and confirm the latest stable release (**v0.9.0** or newer).
       </Step>
       <Step title="Configure the integration">
         On a new installation, Marketplace can open the integration's setup flow **without a restart**. If it doesn't, use **Settings → Devices & services → Add integration** and select **Daylight Calendar Import**. Restart if Marketplace prompts you. After an **update**, restart Home Assistant to load the new code.
       </Step>
     </Steps>
-
-    If you previously installed Daylight by adding a custom repository link, leave it installed. Marketplace automatically recognizes it as a catalog repository now that it is listed.
 
     For Marketplace behavior and prerelease controls, see the [official Home Assistant Marketplace guide](https://www.home-assistant.io/integrations/marketplace/).
   </Tab>
@@ -39,7 +37,7 @@ Daylight Calendar Import is listed in the **Home Assistant Marketplace catalog**
 
     <Steps>
       <Step title="Find Daylight in HACS">
-        Open **HACS** in the sidebar and search for **Daylight Calendar Import** in the default catalog. You do not need to add a custom repository. Alternatively, use the [Daylight HACS shortcut](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration).
+        Open **HACS** in the sidebar and search for **Daylight Calendar Import**. Alternatively, use the [Daylight HACS shortcut](https://my.home-assistant.io/redirect/hacs_repository/?owner=superdingo101&repository=daylight-calendar-import&category=integration).
       </Step>
       <Step title="Download the stable release">
         Open **Daylight Calendar Import** in HACS and choose the latest stable version (**v0.9.0** or newer).
@@ -49,7 +47,6 @@ Daylight Calendar Import is listed in the **Home Assistant Marketplace catalog**
       </Step>
     </Steps>
 
-    If you update Home Assistant to 2026.11 or newer, HACS installations migrate into the built-in Marketplace. You do not need to reinstall Daylight or add the repository again.
   </Tab>
 
   <Tab title="Manual (advanced)">
@@ -57,7 +54,7 @@ Daylight Calendar Import is listed in the **Home Assistant Marketplace catalog**
 
     <Steps>
       <Step title="Choose an exact published version">
-        Visit the [Daylight releases](https://github.com/superdingo101/daylight-calendar-import/releases). Download **daylight-calendar-import.zip** attached to the release you intend to install; do not copy the development repository's current files.
+        Visit the [Daylight releases](https://github.com/superdingo101/daylight-calendar-import/releases). Download **daylight-calendar-import.zip** attached to the release you intend to install.
       </Step>
       <Step title="Extract the integration">
         Extract the archive into <code>&lt;config&gt;/custom_components/daylight_calendar_import/</code>. That directory must contain <code>manifest.json</code> and <code>__init__.py</code> at its top level, not an extra nested folder.
