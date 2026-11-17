@@ -427,3 +427,276 @@ async def test_claim_transport_error_after_response_preserves_status_and_retryab
     assert raised.value.retryable is True
     assert "sensitive" not in str(raised.value)
     assert session.request.call_count == 1
+
+
+
+async def test_attachment_download_is_bounded_and_lease_authenticated():
+    import hashlib
+    content = b"synthetic-png"
+    descriptor = {"id": "image.png", "media_type": "image/png", "size_bytes": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.request.return_value = Response(raw=content, content_type="image/png", headers={
+        "Cache-Control": "no-store", "Content-Length": str(len(content)),
+    })
+    result = await HostedSourceTransport(session, SERVICE).async_fetch_attachment(
+        token=TOKEN, delivery_id="d" * 32, lease_token="l" * 32, descriptor=descriptor,
+    )
+    assert result == content
+    args, kwargs = session.request.call_args
+    assert args == ("GET", SERVICE.api_origin + "/v1/sources/" + "d" * 32 + "/attachments/image.png")
+    assert kwargs["headers"]["Authorization"] == "Bearer " + TOKEN
+    assert kwargs["headers"]["X-Daylight-Lease-Token"] == "l" * 32
+    assert kwargs["allow_redirects"] is False and kwargs["auto_decompress"] is False
+    assert session.request.call_count == 1
+
+
+@pytest.mark.parametrize("override", [
+    {"token": "bad"}, {"token": None}, {"delivery_id": "../bad"}, {"delivery_id": None},
+    {"lease_token": "bad"}, {"lease_token": None},
+    {"descriptor": None}, {"descriptor": {"id": "../bad"}},
+    {"descriptor": {"id": "..", "media_type": "image/png", "size_bytes": 1, "sha256": "a" * 64}},
+    {"descriptor": {"id": "a", "media_type": "text/html", "size_bytes": 1, "sha256": "a" * 64}},
+    {"descriptor": {"id": "a", "media_type": 1, "size_bytes": 1, "sha256": "a" * 64}},
+    {"descriptor": {"id": "a", "media_type": "image/png", "size_bytes": True, "sha256": "a" * 64}},
+    {"descriptor": {"id": "a", "media_type": "image/png", "size_bytes": 0, "sha256": "a" * 64}},
+    {"descriptor": {"id": "a", "media_type": "image/png", "size_bytes": 10_485_761, "sha256": "a" * 64}},
+    {"descriptor": {"id": "a", "media_type": "image/png", "size_bytes": 1, "sha256": "bad"}},
+])
+async def test_attachment_rejects_invalid_inputs_before_network(override):
+    session = MagicMock(spec=aiohttp.ClientSession)
+    args = {"token": TOKEN, "delivery_id": "d" * 32, "lease_token": "l" * 32,
+            "descriptor": attachment()}
+    args.update(override)
+    with pytest.raises(ValueError, match="invalid attachment request"):
+        await HostedSourceTransport(session, SERVICE).async_fetch_attachment(**args)
+    session.request.assert_not_called()
+
+
+@pytest.mark.parametrize("status,headers,content_type,body,code", [
+    (302, {"Cache-Control": "no-store"}, "image/png", b"hello", "invalid_response"),
+    (200, {"Cache-Control": "no-store", "Content-Encoding": "gzip"}, "image/png", b"hello", "invalid_response"),
+    (200, {}, "image/png", b"hello", "invalid_response"),
+    (200, {"Cache-Control": "no-store", "Content-Length": "5"}, "text/html", b"hello", "invalid_response"),
+    (200, {"Cache-Control": "no-store", "Content-Length": "6"}, "image/png", b"hello", "invalid_response"),
+    (200, {"Cache-Control": "no-store", "Content-Length": "5"}, "image/png", b"helloo", "invalid_response"),
+    (200, {"Cache-Control": "no-store", "Content-Length": "5"}, "image/png", b"hell", "invalid_response"),
+    (200, {"Cache-Control": "no-store", "Content-Length": "5"}, "image/png", b"wrong", "invalid_response"),
+    (409, {"Cache-Control": "no-store"}, "application/json", b"{}", "lease_not_current"),
+    (429, {"Cache-Control": "no-store"}, "application/json", b"{}", "rate_limited"),
+    (503, {"Cache-Control": "no-store"}, "application/json", b"{}", "attachment_unavailable"),
+])
+async def test_attachment_rejects_unsafe_envelopes_and_integrity_mismatches(
+    status, headers, content_type, body, code,
+):
+    import hashlib
+    descriptor = {"id": "a", "media_type": "image/png", "size_bytes": 5,
+                  "sha256": hashlib.sha256(b"hello").hexdigest()}
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.request.return_value = Response(raw=body, status=status, headers=headers,
+                                            content_type=content_type)
+    with pytest.raises(HostedTransportError) as error:
+        await HostedSourceTransport(session, SERVICE).async_fetch_attachment(
+            token=TOKEN, delivery_id="d" * 32, lease_token="l" * 32, descriptor=descriptor,
+        )
+    assert error.value.code == code
+    assert error.value.retryable is (status in (429, 503))
+
+
+async def test_attachment_network_failure_never_retries():
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.request.side_effect = aiohttp.ClientConnectionError()
+    with pytest.raises(HostedTransportError, match="service_unavailable"):
+        await HostedSourceTransport(session, SERVICE).async_fetch_attachment(
+            token=TOKEN, delivery_id="d" * 32, lease_token="l" * 32, descriptor=attachment(),
+        )
+    assert session.request.call_count == 1
+
+
+# Mutation coverage for the H3 attachment download wire contract. Keep unrelated
+# validation fields valid so removal of any one safeguard fails its own case.
+def _download_fixture(raw=b"hello", *, size=None, media="image/png", headers=None, status=200,
+                      descriptor_overrides=None):
+    import hashlib
+    evidence = {
+        "id": "a.png",
+        "media_type": media,
+        "size_bytes": len(raw) if size is None else size,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    evidence.update(descriptor_overrides or {})
+    session = MagicMock(spec=aiohttp.ClientSession)
+    response = Response(
+        raw=raw, status=status, content_type=media,
+        headers=({"Cache-Control": "no-store",
+                  "Content-Length": str(evidence["size_bytes"])}
+                 if headers is None else headers),
+    )
+    session.request.return_value = response
+    return session, response, evidence
+
+
+async def _fetch_download(session, descriptor, *, token=TOKEN):
+    return await HostedSourceTransport(session, SERVICE).async_fetch_attachment(
+        token=token, delivery_id="d" * 32, lease_token="l" * 32, descriptor=descriptor,
+    )
+
+
+async def test_attachment_request_has_exact_trusted_origin_headers_and_limits(monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_source_transport as module
+
+    observed_timeouts = []
+    real_timeout = module.asyncio.timeout
+
+    def record_timeout(seconds):
+        observed_timeouts.append(seconds)
+        return real_timeout(seconds)
+
+    monkeypatch.setattr(module.asyncio, "timeout", record_timeout)
+    session, response, descriptor = _download_fixture()
+    assert await _fetch_download(session, descriptor) == b"hello"
+    assert observed_timeouts == [30]
+    assert response.closed
+    assert session.request.call_count == 1
+    args, options = session.request.call_args
+    assert args == ("GET", SERVICE.api_origin + "/v1/sources/" + "d" * 32
+                    + "/attachments/a.png")
+    assert options["headers"] == {
+        "Accept": "image/png",
+        "Accept-Encoding": "identity",
+        "Authorization": "Bearer " + TOKEN,
+        "X-Daylight-Lease-Token": "l" * 32,
+    }
+    assert set(options) == {
+        "headers", "allow_redirects", "timeout", "max_line_size",
+        "max_field_size", "max_headers", "auto_decompress",
+    }
+    assert options["allow_redirects"] is False
+    assert options["auto_decompress"] is False
+    assert isinstance(options["timeout"], aiohttp.ClientTimeout)
+    assert options["timeout"].total == 30
+    assert options["max_line_size"] == 4096
+    assert options["max_field_size"] == 4096
+    assert options["max_headers"] == 32
+
+
+@pytest.mark.parametrize("body_size", [1, 10_485_760])
+async def test_attachment_download_accepts_exact_permitted_size_boundaries(body_size):
+    raw = b"p" * body_size
+    session, _, descriptor = _download_fixture(raw)
+    assert await _fetch_download(session, descriptor) == raw
+
+
+async def test_attachment_optional_filename_is_permitted_but_does_not_affect_url():
+    session, _, descriptor = _download_fixture(
+        descriptor_overrides={"filename": "School flyer – original.png"},
+    )
+    assert await _fetch_download(session, descriptor) == b"hello"
+    assert session.request.call_args.args[1].endswith("/attachments/a.png")
+
+
+@pytest.mark.parametrize("token", ["T" * 43, "t" * 43])
+async def test_attachment_authentication_token_case_is_preserved(token):
+    session, _, descriptor = _download_fixture()
+    assert await _fetch_download(session, descriptor, token=token) == b"hello"
+    assert session.request.call_args.kwargs["headers"]["Authorization"] == "Bearer " + token
+
+
+async def test_attachment_invalid_inputs_have_exact_error_without_request():
+    for override in ({"token": "bad"}, {"descriptor": {"id": "a.png"}}):
+        session, _, descriptor = _download_fixture()
+        values = {"token": TOKEN, "delivery_id": "d" * 32,
+                  "lease_token": "l" * 32, "descriptor": descriptor}
+        values.update(override)
+        with pytest.raises(ValueError, match=r"^invalid attachment request$"):
+            await HostedSourceTransport(session, SERVICE).async_fetch_attachment(**values)
+        session.request.assert_not_called()
+
+
+@pytest.mark.parametrize("headers", [
+    {"Content-Length": "5"},  # cache-control omission alone
+    {"Cache-Control": "no-store", "Content-Length": "5", "Content-Encoding": "gzip"},
+])
+async def test_attachment_rejects_each_unsafe_header_independently(headers):
+    session, response, descriptor = _download_fixture(headers=headers)
+    with pytest.raises(HostedTransportError) as raised:
+        await _fetch_download(session, descriptor)
+    assert raised.value.code == "invalid_response"
+    assert raised.value.status == 200
+    assert raised.value.retryable is False
+    assert response.closed
+
+
+@pytest.mark.parametrize("cache_control", [
+    "max-age=0, no-store",
+    "NO-CACHE, NO-STORE",
+    "private,no-store",
+])
+async def test_attachment_accepts_comma_separated_no_store(cache_control):
+    session, _, descriptor = _download_fixture(headers={
+        "Cache-Control": cache_control, "Content-Length": "5",
+    })
+    assert await _fetch_download(session, descriptor) == b"hello"
+
+
+@pytest.mark.parametrize("status,code,retryable", [
+    (300, "invalid_response", False),
+    (301, "invalid_response", False),
+    (302, "invalid_response", False),
+    (399, "invalid_response", False),
+    (400, "attachment_unavailable", False),
+    (401, "not_authorized", False),
+    (402, "attachment_unavailable", False),
+    (403, "entitlement_required", False),
+    (404, "not_found", False),
+    (409, "lease_not_current", False),
+    (429, "rate_limited", True),
+    (499, "attachment_unavailable", False),
+    (500, "attachment_unavailable", True),
+    (501, "attachment_unavailable", True),
+])
+async def test_attachment_status_mapping_preserves_code_status_and_retryability(
+    status, code, retryable,
+):
+    session, response, descriptor = _download_fixture(status=status)
+    with pytest.raises(HostedTransportError) as raised:
+        await _fetch_download(session, descriptor)
+    assert raised.value.code == code
+    assert raised.value.status == status
+    assert raised.value.retryable is retryable
+    assert response.closed
+
+
+async def test_attachment_stream_requests_fixed_chunks_and_aborts_on_overrun():
+    session, response, descriptor = _download_fixture(size=5)
+    chunk_sizes = []
+
+    async def oversized_body(chunk_size):
+        chunk_sizes.append(chunk_size)
+        yield b"123456"
+        pytest.fail("over-limit response must be rejected before the next chunk")
+
+    response.content.iter_chunked = oversized_body
+    with pytest.raises(HostedTransportError) as raised:
+        await _fetch_download(session, descriptor)
+    assert chunk_sizes == [16384]
+    assert raised.value.code == "invalid_response"
+    assert raised.value.status == 200
+
+
+async def test_attachment_payload_transport_failure_after_headers_keeps_status():
+    session, response, descriptor = _download_fixture(status=200)
+
+    async def interrupted_body(_chunk_size):
+        raise aiohttp.ClientPayloadError("private upstream response")
+        yield b""  # pragma: no cover
+
+    response.content.iter_chunked = interrupted_body
+    with pytest.raises(HostedTransportError) as raised:
+        await _fetch_download(session, descriptor)
+    assert raised.value.code == "service_unavailable"
+    assert raised.value.status == 200
+    assert raised.value.retryable is True
+    assert "private" not in str(raised.value)
+    assert response.closed
+    assert session.request.call_count == 1
