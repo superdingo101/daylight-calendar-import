@@ -220,3 +220,28 @@ async def test_hosted_immediate_checkpoint_error_has_repair_instructions(pending
         await pending.async_add(source_text="Private source", events=[draft()],
                                 source_id=item.source_id, hosted_evidence=item)
     assert str(exc.value) == _STORAGE_ERROR
+
+
+@pytest.mark.parametrize("bound", [False, True])
+async def test_delivery_aware_reconnect_preserves_durable_ack_records(pending, hass, bound):
+    from dataclasses import replace
+
+    from tests.test_hosted_delivery_journal import evidence
+
+    namespace = ("account_1234567890", "installation_1234567890")
+    item = evidence()
+    if bound:
+        item = replace(item, account_id=namespace[0], installation_id=namespace[1])
+    await pending.async_add(source_text="Private source", events=[draft()],
+                            source_id=item.source_id, hosted_evidence=item)
+    restarted = PendingImportStore(hass)
+    await restarted.async_load()
+    restarted.accepting_services = True
+    reconciler = module.LocalOnlyNamespaceReconciler(restarted, allow_delivery=True)
+    if bound:
+        assert await reconciler.async_receipt(namespace) == module.DELIVERY_CONTRACT
+        assert restarted.hosted_ack_journal()[0].evidence == item
+        assert restarted.hosted_ack_journal()[0].ack_status == "pending"
+        restarted._hosted_delivery_journal = ()
+    with pytest.raises(module.NamespaceReconciliationError):
+        await reconciler.async_receipt(namespace)

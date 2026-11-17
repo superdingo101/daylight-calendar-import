@@ -149,3 +149,22 @@ async def test_recovery_invalid_limit_error_is_stable(monkeypatch):
     with pytest.raises(ValueError) as failure:
         await run(store, Transport(), limit=51)
     assert str(failure.value) == "ACK recovery limit must be 1 to 50"
+
+
+async def test_reconnect_ack_recovery_leaves_retired_namespace_pending_until_expiry(monkeypatch):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    await accepted(store, "prior")
+    await accepted(store, "current")
+    prior, current = store.hosted_ack_journal()
+    prior = replace(prior, evidence=replace(prior.evidence, installation_id="retired_installation"))
+    store._hosted_delivery_journal = (prior, current)
+    transport = Transport()
+    result = await run(store, transport, limit=1)
+    assert result[0].evidence.delivery_id == "current"
+    assert store.hosted_ack_journal()[0] == prior
+    prior = replace(prior, evidence=replace(
+        prior.evidence, source_expires_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+    ))
+    store._hosted_delivery_journal = (prior, result[0])
+    assert (await run(store, transport))[0].ack_status == "expired"
+    assert len(transport.calls) == 1

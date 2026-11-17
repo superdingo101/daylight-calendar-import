@@ -342,3 +342,85 @@ async def test_expiration_is_exclusive_at_exact_boundary(monkeypatch, boundary):
     with pytest.raises(HostedTextAcceptanceError, match=r"^hosted delivery authority unavailable$"):
         await run(store, SimpleNamespace(snapshot=cp), delivery, parse=should_not_parse)
     assert not store.hosted_ack_journal()
+
+
+async def test_durable_acceptance_clears_matching_attempt_in_same_write(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    delivery = page()["deliveries"][0]
+    source_id = "hosted:entry:" + delivery["delivery_id"]
+    await store.async_change_hosted_parse_attempt(source_id)
+    assert store.hosted_parse_uncertain
+    with pytest.raises(ValueError, match="explicit recovery"):
+        await store.async_change_hosted_parse_attempt(source_id)
+    await run(store, SimpleNamespace(snapshot=checkpoint()), delivery)
+    assert not store.hosted_parse_uncertain
+    assert "hosted_parse_attempt" not in backend.saved[-1]
+    assert len(backend.saved[-1]["hosted_delivery_journal"]) == 1
+
+
+async def test_retiring_store_drains_accepted_write_and_fences_late_mutations(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from custom_components.daylight_calendar_import import _async_stop_hosted_runtime
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = backend.async_save_immediate
+
+    async def slow_save(data):
+        entered.set()
+        await release.wait()
+        await original(data)
+
+    backend.async_save_immediate = slow_save
+    delivery = page()["deliveries"][0]
+    creds = SimpleNamespace(snapshot=checkpoint())
+    delivery_task = asyncio.create_task(run(store, creds, delivery))
+    await entered.wait()
+    store.hosted_runtime = SimpleNamespace(async_stop=AsyncMock())
+    stopping = asyncio.create_task(_async_stop_hosted_runtime(store))
+    await asyncio.sleep(0)
+    assert not stopping.done()
+    release.set()
+    await asyncio.gather(stopping, delivery_task)
+    saved = store.hosted_ack_journal()[0]
+    with pytest.raises(PendingImportStorageError):
+        await store.async_reconcile_hosted_ack(entry=saved, action="attempt")
+    with pytest.raises(PendingImportStorageError):
+        await store.async_change_hosted_parse_attempt(None)
+    with pytest.raises(PendingImportStorageError):
+        await run(store, creds, {**delivery, "delivery_id": "x" * 32})
+    restarted = make_store(monkeypatch, FakeStoreBackend(load_result=backend.saved[-1]))
+    await restarted.async_load()
+    assert restarted.hosted_ack_journal() == (saved,)
+
+
+async def test_cancelled_hosted_parse_attempt_waits_for_durable_fence(monkeypatch):
+    import asyncio
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    entered, release = asyncio.Event(), asyncio.Event()
+    save = backend.async_save_immediate
+
+    async def blocked_save(data):
+        entered.set()
+        await release.wait()
+        await save(data)
+
+    backend.async_save_immediate = blocked_save
+    delivery = page()["deliveries"][0]
+    source_id = "hosted:entry:" + delivery["delivery_id"]
+    task = asyncio.create_task(store.async_change_hosted_parse_attempt(source_id))
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert store.hosted_parse_uncertain
+    assert "hosted_parse_attempt" in backend.saved[-1]

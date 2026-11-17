@@ -1394,3 +1394,140 @@ async def test_delivery_acceptance_guard_rechecks_fence_after_parse(
             additional.cancel()
             await asyncio.gather(additional, return_exceptions=True)
         await runtime.async_stop()
+
+
+async def test_delivery_pass_surfaces_expired_ack_without_reparse(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import (
+        hosted_ack_recovery, hosted_runtime, hosted_text_batch,
+    )
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    recovery = AsyncMock(return_value=[SimpleNamespace(ack_status="expired")])
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", recovery)
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", AsyncMock(return_value=[]))
+    repair = Mock()
+    monkeypatch.setattr(hosted_runtime.ir, "async_create_issue", repair)
+    parser = AsyncMock()
+    runtime.configure_delivery(store=object(), route_source=object(), parse_source=parser)
+    assert await runtime.async_delivery_pass() == []
+    assert repair.call_args.kwargs["translation_key"] == "hosted_delivery_expired"
+    assert repair.call_args.kwargs["is_persistent"] is True
+    parser.assert_not_awaited()
+    await runtime.async_stop()
+
+
+@pytest.mark.parametrize("failure", [
+    "uncertain", "rate_limited", "invalid_local", "success", "bad_request",
+    "unauthorized", "forbidden", "payload_too_large", "not_definitive",
+    "uncertain_bad_request",
+])
+async def test_managed_delivery_parse_fences_attempt_before_io(hass, monkeypatch, failure):
+    from custom_components.daylight_calendar_import import hosted_ack_recovery, hosted_text_batch
+    from custom_components.daylight_calendar_import.hosted_parse_transport import HostedParseError
+    from custom_components.daylight_calendar_import.providers import SourceValidationError
+    from tests.test_storage import FakeStoreBackend, make_store
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    source = SimpleNamespace(upstream_source_id="hosted:entry:delivery")
+    await_called = []
+    error = {
+        "uncertain": HostedParseError("provider_timeout", uncertain=True),
+        "rate_limited": HostedParseError("rate_limited", status=429, retry_after=300),
+        "invalid_local": SourceValidationError("invalid_source", "Invalid source"),
+        "bad_request": HostedParseError("bad_request", status=400),
+        "unauthorized": HostedParseError("unauthorized", status=401),
+        "forbidden": HostedParseError("forbidden", status=403),
+        "payload_too_large": HostedParseError("payload_too_large", status=413),
+        "not_definitive": HostedParseError("not_found", status=404),
+        "uncertain_bad_request": HostedParseError("provider_timeout", status=400, uncertain=True),
+    }.get(failure)
+
+    async def parse(got):
+        assert got is source
+        assert store.hosted_parse_uncertain
+        assert backend.saved[-1]["hosted_parse_attempt"].startswith("v1:source:")
+        await_called.append(True)
+        if error:
+            raise error
+        return "success", None
+
+    async def batch(**kwargs):
+        return await kwargs["parse_source"](source)
+
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", AsyncMock())
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
+    runtime.configure_delivery(store=store, route_source=object(), parse_source=parse)
+    runtime._delivery_poll_running = True
+    await runtime._async_delivery_poll()
+    assert await_called == [True]
+    assert store.hosted_parse_uncertain == (failure in {
+        "uncertain", "success", "not_definitive", "uncertain_bad_request",
+    })
+    if failure == "rate_limited":
+        assert (runtime._delivery_due_at - datetime.now(UTC)).total_seconds() > 295
+    restarted = make_store(monkeypatch, FakeStoreBackend(load_result=backend.saved[-1]))
+    await restarted.async_load()
+    assert restarted.hosted_parse_uncertain == store.hosted_parse_uncertain
+    await runtime.async_stop()
+
+
+@pytest.mark.parametrize("rate_limited", [False, True])
+async def test_real_delivery_retry_preserves_parse_transport_evidence(hosted_review, monkeypatch, rate_limited):
+    from custom_components.daylight_calendar_import import hosted_runtime, hosted_source_transport
+    from tests.test_hosted_ack_dispatch import Transport, checkpoint
+    from tests.test_hosted_text_acceptance import page
+
+    store = hosted_review.store
+    runtime = store.hosted_runtime
+    credential = checkpoint()
+    runtime._service = SERVICE
+    runtime._credential_store = SimpleNamespace(snapshot=credential)
+    runtime._controller = object()
+    runtime._verified_parse_credential = credential.current
+    runtime._state = HostedConnectionResult("connected", "current")
+    monkeypatch.setattr(HostedConnectionRuntime, "parse_session", REAL_PARSE_SESSION)
+    error = (HostedParseError("rate_limited", status=429, retry_after=300) if rate_limited
+             else HostedParseError("provider_timeout", uncertain=True))
+    wire = AsyncMock(side_effect=error)
+    monkeypatch.setattr(HostedParseTransport, "async_parse", wire)
+    ack = Transport()
+    claim = SimpleNamespace(service_binding=SERVICE, async_claim=AsyncMock(return_value=page()))
+    monkeypatch.setattr(hosted_source_transport, "HostedSourceTransport", lambda *_: claim)
+    monkeypatch.setattr(hosted_runtime, "HostedLifecycleTransport", lambda *_, **__: ack)
+    runtime._delivery_poll_running = True
+    await runtime._async_delivery_poll()
+    assert wire.await_count == 1
+    assert not ack.calls and not store.hosted_ack_journal()
+    assert store.hosted_parse_uncertain is not rate_limited
+    if rate_limited:
+        assert (runtime._delivery_due_at - datetime.now(UTC)).total_seconds() > 295
+    await runtime.async_stop()
+
+
+async def test_fresh_delivery_batch_surfaces_its_terminal_ack_expiry(hass, hosted_review, monkeypatch):
+    from custom_components.daylight_calendar_import import (
+        hosted_ack_recovery, hosted_runtime, hosted_text_batch,
+    )
+    from tests.test_hosted_delivery_journal import evidence
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    store = hosted_review.store
+    item = replace(evidence(), local_config_entry_id=runtime._entry_id)
+    await store.async_add(source_text="Private source", events=[], source_id=item.source_id,
+                          hosted_evidence=item)
+    entry = store.hosted_ack_journal()[0]
+
+    async def batch(**_kwargs):
+        store._hosted_delivery_journal = (replace(entry, ack_status="expired"),)
+        return []
+
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", AsyncMock(return_value=[]))
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
+    repair = Mock()
+    monkeypatch.setattr(hosted_runtime.ir, "async_create_issue", repair)
+    runtime.configure_delivery(store=store, route_source=object(), parse_source=AsyncMock())
+    assert await runtime.async_delivery_pass() == []
+    assert repair.call_args.kwargs["translation_key"] == "hosted_delivery_expired"
+    await runtime.async_stop()

@@ -41,6 +41,7 @@ ACTIVITY_TRANSITIONS_PER_IMPORT = 32
 COMPLETED_HISTORY_DAYS = 30
 TERMINAL_NOTIFICATION_LIMIT = 1_000
 _STORAGE_HOSTED_JOURNAL = "hosted_delivery_journal"
+_STORAGE_HOSTED_PARSE_ATTEMPT = "hosted_parse_attempt"
 _STORAGE_ITEMS = "items"
 _STORAGE_ACTIVITY = "activity"
 _STORAGE_NOTIFICATIONS = "notifications"
@@ -372,7 +373,8 @@ class PendingImport:
 def _decode_storage_data(data: Any) -> tuple:
     """Decode all durable collections before installing any of the snapshot."""
     fields = {_STORAGE_ITEMS, _STORAGE_ACTIVITY, _STORAGE_NOTIFICATIONS,
-              _STORAGE_SOURCE_CLAIMS, _STORAGE_SEEN_SOURCES, _STORAGE_SEEN_EVENTS, _STORAGE_HOSTED_JOURNAL}
+              _STORAGE_SOURCE_CLAIMS, _STORAGE_SEEN_SOURCES, _STORAGE_SEEN_EVENTS,
+              _STORAGE_HOSTED_JOURNAL, _STORAGE_HOSTED_PARSE_ATTEMPT}
     if not isinstance(data, dict) or set(data) - fields:
         raise ValueError("unsupported pending storage envelope")
 
@@ -464,7 +466,13 @@ def _decode_storage_data(data: Any) -> tuple:
         stored_fingerprint(fingerprint, "source")
     hosted = tuple(HostedDeliveryJournalEntry.from_dict(raw) for raw in rows(_STORAGE_HOSTED_JOURNAL))
     unique([(entry.evidence.local_config_entry_id, entry.evidence.delivery_id) for entry in hosted])
-    return {item.id: item for item in loaded_items}, tuple(activity), journal, *histories, dict(claims), hosted
+    parse_attempt = data.get(_STORAGE_HOSTED_PARSE_ATTEMPT)
+    if parse_attempt is not None:
+        stored_fingerprint(parse_attempt, "source")
+    return (
+        {item.id: item for item in loaded_items}, tuple(activity), journal, *histories,
+        dict(claims), hosted, parse_attempt,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -491,6 +499,8 @@ class PendingImportStore:
         self._items: dict[str, PendingImport] = {}
         self._activity: tuple[dict[str, Any], ...] = ()
         self._hosted_delivery_journal: tuple[HostedDeliveryJournalEntry, ...] = ()
+        self._hosted_parse_attempt: str | None = None
+        self._hosted_writes_closed = False
         self._notifications: tuple[NotificationRecord, ...] = ()
         self.notification_preferences: Callable[[], NotificationPreferences] = NotificationPreferences
         self.notification_delivery_lock = asyncio.Lock()
@@ -530,9 +540,10 @@ class PendingImportStore:
             data = await self._store.async_load()
             if data is None:
                 if any((self._items, self._activity, self._notifications, self._source_claims,
-                        self._seen_source_fingerprints, self._seen_event_fingerprints, self._hosted_delivery_journal)):
+                        self._seen_source_fingerprints, self._seen_event_fingerprints,
+                        self._hosted_delivery_journal, self._hosted_parse_attempt)):
                     raise PendingImportStorageError(_STORAGE_ERROR)
-                snapshot = ({}, (), (), (), (), {}, ())
+                snapshot = ({}, (), (), (), (), {}, (), None)
             else:
                 snapshot = _decode_storage_data(data)
         except Exception:
@@ -541,7 +552,8 @@ class PendingImportStore:
             raise PendingImportStorageError(_STORAGE_ERROR) from None
 
         (self._items, self._activity, self._notifications, self._seen_source_fingerprints,
-         self._seen_event_fingerprints, self._source_claims, self._hosted_delivery_journal) = snapshot
+         self._seen_event_fingerprints, self._source_claims, self._hosted_delivery_journal,
+         self._hosted_parse_attempt) = snapshot
         self._storage_blocked = False
         self._source_claim_releases = set()
         self._source_claim_release_provider_codes = {}
@@ -1508,6 +1520,35 @@ class PendingImportStore:
             raise PendingImportStorageError(_STORAGE_ERROR)
         return deepcopy(self._hosted_delivery_journal)
 
+    def close_hosted_writes(self) -> None:
+        """Fence late writes from the retiring runtime before draining."""
+        self._hosted_writes_closed = True
+
+    async def async_drain_hosted_writes(self) -> None:
+        """Wait for already-admitted storage transactions to finish."""
+        async with self._lock:
+            pass
+
+    @property
+    def hosted_parse_uncertain(self) -> bool:
+        """A managed parse was attempted without a durable terminal result."""
+        return self._hosted_parse_attempt is not None
+
+    async def async_change_hosted_parse_attempt(self, source_id: str | None) -> None:
+        """Fence a managed POST durably, or clear it after explicit recovery."""
+        async def change() -> None:
+            async with self._lock:
+                if self._hosted_writes_closed:
+                    raise PendingImportStorageError(_STORAGE_ERROR)
+                if source_id is not None and self._hosted_parse_attempt is not None:
+                    raise ValueError("hosted parse requires explicit recovery")
+                attempt = build_source_fingerprint(source_id) if source_id is not None else None
+                await self._async_save(self._items, hosted_parse_attempt=(attempt,))
+
+        _, cancelled = await self._async_complete_transaction(change())
+        if cancelled:
+            raise asyncio.CancelledError
+
     async def async_reconcile_hosted_ack(
         self, *, entry: HostedDeliveryJournalEntry, action: str,
         new_evidence: HostedDeliveryEvidence | None = None,
@@ -1531,7 +1572,7 @@ class PendingImportStore:
         new_evidence: HostedDeliveryEvidence | None,
     ) -> HostedDeliveryJournalEntry:
         async with self._lock:
-            if self._storage_blocked:
+            if self._storage_blocked or self._hosted_writes_closed:
                 raise PendingImportStorageError(_STORAGE_ERROR)
             if action not in {"attempt", "confirm", "expire", "replace_lease"}:
                 raise ValueError("invalid hosted journal action")
@@ -1695,6 +1736,8 @@ class PendingImportStore:
             if acceptance_guard is not None:
                 acceptance_guard()
             if hosted_evidence is not None:
+                if self._hosted_writes_closed:
+                    raise PendingImportStorageError(_STORAGE_ERROR)
                 expiry = datetime.fromisoformat(hosted_evidence.source_expires_at.replace("Z", "+00:00"))
                 if expiry <= datetime.now(UTC):
                     raise ValueError("hosted source has expired")
@@ -2160,6 +2203,7 @@ class PendingImportStore:
         source_claims: dict[str, str] | None = None,
         notifications: tuple[NotificationRecord, ...] | None = None,
         hosted_delivery_journal: tuple[HostedDeliveryJournalEntry, ...] | None = None,
+        hosted_parse_attempt: tuple[str | None] | None = None,
     ) -> None:
         """Persist a proposed collection and deduplication history."""
         if self._storage_blocked:
@@ -2195,19 +2239,26 @@ class PendingImportStore:
         hosted = self._hosted_delivery_journal if hosted_delivery_journal is None else hosted_delivery_journal
         if hosted:
             data[_STORAGE_HOSTED_JOURNAL] = [entry.as_dict() for entry in hosted]
+        attempt = self._hosted_parse_attempt if hosted_parse_attempt is None else hosted_parse_attempt[0]
+        if attempt is not None and any(record.source_fingerprint == attempt for record in hosted):
+            attempt = None
+        if attempt is not None:
+            data[_STORAGE_HOSTED_PARSE_ATTEMPT] = attempt
+        hosted_write = hosted_delivery_journal is not None or hosted_parse_attempt is not None
         try:
-            if hosted_delivery_journal is not None:
+            if hosted_write:
                 await self._store.async_save_immediate(data)
             else:
                 await self._store.async_save(data)
         except BaseException:
             # A failed save can have committed on disk before reporting failure.
             # Do not overwrite uncertain acceptance; require a fresh reload first.
-            if hosted_delivery_journal is not None:
+            if hosted_write:
                 self._storage_blocked = True
                 self.accepting_services = False
             raise
         self._hosted_delivery_journal = hosted
+        self._hosted_parse_attempt = attempt
         self._activity = history
         self._notifications = journal
         if self.on_notifications is not None:

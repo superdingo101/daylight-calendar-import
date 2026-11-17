@@ -281,8 +281,13 @@ class DaylightHostedParserProvider:
         if self._authority() != credential:
             raise HostedParseError("unauthenticated", status=401)
         response = await self._transport.async_parse(request, tuple(binaries), token=credential.token)
-        if self._authority() != credential:
-            raise HostedParseError("unauthenticated", status=401)
+        try:
+            if self._authority() != credential:
+                raise HostedParseError("unauthenticated", status=401)
+        except HostedParseError as error:
+            # A successful response followed by local authority loss may already
+            # represent billable work, even when the local error resembles a 401.
+            raise HostedParseError(error.code, status=error.status, uncertain=True) from None
         try:
             return parse_hosted_result(response, source)
         except Exception:
