@@ -830,6 +830,7 @@ async def test_explicit_delivery_retry_fences_permission_and_owns_transaction(ru
     delete = Mock()
     monkeypatch.setattr(module, "async_track_point_in_utc_time", timer)
     monkeypatch.setattr(module.ir, "async_delete_issue", delete)
+    monkeypatch.setattr(module.ir, "async_create_issue", Mock())
     store = SimpleNamespace(hosted_parse_uncertain=True)
     async def clear_attempt(value):
         assert value is None
