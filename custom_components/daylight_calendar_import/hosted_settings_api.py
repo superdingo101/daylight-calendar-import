@@ -150,11 +150,12 @@ async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: 
 @websocket_api.websocket_command({
     "type": WS_HOSTED_ACTION,
     vol.Required("entry_id"): cv.string,
-    vol.Required("action"): vol.In(("connect", "reconnect", "poll", "reconcile", "rotate", "disconnect")),
+    vol.Required("action"): vol.In(("connect", "reconnect", "poll", "reconcile", "rotate", "disconnect", "retry_delivery")),
     vol.Optional("processing_consent"): bool,
     vol.Optional("installation_label"): vol.All(str, vol.Length(min=1, max=128)),
     vol.Optional("confirm_disconnect"): bool,
     vol.Optional("confirm_reconnect"): bool,
+    vol.Optional("confirm_delivery_retry"): bool,
 })
 @websocket_api.async_response
 async def websocket_hosted_action(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
@@ -165,7 +166,8 @@ async def websocket_hosted_action(hass: HomeAssistant, connection: Any, msg: dic
         connect_keys = {"processing_consent", "installation_label"} & msg.keys()
         if ((action not in ("connect", "reconnect") and connect_keys)
                 or (action != "disconnect" and "confirm_disconnect" in msg)
-                or (action != "reconnect" and "confirm_reconnect" in msg)):
+                or (action != "reconnect" and "confirm_reconnect" in msg)
+                or (action != "retry_delivery" and "confirm_delivery_retry" in msg)):
             raise HostedRuntimeError("invalid_hosted_action")
         kwargs = {}
         if action in ("connect", "reconnect"):
@@ -176,7 +178,13 @@ async def websocket_hosted_action(hass: HomeAssistant, connection: Any, msg: dic
             raise HostedRuntimeError("confirmation_required")
         if action == "disconnect" and msg.get("confirm_disconnect") is not True:
             raise HostedRuntimeError("confirmation_required")
-        result = await _runtime(hass, entry).async_action(action, **kwargs)
+        runtime = _runtime(hass, entry)
+        if action == "retry_delivery":
+            if msg.get("confirm_delivery_retry") is not True:
+                raise HostedRuntimeError("confirmation_required")
+            result = await runtime.async_retry_delivery_parse()
+        else:
+            result = await runtime.async_action(action, **kwargs)
     except asyncio.CancelledError:
         if asyncio.current_task().cancelling():
             raise

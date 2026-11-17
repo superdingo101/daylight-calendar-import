@@ -2,7 +2,7 @@
 
 const PREFIX = "daylight_calendar_import/hosted/";
 const STATE_KEYS = ["entry_id", "configured", "automatic_lifecycle", "api_origin", "account_origin", "account_url", "state", "credential_status", "credential_expires_at"];
-const ACTIONS = new Set(["connect", "reconnect", "poll", "reconcile", "rotate", "disconnect"]);
+const ACTIONS = new Set(["connect", "reconnect", "poll", "reconcile", "rotate", "disconnect", "retry_delivery"]);
 const SAFE_FAILURE = "The connection request could not be confirmed. Check status before making another change.";
 
 function node(tag, text = "", className) {
@@ -49,13 +49,15 @@ function trustedAccountLink(value, accountOrigin) {
 export function validateHostedState(result, {entryId, pairing = false} = {}) {
   const hasPairing = result !== null && typeof result === "object" && Object.hasOwn(result, "pairing");
   const progressKeys = Object.hasOwn(result || {}, "reconnect_in_progress") ? ["reconnect_in_progress"] : [];
-  const pollKeys = Object.hasOwn(result || {}, "delivery_polling") ? ["delivery_polling"] : [];
+  const pollKeys = ["delivery_polling", "delivery_parse_uncertain"].filter(
+    key => Object.hasOwn(result || {}, key),
+  );
   const keys = [...STATE_KEYS, ...progressKeys, ...pollKeys, ...(hasPairing && pairing ? ["pairing"] : [])];
   if (!closed(result, keys) || typeof result.entry_id !== "string" ||
       result.entry_id.length < 1 || result.entry_id.length > 128 ||
       entryId !== undefined && result.entry_id !== entryId ||
       progressKeys.length > 0 && typeof result.reconnect_in_progress !== "boolean" ||
-      pollKeys.length > 0 && typeof result.delivery_polling !== "boolean" ||
+      pollKeys.some(key => typeof result[key] !== "boolean") ||
       typeof result.configured !== "boolean" || typeof result.automatic_lifecycle !== "boolean" ||
       ![null, "current", "overlap"].includes(result.credential_status) ||
       result.credential_expires_at !== null && !deadline(result.credential_expires_at) ||
@@ -128,6 +130,10 @@ export async function runHostedAction(hass, entryId, action, input = {}) {
   if (action === "disconnect") {
     if (input.confirm_disconnect !== true) throw new Error("Confirm local stop and disconnection first.");
     request.confirm_disconnect = true;
+  }
+  if (action === "retry_delivery") {
+    if (input.confirm_delivery_retry !== true) throw new Error("Confirm that you want to retry the uncertain import.");
+    request.confirm_delivery_retry = true;
   }
   return validateHostedState(await hass.callWS(request), {entryId, pairing: ["connect", "reconnect"].includes(action)});
 }
@@ -561,6 +567,26 @@ export class HostedConnectionSettings {
         delivery_polling: !state.delivery_polling,
       }));
       delivery.append(toggleDelivery);
+      if (state.delivery_parse_uncertain && state.delivery_polling) {
+        delivery.append(node("p", "The previous hosted email parse may have completed. Check Recent Activity and the Review Inbox before retrying. A retry may use another managed parse."));
+        const retryForm = document.createElement("form");
+        const confirm = document.createElement("input");
+        confirm.name = "confirm_delivery_retry";
+        confirm.type = "checkbox";
+        confirm.disabled = this.busy;
+        const label = node("label", "I checked the previous attempt and want to retry");
+        label.append(confirm);
+        const retry = node("button", "Retry hosted email");
+        retry.type = "submit";
+        retry.disabled = true;
+        confirm.addEventListener("change", () => { retry.disabled = !confirm.checked || this.busy; });
+        retryForm.append(label, retry);
+        retryForm.addEventListener("submit", event => {
+          event.preventDefault();
+          if (confirm.checked) void this.submit("retry_delivery", {confirm_delivery_retry: true});
+        });
+        delivery.append(retryForm);
+      }
       diagnostics.append(delivery);
     }
 

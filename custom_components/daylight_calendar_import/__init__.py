@@ -423,7 +423,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         except ProviderError as error:
             from .hosted_parse_transport import HostedParseError
-            if not isinstance(error, HostedParseError):
+            if delivery_owner or not isinstance(error, HostedParseError):
                 raise
             raise _hosted_parse_failure(error) from None
         guard()
@@ -1188,7 +1188,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def _async_stop_hosted_runtime(store: PendingImportStore) -> None:
     runtime = getattr(store, "hosted_runtime", None)
     if runtime is not None:
+        if isinstance(store, PendingImportStore):
+            store.close_hosted_writes()
         await runtime.async_stop()
+        if isinstance(store, PendingImportStore):
+            await store.async_drain_hosted_writes()
 
 
 _NOTIFICATION_CANCEL_GRACE_SECONDS = 1

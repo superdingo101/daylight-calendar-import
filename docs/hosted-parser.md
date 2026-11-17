@@ -101,3 +101,17 @@ staged-file integrity/privacy, strict JSON/envelope limits, errors, cancellation
 and an actual loopback multipart request. These tests do not demonstrate a live
 provider call, deployed Cloud parse permission, or the normal HA review flow.
 Those remain the separately reviewed P03 activation/C05 end-to-end work.
+
+### Hosted email delivery
+
+An administrator can opt in to hosted email checks for a verified connection
+under Daylight Cloud troubleshooting settings. Hosted email checks pause while
+a foreground import or storage recovery is in progress. A scheduled claim
+first reconciles durable acknowledgements. It respects a managed parse
+rate-limit delay and never automatically repeats an uncertain managed parse.
+
+Before a managed parse POST, Home Assistant saves an opaque source fingerprint.
+The durable review outcome and its ACK obligation clear that attempt in the
+same write. If the outcome cannot be established after a restart or lost
+response, the attempt stays fenced. Check Recent Activity and the Review Inbox,
+then deliberately confirm a retry in the hosted settings if needed.

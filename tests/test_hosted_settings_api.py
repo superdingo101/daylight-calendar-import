@@ -587,3 +587,20 @@ async def test_polling_opt_in_is_preserved_only_for_same_service(hass, hass_ws_c
         api_origin="https://other.example.test", account_origin=SERVICE["account_origin"],
     )
     assert not replaced.get("delivery_polling", False)
+
+
+async def test_retry_delivery_requires_an_explicit_admin_confirmation():
+    cfg = entry()
+    hass = hass_for(cfg)
+    runtime = fake_runtime(hass, cfg)
+    runtime.async_retry_delivery_parse = AsyncMock(return_value={"delivery_polling": True})
+    base = {"entry_id": cfg.entry_id, "action": "retry_delivery"}
+    refused = await invoke(api.websocket_hosted_action, hass, base)
+    assert refused.errors[0][1] == "confirmation_required"
+    runtime.async_retry_delivery_parse.assert_not_awaited()
+    await invoke(api.websocket_hosted_action, hass, {**base, "confirm_delivery_retry": True})
+    runtime.async_retry_delivery_parse.assert_awaited_once_with()
+    wrong = await invoke(api.websocket_hosted_action, hass, {
+        **base, "action": "reconcile", "confirm_delivery_retry": True,
+    })
+    assert wrong.errors[0][1] == "invalid_hosted_action"

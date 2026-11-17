@@ -594,3 +594,53 @@ async def test_delivery_poll_is_opt_in_single_flight_and_backed_off(hass, monkey
     runtime._delivery_poll_tick(datetime.now(UTC))
     await hass.async_block_till_done()
     assert passed.await_count == count
+
+
+async def test_delivery_poll_defers_foreground_and_requires_explicit_recovery(hass, monkeypatch):
+    from datetime import UTC, datetime
+    from unittest.mock import Mock
+
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+
+    timer = Mock(return_value=Mock())
+    create_issue = Mock()
+    delete_issue = Mock()
+    monkeypatch.setattr(module, "async_track_point_in_utc_time", timer)
+    monkeypatch.setattr(module.ir, "async_create_issue", create_issue)
+    monkeypatch.setattr(module.ir, "async_delete_issue", delete_issue)
+    runtime = await async_setup_hosted_runtime(hass, entry())
+    runtime.resume()
+    with pytest.raises(HostedRuntimeError, match="hosted_unavailable"):
+        await runtime.async_retry_delivery_parse()
+    runtime._delivery_poll_enabled = runtime._delivery_parser_selected = True
+    store = SimpleNamespace(hosted_parse_uncertain=True, active_submissions={object()})
+    async def clear(value):
+        assert value is None
+        store.hosted_parse_uncertain = False
+    store.async_change_hosted_parse_attempt = AsyncMock(side_effect=clear)
+    runtime.configure_delivery(store=store, route_source=object(), parse_source=object())
+    runtime._state = HostedConnectionResult("connected", credential_status="current")
+    runtime._schedule_delivery_poll()
+    assert not timer.called
+    assert create_issue.call_args.kwargs == {
+        "is_fixable": False, "is_persistent": True, "severity": module.ir.IssueSeverity.WARNING,
+        "translation_key": "hosted_delivery_uncertain",
+    }
+    assert runtime.snapshot()["delivery_parse_uncertain"]
+    runtime._delivery_poll_running = True
+    with pytest.raises(HostedRuntimeError, match="hosted_busy"):
+        await runtime.async_retry_delivery_parse()
+    runtime._delivery_poll_running = False
+    assert "delivery_parse_uncertain" not in await runtime.async_retry_delivery_parse()
+    store.async_change_hosted_parse_attempt.assert_awaited_once_with(None)
+    delete_issue.assert_called_with(hass, "daylight_calendar_import",
+                                    "hosted_delivery_uncertain_hosted-entry")
+    assert timer.call_count == 1
+    run = AsyncMock()
+    monkeypatch.setattr(runtime, "async_delivery_pass", run)
+    runtime._delivery_poll_tick(datetime.now(UTC))
+    run.assert_not_awaited()
+    assert (runtime._delivery_due_at - datetime.now(UTC)).total_seconds() > 55
+    await runtime._async_delivery_poll()
+    run.assert_not_awaited()
+    await runtime.async_stop()

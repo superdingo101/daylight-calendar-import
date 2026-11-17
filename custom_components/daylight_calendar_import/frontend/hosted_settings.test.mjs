@@ -823,3 +823,13 @@ test("hosted email polling requires an explicit settings choice", async () => {
   }
   assert.throws(() => validateHostedState({...snapshot, delivery_polling: "true"}));
 });
+
+
+test("retrying an uncertain delivery requires deliberate confirmation", async () => {
+  const calls = [];
+  const hass = {callWS: async request => { calls.push(request); return snapshot; }};
+  await assert.rejects(runHostedAction(hass, snapshot.entry_id, "retry_delivery"), /confirm/i);
+  await runHostedAction(hass, snapshot.entry_id, "retry_delivery", {confirm_delivery_retry: true});
+  assert.equal(calls[0].confirm_delivery_retry, true);
+  assert.equal(calls[0].action, "retry_delivery");
+});
