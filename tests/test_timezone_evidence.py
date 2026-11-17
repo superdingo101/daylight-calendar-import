@@ -326,3 +326,77 @@ async def test_matched_source_zone_takes_priority_over_provider_fallback_claim(m
     result = await replay(monkeypatch, event, zone="America/New_York", support=record)
     assert result.events[0].start == BASE["start"]
     assert not result.warnings
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    (None, "start/end must be valid ISO values"),
+    (42, "start/end must be valid ISO values"),
+    ("not-a-date", "start/end must be valid ISO values"),
+    ("2026-12-05T10:00:00", "timed events must include timezone offsets"),
+    ("2026-03-08T02:15:00-08:00", "does not exist"),
+])
+def test_mutation_wall_time_rejects_invalid_inputs(value, expected):
+    """Assert exact validation boundaries, including the spring DST gap."""
+    with pytest.raises(parser.DraftValidationError, match=expected):
+        parser._wall_time_candidates(value, ZoneInfo("America/Los_Angeles"))
+
+
+@pytest.mark.parametrize(("value", "offsets"), [
+    ("2026-12-05T10:00:00-08:00", {-8}),
+    ("2026-07-05T10:00:00-07:00", {-7}),
+    ("2026-11-01T01:15:00-07:00", {-7, -8}),
+    ("2026-11-01T01:15:00-08:00", {-7, -8}),
+])
+def test_mutation_wall_time_candidate_offsets(value, offsets):
+    instant, candidates = parser._wall_time_candidates(value, ZoneInfo("America/Los_Angeles"))
+    assert instant.isoformat() == value
+    assert {int(offset.total_seconds() / 3600) for offset in candidates} == offsets
+    assert all(candidate.replace(tzinfo=None) == instant.replace(tzinfo=None)
+               for candidate in candidates.values())
+
+
+@pytest.mark.parametrize(("value", "expected", "ambiguous"), [
+    ("2026-12-05T10:00:00-08:00", "2026-12-05T10:00:00-08:00", False),
+    ("2026-07-05T10:00:00-08:00", "2026-07-05T10:00:00-07:00", False),
+    ("2026-11-01T01:15:00-07:00", "2026-11-01T01:15:00-07:00", True),
+    ("2026-11-01T01:15:00-08:00", "2026-11-01T01:15:00-08:00", True),
+])
+def test_mutation_reference_zone_preserves_wall_clock_and_valid_folds(value, expected, ambiguous):
+    actual, repeated = parser._reference_zone_endpoint(value, ZoneInfo("America/Los_Angeles"))
+    assert actual == expected
+    assert repeated is ambiguous
+
+
+@pytest.mark.parametrize(("value", "message"), [
+    ("2026-12-05T10:00:00+00:00", "UTC-formatted inferred local time"),
+    ("2026-12-05T10:00:00+05:00", "unrelated UTC offset"),
+])
+def test_mutation_reference_zone_rejects_unsafe_offset_reinterpretation(value, message):
+    with pytest.raises(parser.DraftValidationError, match=message):
+        parser._reference_zone_endpoint(value, ZoneInfo("America/Los_Angeles"))
+
+
+@pytest.mark.parametrize(("zone", "value", "source_clock", "check_offset", "expected"), [
+    ("America/Los_Angeles", "2026-12-05T10:00:00-08:00", None, True, False),
+    ("America/Los_Angeles", "2026-11-01T01:15:00-07:00", None, True, True),
+    ("America/Los_Angeles", "2026-11-01T01:15:00-08:00", None, True, True),
+    ("America/Los_Angeles", "2026-12-05T10:00:00-08:00", "10:00AM", True, False),
+    ("America/Los_Angeles", "2026-12-05T13:00:00-08:00", "01:00PM", True, False),
+    ("America/Los_Angeles", "2026-12-05T10:00:00-07:00", None, False, False),
+])
+def test_mutation_named_zone_validates_wall_time_and_offset_policy(
+    zone, value, source_clock, check_offset, expected,
+):
+    assert parser._named_zone_endpoint(value, zone, source_clock, check_offset=check_offset) is expected
+
+
+@pytest.mark.parametrize(("zone", "value", "clock", "message"), [
+    ("../etc/passwd", "2026-12-05T10:00:00-08:00", None, "IANA time zone name"),
+    ("Unknown/Zone", "2026-12-05T10:00:00-08:00", None, "unavailable"),
+    ("America/Los_Angeles", "2026-12-05T10:00:00-07:00", None, "offset does not match"),
+    ("America/Los_Angeles", "2026-12-05T10:00:00-08:00", "11:00AM", "differs from the source"),
+    ("America/Los_Angeles", "2026-03-08T02:15:00-08:00", None, "does not exist"),
+])
+def test_mutation_named_zone_rejects_conflicts(zone, value, clock, message):
+    with pytest.raises(parser.DraftValidationError, match=message):
+        parser._named_zone_endpoint(value, zone, clock, check_offset=True)
