@@ -365,6 +365,7 @@ test("timezone safety disclosures stay visible with full event assumptions and c
   await page.evaluate(safety => {
     Object.assign(window.fixture.pending.events[0], {
       start: "2026-11-01T01:15:00-05:00", end: "2026-11-01T01:45:00-05:00",
+      confidence: 0.9,
       date_time_assumptions: [...safety, ...Array.from({length: 6}, (_, index) => "Other context " + index)],
     });
   }, safety);
