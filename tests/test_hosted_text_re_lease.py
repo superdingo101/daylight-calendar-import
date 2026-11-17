@@ -191,7 +191,8 @@ async def test_invalid_claim_has_stable_sanitized_error(monkeypatch, invalid):
             {"id": "scan.png", "media_type": "image/png",
              "size_bytes": 3, "sha256": "a" * 64},
         ]
-    with pytest.raises(HostedTextReLeaseError, match=r"^invalid hosted text delivery$"):
+    message = "hosted delivery evidence changed" if invalid == "attachment" else "invalid hosted text delivery"
+    with pytest.raises(HostedTextReLeaseError, match=f"^{message}$"):
         await re_lease(store, creds, entry, delivery)
     assert store.hosted_ack_journal() == (entry,)
 

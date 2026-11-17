@@ -150,6 +150,8 @@ def parse_hosted_result(value: Any, source: SourceDocument) -> ParseOutcome:
 
 def _attachment_bytes(media_dirs: dict[str, str], attachment: SourceAttachment) -> bytes:
     """Read only a normal integration-staged file below a configured media root."""
+    if attachment.content is not None:
+        return _validate_attachment_content(attachment, attachment.content)
     ref = urlsplit(attachment.content_ref)
     parts = ref.path.split("/")
     if (ref.scheme != "media-source" or ref.netloc != "media_source" or ref.query or ref.fragment
@@ -169,6 +171,11 @@ def _attachment_bytes(media_dirs: dict[str, str], attachment: SourceAttachment) 
             content = handle.read(attachment.size_bytes + 1)
     finally:
         os.close(directory)
+
+    return _validate_attachment_content(attachment, content)
+
+
+def _validate_attachment_content(attachment: SourceAttachment, content: bytes) -> bytes:
     if len(content) != attachment.size_bytes:
         raise ValueError
     observed = (
