@@ -427,3 +427,85 @@ async def test_claim_transport_error_after_response_preserves_status_and_retryab
     assert raised.value.retryable is True
     assert "sensitive" not in str(raised.value)
     assert session.request.call_count == 1
+
+
+
+async def test_attachment_download_is_bounded_and_lease_authenticated():
+    import hashlib
+    content = b"synthetic-png"
+    descriptor = {"id": "image.png", "media_type": "image/png", "size_bytes": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.request.return_value = Response(raw=content, content_type="image/png", headers={
+        "Cache-Control": "no-store", "Content-Length": str(len(content)),
+    })
+    result = await HostedSourceTransport(session, SERVICE).async_fetch_attachment(
+        token=TOKEN, delivery_id="d" * 32, lease_token="l" * 32, descriptor=descriptor,
+    )
+    assert result == content
+    args, kwargs = session.request.call_args
+    assert args == ("GET", SERVICE.api_origin + "/v1/sources/" + "d" * 32 + "/attachments/image.png")
+    assert kwargs["headers"]["Authorization"] == "Bearer " + TOKEN
+    assert kwargs["headers"]["X-Daylight-Lease-Token"] == "l" * 32
+    assert kwargs["allow_redirects"] is False and kwargs["auto_decompress"] is False
+    assert session.request.call_count == 1
+
+
+@pytest.mark.parametrize("override", [
+    {"token": "bad"}, {"delivery_id": "../bad"}, {"lease_token": "bad"},
+    {"descriptor": None}, {"descriptor": {"id": "../bad"}},
+    {"descriptor": {"id": "..", "media_type": "image/png", "size_bytes": 1, "sha256": "a" * 64}},
+    {"descriptor": {"id": "a", "media_type": "text/html", "size_bytes": 1, "sha256": "a" * 64}},
+    {"descriptor": {"id": "a", "media_type": "image/png", "size_bytes": True, "sha256": "a" * 64}},
+    {"descriptor": {"id": "a", "media_type": "image/png", "size_bytes": 0, "sha256": "a" * 64}},
+    {"descriptor": {"id": "a", "media_type": "image/png", "size_bytes": 10_485_761, "sha256": "a" * 64}},
+    {"descriptor": {"id": "a", "media_type": "image/png", "size_bytes": 1, "sha256": "bad"}},
+])
+async def test_attachment_rejects_invalid_inputs_before_network(override):
+    session = MagicMock(spec=aiohttp.ClientSession)
+    args = {"token": TOKEN, "delivery_id": "d" * 32, "lease_token": "l" * 32,
+            "descriptor": attachment()}
+    args.update(override)
+    with pytest.raises(ValueError, match="invalid attachment request"):
+        await HostedSourceTransport(session, SERVICE).async_fetch_attachment(**args)
+    session.request.assert_not_called()
+
+
+@pytest.mark.parametrize("status,headers,content_type,body,code", [
+    (302, {"Cache-Control": "no-store"}, "image/png", b"hello", "invalid_response"),
+    (200, {"Cache-Control": "no-store", "Content-Encoding": "gzip"}, "image/png", b"hello", "invalid_response"),
+    (200, {}, "image/png", b"hello", "invalid_response"),
+    (200, {"Cache-Control": "no-store", "Content-Length": "5"}, "text/html", b"hello", "invalid_response"),
+    (200, {"Cache-Control": "no-store", "Content-Length": "6"}, "image/png", b"hello", "invalid_response"),
+    (200, {"Cache-Control": "no-store", "Content-Length": "5"}, "image/png", b"helloo", "invalid_response"),
+    (200, {"Cache-Control": "no-store", "Content-Length": "5"}, "image/png", b"hell", "invalid_response"),
+    (200, {"Cache-Control": "no-store", "Content-Length": "5"}, "image/png", b"wrong", "invalid_response"),
+    (409, {"Cache-Control": "no-store"}, "application/json", b"{}", "lease_not_current"),
+    (429, {"Cache-Control": "no-store"}, "application/json", b"{}", "rate_limited"),
+    (503, {"Cache-Control": "no-store"}, "application/json", b"{}", "attachment_unavailable"),
+])
+async def test_attachment_rejects_unsafe_envelopes_and_integrity_mismatches(
+    status, headers, content_type, body, code,
+):
+    import hashlib
+    descriptor = {"id": "a", "media_type": "image/png", "size_bytes": 5,
+                  "sha256": hashlib.sha256(b"hello").hexdigest()}
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.request.return_value = Response(raw=body, status=status, headers=headers,
+                                            content_type=content_type)
+    with pytest.raises(HostedTransportError) as error:
+        await HostedSourceTransport(session, SERVICE).async_fetch_attachment(
+            token=TOKEN, delivery_id="d" * 32, lease_token="l" * 32, descriptor=descriptor,
+        )
+    assert error.value.code == code
+    assert error.value.retryable is (status in (429, 503))
+
+
+async def test_attachment_network_failure_never_retries():
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.request.side_effect = aiohttp.ClientConnectionError()
+    with pytest.raises(HostedTransportError, match="service_unavailable"):
+        await HostedSourceTransport(session, SERVICE).async_fetch_attachment(
+            token=TOKEN, delivery_id="d" * 32, lease_token="l" * 32, descriptor=attachment(),
+        )
+    assert session.request.call_count == 1

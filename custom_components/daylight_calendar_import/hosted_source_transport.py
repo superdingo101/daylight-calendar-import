@@ -6,6 +6,8 @@ same request transparently, and must not acknowledge a source on transport alone
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -127,6 +129,70 @@ class HostedSourceTransport:
         """The trusted service to which this client sends credentials."""
         return self._service
 
+    async def async_fetch_attachment(
+        self, *, token: str, delivery_id: str, lease_token: str, descriptor: dict,
+    ) -> bytes:
+        """Fetch one lease-bound attachment and verify its advertised evidence.
+
+        The origin is the preconfigured service, never a URL from a delivery.
+        No bytes are returned unless length, media type and digest all match.
+        """
+        if (type(token) is not str or re.fullmatch(r"[A-Za-z0-9._~-]{43,256}", token) is None
+                or type(delivery_id) is not str or _ID.fullmatch(delivery_id) is None
+                or type(lease_token) is not str or _LEASE.fullmatch(lease_token) is None):
+            raise ValueError("invalid attachment request")
+        try:
+            item = _fields(descriptor, {"id", "media_type", "size_bytes", "sha256"}, {"filename"})
+            ident = _pattern(item["id"], _ATTACHMENT)
+            digest = _pattern(item["sha256"], _DIGEST)
+            media, size = item["media_type"], item["size_bytes"]
+            if (type(media) is not str or media not in _MEDIA
+                    or type(size) is not int or not 1 <= size <= 10_485_760):
+                raise ValueError
+        except (ValueError, TypeError):
+            raise ValueError("invalid attachment request") from None
+        status = None
+        try:
+            async with asyncio.timeout(30):
+                async with self._session.request(
+                    "GET", self._service.api_origin + "/v1/sources/" + delivery_id
+                    + "/attachments/" + ident,
+                    headers={"Accept": media, "Accept-Encoding": "identity",
+                             "Authorization": "Bearer " + token,
+                             "X-Daylight-Lease-Token": lease_token},
+                    allow_redirects=False, timeout=aiohttp.ClientTimeout(total=30),
+                    max_line_size=4096, max_field_size=4096, max_headers=32,
+                    auto_decompress=False,
+                ) as response:
+                    status = response.status
+                    directives = response.headers.get("Cache-Control", "").lower().split(",")
+                    if ("no-store" not in (part.strip() for part in directives)
+                            or "Content-Encoding" in response.headers or 300 <= status < 400):
+                        raise ValueError
+                    if status != 200:
+                        code = {401: "not_authorized", 403: "entitlement_required",
+                                404: "not_found", 409: "lease_not_current",
+                                429: "rate_limited"}.get(status, "attachment_unavailable")
+                        raise HostedTransportError(code, status=status,
+                                                   retryable=status == 429 or status >= 500)
+                    if (response.content_type != media
+                            or response.headers.get("Content-Length") != str(size)):
+                        raise ValueError
+                    content = bytearray()
+                    async for chunk in response.content.iter_chunked(16384):
+                        if len(content) + len(chunk) > size:
+                            raise ValueError
+                        content.extend(chunk)
+                    if len(content) != size or not hmac.compare_digest(
+                        hashlib.sha256(content).hexdigest(), digest
+                    ):
+                        raise ValueError
+                    return bytes(content)
+        except (aiohttp.ClientError, TimeoutError):
+            raise HostedTransportError("service_unavailable", status=status, retryable=True) from None
+        except (ValueError, TypeError, OverflowError):
+            raise HostedTransportError("invalid_response", status=status) from None
+
     async def async_claim(self, *, token: str, limit: int = 20) -> dict[str, Any]:
         """Perform one claim; a lost response leaves an unknown, expiring lease."""
         if type(limit) is not int or not 1 <= limit <= 50 or type(token) is not str or re.fullmatch(r"[A-Za-z0-9._~-]{43,256}", token) is None:
@@ -162,3 +228,4 @@ class HostedSourceTransport:
             raise HostedTransportError("service_unavailable", status=status, retryable=True) from None
         except (ValueError, UnicodeError, RecursionError, vol.Invalid, OverflowError):
             raise HostedTransportError("invalid_response", status=status) from None
+
