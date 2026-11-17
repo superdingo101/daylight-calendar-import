@@ -622,7 +622,7 @@ def test_repeated_hour_disclosure_does_not_exceed_assumptions_limit():
                 "assumptions": ["Existing assumption"] * 8}
     result = parser.parse_ai_data({"events": [repeated]}, time_zone="America/Los_Angeles")
     assert len(result.events) == 1
-    assert result.event_assumptions[0] == ("Existing assumption",) * 8
+    assert result.event_assumptions[0] == (parser._FALL_BACK_REVIEW_NOTE, "Existing assumption")
     assert "DST fall-back" in result.warnings[0]
 
 

@@ -6660,3 +6660,33 @@ test('a newly linked return session waits for an active edit before rerendering'
     assert.ok(panel._viewContent.querySelector('[data-return-calendar]'));
   } finally {globalThis.window = prior;}
 });
+
+
+test("eight assumptions retain event-level timezone safety disclosures outside collapsed details", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "pending";
+  const safety = [
+    "DST fall-back repeats this local hour; confirm first or second occurrence before approval.",
+    "Time zone inferred from venue geography; confirm the venue's local time zone before approval.",
+  ];
+  const fields = {start: "2026-11-01T01:15:00-05:00", end: "2026-11-01T01:45:00-05:00",
+    all_day: false, status: "pending", confidence: 0.9, calendar_entity: "calendar.family"};
+  panel._detail = {id: "pending", source_kind: "image", events: [
+    {...fields, id: "venue", title: "New York venue", date_time_assumptions: [
+      ...safety, ...Array.from({length: 6}, (_, index) => "Other context " + index),
+    ]},
+    {...fields, id: "other", title: "Other event"},
+  ]};
+  panel.render();
+  const cards = panel._content.querySelectorAll(".detail-event");
+  for (const note of safety) {
+    assert.ok(cards[0].querySelectorAll(".event-note")
+      .some(item => item.textContent === "Date/time assumption: " + note));
+    assert.ok(!cards[0].querySelectorAll(".event-diagnostics").flatMap(item => item.querySelectorAll("p"))
+      .some(item => item.textContent.includes(note)));
+    assert.ok(!cards[1].querySelectorAll("p").some(item => item.textContent.includes(note)));
+  }
+  assert.equal(cards[0].querySelectorAll(".event-note").length, 9); // Heading plus all eight disclosures.
+});

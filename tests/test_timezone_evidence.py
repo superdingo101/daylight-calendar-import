@@ -42,7 +42,7 @@ async def replay(monkeypatch, event, *, zone="America/Los_Angeles", support=""):
     """Exercise the shipped HA provider, prompt, parser and draft model."""
     seed = SourceDocument(
         id="invitation", kind=SourceKind.IMAGE,
-        received_at="2026-11-17T09:00:00-08:00", text=support,
+        received_at=datetime(2026, 11, 17, 9, tzinfo=ZoneInfo("America/Los_Angeles")), text=support,
         attachments=(SourceAttachment("image", "image/png", 128, "media-source://test/invitation"),),
     )
     generate = AsyncMock(return_value=SimpleNamespace(data={
@@ -62,7 +62,9 @@ async def replay(monkeypatch, event, *, zone="America/Los_Angeles", support=""):
     assert request["attachments"][0]["media_content_id"] == seed.attachments[0].content_ref
     assert json.dumps(support, ensure_ascii=False) in request["instructions"]
     assert "venue address or city is geographic context" in request["instructions"]
-    assert "never a copy of the configured zone or an inferred location zone" in request["instructions"]
+    assert "A venue timezone differing from HA is not a conflict" in request["instructions"]
+    fields = request["structure"].schema["events"].config["fields"]
+    assert fields["time_zone_basis"]["required"] is True
     return result
 
 
@@ -137,9 +139,10 @@ async def test_conflicts_invalid_metadata_and_gaps_remain_rejected(monkeypatch, 
 
 @pytest.mark.parametrize("endpoint", ["start_time_zone", "end_time_zone"])
 async def test_named_zone_matching_one_fold_is_not_equivalent_to_ha(monkeypatch, endpoint):
+    # Explicit HA fallback claims must agree on the whole offset candidate set.
     # Phoenix shares -07 with LA's first occurrence but has no second fold.
     event = {**BASE, "start": "2026-11-01T01:15:00-07:00", "end": "2026-11-01T01:45:00-07:00",
-             endpoint: "America/Phoenix"}
+             endpoint: "America/Phoenix", "time_zone_basis": "ha_fallback"}
     result = await replay(monkeypatch, event)
     assert not result.events
     assert "Specify the event's time zone in supporting text" in result.warnings[0]
@@ -164,7 +167,7 @@ async def test_cross_midnight_named_inferred_metadata_preserves_wall_dates(monke
 
 @pytest.mark.parametrize("zone", [None, "Unknown/Zone", "../invalid"])
 def test_named_inferred_metadata_requires_available_ha_zone(zone):
-    result = parser.parse_ai_data({"events": [{**BASE, "start_time_zone": "America/Los_Angeles"}]}, time_zone=zone)
+    result = parser.parse_ai_data({"events": [{**BASE, "start_time_zone": "America/Los_Angeles", "time_zone_basis": "ha_fallback"}]}, time_zone=zone)
     assert not result.events
     assert "Home Assistant time zone is unavailable" in result.warnings[0]
 
@@ -178,6 +181,147 @@ def test_review_disclosure_survives_full_assumptions_list_and_private_diagnostic
     assert len(result.event_assumptions[0]) == 8
     assert "confirm the source time zone" in result.warnings[0]
     assert "origin=provider_named zone=America/Los_Angeles" in caplog.text
-    assert "origin=ha_fallback zone=America/Los_Angeles" in caplog.text
+    assert "basis=unspecified uses_reference=True" in caplog.text
+    assert any("confirm the source time zone" in note for note in result.event_assumptions[0])
+    restored = PendingImport.from_dict(PendingImport.create(
+        source_text="synthetic candidate", events=result.events,
+        event_assumptions=result.event_assumptions, warnings=result.warnings,
+    ).as_dict())
+    assert restored.events[0].date_time_assumptions == result.event_assumptions[0]
     assert "JACKSON" not in caplog.text
     assert "Encinitas" not in caplog.text
+
+
+@pytest.mark.parametrize("basis", ["explicit", "geographic", "unspecified"])
+@pytest.mark.parametrize("legacy_reference", [False, True])
+@pytest.mark.parametrize(("venue", "ha", "offset", "support"), [
+    ("America/Los_Angeles", "America/New_York", "-08:00", INVITATION),
+    ("America/New_York", "America/Los_Angeles", "-05:00", "December 5, 2026, 10 AM to 1 PM in New York City."),
+])
+async def test_venue_timezone_differs_from_ha_without_reinterpretation(
+    monkeypatch, basis, legacy_reference, venue, ha, offset, support,
+):
+    # Synthetic metadata: geographic is an inference, explicit is a provider
+    # source-evidence claim; neither makes HA the authority over venue clocks.
+    if basis == "explicit":
+        support += f" Time zone: {venue}."
+    event = {**BASE, "start": f"2026-12-05T10:00:00{offset}", "end": f"2026-12-05T13:00:00{offset}",
+             "location": "Synthetic venue", "time_zone_basis": basis,
+             "uses_reference_time_zone": legacy_reference,
+             "start_time_zone": venue, "end_time_zone": venue}
+    result = await replay(monkeypatch, event, zone=ha, support=support)
+    assert [(draft.start, draft.end) for draft in result.events] == [(event["start"], event["end"])]
+    restored = PendingImport.from_dict(PendingImport.create(
+        source_text="synthetic venue scenario", events=result.events,
+        event_assumptions=result.event_assumptions, warnings=result.warnings,
+    ).as_dict())
+    notes = restored.events[0].date_time_assumptions
+    if basis == "geographic":
+        assert any("inferred from venue geography" in note for note in notes)
+    elif basis == "unspecified" and legacy_reference:
+        assert any("provenance is uncertain" in note for note in notes)
+    elif legacy_reference:
+        assert any("AI timezone flags disagree" in note for note in notes)
+    else:
+        assert not result.warnings
+
+
+@pytest.mark.parametrize("legacy_reference", [False, True])
+async def test_ha_fallback_is_used_only_when_no_venue_zone_can_be_resolved(monkeypatch, legacy_reference):
+    # The location exists, but the provider cannot reliably resolve its zone.
+    # This is deliberately a different response from geographic inference.
+    event = {**BASE, "time_zone_basis": "ha_fallback", "uses_reference_time_zone": legacy_reference,
+             "start": "2026-12-05T10:00:00-05:00", "end": "2026-12-05T13:00:00-05:00",
+             "assumptions": [f"Other context {i}" for i in range(8)]}
+    result = await replay(monkeypatch, event, zone="America/New_York", support=INVITATION)
+    assert result.events[0].start == event["start"]
+    assert result.events[0].end == event["end"]
+    assert len(result.event_assumptions[0]) == 8
+    assert "Home Assistant fallback" in result.event_assumptions[0][0]
+    assert "confirm the venue's local time zone" in result.event_assumptions[0][0]
+
+
+@pytest.mark.parametrize("basis", ["geographic", "ha_fallback", "unspecified"])
+async def test_two_safety_disclosures_survive_eight_provider_assumptions(monkeypatch, basis):
+    event = {**BASE, "time_zone_basis": basis,
+             "start": "2026-11-01T01:15:00-05:00", "end": "2026-11-01T01:45:00-05:00",
+             "start_time_zone": "America/New_York", "end_time_zone": "America/New_York",
+             "assumptions": [f"Other context {i}" for i in range(8)]}
+    result = await replay(monkeypatch, event, zone="America/New_York")
+    notes = result.event_assumptions[0]
+    assert len(notes) == 8
+    assert parser._FALL_BACK_REVIEW_NOTE in notes
+    if basis == "geographic":
+        assert any("venue geography" in note for note in notes)
+    elif basis == "ha_fallback":
+        assert any("Home Assistant fallback" in note for note in notes)
+    else:
+        assert any("provenance is uncertain" in note for note in notes)
+    restored = PendingImport.from_dict(PendingImport.create(
+        source_text="synthetic repeated hour", events=result.events,
+        event_assumptions=result.event_assumptions, warnings=result.warnings,
+    ).as_dict())
+    assert restored.events[0].date_time_assumptions == notes
+
+
+@pytest.mark.parametrize(("venue", "ha", "start", "end", "message"), [
+    # NY's gap is invalid even though Arizona has no DST transition.
+    ("America/New_York", "America/Phoenix", "2026-03-08T02:15:00-05:00", "2026-03-08T03:30:00-04:00", "does not exist"),
+    # Arizona wall clocks must not be validated against HA's LA gap.
+    ("America/Phoenix", "America/Los_Angeles", "2026-03-08T02:15:00-07:00", "2026-03-08T02:45:00-07:00", None),
+    ("America/New_York", "America/Los_Angeles", "2026-12-05T10:00:00-08:00", "2026-12-05T13:00:00-08:00", "offset does not match"),
+    # Winter LA cannot be 'fixed' using HA's summer/AZ -07 offset.
+    ("America/Los_Angeles", "America/Phoenix", "2026-12-05T10:00:00-07:00", "2026-12-05T13:00:00-07:00", "offset does not match"),
+    ("America/New_York", "America/Los_Angeles", "2026-12-05T23:30:00-05:00", "2026-12-06T01:00:00-05:00", None),
+])
+@pytest.mark.parametrize("basis", ["explicit", "geographic", "unspecified"])
+async def test_strict_venue_validation_uses_venue_rules_not_ha_rules(monkeypatch, venue, ha, start, end, message, basis):
+    event = {**BASE, "time_zone_basis": basis, "start_time_zone": venue, "end_time_zone": venue,
+             "start": start, "end": end}
+    result = await replay(monkeypatch, event, zone=ha)
+    if message:
+        assert not result.events
+        assert any(message in warning for warning in result.warnings)
+    else:
+        assert [(draft.start, draft.end) for draft in result.events] == [(start, end)]
+
+
+@pytest.mark.parametrize("basis", [[], None, "address", "", 3])
+async def test_malformed_provenance_is_not_used_to_skip_validation(monkeypatch, basis):
+    result = await replay(monkeypatch, {**BASE, "time_zone_basis": basis})
+    assert not result.events
+    assert "time_zone_basis must be" in result.warnings[0]
+
+
+@pytest.mark.parametrize("zones", [("", ""), ("America/New_York", ""), ("", "America/New_York")])
+async def test_geographic_claim_requires_both_named_endpoints(monkeypatch, zones):
+    result = await replay(monkeypatch, {**BASE, "time_zone_basis": "geographic",
+                                      "start_time_zone": zones[0], "end_time_zone": zones[1]})
+    assert not result.events
+    assert "requires named zones for both endpoints" in result.warnings[0]
+
+
+async def test_ha_fallback_with_redundant_compatible_names_is_strict(monkeypatch):
+    result = await replay(monkeypatch, {**BASE, "time_zone_basis": "ha_fallback",
+                                      "start_time_zone": "US/Pacific", "end_time_zone": "America/Los_Angeles"})
+    assert result.events[0].start == BASE["start"]
+    assert any("Home Assistant fallback" in note for note in result.event_assumptions[0])
+
+
+async def test_fixed_source_offset_overrides_conflicting_legacy_reference_flag(monkeypatch):
+    # A timezone stated as a fixed offset is not an HA fallback, and cannot be
+    # seasonally repaired or checked as if it claimed HA's named DST rules.
+    event = {**BASE, "time_zone_basis": "explicit", "start": "2026-03-08T02:15:00-05:00",
+             "end": "2026-03-08T02:45:00-05:00"}
+    result = await replay(monkeypatch, event, support="March 8, 2026 2:15–2:45 AM UTC-05:00")
+    assert result.events[0].start == event["start"]
+    assert result.events[0].end == event["end"]
+    assert "explicit zone/offset retained" in result.event_assumptions[0][0]
+
+
+async def test_matched_source_zone_takes_priority_over_provider_fallback_claim(monkeypatch):
+    event = {**BASE, "time_zone_basis": "ha_fallback"}
+    record = f"{BASE['title']}\nDate: December 5, 2026\nTime: 10:00 AM to 1:00 PM (America/Los_Angeles)"
+    result = await replay(monkeypatch, event, zone="America/New_York", support=record)
+    assert result.events[0].start == BASE["start"]
+    assert not result.warnings

@@ -3082,14 +3082,15 @@ export class DaylightImportPanel extends HTMLElement {
           surface.append(element("p", yearInferred ?
             "Year inferred — verify the date" : "Date interpretation needs review", "event-note"));
         }
-        if (event.date_time_assumptions?.length || typeof event.confidence === "number" ||
-            event.calendar_entity) {
+        // Temporal safety disclosures belong to the event, outside collapsed
+        // extraction diagnostics, so reviewers see them before approval.
+        for (const assumption of event.date_time_assumptions || []) {
+          surface.append(element("p", "Date/time assumption: " + assumption, "event-note"));
+        }
+        if (typeof event.confidence === "number" || event.calendar_entity) {
           const diagnostics = element("details", "", "event-diagnostics");
           diagnostics.append(element("summary", "Extraction details"));
           if (event.calendar_entity) diagnostics.append(element("p", "Calendar ID: " + event.calendar_entity));
-          for (const assumption of event.date_time_assumptions || []) {
-            diagnostics.append(element("p", "Date/time assumption: " + assumption));
-          }
           if (typeof event.confidence === "number") {
             diagnostics.append(element("p", "AI confidence: " +
               Math.round(event.confidence * 100) + "% (estimate)"));
