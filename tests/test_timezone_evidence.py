@@ -218,8 +218,9 @@ async def test_venue_timezone_differs_from_ha_without_reinterpretation(
     notes = restored.events[0].date_time_assumptions
     if basis == "geographic":
         assert any("inferred from venue geography" in note for note in notes)
-    elif basis == "unspecified" and legacy_reference:
-        assert any("provenance is uncertain" in note for note in notes)
+    elif basis == "unspecified":
+        expected = "provenance is uncertain" if legacy_reference else "provenance is unspecified"
+        assert any(expected in note for note in notes)
     elif legacy_reference:
         assert any("AI timezone flags disagree" in note for note in notes)
     else:

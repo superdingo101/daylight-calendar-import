@@ -497,6 +497,8 @@ def parse_ai_data(
                         review_notes.append("Time zone uses Home Assistant fallback; confirm the venue's local time zone before approval.")
                     if basis == "explicit" and claimed_reference:
                         review_notes.append("AI timezone flags disagree; explicit zone/offset retained without changing wall times. Confirm the source time zone.")
+                    if basis == "unspecified" and "time_zone_basis" in raw and not inferred:
+                        review_notes.append("AI timezone provenance is unspecified; confirm the event's local time zone before approval.")
                     if inferred and any(zones) and basis == "unspecified":
                         # Legacy responses may name a geographically inferred zone
                         # while also setting the coarse reference flag. HA is not
