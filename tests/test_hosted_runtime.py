@@ -536,3 +536,61 @@ async def test_startup_does_not_recover_incomplete_connections(hass, monkeypatch
     assert runtime.snapshot()["state"] == "recovery_required"
     assert not runtime.busy
     await runtime.async_stop()
+
+
+async def test_delivery_poll_is_opt_in_single_flight_and_backed_off(hass, monkeypatch):
+    from datetime import UTC, datetime
+    from unittest.mock import Mock
+
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+    from custom_components.daylight_calendar_import.const import (
+        CONF_PARSER_PROVIDER, PARSER_PROVIDER_DAYLIGHT_CLOUD,
+    )
+
+    cancel = Mock()
+    timer = Mock(return_value=cancel)
+    issue = Mock()
+    monkeypatch.setattr(module, "async_track_point_in_utc_time", timer)
+    monkeypatch.setattr(module.ir, "async_create_issue", issue)
+    config = entry({
+        module.CONF_HOSTED_DELIVERY_POLL: True,
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD,
+    })
+    config.data = {}
+    runtime = await async_setup_hosted_runtime(hass, config)
+    assert runtime.snapshot()["delivery_polling"] is True
+    runtime.resume()
+    assert not timer.called
+    runtime.configure_delivery(store=object(), route_source=object(), parse_source=object())
+    runtime._state = HostedConnectionResult("connected", credential_status="current")
+    runtime._delivery_parser_selected = False
+    runtime._schedule_delivery_poll()
+    assert not timer.called
+    runtime._delivery_parser_selected = True
+    runtime._schedule_delivery_poll()
+    assert timer.call_count == 1
+    passed = AsyncMock(side_effect=HostedTransportError("rate_limited", status=429, retry_after=300))
+    monkeypatch.setattr(runtime, "async_delivery_pass", passed)
+    timer.call_args.args[1](datetime.now(UTC))
+    runtime._delivery_poll_tick(datetime.now(UTC))
+    await hass.async_block_till_done()
+    passed.assert_awaited_once_with(limit=1)
+    assert (timer.call_args.args[2] - datetime.now(UTC)).total_seconds() > 295
+    assert not issue.called
+
+    runtime._delivery_failures = 4
+    passed.side_effect = RuntimeError("private provider detail")
+    await runtime._async_delivery_poll()
+    assert issue.call_args.kwargs["translation_key"] == "hosted_delivery_retry"
+    assert (runtime._delivery_due_at - datetime.now(UTC)).total_seconds() > 895
+
+    passed.side_effect = None
+    await runtime._async_delivery_poll()
+    assert runtime._delivery_failures == 0
+    assert (runtime._delivery_due_at - datetime.now(UTC)).total_seconds() > 55
+    await runtime.async_stop()
+    cancel.assert_called()
+    count = passed.await_count
+    runtime._delivery_poll_tick(datetime.now(UTC))
+    await hass.async_block_till_done()
+    assert passed.await_count == count

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import asdict, replace
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -16,7 +17,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_utc_time
 
-from .const import DOMAIN
+from .const import DOMAIN, PARSER_PROVIDER_DAYLIGHT_CLOUD
 from .hosted_automation import HostedAutomationPolicy
 from .hosted_credentials import (
     HostedCredentialConflict,
@@ -36,10 +37,15 @@ from .hosted_transport import (
     HostedTransportError,
 )
 from .storage import PendingImportStore
+from .settings import effective_parser_provider
 from .providers import ParserProvider, ProviderError
 
 CONF_HOSTED_SERVICE = "hosted_service"
 CONF_HOSTED_AUTOMATIC = "hosted_automatic_lifecycle"
+CONF_HOSTED_DELIVERY_POLL = "hosted_delivery_polling"
+_LOGGER = logging.getLogger(__name__)
+_DELIVERY_INTERVAL = 60
+_MAX_DELIVERY_BACKOFF = 900
 
 
 def hosted_signal(entry_id: str) -> str:
@@ -108,6 +114,15 @@ class HostedConnectionRuntime:
         self._tasks: set[asyncio.Task] = registry.setdefault(entry.entry_id, set())
         self._options = entry.options
         self._automatic = entry.options.get(CONF_HOSTED_AUTOMATIC) is True
+        self._delivery_poll_enabled = entry.options.get(CONF_HOSTED_DELIVERY_POLL) is True
+        self._delivery_parser_selected = (
+            self._delivery_poll_enabled
+            and effective_parser_provider(entry) == PARSER_PROVIDER_DAYLIGHT_CLOUD
+        )
+        self._delivery_failures = 0
+        self._delivery_due_at: datetime | None = None
+        self._delivery_poll_timer = None
+        self._delivery_poll_running = False
         self._automation: HostedAutomationPolicy | None = None
         self._cancel_timer = None
         self._cancel_stop = None
@@ -173,6 +188,7 @@ class HostedConnectionRuntime:
             "entry_id": self._entry_id,
             "configured": self._service is not None,
             "automatic_lifecycle": self._automatic,
+            **({"delivery_polling": True} if self._delivery_poll_enabled else {}),
             "reconnect_in_progress": (self._controller is not None
                                       and self._controller.reconnect_in_progress is True),
             "api_origin": self._service.api_origin if self._service else None,
@@ -288,11 +304,13 @@ class HostedConnectionRuntime:
                     session, api_origin=self._service.api_origin,
                     account_origin=self._service.account_origin,
                 )
-                await async_recover_pending_acks(
+                recovered = await async_recover_pending_acks(
                     store=store, credentials=self._credential_store, transport=ack,
                     local_config_entry_id=self._entry_id, limit=limit,
                 )
                 guard_delivery(require_owner=True)
+                if recovered and any(item.ack_status == "expired" for item in recovered):
+                    self._delivery_attention_issue("hosted_delivery_expired")
                 return await async_process_text_batch(
                     store=store, credentials=self._credential_store,
                     claim_transport=claim, ack_transport=ack,
@@ -330,6 +348,7 @@ class HostedConnectionRuntime:
     def pause(self) -> None:
         """Close admission before platform unload starts."""
         self._accepting = False
+        self._cancel_delivery_poll()
         self._parse_generation += 1
         if self._cancel_timer is not None:
             self._cancel_timer()
@@ -339,15 +358,18 @@ class HostedConnectionRuntime:
         """A failed platform unload may reopen the same retained runtime."""
         if not self._stopped:
             self._accepting = True
-            if self._automatic and self._cancel_stop is None:
+            if (self._automatic or self._delivery_poll_enabled) and self._cancel_stop is None:
                 self._cancel_stop = self._hass.bus.async_listen_once(
                     EVENT_HOMEASSISTANT_STOP, self._async_ha_stop,
                 )
+            if not self._delivery_poll_enabled:
+                ir.async_delete_issue(self._hass, DOMAIN, f"hosted_delivery_retry_{self._entry_id}")
             if not self._automatic:
                 ir.async_delete_issue(self._hass, DOMAIN, f"hosted_lifecycle_{self._entry_id}")
             if self._state.state == "checking_access" and not self.busy:
                 self._start_work("verify_saved", {})
             self._schedule_automation()
+            self._schedule_delivery_poll()
 
     async def _async_ha_stop(self, _event) -> None:
         await self.async_stop()
@@ -377,6 +399,61 @@ class HostedConnectionRuntime:
         self._cancel_timer = async_track_point_in_utc_time(
             self._hass, self._automatic_tick,
             max(plan.due_at, datetime.now(UTC) + timedelta(seconds=1)),
+        )
+
+    def _cancel_delivery_poll(self) -> None:
+        if self._delivery_poll_timer is not None:
+            self._delivery_poll_timer()
+            self._delivery_poll_timer = None
+
+    def _schedule_delivery_poll(self) -> None:
+        self._cancel_delivery_poll()
+        if (not self._delivery_poll_enabled or not self._delivery_parser_selected
+                or not self.accepting or self.busy or self._delivery_poll_running
+                or self._delivery_handlers is None
+                or self._state.credential_status not in ("current", "overlap")):
+            return
+        now = datetime.now(UTC)
+        due = self._delivery_due_at or now + timedelta(seconds=1)
+        self._delivery_poll_timer = async_track_point_in_utc_time(
+            self._hass, self._delivery_poll_tick, max(due, now + timedelta(seconds=1)),
+        )
+
+    @callback
+    def _delivery_poll_tick(self, _now) -> None:
+        self._delivery_poll_timer = None
+        if not self.accepting or self.busy or self._delivery_poll_running:
+            return
+        self._delivery_poll_running = True
+        self._hass.async_create_task(self._async_delivery_poll(), "Daylight delivery poll", eager_start=False)
+
+    async def _async_delivery_poll(self) -> None:
+        delay = _DELIVERY_INTERVAL
+        try:
+            # Each pass makes one claim POST at most. A new pass after backoff
+            # first checks the durable ACK journal, even after an uncertain POST.
+            async with asyncio.timeout(110):
+                await self.async_delivery_pass(limit=1)
+        except Exception as error:
+            self._delivery_failures = min(6, self._delivery_failures + 1)
+            delay = min(_MAX_DELIVERY_BACKOFF, _DELIVERY_INTERVAL * 2 ** self._delivery_failures)
+            if isinstance(error, HostedTransportError):
+                delay = max(delay, error.retry_after or 0)
+            if self._delivery_failures == 5:
+                self._delivery_attention_issue("hosted_delivery_retry")
+                _LOGGER.warning("Daylight hosted delivery polling is backing off")
+        else:
+            self._delivery_failures = 0
+            ir.async_delete_issue(self._hass, DOMAIN, f"hosted_delivery_retry_{self._entry_id}")
+        finally:
+            self._delivery_due_at = datetime.now(UTC) + timedelta(seconds=delay)
+            self._delivery_poll_running = False
+            self._schedule_delivery_poll()
+
+    def _delivery_attention_issue(self, key: str) -> None:
+        ir.async_create_issue(
+            self._hass, DOMAIN, f"{key}_{self._entry_id}", is_fixable=False,
+            severity=ir.IssueSeverity.WARNING, translation_key=key, is_persistent=False,
         )
 
     def _attention_issue(self) -> None:
@@ -434,6 +511,7 @@ class HostedConnectionRuntime:
         if not task.cancelled():
             task.exception()
         self._schedule_automation()
+        self._schedule_delivery_poll()
         if self.accepting:
             async_dispatcher_send(self._hass, hosted_signal(self._entry_id))
 

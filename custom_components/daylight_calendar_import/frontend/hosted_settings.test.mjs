@@ -805,3 +805,21 @@ test("expired Cloud access keeps the account link and offers a status recheck", 
   assert.equal(calls.at(-1).action, "reconcile");
   assert.match(settings.element.querySelector("[role=status]").textContent, /securely connected/i);
 });
+
+
+test("hosted email polling requires an explicit settings choice", async () => {
+  const calls = [];
+  const hass = {callWS: async request => {
+    calls.push(request);
+    return {...snapshot, delivery_polling: request.delivery_polling};
+  }};
+  for (const enabled of [true, false]) {
+    const result = await configureHostedService(
+      hass, snapshot.entry_id, snapshot.api_origin, snapshot.account_origin, undefined, enabled,
+    );
+    assert.equal(result.delivery_polling, enabled);
+    assert.equal(calls.at(-1).delivery_polling, enabled);
+    assert.equal(Object.hasOwn(calls.at(-1), "automatic_lifecycle"), false);
+  }
+  assert.throws(() => validateHostedState({...snapshot, delivery_polling: "true"}));
+});

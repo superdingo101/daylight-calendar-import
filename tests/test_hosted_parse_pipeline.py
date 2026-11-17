@@ -1394,3 +1394,22 @@ async def test_delivery_acceptance_guard_rechecks_fence_after_parse(
             additional.cancel()
             await asyncio.gather(additional, return_exceptions=True)
         await runtime.async_stop()
+
+
+async def test_delivery_pass_surfaces_expired_ack_without_reparse(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import (
+        hosted_ack_recovery, hosted_runtime, hosted_text_batch,
+    )
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    recovery = AsyncMock(return_value=[SimpleNamespace(ack_status="expired")])
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", recovery)
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", AsyncMock(return_value=[]))
+    repair = Mock()
+    monkeypatch.setattr(hosted_runtime.ir, "async_create_issue", repair)
+    parser = AsyncMock()
+    runtime.configure_delivery(store=object(), route_source=object(), parse_source=parser)
+    assert await runtime.async_delivery_pass() == []
+    assert repair.call_args.kwargs["translation_key"] == "hosted_delivery_expired"
+    parser.assert_not_awaited()
+    await runtime.async_stop()
