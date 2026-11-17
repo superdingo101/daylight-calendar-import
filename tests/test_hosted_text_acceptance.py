@@ -396,3 +396,31 @@ async def test_retiring_store_drains_accepted_write_and_fences_late_mutations(mo
     restarted = make_store(monkeypatch, FakeStoreBackend(load_result=backend.saved[-1]))
     await restarted.async_load()
     assert restarted.hosted_ack_journal() == (saved,)
+
+
+async def test_cancelled_hosted_parse_attempt_waits_for_durable_fence(monkeypatch):
+    import asyncio
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    entered, release = asyncio.Event(), asyncio.Event()
+    save = backend.async_save_immediate
+
+    async def blocked_save(data):
+        entered.set()
+        await release.wait()
+        await save(data)
+
+    backend.async_save_immediate = blocked_save
+    delivery = page()["deliveries"][0]
+    source_id = "hosted:entry:" + delivery["delivery_id"]
+    task = asyncio.create_task(store.async_change_hosted_parse_attempt(source_id))
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert store.hosted_parse_uncertain
+    assert "hosted_parse_attempt" in backend.saved[-1]
