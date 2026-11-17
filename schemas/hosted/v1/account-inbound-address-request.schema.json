@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/account-inbound-address-request.schema.json",
+  "title": "Daylight v1 forwarding address change",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "expected_revision"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "expected_revision": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+        }
+      ]
+    }
+  }
+}

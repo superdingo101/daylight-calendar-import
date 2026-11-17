@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "address": null,
+  "sender_policy": {
+    "revision": null,
+    "allowed_senders": []
+  }
+}

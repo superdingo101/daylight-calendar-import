@@ -276,6 +276,9 @@ VALID_ACCOUNT_FIXTURES = (
     ("account-enroll-request", "account-enroll-request"),
     ("account-disconnect-request", "account-disconnect-request"),
     ("account-status", "account-status"),
+    ("account-inbound-settings", "account-inbound-settings"),
+    ("account-inbound-address-request", "account-inbound-address-request"),
+    ("account-inbound-senders-request", "account-inbound-senders-request"),
     ("installation-status-response", "account-installation-status"),
     ("installation-disconnect-response", "account-installation-disconnect"),
     ("pairing-start-request", "pairing-start-request"),
@@ -553,3 +556,4 @@ def test_installation_status_requires_credential_class(account_registry):
     del data["credential_status"]
     with pytest.raises(ValidationError):
         _validate("installation-status-response.schema.json", data, account_registry)
+

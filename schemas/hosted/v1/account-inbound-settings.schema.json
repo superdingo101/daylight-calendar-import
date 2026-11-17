@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v1/account-inbound-settings.schema.json",
+  "title": "Daylight v1 inbound email settings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "address",
+    "sender_policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "address": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "email",
+            "revision"
+          ],
+          "properties": {
+            "email": {
+              "type": "string",
+              "maxLength": 254,
+              "pattern": "^[a-f0-9]{48}@[a-z0-9.-]+(?![\\s\\S])"
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+            }
+          }
+        }
+      ]
+    },
+    "sender_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_senders",
+        "revision"
+      ],
+      "properties": {
+        "allowed_senders": {
+          "type": "array",
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 254,
+            "pattern": "^(?=.{1,64}@)[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\\.(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?![\\s\\S])"
+          }
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
