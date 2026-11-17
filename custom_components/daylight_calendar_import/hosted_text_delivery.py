@@ -11,7 +11,7 @@ from .hosted_text_acceptance import async_accept_hosted_text
 
 async def async_accept_and_ack_text(
     *, store, credentials, claim_checkpoint, service_binding, transport,
-    local_config_entry_id, delivery, route_source, parse_source,
+    local_config_entry_id, delivery, route_source, parse_source, attachment_transport=None,
 ):
     """Commit an outcome and its ACK obligation before any ACK is sent.
 
@@ -24,6 +24,7 @@ async def async_accept_and_ack_text(
         store=store, credentials=credentials, claim_checkpoint=claim_checkpoint,
         service_binding=service_binding, local_config_entry_id=local_config_entry_id,
         delivery=delivery, route_source=route_source, parse_source=parse_source,
+        attachment_transport=attachment_transport,
     )
     matches = [item for item in store.hosted_ack_journal()
                if item.evidence.local_config_entry_id == local_config_entry_id

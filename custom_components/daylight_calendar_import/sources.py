@@ -30,6 +30,7 @@ class SourceAttachment:
     content_ref: str
     filename: str | None = None
     sha256: str | None = None
+    content: bytes | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

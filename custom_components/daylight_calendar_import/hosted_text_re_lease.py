@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 import json
 
+from .hosted_attachment_acceptance import async_verify_attachments, manifest_digest
 from .hosted_source_transport import _date, _page
 from .hosted_transport import HostedServiceBinding, _strict_strings
 
@@ -23,7 +24,7 @@ class HostedTextReLeaseError(ValueError):
 
 async def async_re_lease_hosted_text(
     *, store, credentials, claim_checkpoint, service_binding, local_config_entry_id,
-    entry, delivery,
+    entry, delivery, attachment_transport=None,
 ):
     """Verify immutable evidence and durably replace the journal lease token."""
     delivery = deepcopy(delivery)
@@ -31,7 +32,7 @@ async def async_re_lease_hosted_text(
         _strict_strings(delivery)
         _page({"schema_version": 1, "deliveries": [delivery]}, 1, datetime.now(UTC))
         source = delivery["source"]
-        if source["attachments"] or not isinstance(source.get("text"), str) or not source["text"].strip():
+        if not source["attachments"] and not (source.get("text") or "").strip():
             raise ValueError
         canonical = json.dumps(source, ensure_ascii=False, sort_keys=True,
                                separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -58,6 +59,7 @@ async def async_re_lease_hosted_text(
             raise HostedTextReLeaseError("hosted delivery authority unavailable")
 
     guard()
+    descriptors = tuple(source["attachments"])
     evidence = replace(
         entry.evidence,
         delivery_id=delivery["delivery_id"],
@@ -66,9 +68,17 @@ async def async_re_lease_hosted_text(
         source_expires_at=delivery["source_expires_at"].removesuffix("z")
         + ("Z" if delivery["source_expires_at"].endswith("z") else ""),
         source_evidence_sha256=sha256(canonical).hexdigest(),
-        attachment_manifest_sha256=sha256(b'{"attachments":[]}').hexdigest(),
-        attachment_descriptors=(), verified_attachments=(),
+        attachment_manifest_sha256=manifest_digest(descriptors),
+        attachment_descriptors=descriptors,
     )
+    # Do not request bytes for changed evidence.
+    if descriptors and replace(evidence, lease_token=entry.evidence.lease_token) != entry.evidence:
+        raise HostedTextReLeaseError("hosted delivery evidence changed")
+    _, verified = await async_verify_attachments(
+        delivery, descriptors, attachment_transport, credential.token,
+        service_binding, guard, HostedTextReLeaseError,
+    )
+    evidence = replace(evidence, verified_attachments=verified)
     result = await store.async_reconcile_hosted_ack(
         entry=entry, action="replace_lease", new_evidence=evidence,
     )

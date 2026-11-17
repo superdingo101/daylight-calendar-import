@@ -39,7 +39,7 @@ async def async_process_text_batch(
             raise AckDispatchBlocked("hosted claim authority unavailable")
         results.append(await async_handle_text_claim(
             store=store, credentials=credentials, claim_checkpoint=checkpoint,
-            service_binding=binding, transport=ack_transport,
+            service_binding=binding, transport=ack_transport, attachment_transport=claim_transport,
             local_config_entry_id=local_config_entry_id, delivery=delivery,
             route_source=route_source, parse_source=parse_source,
         ))

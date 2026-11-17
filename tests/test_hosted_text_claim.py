@@ -16,7 +16,7 @@ from tests.test_storage import FakeStoreBackend, draft, make_store
 BLOCKED_REASON = r"^hosted ACK authority unavailable$"
 
 
-async def handle(store, creds, transport, delivery, *, parse=None):
+async def handle(store, creds, transport, delivery, *, parse=None, attachments=None):
     async def default_parse(_source):
         return SimpleNamespace(events=[draft()], event_assumptions=(), warnings=[]), None
 
@@ -28,6 +28,7 @@ async def handle(store, creds, transport, delivery, *, parse=None):
         store=store, credentials=creds, claim_checkpoint=creds.snapshot,
         service_binding=SERVICE, transport=transport, local_config_entry_id="entry",
         delivery=delivery, route_source=route, parse_source=parse or default_parse,
+        attachment_transport=attachments,
     )
 
 
@@ -295,3 +296,76 @@ async def test_final_transport_fence_rejects_changed_credentials():
     with pytest.raises(AckDispatchBlocked, match=BLOCKED_REASON):
         await bound.acknowledge_source(token="private", delivery_id="id", lease_token="secret")
     assert not transport.calls
+
+
+@pytest.mark.parametrize("failure", [None, "corrupt", "revoked", "wrong_binding"])
+async def test_attachment_claim_through_restart_and_re_lease(monkeypatch, failure):
+    from dataclasses import replace
+    from hashlib import sha256
+    from unittest.mock import MagicMock
+
+    from custom_components.daylight_calendar_import.hosted_parser import _attachment_bytes
+    from custom_components.daylight_calendar_import.hosted_source_transport import HostedSourceTransport
+    from custom_components.daylight_calendar_import.hosted_text_acceptance import HostedTextAcceptanceError
+    from custom_components.daylight_calendar_import.hosted_transport import HostedServiceBinding, HostedTransportError
+    from tests.test_hosted_source_transport import Response
+
+    raw = b"%PDF-1.7\nprivate attachment"
+    delivery = page()["deliveries"][0]
+    delivery["source"].pop("text")
+    delivery["source"]["attachments"] = [{
+        "id": "flyer.pdf", "media_type": "application/pdf", "size_bytes": len(raw),
+        "sha256": sha256(raw).hexdigest(), "filename": "Flyer.pdf",
+    }]
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    creds = SimpleNamespace(snapshot=checkpoint())
+    session = MagicMock()
+
+    def respond(*_args, **_kwargs):
+        if failure == "revoked":
+            creds.snapshot = replace(creds.snapshot, revision=1, processing_consent=False)
+        return Response(
+            raw=b"X" + raw[1:] if failure == "corrupt" else raw,
+            content_type="application/pdf",
+            headers={"Cache-Control": "no-store", "Content-Length": str(len(raw))},
+        )
+
+    session.request.side_effect = respond
+    binding = (HostedServiceBinding("https://other.example.test", SERVICE.account_origin)
+               if failure == "wrong_binding" else SERVICE)
+    attachments = HostedSourceTransport(session, binding)
+    seen = []
+
+    async def parse(source):
+        seen.append(_attachment_bytes({}, source.attachments[0]))
+        return SimpleNamespace(events=[draft()], event_assumptions=(), warnings=[]), None
+
+    ack = Transport()
+    if failure:
+        with pytest.raises((HostedTransportError, HostedTextAcceptanceError)):
+            await handle(store, creds, ack, delivery, parse=parse, attachments=attachments)
+        assert session.request.call_count == (0 if failure == "wrong_binding" else 1)
+        assert not seen and not backend.saved and not ack.calls
+        return
+
+    def lost_ack():
+        raise RuntimeError("ACK response lost")
+
+    with pytest.raises(RuntimeError, match="ACK response lost"):
+        await handle(store, creds, Transport(on_call=lost_ack), delivery,
+                     parse=parse, attachments=attachments)
+    restarted = make_store(monkeypatch, FakeStoreBackend(load_result=backend.saved[-1]))
+    await restarted.async_load()
+    prior = restarted.hosted_ack_journal()[0]
+    assert prior.ack_status == "pending"
+    assert prior.evidence.verified_attachments[0]["sha256"] == sha256(raw).hexdigest()
+    assert raw.decode() not in repr(backend.saved)
+
+    delivery["lease_token"] = "r" * 32
+    await handle(restarted, creds, ack, delivery, parse=parse, attachments=attachments)
+    assert seen == [raw]
+    assert session.request.call_count == 2
+    assert session.request.call_args.kwargs["headers"]["X-Daylight-Lease-Token"] == "r" * 32
+    assert ack.calls[0]["lease_token"] == "r" * 32
+    assert restarted.hosted_ack_journal()[0].ack_status == "confirmed"

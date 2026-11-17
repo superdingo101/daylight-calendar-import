@@ -33,7 +33,7 @@ class _LeaseBoundTransport:
 
 async def async_handle_text_claim(
     *, store, credentials, claim_checkpoint, service_binding, transport,
-    local_config_entry_id, delivery, route_source, parse_source,
+    local_config_entry_id, delivery, route_source, parse_source, attachment_transport=None,
 ):
     """Accept a new delivery or rebind proven prior acceptance before ACK.
 
@@ -60,6 +60,7 @@ async def async_handle_text_claim(
             service_binding=service_binding, transport=bounded_transport,
             local_config_entry_id=local_config_entry_id, delivery=delivery,
             route_source=route_source, parse_source=parse_source,
+            attachment_transport=attachment_transport,
         )
     entry = matches[0]
     if entry.ack_status != "pending":
@@ -67,7 +68,7 @@ async def async_handle_text_claim(
     updated = await async_re_lease_hosted_text(
         store=store, credentials=credentials, claim_checkpoint=claim_checkpoint,
         service_binding=service_binding, local_config_entry_id=local_config_entry_id,
-        entry=entry, delivery=delivery,
+        entry=entry, delivery=delivery, attachment_transport=attachment_transport,
     )
     # Lease can expire during the durable journal write. Never ACK it after that.
     if (credentials.snapshot != claim_checkpoint

@@ -166,6 +166,7 @@ async def test_batch_forwards_complete_delivery_context_and_default_limit(monkey
         "claim_checkpoint": creds.snapshot,
         "service_binding": SERVICE,
         "transport": ack,
+        "attachment_transport": client,
         "local_config_entry_id": "other-entry",
         "route_source": route_source,
         "parse_source": parse_source,
