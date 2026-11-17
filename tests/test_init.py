@@ -27,6 +27,7 @@ from custom_components.daylight_calendar_import import (
     _async_check_entity_control_permission,
     _async_create_calendar_event,
     _async_parse_source,
+    _async_stop_hosted_runtime,
     _calendar_configuration,
     _expected_event,
     _parse_text_with_ai_task,
@@ -133,6 +134,24 @@ def fake_review_panel_for_service_unit_tests(monkeypatch):
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_classify_conflicts", AsyncMock(return_value=()))
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_track_time_interval",
                         Mock(return_value=Mock()))
+
+
+async def test_hosted_unload_fences_then_drains_supported_storage_writes():
+    calls = []
+
+    async def stop():
+        calls.append("stop")
+
+    async def drain():
+        calls.append("drain")
+
+    store = SimpleNamespace(
+        hosted_runtime=SimpleNamespace(async_stop=stop),
+        close_hosted_writes=lambda: calls.append("close"),
+        async_drain_hosted_writes=drain,
+    )
+    await _async_stop_hosted_runtime(store)
+    assert calls == ["close", "stop", "drain"]
 
 
 async def test_panel_registration_failure_leaves_no_services_or_store(monkeypatch):
