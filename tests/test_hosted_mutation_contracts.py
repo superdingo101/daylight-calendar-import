@@ -249,3 +249,28 @@ async def test_v2_get_invalid_json_after_headers_keeps_status(client):
     with pytest.raises(HostedParseError) as raised:
         await transport.async_v2_get("/account", token=TOKEN)
     assert (raised.value.code, raised.value.status) == ("provider_invalid_response", 200)
+
+
+@pytest.mark.parametrize("raw,expected,type_name", [
+    (b'{"integral":1.0}', 1, "int"),
+    (b'{"fractional":0.125}', "0.125", "Decimal"),
+])
+async def test_v2_get_preserves_exact_decimal_number_policy(client, raw, expected, type_name):
+    from decimal import Decimal
+    transport, session = client
+    session.request.return_value = Response(raw=raw)
+    result = await transport.async_v2_get("/account", token=TOKEN)
+    number = next(iter(result.values()))
+    assert type(number).__name__ == type_name
+    assert number == (Decimal(expected) if type_name == "Decimal" else expected)
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("private"), aiohttp.ClientConnectionError("private")])
+async def test_v2_get_preheader_transport_failure_has_no_http_status(client, failure):
+    transport, session = client
+    session.request.side_effect = failure
+    with pytest.raises(HostedParseError) as raised:
+        await transport.async_v2_get("/account", token=TOKEN)
+    assert raised.value.code == "operation_recovery_required"
+    assert raised.value.uncertain is True
+    assert raised.value.status is None
