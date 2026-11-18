@@ -451,3 +451,79 @@ def test_mutation_named_zone_clock_matching_is_exact(zone, clock):
     else:
         with pytest.raises(parser.DraftValidationError, match="Extracted clock time differs"):
             parser._named_zone_endpoint(value, zone, clock, check_offset=True)
+
+
+@pytest.mark.parametrize(("start", "end", "expected_start", "expected_end", "ambiguous"), [
+    ("2026-12-05T10:00:00-08:00", "2026-12-05T13:00:00-08:00",
+     "2026-12-05T10:00:00-08:00", "2026-12-05T13:00:00-08:00", False),
+    ("2026-07-05T10:00:00-08:00", "2026-07-05T13:00:00-08:00",
+     "2026-07-05T10:00:00-07:00", "2026-07-05T13:00:00-07:00", False),
+    ("2026-11-01T01:15:00-07:00", "2026-11-01T01:45:00-08:00",
+     "2026-11-01T01:15:00-07:00", "2026-11-01T01:45:00-08:00", True),
+    ("2026-11-01T01:15:00-08:00", "2026-11-01T01:45:00-07:00",
+     "2026-11-01T01:15:00-08:00", "2026-11-01T01:45:00-08:00", True),
+    ("2026-11-01T01:45:00-07:00", "2026-11-01T01:15:00-07:00",
+     "2026-11-01T01:45:00-07:00", "2026-11-01T01:15:00-08:00", True),
+])
+def test_mutation_inferred_zone_resolves_only_safe_repeated_hour_ranges(
+    start, end, expected_start, expected_end, ambiguous,
+):
+    original = {"start": start, "end": end, "title": "preserved"}
+    corrected, is_ambiguous = parser._correct_inferred_zone(original, "America/Los_Angeles")
+    assert corrected == {"start": expected_start, "end": expected_end, "title": "preserved"}
+    assert is_ambiguous is ambiguous
+    assert original == {"start": start, "end": end, "title": "preserved"}
+
+
+@pytest.mark.parametrize("zone", ["Unknown/Zone", "../etc/passwd", ""])
+def test_mutation_inferred_zone_requires_valid_ha_zone(zone):
+    with pytest.raises(parser.DraftValidationError, match="Home Assistant time zone is unavailable"):
+        parser._correct_inferred_zone({"start": BASE["start"], "end": BASE["end"]}, zone)
+
+
+@pytest.mark.parametrize(("start", "end", "expected"), [
+    ("2026-11-01T01:15:00-07:00", "2026-11-01T01:45:00-07:00",
+     ("2026-11-01T01:15:00-07:00", "2026-11-01T01:15:00-08:00")),
+    ("2026-12-05T10:00:00-08:00", "2026-12-05T13:00:00-08:00",
+     ("2026-12-05T10:00:00-08:00",)),
+])
+def test_mutation_fallback_candidates_are_exact_real_instants(start, end, expected):
+    zone = ZoneInfo("America/Los_Angeles")
+    assert parser._fall_back_candidates(start, zone, len(expected) > 1) == expected
+
+
+@pytest.mark.parametrize(("zones", "expected"), [
+    (("America/Los_Angeles", "America/Los_Angeles"), False),
+    (("America/New_York", "America/New_York"), False),
+    (("America/Los_Angeles", ""), False),
+    (("", "America/Los_Angeles"), False),
+])
+def test_mutation_explicit_zone_ambiguity_checks_both_endpoints(zones, expected):
+    assert parser._explicit_zone_ambiguity(BASE, zones, None, check_offset=True) is expected
+
+
+@pytest.mark.parametrize(("start", "end", "zones"), [
+    ("2026-11-01T01:15:00-07:00", "2026-11-01T01:45:00-07:00",
+     ("America/Los_Angeles", "America/Los_Angeles")),
+    ("2026-11-01T01:15:00-08:00", "2026-11-01T01:45:00-08:00",
+     ("America/Los_Angeles", "")),
+])
+def test_mutation_explicit_zone_ambiguity_propagates_repeated_hour(start, end, zones):
+    raw = {**BASE, "start": start, "end": end}
+    assert parser._explicit_zone_ambiguity(raw, zones, None, check_offset=True) is True
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("start_time_zone", None), ("end_time_zone", 3),
+    ("start_time_zone", ["America/Los_Angeles"]),
+])
+def test_mutation_explicit_zone_metadata_rejects_non_strings(field, value):
+    with pytest.raises(parser.DraftValidationError, match="Source time zone must be a string"):
+        parser._explicit_zones({**BASE, field: value})
+
+
+def test_mutation_explicit_zone_metadata_strips_both_endpoints():
+    assert parser._explicit_zones({
+        "start_time_zone": "  America/Los_Angeles  ",
+        "end_time_zone": "  America/New_York  ",
+    }) == ("America/Los_Angeles", "America/New_York")
