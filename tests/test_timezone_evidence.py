@@ -526,3 +526,124 @@ def test_mutation_explicit_zone_metadata_strips_both_endpoints():
         "start_time_zone": "  America/Los_Angeles  ",
         "end_time_zone": "  America/New_York  ",
     }) == ("America/Los_Angeles", "America/New_York")
+
+
+# Mutation regressions: assert user-visible provenance and diagnostic contracts,
+# not merely that extraction returned an event.
+@pytest.mark.parametrize(("basis", "use_reference", "start_zone", "end_zone", "expected_note"), [
+    ("geographic", False, "America/Los_Angeles", "America/Los_Angeles",
+     "Time zone inferred from venue geography; confirm the venue's local time zone before approval."),
+    ("ha_fallback", True, "", "",
+     "Time zone uses Home Assistant fallback; confirm the venue's local time zone before approval."),
+    ("explicit", True, "America/Los_Angeles", "America/Los_Angeles",
+     "AI timezone flags disagree; explicit zone/offset retained without changing wall times. Confirm the source time zone."),
+    ("unspecified", False, "", "",
+     "AI timezone provenance is unspecified; confirm the event's local time zone before approval."),
+    ("unspecified", True, "America/Los_Angeles", "",
+     "AI named timezone provenance is uncertain; times retained in that zone. Please confirm the source time zone before approval."),
+])
+def test_mutation_provenance_disclosures_are_exact_and_durable(
+    basis, use_reference, start_zone, end_zone, expected_note, caplog,
+):
+    event = {**BASE, "time_zone_basis": basis,
+             "uses_reference_time_zone": use_reference,
+             "start_time_zone": start_zone, "end_time_zone": end_zone}
+    with caplog.at_level(logging.DEBUG, logger=parser.__name__):
+        outcome = parser.parse_ai_data({"events": [event]}, time_zone="America/Los_Angeles")
+    assert len(outcome.events) == 1
+    assert outcome.events[0].start == BASE["start"]
+    assert outcome.events[0].end == BASE["end"]
+    assert outcome.event_assumptions[0][0] == expected_note
+    assert outcome.warnings == [f"event 0: {expected_note}"]
+    assert ("Timezone evidence: origin=ai_metadata "
+            f"basis={basis} uses_reference={use_reference} "
+            f"named_start={bool(start_zone)} named_end={bool(end_zone)} "
+            "matched_source_record=False") in caplog.text
+
+
+@pytest.mark.parametrize(("updates", "expected"), [
+    ({"time_zone_basis": "invalid"}, "time_zone_basis must be explicit, geographic, ha_fallback or unspecified"),
+    ({"time_zone_basis": "geographic", "start_time_zone": "", "end_time_zone": ""},
+     "Geographic timezone inference requires named zones for both endpoints"),
+    ({"time_zone_basis": "geographic", "start_time_zone": "America/Los_Angeles",
+      "end_time_zone": ""}, "Geographic timezone inference requires named zones for both endpoints"),
+    ({"time_zone_basis": "ha_fallback", "start_time_zone": "America/New_York",
+      "end_time_zone": "America/New_York"}, "Extracted UTC offset does not match the source time zone."),
+    ({"time_zone_basis": "ha_fallback", "start_time_zone": "America/Los_Angeles",
+      "end_time_zone": "America/Los_Angeles", "start": "2026-12-05T10:00:00-07:00"},
+     "Extracted UTC offset does not match the source time zone."),
+])
+def test_mutation_provenance_errors_have_actionable_exact_reason(updates, expected):
+    event = {**BASE, **updates}
+    result = parser.parse_ai_data({"events": [event]}, time_zone="America/Los_Angeles")
+    assert result.events == []
+    assert len(result.warnings) == 1
+    assert result.warnings[0].startswith("event 0 is invalid: " + expected)
+
+
+def test_mutation_compatible_named_ha_metadata_diagnostic_and_fold(caplog):
+    event = {**BASE, "time_zone_basis": "ha_fallback",
+             "start_time_zone": "America/Los_Angeles",
+             "end_time_zone": "America/Los_Angeles"}
+    with caplog.at_level(logging.DEBUG, logger=parser.__name__):
+        result = parser.parse_ai_data({"events": [event]}, time_zone="America/Los_Angeles")
+    assert len(result.events) == 1
+    assert result.events[0].start == BASE["start"]
+    assert result.warnings == [
+        "event 0: Time zone uses Home Assistant fallback; confirm the venue's local time zone before approval."
+    ]
+    assert ("Timezone resolution: origin=ha_fallback zone=America/Los_Angeles "
+            "condition=compatible_named_metadata") in caplog.text
+    assert ("Timezone candidate validated: origin=ha_fallback zone=America/Los_Angeles "
+            "offsets=('-1 day, 16:00:00',)") in caplog.text
+
+
+def test_mutation_fallback_resolution_diagnostic_is_exact(caplog):
+    with caplog.at_level(logging.DEBUG, logger=parser.__name__):
+        corrected, ambiguous = parser._correct_inferred_zone(
+            {"start": BASE["start"], "end": BASE["end"]}, "America/Los_Angeles")
+    assert corrected == {"start": BASE["start"], "end": BASE["end"]}
+    assert ambiguous is False
+    assert "Timezone resolution: origin=ha_fallback zone=America/Los_Angeles" in caplog.text
+
+
+@pytest.mark.parametrize(("value", "message"), [
+    ("2026-12-05T10:00:00+00:00",
+     "UTC-formatted inferred local time cannot be safely reinterpreted"),
+    ("2026-12-05T10:00:00+05:00",
+     "inferred local time has an unrelated UTC offset"),
+])
+def test_mutation_reinterpretation_error_is_exact(value, message):
+    with pytest.raises(parser.DraftValidationError) as raised:
+        parser._reference_zone_endpoint(value, ZoneInfo("America/Los_Angeles"))
+    assert str(raised.value) == message
+
+
+def test_mutation_source_record_diagnostic_has_actual_origin(caplog):
+    source_text = ("JACKSON IS TURNING 6\nDate: December 5, 2026\n"
+                   "Time: 10:00 AM to 01:00 PM (America/Los_Angeles)")
+    event = {**BASE, "time_zone_basis": "explicit",
+             "uses_reference_time_zone": False}
+    with caplog.at_level(logging.DEBUG, logger=parser.__name__):
+        result = parser.parse_ai_data({"events": [event]},
+                                      source_text=source_text,
+                                      time_zone="America/New_York")
+    assert len(result.events) == 1
+    assert result.events[0].start == BASE["start"]
+    assert ("Timezone evidence: origin=ai_metadata basis=explicit uses_reference=False "
+            "named_start=False named_end=False matched_source_record=True") in caplog.text
+    assert ("Timezone candidate validated: origin=source_text_record "
+            "zone=America/Los_Angeles") in caplog.text
+
+
+def test_mutation_named_offset_error_complete_guidance_and_diagnostic(caplog):
+    with caplog.at_level(logging.DEBUG, logger=parser.__name__):
+        with pytest.raises(parser.DraftValidationError) as raised:
+            parser._named_zone_endpoint("2026-12-05T10:00:00-07:00",
+                                        "America/Los_Angeles", None, check_offset=True)
+    assert str(raised.value) == (
+        "Extracted UTC offset does not match the source time zone. "
+        "Specify the event's time zone and local times in supporting text and try again."
+    )
+    assert ("Timezone validation failed: condition=named_offset_mismatch "
+            "zone=America/Los_Angeles") in caplog.text
