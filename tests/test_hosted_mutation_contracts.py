@@ -204,8 +204,9 @@ async def test_v2_get_response_size_and_chunk_boundary(client, monkeypatch):
     assert await transport.async_v2_get("/account", token=TOKEN) == {"v": 7}
     assert sizes == [16384]
     monkeypatch.setattr(module, "MAX_PARSE_RESPONSE_BYTES", 6)
-    with pytest.raises(HostedParseError, match="provider_invalid_response"):
+    with pytest.raises(HostedParseError) as raised:
         await transport.async_v2_get("/account", token=TOKEN)
+    assert (raised.value.code, raised.value.status) == ("provider_invalid_response", 200)
 
 
 @pytest.mark.parametrize("status", [401, 429, 500])
