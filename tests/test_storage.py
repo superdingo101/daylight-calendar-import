@@ -3579,5 +3579,5 @@ async def test_hosted_operation_acceptance_is_atomic_and_replay_is_a_tombstone(m
     before = len(backend.saved)
     second = await store.async_add(source_text="Practice", events=[draft()],
                                    hosted_operation_id=record["key"])
-    assert second.duplicate is True
+    assert second.duplicate_source is True
     assert len(backend.saved) == before
