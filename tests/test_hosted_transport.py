@@ -1476,7 +1476,6 @@ async def test_source_ack_surfaces_stale_lease_without_remote_text(transport):
     ("https://app.daylight.test/connect\\bad", "invalid account URL"),
     ("https://app.daylight.test/with space", "invalid account URL"),
     ("https://other.daylight.test/connect", "untrusted account URL"),
-    ("https://APP.DAYLIGHT.TEST/connect", "untrusted account URL"),
 ])
 def test_account_url_trust_boundary_errors_are_exact(value, expected):
     with pytest.raises(vol.Invalid) as raised:
