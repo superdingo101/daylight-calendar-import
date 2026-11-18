@@ -647,3 +647,88 @@ def test_mutation_named_offset_error_complete_guidance_and_diagnostic(caplog):
     )
     assert ("Timezone validation failed: condition=named_offset_mismatch "
             "zone=America/Los_Angeles") in caplog.text
+
+
+@pytest.mark.parametrize(("zone_name", "offset"), [
+    ("America/Phoenix", "-07:00"),
+    ("America/New_York", "-05:00"),
+])
+def test_mutation_named_ha_fallback_rejects_different_valid_venue_zone(
+    zone_name, offset, caplog,
+):
+    event = {**BASE, "time_zone_basis": "ha_fallback",
+             "start_time_zone": zone_name, "end_time_zone": zone_name,
+             "start": "2026-12-05T10:00:00" + offset,
+             "end": "2026-12-05T13:00:00" + offset}
+    with caplog.at_level(logging.DEBUG, logger=parser.__name__):
+        result = parser.parse_ai_data({"events": [event]}, time_zone="America/Los_Angeles")
+    assert result.events == []
+    assert result.warnings == [
+        "event 0 is invalid: Named source time zones conflict with inferred time zone. "
+        "Specify the event's time zone in supporting text and try again."
+    ]
+    assert "Timezone validation failed: condition=named_reference_conflict endpoint=start" in caplog.text
+
+
+def test_mutation_named_identifier_length_boundary():
+    # 255 is permitted by the validation boundary, although not a real IANA key.
+    with pytest.raises(parser.DraftValidationError) as raised:
+        parser._named_zone_endpoint(BASE["start"], "A" * 255, None, check_offset=True)
+    assert str(raised.value) == "Source IANA time zone is unavailable"
+    with pytest.raises(parser.DraftValidationError) as raised:
+        parser._named_zone_endpoint(BASE["start"], "A" * 256, None, check_offset=True)
+    assert str(raised.value) == "Source time zone must be an IANA time zone name"
+
+
+@pytest.mark.parametrize("field", ["start_time_zone", "end_time_zone"])
+def test_mutation_zone_metadata_type_rejection_is_exact(field):
+    raw = {**BASE, field: []}
+    with pytest.raises(parser.DraftValidationError) as raised:
+        parser._explicit_zones(raw)
+    assert str(raised.value) == "Source time zone must be a string"
+
+
+def test_mutation_source_record_endpoint_validation_reports_origin_and_both_offsets(caplog):
+    raw = {**BASE}
+    with caplog.at_level(logging.DEBUG, logger=parser.__name__):
+        ambiguous = parser._explicit_zone_ambiguity(
+            raw, ("", ""),
+            parser._NAMED_TIME_RECORD.fullmatch(
+                "JACKSON IS TURNING 6\nDate: December 5, 2026\n"
+                "Time: 10:00 AM to 01:00 PM (America/Los_Angeles)"),
+            check_offset=True,
+        )
+    assert ambiguous is False
+    assert caplog.text.count(
+        "Timezone candidate validated: origin=source_text_record "
+        "zone=America/Los_Angeles offsets=('-1 day, 16:00:00',)"
+    ) == 2
+
+
+@pytest.mark.parametrize(("value", "clock", "error"), [
+    ("2026-12-05T10:00:00-08:00", "11:00AM",
+     "Extracted clock time differs from the source time"),
+    ("2026-03-08T03:15:00-07:00", "02:15AM",
+     "uses 2026-03-08 02:15:00 which does not exist in America/Los_Angeles. "
+     "Check the source and submit a valid local time."),
+])
+def test_mutation_named_source_clock_mismatch_distinguishes_gap(value, clock, error):
+    with pytest.raises(parser.DraftValidationError) as raised:
+        parser._named_zone_endpoint(value, "America/Los_Angeles", clock, check_offset=True)
+    assert str(raised.value) == error
+
+
+def test_mutation_ambiguous_named_zone_validates_both_endpoints(caplog):
+    raw = {
+        "start": "2026-11-01T01:15:00-07:00",
+        "end": "2026-11-01T01:45:00-08:00",
+    }
+    with caplog.at_level(logging.DEBUG, logger=parser.__name__):
+        ambiguous = parser._explicit_zone_ambiguity(
+            raw, ("America/Los_Angeles", "America/Los_Angeles"),
+            None, check_offset=True,
+        )
+    assert ambiguous is True
+    assert caplog.text.count(
+        "Timezone candidate validated: origin=provider_named zone=America/Los_Angeles"
+    ) == 2
