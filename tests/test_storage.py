@@ -3670,4 +3670,4 @@ async def test_unknown_hosted_operation_rejects_without_mutating_storage(monkeyp
         await store.async_add(source_text="Reject", events=[draft()],
                               hosted_operation_id="fabricated")
     assert backend.saved == []
-    assert store.list() == []
+    assert store.list() == ()
