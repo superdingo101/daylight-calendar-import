@@ -3489,3 +3489,72 @@ async def test_reimport_empty_extraction_still_reports_no_events(monkeypatch):
     assert result.pending is None
     assert result.duplicate_events == 0
     assert result.duplicate_source is False
+
+
+def hosted_operation_request():
+    return {
+        "schema_version": 1, "reference_datetime": "2026-11-17T12:00:00Z",
+        "time_zone": "UTC", "source": {
+            "id": "source-1", "received_at": "2026-11-17T11:00:00Z",
+            "kind": "manual_text", "title": "Practice", "text": "Practice",
+            "attachments": [], "metadata": {},
+        },
+    }
+
+
+async def test_hosted_operation_is_durable_before_network_and_reuses_original_payload(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    request = hosted_operation_request()
+    record, fresh = await store.async_prepare_hosted_operation("identity", request, ())
+    assert fresh is True
+    assert backend.saved[-1]["hosted_operations"]["identity"] == record
+    assert record["accepted"] is False
+    replay = hosted_operation_request()
+    replay["source"]["id"] = "new-ephemeral-id"
+    replay["source"]["received_at"] = "2026-11-18T11:00:00Z"
+    replay["reference_datetime"] = "2026-11-18T12:00:00Z"
+    observed, fresh = await store.async_prepare_hosted_operation("identity", replay, ())
+    assert fresh is False
+    assert observed == record
+    assert replay["source"]["id"] == "source-1"
+    assert replay["reference_datetime"] == request["reference_datetime"]
+    assert replay["source"]["received_at"] == request["source"]["received_at"]
+    assert len(backend.saved) == 1
+    request["source"]["text"] = "Different source"
+    with pytest.raises(ValueError, match="operation payload conflict"):
+        await store.async_prepare_hosted_operation("identity", request, ())
+    assert len(backend.saved) == 1
+
+
+async def test_hosted_operation_fences_closed_blocked_and_full_journal(monkeypatch):
+    from custom_components.daylight_calendar_import.storage import PendingImportStorageError
+    store = make_store(monkeypatch, FakeStoreBackend())
+    await store.async_load()
+    store.close_hosted_writes()
+    with pytest.raises(PendingImportStorageError):
+        await store.async_prepare_hosted_operation("identity", hosted_operation_request(), ())
+    await store.async_drain_hosted_writes()
+    store._hosted_writes_closed = False
+    store._storage_blocked = True
+    with pytest.raises(PendingImportStorageError):
+        await store.async_prepare_hosted_operation("identity", hosted_operation_request(), ())
+    store._storage_blocked = False
+    store._hosted_operations = {str(i): {} for i in range(10000)}
+    with pytest.raises(ValueError, match="journal requires owner recovery"):
+        await store.async_prepare_hosted_operation("new", hosted_operation_request(), ())
+
+
+async def test_hosted_operation_failed_immediate_save_blocks_further_writes(monkeypatch):
+    from custom_components.daylight_calendar_import.storage import PendingImportStorageError
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    backend.save_error = RuntimeError("disk outcome unknown")
+    with pytest.raises(RuntimeError, match="disk outcome unknown"):
+        await store.async_prepare_hosted_operation("identity", hosted_operation_request(), ())
+    assert store._storage_blocked
+    assert store.accepting_services is False
+    with pytest.raises(PendingImportStorageError):
+        await store.async_prepare_hosted_operation("identity", hosted_operation_request(), ())
