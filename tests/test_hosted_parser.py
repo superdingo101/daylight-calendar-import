@@ -878,7 +878,7 @@ async def test_durable_parser_binds_exact_source_identity_and_payload(
     assert request["source"]["received_at"] == source.received_at.isoformat()
     assert request["reference_datetime"] == "2026-11-17T12:00:00Z"
     assert request["source"]["metadata"] == {}
-    assert attachments == ()
+    assert attachments == []
     store.async_prepare_hosted_operation.assert_awaited_once_with(identity, request, ())
     client._transport.async_parse.assert_awaited_once_with(
         request, (), token=TOKEN, operation_key=key,
