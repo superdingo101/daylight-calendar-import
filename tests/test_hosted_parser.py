@@ -753,3 +753,187 @@ def test_staged_attachment_read_is_bounded_by_declared_size_plus_one(tmp_path, m
     monkeypatch.setattr(module.os, "fdopen", fdopen)
     assert module._attachment_bytes({"local": str(tmp_path)}, item) == b"\x89PNG\r\n\x1a\nbody"
     assert read_sizes == [item.size_bytes + 1]
+
+
+async def test_authority_failure_after_response_is_uncertain(provider):
+    client, saved, _ = provider
+
+    async def disconnected(*args, **kwargs):
+        saved[0] = None
+        return result()
+
+    client._transport.async_parse.side_effect = disconnected
+    with pytest.raises(HostedParseError) as error:
+        await client.async_parse(TextSourceAdapter().create("school"), reference_datetime="2026-10-28T10:00:00Z", time_zone="UTC")
+    assert error.value.uncertain is True
+    assert error.value.status == 401
+
+
+@pytest.mark.parametrize("fresh,status,valid", [
+    (True, "succeeded", True),
+    (False, "succeeded", True),
+    (False, "pending", True),
+    (True, "succeeded", False),
+])
+async def test_durable_operation_parse_and_recovery(provider, fresh, status, valid):
+    """The durable branch never silently falls back to an unkeyed v1 parse."""
+    client, _, _ = provider
+    from uuid import uuid4
+    key = str(uuid4())
+    digest = "a" * 64
+    record = {"key": key, "digest": digest}
+    store = MagicMock()
+    store.async_prepare_hosted_operation = AsyncMock(return_value=(record, fresh))
+    client._operation_store = store
+    client._operation_namespace = "installation"
+    envelope = {
+        "schema_version": 2, "operation_id": key if valid else str(uuid4()),
+        "payload_sha256": digest, "status": status,
+        "result": result() if status == "succeeded" else None,
+        "replay_expires_at": None,
+    }
+    client._transport.async_operation = AsyncMock(return_value=envelope if not fresh else None)
+    client._transport.async_parse = AsyncMock(return_value=envelope)
+    source = TextSourceAdapter().create("School event")
+    if status != "succeeded" or not valid:
+        with pytest.raises(HostedParseError) as raised:
+            await client.async_parse(source, reference_datetime="2026-11-17T12:00:00Z", time_zone="UTC")
+        assert raised.value.uncertain
+        assert raised.value.code == ("provider_invalid_response" if not valid else "operation_pending")
+    else:
+        parsed = await client.async_parse(source, reference_datetime="2026-11-17T12:00:00Z", time_zone="UTC")
+        assert parsed.events
+    assert client.last_operation_id == key
+    assert store.async_prepare_hosted_operation.await_count == 1
+    if fresh:
+        client._transport.async_operation.assert_not_awaited()
+        assert client._transport.async_parse.call_args.kwargs["operation_key"] == key
+    else:
+        client._transport.async_operation.assert_awaited_once_with(key, token=TOKEN)
+        client._transport.async_parse.assert_not_awaited()
+
+
+async def test_durable_operation_not_found_replays_only_original_key(provider):
+    client, _, _ = provider
+    from uuid import uuid4
+    key = str(uuid4())
+    store = MagicMock()
+    store.async_prepare_hosted_operation = AsyncMock(return_value=({"key": key, "digest": "a" * 64}, False))
+    client._operation_store = store
+    client._operation_namespace = "installation"
+    client._transport.async_operation = AsyncMock(return_value=None)
+    client._transport.async_parse = AsyncMock(return_value={
+        "schema_version": 2, "operation_id": key, "payload_sha256": "a" * 64,
+        "status": "succeeded", "result": result(), "replay_expires_at": None,
+    })
+    await client.async_parse(TextSourceAdapter().create("School event"),
+                             reference_datetime="2026-11-17T12:00:00Z", time_zone="UTC")
+    client._transport.async_operation.assert_awaited_once_with(key, token=TOKEN)
+    assert client._transport.async_parse.call_args.kwargs["operation_key"] == key
+
+
+@pytest.mark.parametrize("upstream,reparse", [
+    ("mail/one", None), ("mail/other", "manual-1"), (None, "manual-2"),
+])
+async def test_durable_parser_binds_exact_source_identity_and_payload(
+    provider, monkeypatch, upstream, reparse,
+):
+    from custom_components.daylight_calendar_import import hosted_parser as module
+    from custom_components.daylight_calendar_import.hosted_operations import source_identity
+    from uuid import uuid4
+
+    client, _, _ = provider
+    client._operation_namespace = "installation:https://api.daylight.test"
+    key = str(uuid4())
+    digest = "a" * 64
+    store = MagicMock()
+    store.async_prepare_hosted_operation = AsyncMock(
+        return_value=({"key": key, "digest": digest}, True),
+    )
+    client._operation_store = store
+    client._transport.async_parse = AsyncMock(return_value={
+        "schema_version": 2, "operation_id": key, "payload_sha256": digest,
+        "status": "succeeded", "result": result(), "replay_expires_at": None,
+    })
+    observed = []
+    def identify(request, attachments, *, namespace, upstream, reparse):
+        identity = source_identity(request, attachments, namespace=namespace,
+                                   upstream=upstream, reparse=reparse)
+        observed.append((request, attachments, namespace, upstream, reparse, identity))
+        return identity
+    monkeypatch.setattr(module, "source_identity", identify)
+    source = replace(
+        TextSourceAdapter().create("School calendar"),
+        upstream_source_id=upstream,
+        metadata={"hosted_reparse": reparse} if reparse is not None else {},
+    )
+    await client.async_parse(source, reference_datetime="2026-11-17T12:00:00Z", time_zone="UTC")
+    assert len(observed) == 1
+    request, attachments, namespace, actual_upstream, actual_reparse, identity = observed[0]
+    assert namespace == client._operation_namespace
+    assert actual_upstream == upstream
+    assert actual_reparse == reparse
+    assert request["source"]["text"] == "School calendar"
+    assert request["source"]["id"] == source.id
+    assert request["source"]["received_at"] == source.received_at.isoformat()
+    assert request["reference_datetime"] == "2026-11-17T12:00:00Z"
+    assert request["source"]["metadata"] == {}
+    assert attachments == []
+    store.async_prepare_hosted_operation.assert_awaited_once_with(identity, request, ())
+    client._transport.async_parse.assert_awaited_once_with(
+        request, (), token=TOKEN, operation_key=key,
+    )
+
+
+async def test_durable_parser_recovery_pins_existing_authority_and_payload(provider):
+    from uuid import uuid4
+    client, _, _ = provider
+    key = str(uuid4())
+    digest = "a" * 64
+    store = MagicMock()
+    store.async_prepare_hosted_operation = AsyncMock(
+        return_value=({"key": key, "digest": digest}, False),
+    )
+    client._operation_store = store
+    client._operation_namespace = "entry:origin"
+    client._transport.async_operation = AsyncMock(return_value=None)
+    client._transport.async_parse = AsyncMock(return_value={
+        "schema_version": 2, "operation_id": key, "payload_sha256": digest,
+        "status": "succeeded", "result": result(), "replay_expires_at": None,
+    })
+    source = TextSourceAdapter().create("School calendar")
+    await client.async_parse(source, reference_datetime="2026-11-17T12:00:00Z", time_zone="UTC")
+    client._transport.async_operation.assert_awaited_once_with(key, token=TOKEN)
+    request, attachments = store.async_prepare_hosted_operation.await_args.args[1:]
+    client._transport.async_parse.assert_awaited_once_with(
+        request, attachments, token=TOKEN, operation_key=key,
+    )
+
+
+@pytest.mark.parametrize("status", ["pending", "uncertain", "failed", "expired"])
+async def test_durable_parser_refuses_nonterminal_operation_without_v1_fallback(provider, status):
+    from uuid import uuid4
+    client, _, _ = provider
+    key = str(uuid4())
+    store = MagicMock()
+    store.async_prepare_hosted_operation = AsyncMock(
+        return_value=({"key": key, "digest": "a" * 64}, False),
+    )
+    client._operation_store = store
+    client._operation_namespace = "entry:origin"
+    client._transport.async_operation = AsyncMock(return_value={
+        "schema_version": 2, "operation_id": key, "payload_sha256": "a" * 64,
+        "status": status, "result": None, "replay_expires_at": None,
+    })
+    with pytest.raises(HostedParseError) as raised:
+        await client.async_parse(TextSourceAdapter().create("School calendar"),
+                                 reference_datetime="2026-11-17T12:00:00Z", time_zone="UTC")
+    assert (raised.value.code, raised.value.uncertain) == ("operation_" + status, True)
+    client._transport.async_parse.assert_not_awaited()
+
+
+def test_initial_durable_parser_metadata_has_no_operation_id(provider):
+    client, _, _ = provider
+    assert client.last_operation_id is None
+    assert client._operation_store is None
+    assert client._operation_namespace is None

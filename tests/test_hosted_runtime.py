@@ -536,3 +536,389 @@ async def test_startup_does_not_recover_incomplete_connections(hass, monkeypatch
     assert runtime.snapshot()["state"] == "recovery_required"
     assert not runtime.busy
     await runtime.async_stop()
+
+
+async def test_delivery_poll_is_opt_in_single_flight_and_backed_off(hass, monkeypatch):
+    from datetime import UTC, datetime
+    from unittest.mock import Mock
+
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+    from custom_components.daylight_calendar_import.const import (
+        CONF_PARSER_PROVIDER, PARSER_PROVIDER_DAYLIGHT_CLOUD,
+    )
+
+    cancel = Mock()
+    timer = Mock(return_value=cancel)
+    issue = Mock()
+    monkeypatch.setattr(module, "async_track_point_in_utc_time", timer)
+    monkeypatch.setattr(module.ir, "async_create_issue", issue)
+    config = entry({
+        module.CONF_HOSTED_DELIVERY_POLL: True,
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD,
+    })
+    config.data = {}
+    runtime = await async_setup_hosted_runtime(hass, config)
+    assert runtime.snapshot()["delivery_polling"] is True
+    runtime.resume()
+    assert not timer.called
+    runtime.configure_delivery(store=object(), route_source=object(), parse_source=object())
+    runtime._state = HostedConnectionResult("connected", credential_status="current")
+    runtime._delivery_parser_selected = False
+    runtime._schedule_delivery_poll()
+    assert not timer.called
+    runtime._delivery_parser_selected = True
+    runtime._schedule_delivery_poll()
+    assert timer.call_count == 1
+    passed = AsyncMock(side_effect=HostedTransportError("rate_limited", status=429, retry_after=300))
+    monkeypatch.setattr(runtime, "async_delivery_pass", passed)
+    timer.call_args.args[1](datetime.now(UTC))
+    runtime._delivery_poll_tick(datetime.now(UTC))
+    await hass.async_block_till_done()
+    passed.assert_awaited_once_with(limit=1)
+    assert (timer.call_args.args[2] - datetime.now(UTC)).total_seconds() > 295
+    assert not issue.called
+
+    runtime._delivery_failures = 4
+    passed.side_effect = RuntimeError("private provider detail")
+    await runtime._async_delivery_poll()
+    assert issue.call_args.kwargs["translation_key"] == "hosted_delivery_retry"
+    assert (runtime._delivery_due_at - datetime.now(UTC)).total_seconds() > 895
+
+    passed.side_effect = None
+    await runtime._async_delivery_poll()
+    assert runtime._delivery_failures == 0
+    assert (runtime._delivery_due_at - datetime.now(UTC)).total_seconds() > 55
+    await runtime.async_stop()
+    cancel.assert_called()
+    count = passed.await_count
+    runtime._delivery_poll_tick(datetime.now(UTC))
+    await hass.async_block_till_done()
+    assert passed.await_count == count
+
+
+async def test_delivery_poll_defers_foreground_and_requires_explicit_recovery(hass, monkeypatch):
+    from datetime import UTC, datetime
+    from unittest.mock import Mock
+
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+
+    timer = Mock(return_value=Mock())
+    create_issue = Mock()
+    delete_issue = Mock()
+    monkeypatch.setattr(module, "async_track_point_in_utc_time", timer)
+    monkeypatch.setattr(module.ir, "async_create_issue", create_issue)
+    monkeypatch.setattr(module.ir, "async_delete_issue", delete_issue)
+    runtime = await async_setup_hosted_runtime(hass, entry())
+    runtime.resume()
+    with pytest.raises(HostedRuntimeError, match="hosted_unavailable"):
+        await runtime.async_retry_delivery_parse()
+    runtime._delivery_poll_enabled = runtime._delivery_parser_selected = True
+    store = SimpleNamespace(hosted_parse_uncertain=True, active_submissions={object()})
+    async def clear(value):
+        assert value is None
+        store.hosted_parse_uncertain = False
+    store.async_change_hosted_parse_attempt = AsyncMock(side_effect=clear)
+    runtime.configure_delivery(store=store, route_source=object(), parse_source=object())
+    runtime._state = HostedConnectionResult("connected", credential_status="current")
+    runtime._schedule_delivery_poll()
+    assert not timer.called
+    assert create_issue.call_args.kwargs == {
+        "is_fixable": False, "is_persistent": True, "severity": module.ir.IssueSeverity.WARNING,
+        "translation_key": "hosted_delivery_uncertain",
+    }
+    assert runtime.snapshot()["delivery_parse_uncertain"]
+    runtime._delivery_poll_running = True
+    with pytest.raises(HostedRuntimeError, match="hosted_busy"):
+        await runtime.async_retry_delivery_parse()
+    runtime._delivery_poll_running = False
+    assert "delivery_parse_uncertain" not in await runtime.async_retry_delivery_parse()
+    store.async_change_hosted_parse_attempt.assert_awaited_once_with(None)
+    delete_issue.assert_called_with(hass, "daylight_calendar_import",
+                                    "hosted_delivery_uncertain_hosted-entry")
+    assert timer.call_count == 1
+    run = AsyncMock()
+    monkeypatch.setattr(runtime, "async_delivery_pass", run)
+    runtime._delivery_poll_tick(datetime.now(UTC))
+    run.assert_not_awaited()
+    assert (runtime._delivery_due_at - datetime.now(UTC)).total_seconds() > 55
+    await runtime._async_delivery_poll()
+    run.assert_not_awaited()
+    await runtime.async_stop()
+
+
+async def test_delivery_runtime_starts_with_strictly_disabled_email_defaults(runtime):
+    r, _ = runtime
+    assert r._delivery_poll_enabled is False
+    assert r._delivery_parser_selected is False
+    assert r._delivery_failures == 0
+    assert r._delivery_due_at is None
+    assert r._delivery_poll_running is False
+    assert r._delivery_owner is None
+    assert r._verified_parse_credential is None
+    await r.async_stop()
+
+
+async def test_delivery_scheduler_independent_admission_guards_and_deadlines(runtime, hass, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
+
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+
+    timer = Mock(return_value=Mock())
+    monkeypatch.setattr(module, "async_track_point_in_utc_time", timer)
+    r, _ = runtime
+    r._delivery_poll_enabled = r._delivery_parser_selected = True
+    store = SimpleNamespace(
+        hosted_parse_uncertain=False, active_submissions=set(), active_service_handlers=set(),
+    )
+    r.configure_delivery(store=store, route_source=object(), parse_source=object())
+    handlers = r._delivery_handlers
+    r._state = HostedConnectionResult("connected", credential_status="current")
+
+    r._delivery_handlers = None
+    r._schedule_delivery_poll()
+    timer.assert_not_called()
+    r._delivery_handlers = handlers
+
+    r._delivery_poll_running = True
+    r._schedule_delivery_poll()
+    timer.assert_not_called()
+    r._delivery_poll_running = False
+
+    owner = asyncio.current_task()
+    r._tasks.add(owner)
+    try:
+        r._schedule_delivery_poll()
+        timer.assert_not_called()
+    finally:
+        r._tasks.remove(owner)
+
+    r._accepting = False
+    r._schedule_delivery_poll()
+    timer.assert_not_called()
+    r._accepting = True
+
+    r._delivery_poll_enabled = False
+    r._schedule_delivery_poll()
+    timer.assert_not_called()
+    r._delivery_poll_enabled = True
+
+    r._delivery_parser_selected = False
+    r._schedule_delivery_poll()
+    timer.assert_not_called()
+    r._delivery_parser_selected = True
+
+    r._state = HostedConnectionResult("connected", credential_status="expired")
+    r._schedule_delivery_poll()
+    timer.assert_not_called()
+
+    r._state = HostedConnectionResult("connected", credential_status="overlap")
+    start = datetime.now(UTC)
+    r._schedule_delivery_poll()
+    assert timer.call_count == 1
+    assert timer.call_args.args[0] is hass
+    assert timer.call_args.args[1] == r._delivery_poll_tick
+    assert 0.8 <= (timer.call_args.args[2] - start).total_seconds() <= 1.5
+
+    timer.reset_mock()
+    r._delivery_due_at = datetime.now(UTC) - timedelta(minutes=5)
+    start = datetime.now(UTC)
+    r._schedule_delivery_poll()
+    assert timer.call_count == 1
+    assert 0.8 <= (timer.call_args.args[2] - start).total_seconds() <= 1.5
+
+    future = datetime.now(UTC) + timedelta(seconds=150)
+    r._delivery_due_at = future
+    r._schedule_delivery_poll()
+    assert timer.call_args.args[2] == future
+    await r.async_stop()
+
+
+async def test_delivery_repair_issue_records_correct_owner_and_persistence(runtime, hass, monkeypatch):
+    from unittest.mock import Mock
+
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+
+    create_issue = Mock()
+    monkeypatch.setattr(module.ir, "async_create_issue", create_issue)
+    r, _ = runtime
+
+    r._delivery_attention_issue("hosted_delivery_expired")
+    create_issue.assert_called_once_with(
+        hass, module.DOMAIN, "hosted_delivery_expired_hosted-entry",
+        is_fixable=False, severity=module.ir.IssueSeverity.WARNING,
+        translation_key="hosted_delivery_expired", is_persistent=True,
+    )
+    create_issue.reset_mock()
+    r._delivery_attention_issue("hosted_delivery_retry")
+    create_issue.assert_called_once_with(
+        hass, module.DOMAIN, "hosted_delivery_retry_hosted-entry",
+        is_fixable=False, severity=module.ir.IssueSeverity.WARNING,
+        translation_key="hosted_delivery_retry", is_persistent=False,
+    )
+    await r.async_stop()
+
+
+async def test_delivery_backoff_progression_logs_and_clears_exact_repair(runtime, hass, monkeypatch):
+    from datetime import UTC, datetime
+    from unittest.mock import Mock
+
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+
+    r, _ = runtime
+    r._delivery_poll_enabled = r._delivery_parser_selected = True
+    r.configure_delivery(
+        store=SimpleNamespace(
+            hosted_parse_uncertain=False, active_submissions=set(), active_service_handlers=set(),
+        ),
+        route_source=object(), parse_source=object(),
+    )
+    r._state = HostedConnectionResult("connected", credential_status="current")
+    monkeypatch.setattr(module, "async_track_point_in_utc_time", Mock(return_value=Mock()))
+    warning = Mock()
+    delete = Mock()
+    create = Mock()
+    monkeypatch.setattr(module._LOGGER, "warning", warning)
+    monkeypatch.setattr(module.ir, "async_delete_issue", delete)
+    monkeypatch.setattr(module.ir, "async_create_issue", create)
+    poll = AsyncMock(side_effect=HostedTransportError("rate_limited", status=429, retry_after=0))
+    monkeypatch.setattr(r, "async_delivery_pass", poll)
+
+    await r._async_delivery_poll()
+    assert r._delivery_failures == 1
+    assert 118 <= (r._delivery_due_at - datetime.now(UTC)).total_seconds() <= 122
+    assert r._delivery_poll_running is False
+    await r._async_delivery_poll()
+    assert r._delivery_failures == 2
+    assert 238 <= (r._delivery_due_at - datetime.now(UTC)).total_seconds() <= 242
+
+    r._delivery_failures = 4
+    poll.side_effect = RuntimeError("private provider message")
+    await r._async_delivery_poll()
+    assert r._delivery_failures == 5
+    assert 895 <= (r._delivery_due_at - datetime.now(UTC)).total_seconds() <= 902
+    warning.assert_called_once_with("Daylight hosted delivery polling is backing off")
+    create.assert_called_once_with(
+        hass, module.DOMAIN, "hosted_delivery_retry_hosted-entry",
+        is_fixable=False, severity=module.ir.IssueSeverity.WARNING,
+        translation_key="hosted_delivery_retry", is_persistent=False,
+    )
+    await r._async_delivery_poll()
+    await r._async_delivery_poll()
+    assert r._delivery_failures == 6
+    assert 895 <= (r._delivery_due_at - datetime.now(UTC)).total_seconds() <= 902
+    warning.assert_called_once()
+
+    poll.side_effect = None
+    await r._async_delivery_poll()
+    assert r._delivery_failures == 0
+    assert r._delivery_poll_running is False
+    assert 58 <= (r._delivery_due_at - datetime.now(UTC)).total_seconds() <= 62
+    delete.assert_called_once_with(hass, module.DOMAIN, "hosted_delivery_retry_hosted-entry")
+    assert poll.await_args_list and all(x.kwargs == {"limit": 1} for x in poll.await_args_list)
+    await r.async_stop()
+
+
+async def test_explicit_delivery_retry_fences_permission_and_owns_transaction(runtime, hass, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
+
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+
+    r, _ = runtime
+    timer = Mock(return_value=Mock())
+    delete = Mock()
+    monkeypatch.setattr(module, "async_track_point_in_utc_time", timer)
+    monkeypatch.setattr(module.ir, "async_delete_issue", delete)
+    monkeypatch.setattr(module.ir, "async_create_issue", Mock())
+    store = SimpleNamespace(hosted_parse_uncertain=True)
+    async def clear_attempt(value):
+        assert value is None
+        assert r._delivery_poll_running is True
+        store.hosted_parse_uncertain = False
+    store.async_change_hosted_parse_attempt = AsyncMock(side_effect=clear_attempt)
+    r.configure_delivery(store=store, route_source=object(), parse_source=object())
+    r._state = HostedConnectionResult("connected", credential_status="current")
+
+    with pytest.raises(HostedRuntimeError, match="^hosted_unavailable$"):
+        await r.async_retry_delivery_parse()
+    r._delivery_poll_enabled = r._delivery_parser_selected = True
+    r.pause()
+    with pytest.raises(HostedRuntimeError, match="^hosted_unavailable$"):
+        await r.async_retry_delivery_parse()
+    r.resume()
+    r._delivery_poll_running = True
+    with pytest.raises(HostedRuntimeError, match="^hosted_busy$"):
+        await r.async_retry_delivery_parse()
+    r._delivery_poll_running = False
+
+    r._delivery_due_at = datetime.now(UTC) + timedelta(hours=2)
+    result = await r.async_retry_delivery_parse()
+    assert result["delivery_polling"] is True
+    assert "delivery_parse_uncertain" not in result
+    assert r._delivery_due_at is None
+    assert r._delivery_poll_running is False
+    store.async_change_hosted_parse_attempt.assert_awaited_once_with(None)
+    delete.assert_any_call(hass, module.DOMAIN, "hosted_delivery_uncertain_hosted-entry")
+    assert timer.called
+    await r.async_stop()
+
+
+async def test_foreground_delivery_conflict_checks_service_handlers_independently(runtime):
+    r, _ = runtime
+    store = SimpleNamespace(active_submissions=set(), active_service_handlers={object()})
+    r.configure_delivery(store=store, route_source=object(), parse_source=object())
+    assert r._foreground_delivery_conflict() is True
+    store.active_service_handlers.clear()
+    assert r._foreground_delivery_conflict() is False
+    store.active_submissions.add(object())
+    assert r._foreground_delivery_conflict() is True
+    await r.async_stop()
+
+
+@pytest.mark.parametrize("enabled", [True, False, None])
+async def test_m5_parse_session_only_wires_durable_journal_with_explicit_opt_in(
+    runtime, hass, monkeypatch, enabled,
+):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+    r, store = runtime
+    binding = HostedServiceBinding(**SERVICE)
+    credential = BoundCredential(
+        "account_1234567890", "installation_1234567890",
+        "x" * 60, (datetime.now(UTC) + timedelta(days=10)).isoformat(),
+    )
+    store.snapshot = CredentialCheckpoint(
+        service_binding=binding, processing_consent=True, current=credential,
+    )
+    r._verified_parse_credential = credential
+    r._state = HostedConnectionResult("connected", credential_status="current")
+    r._options[module.CONF_HOSTED_PARSE_OPERATIONS] = enabled
+    from custom_components.daylight_calendar_import.const import DOMAIN
+    pending_store = object()
+    hass.data.setdefault(DOMAIN, {})[r._entry_id] = pending_store
+    constructor = Mock(return_value=object())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.hosted_parser.DaylightHostedParserProvider",
+        constructor,
+    )
+    parser, guard = r.parse_session()
+    assert parser is constructor.return_value
+    guard()
+    kwargs = constructor.call_args.kwargs
+    assert kwargs["service_binding"] == binding
+    assert kwargs["checkpoint"]() == store.snapshot
+    assert kwargs["active"]() is True
+    if enabled is True:
+        assert kwargs["operation_store"] is pending_store
+        assert kwargs["operation_namespace"] == "hosted-entry:" + binding.api_origin
+    else:
+        assert "operation_store" not in kwargs
+        assert "operation_namespace" not in kwargs
+    # Admission must be irreversibly fenced after authority rotation.
+    r._parse_generation += 1
+    from custom_components.daylight_calendar_import.providers import ProviderError
+    with pytest.raises(ProviderError, match="Daylight Cloud connection changed"):
+        guard()
+    await r.async_stop()

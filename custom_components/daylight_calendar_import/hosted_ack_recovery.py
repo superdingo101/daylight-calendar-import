@@ -5,6 +5,8 @@ This module does not schedule work, retry automatically, or acquire new leases.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from .hosted_ack_dispatch import async_dispatch_ack
 from .hosted_transport import HostedTransportError
 
@@ -23,7 +25,15 @@ async def async_recover_pending_acks(
                if entry.ack_status == "pending"
                and entry.evidence.local_config_entry_id == local_config_entry_id]
     results = []
-    for entry in pending[:limit]:
+    # Reconnect retains earlier namespaces. Only the current installation can
+    # transmit an ACK. A retired obligation still expires locally.
+    credential = getattr(credentials.snapshot, "current", None)
+    now = datetime.now(UTC)
+    eligible = [entry for entry in pending if (
+        datetime.fromisoformat(entry.evidence.source_expires_at.replace("Z", "+00:00")) <= now
+        or (credential is not None and entry.evidence.matches_namespace(*credential.namespace))
+    )]
+    for entry in eligible[:limit]:
         try:
             results.append(await async_dispatch_ack(
                 store=store, credentials=credentials, transport=transport, entry=entry,

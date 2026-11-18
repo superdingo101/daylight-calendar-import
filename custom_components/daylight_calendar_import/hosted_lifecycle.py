@@ -18,6 +18,7 @@ from .hosted_credentials import (
     HostedCredentialStore,
     PairingAttempt,
     ReconnectIntent,
+    SUPPORTED_JOURNAL_CONTRACTS,
 )
 from .hosted_namespace import NamespaceReconciliationError
 from .hosted_transport import (
@@ -85,7 +86,7 @@ class HostedLifecycleController:
             receipt = await self._reconciler.async_receipt(namespace)
         except NamespaceReconciliationError:
             return None
-        return receipt if type(receipt) is str and receipt == "pending-v2-local-only" else None
+        return receipt if type(receipt) is str and receipt in SUPPORTED_JOURNAL_CONTRACTS else None
 
     async def _reconnect_authorized(self, checkpoint: Any) -> bool:
         intent = checkpoint.reconnect

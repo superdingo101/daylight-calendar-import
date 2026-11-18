@@ -938,3 +938,54 @@ async def test_new_acceptance_requires_public_source_identity(monkeypatch):
         await store.async_add(source_text="source", events=[], source_id=item.source_id,
                               hosted_evidence=item)
     assert not backend.saved
+
+
+@pytest.mark.parametrize("account,installation,expected", [
+    ("acct", None, "incomplete hosted namespace"),
+    (None, "install", "incomplete hosted namespace"),
+    ("bad:account", "install", "invalid hosted namespace"),
+    ("acct", "bad:install", "invalid hosted namespace"),
+])
+def test_hosted_namespace_refusal_has_exact_diagnostic(account, installation, expected):
+    item = replace(evidence(), account_id=account, installation_id=installation)
+    with pytest.raises(ValueError) as raised:
+        item.validate()
+    assert str(raised.value) == expected
+
+
+@pytest.mark.parametrize("public_id,valid", [
+    ("a" * 16, True), ("z" * 128, True),
+    ("A" * 16, True), ("a" * 15, False),
+    ("a" * 129, False), ("a" * 16 + ":", False),
+])
+def test_public_source_id_requires_exact_safe_charset(public_id, valid):
+    item = replace(evidence(), public_source_id=public_id)
+    if valid:
+        item.validate()
+    else:
+        with pytest.raises(ValueError, match="^invalid hosted source identity$"):
+            item.validate()
+
+
+def test_manifest_digest_is_canonical_compact_utf8_and_rejects_modified_attachment():
+    import json
+    from hashlib import sha256
+    descriptor = _descriptor("flyer", media_type="image/png", filename="école.png")
+    item = _with_attachments([descriptor])
+    expected = sha256(json.dumps(
+        {"attachments": [descriptor]}, ensure_ascii=False,
+        sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    assert item.attachment_manifest_sha256 == expected
+    assert expected != sha256(json.dumps(
+        {"attachments": [descriptor]}, sort_keys=True,
+    ).encode("utf-8")).hexdigest()
+    item.validate()
+    for changed in (
+        replace(item, attachment_manifest_sha256=sha256(
+            json.dumps({"attachments": [descriptor]}, sort_keys=True).encode()).hexdigest()),
+        replace(item, attachment_descriptors=({**descriptor, "filename": "other.png"},)),
+        replace(item, verified_attachments=({**item.verified_attachments[0], "sha256": "b" * 64},)),
+    ):
+        with pytest.raises(ValueError):
+            changed.validate()

@@ -220,3 +220,76 @@ async def test_hosted_immediate_checkpoint_error_has_repair_instructions(pending
         await pending.async_add(source_text="Private source", events=[draft()],
                                 source_id=item.source_id, hosted_evidence=item)
     assert str(exc.value) == _STORAGE_ERROR
+
+
+@pytest.mark.parametrize("bound", [False, True])
+async def test_delivery_aware_reconnect_preserves_durable_ack_records(pending, hass, bound):
+    from dataclasses import replace
+
+    from tests.test_hosted_delivery_journal import evidence
+
+    namespace = ("account_1234567890", "installation_1234567890")
+    item = evidence()
+    if bound:
+        item = replace(item, account_id=namespace[0], installation_id=namespace[1])
+    await pending.async_add(source_text="Private source", events=[draft()],
+                            source_id=item.source_id, hosted_evidence=item)
+    restarted = PendingImportStore(hass)
+    await restarted.async_load()
+    restarted.accepting_services = True
+    reconciler = module.LocalOnlyNamespaceReconciler(restarted, allow_delivery=True)
+    if bound:
+        assert await reconciler.async_receipt(namespace) == module.DELIVERY_CONTRACT
+        assert restarted.hosted_ack_journal()[0].evidence == item
+        assert restarted.hosted_ack_journal()[0].ack_status == "pending"
+        restarted._hosted_delivery_journal = ()
+    with pytest.raises(module.NamespaceReconciliationError):
+        await reconciler.async_receipt(namespace)
+
+
+async def test_parse_attempt_requires_delivery_aware_receipt_and_preserves_disk(pending):
+    from custom_components.daylight_calendar_import.hosted_credentials import DELIVERY_CONTRACT
+    await pending.async_change_hosted_parse_attempt("hosted:entry:receipt-123")
+    path = Path(pending._store.path)
+    before = path.read_bytes()
+    assert pending.hosted_parse_uncertain is True
+    with pytest.raises(module.NamespaceReconciliationError, match="^Hosted namespace reconciliation is required; preserve existing journals\\.$"):
+        await module.LocalOnlyNamespaceReconciler(pending).async_receipt(None)
+    assert await module.LocalOnlyNamespaceReconciler(pending, allow_delivery=True).async_receipt(None) == DELIVERY_CONTRACT
+    assert path.read_bytes() == before
+
+
+async def test_delivery_aware_receipt_rejects_disagreement_between_memory_and_disk(pending):
+    from custom_components.daylight_calendar_import.storage import PendingImportStore
+    await pending.async_change_hosted_parse_attempt("hosted:entry:receipt-456")
+    path = Path(pending._store.path)
+    original = path.read_bytes()
+    envelope = json.loads(original)
+    del envelope["data"]["hosted_parse_attempt"]
+    path.write_text(json.dumps(envelope))
+    tampered = path.read_bytes()
+    with pytest.raises(module.NamespaceReconciliationError, match="^Hosted namespace reconciliation is required; preserve existing journals\\.$"):
+        await module.LocalOnlyNamespaceReconciler(pending, allow_delivery=True).async_receipt(None)
+    assert path.read_bytes() == tampered
+    path.write_bytes(original)
+    assert await module.LocalOnlyNamespaceReconciler(pending, allow_delivery=True).async_receipt(None) == module.DELIVERY_CONTRACT
+
+
+async def test_delivery_aware_receipt_rechecks_ownership_after_disk_read(pending, monkeypatch):
+    original = pending._store.hass.async_add_executor_job
+    await pending.async_change_hosted_parse_attempt("hosted:entry:receipt-789")
+    for action in ("pause", "write"):
+        pending.accepting_services = True
+        pending._store._data = None
+        async def interleave(*args):
+            result = await original(*args)
+            if action == "pause":
+                pending.accepting_services = False
+            else:
+                pending._store._data = {"late": "write"}
+            return result
+        monkeypatch.setattr(pending._store.hass, "async_add_executor_job", interleave)
+        with pytest.raises(module.NamespaceReconciliationError, match="preserve existing journals"):
+            await module.LocalOnlyNamespaceReconciler(pending, allow_delivery=True).async_receipt(None)
+        monkeypatch.setattr(pending._store.hass, "async_add_executor_job", original)
+    pending._store._data = None

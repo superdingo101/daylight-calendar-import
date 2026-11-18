@@ -1,8 +1,4 @@
-"""Default-deny namespace receipts for the supported pre-delivery storage contract.
-
-This adapter recognizes the actual v2 local/BYO store. It does not assert that
-an arbitrary M4 journal is empty, and must be replaced when delivery is added.
-"""
+"""Validate durable local storage without transferring hosted ACK authority."""
 
 from __future__ import annotations
 
@@ -11,8 +7,9 @@ from typing import Any
 
 from . import storage
 from .sources import SourceKind
-
-LOCAL_ONLY_CONTRACT = "pending-v2-local-only"
+from .hosted_credentials import (
+    DELIVERY_CONTRACT, LOCAL_ONLY_CONTRACT,
+)
 _ERROR = "Hosted namespace reconciliation is required; preserve existing journals."
 _KINDS = {"manual_text", "email", "image", "pdf"}
 _ROOT = {"items", "activity", "notifications", "source_claims", "seen_source_fingerprints", "seen_event_fingerprints"}
@@ -34,9 +31,9 @@ def _closed(value: Any, fields: set[str]) -> None:
         raise NamespaceReconciliationError(_ERROR)
 
 
-def _local_data(data: dict[str, Any]) -> None:
+def _local_data(data: dict[str, Any], allow_delivery: bool = False) -> None:
     """Pin every identity-bearing collection rather than accepting future fields."""
-    _closed(data, _ROOT)
+    _closed(data, _ROOT | {"hosted_delivery_journal", "hosted_parse_attempt"} if allow_delivery else _ROOT)
     storage._decode_storage_data(data)
     for item in data["items"]:
         _closed(item, _ITEM)
@@ -55,7 +52,7 @@ def _local_data(data: dict[str, Any]) -> None:
         _closed(notification, _NOTIFICATION)
 
 
-def _read_contract(path: str) -> dict[str, Any] | None:
+def _read_contract(path: str, allow_delivery: bool = False) -> dict[str, Any] | None:
     envelope = storage._read_pending_storage(path)
     if envelope is None:
         return None
@@ -63,20 +60,20 @@ def _read_contract(path: str) -> dict[str, Any] | None:
             or envelope["version"] != 2 or envelope["minor_version"] != 1
             or envelope["key"] != storage.STORAGE_KEY):
         raise NamespaceReconciliationError(_ERROR)
-    _local_data(envelope["data"])
+    _local_data(envelope["data"], allow_delivery)
     return envelope["data"]
 
 
 class LocalOnlyNamespaceReconciler:
     """Recognize a loaded, certain local-only store; never clear or copy it.
 
-    M4 must replace this adapter with real journal reconciliation. A new source
-    kind, schema/version, unknown metadata, blocked owner or queued write denies
-    the receipt. A browser cannot supply the receipt or an empty-ledger flag.
+    A new source kind, schema/version, unknown metadata, blocked owner or
+    queued write denies the receipt. A browser cannot supply the receipt.
     """
 
-    def __init__(self, pending: storage.PendingImportStore) -> None:
+    def __init__(self, pending: storage.PendingImportStore, *, allow_delivery: bool = False) -> None:
         self._pending = pending
+        self._allow_delivery = allow_delivery
 
     async def async_receipt(self, prior_namespace: tuple[str, str] | None) -> str:
         try:
@@ -105,14 +102,28 @@ class LocalOnlyNamespaceReconciler:
                 }
                 # A local-only receipt must never be issued for an ACK obligation,
                 # even while its storage write is still held in memory.
-                if pending._hosted_delivery_journal:
-                    raise NamespaceReconciliationError(_ERROR)
-                _local_data(loaded)
-                durable = await pending._store.hass.async_add_executor_job(_read_contract, pending._store.path)
+                journal = pending._hosted_delivery_journal
+                attempt = pending._hosted_parse_attempt
+                if journal or attempt is not None:
+                    if not self._allow_delivery:
+                        raise NamespaceReconciliationError(_ERROR)
+                    if any(record.ack_status == "pending" and record.evidence.account_id is None
+                           for record in journal):
+                        raise NamespaceReconciliationError(_ERROR)
+                    loaded["hosted_delivery_journal"] = [record.as_dict() for record in journal]
+                    loaded["hosted_parse_attempt"] = attempt
+                _local_data(loaded, self._allow_delivery)
+                durable = await pending._store.hass.async_add_executor_job(
+                    _read_contract, pending._store.path, self._allow_delivery,
+                )
                 if pending._storage_blocked or getattr(pending, "accepting_services", False) is not True or pending._store._data is not None:
                     raise NamespaceReconciliationError(_ERROR)
                 if durable is None and any(loaded.values()):
                     raise NamespaceReconciliationError(_ERROR)
-            return LOCAL_ONLY_CONTRACT
+                if self._allow_delivery and durable is not None:
+                    decoded = storage._decode_storage_data(durable)
+                    if decoded[-2:] != (journal, attempt):
+                        raise NamespaceReconciliationError(_ERROR)
+            return DELIVERY_CONTRACT if journal or attempt is not None else LOCAL_ONLY_CONTRACT
         except Exception:  # noqa: BLE001 -- never expose source contents or private paths
             raise NamespaceReconciliationError(_ERROR) from None

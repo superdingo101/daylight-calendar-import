@@ -556,3 +556,51 @@ async def test_pristine_native_reconnect_keeps_first_connection_usable(hass, has
     first = await success(client, api.WS_HOSTED_ACTION, entry_id=cfg.entry_id, action="connect", processing_consent=True, installation_label="Home")
     assert first["state"] == "pairing_pending" and first["pairing"]["user_code"] == "ABCD1234EFGH"
     started.assert_awaited_once()
+
+
+async def test_polling_opt_in_is_preserved_only_for_same_service(hass, hass_ws_client, settings_runtime):
+    cfg = settings_runtime.entry
+    client = await hass_ws_client(hass)
+    configured = await success(
+        client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE,
+        automatic_lifecycle=False, delivery_polling=True,
+    )
+    assert not configured.get("delivery_polling", False)
+    enabled = await success(
+        client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE,
+        delivery_polling=True,
+    )
+    assert enabled["delivery_polling"] is True
+    saved = await success(client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE)
+    assert saved["delivery_polling"] is True
+    paused = await success(
+        client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE,
+        delivery_polling=False,
+    )
+    assert not paused.get("delivery_polling", False)
+    await success(
+        client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id, **SERVICE,
+        delivery_polling=True,
+    )
+    replaced = await success(
+        client, api.WS_HOSTED_CONFIGURE, entry_id=cfg.entry_id,
+        api_origin="https://other.example.test", account_origin=SERVICE["account_origin"],
+    )
+    assert not replaced.get("delivery_polling", False)
+
+
+async def test_retry_delivery_requires_an_explicit_admin_confirmation():
+    cfg = entry()
+    hass = hass_for(cfg)
+    runtime = fake_runtime(hass, cfg)
+    runtime.async_retry_delivery_parse = AsyncMock(return_value={"delivery_polling": True})
+    base = {"entry_id": cfg.entry_id, "action": "retry_delivery"}
+    refused = await invoke(api.websocket_hosted_action, hass, base)
+    assert refused.errors[0][1] == "confirmation_required"
+    runtime.async_retry_delivery_parse.assert_not_awaited()
+    await invoke(api.websocket_hosted_action, hass, {**base, "confirm_delivery_retry": True})
+    runtime.async_retry_delivery_parse.assert_awaited_once_with()
+    wrong = await invoke(api.websocket_hosted_action, hass, {
+        **base, "action": "reconcile", "confirm_delivery_retry": True,
+    })
+    assert wrong.errors[0][1] == "invalid_hosted_action"

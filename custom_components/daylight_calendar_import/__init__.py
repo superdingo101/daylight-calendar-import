@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import asyncio
 import logging
 from dataclasses import replace
@@ -423,10 +425,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         except ProviderError as error:
             from .hosted_parse_transport import HostedParseError
-            if not isinstance(error, HostedParseError):
+            if delivery_owner or not isinstance(error, HostedParseError):
                 raise
             raise _hosted_parse_failure(error) from None
         guard()
+        guard.hosted_operation_id = getattr(provider, "last_operation_id", None)
         return outcome, guard
 
     async def accept_parsed(
@@ -436,7 +439,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if guard is None:
             return await pending_store.async_add(**kwargs)
         try:
-            return await pending_store.async_add(**kwargs, acceptance_guard=guard)
+            operation = getattr(guard, "hosted_operation_id", None)
+            return await pending_store.async_add(**kwargs, acceptance_guard=guard,
+                                                **({"hosted_operation_id": operation} if operation else {}))
         except (ProviderError, asyncio.CancelledError) as error:
             try:
                 await pending_store.async_record_parse_failure(
@@ -766,6 +771,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 id=original.id, kind=SourceKind.MANUAL_TEXT,
                 received_at=datetime.fromisoformat(original.created_at),
                 text=original.source_text, title=original.source_title,
+                metadata={"hosted_reparse": str(uuid4())},
             )
             route = route_review_source(source)
             outcome, acceptance_guard = await selected_parse(
@@ -1188,7 +1194,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def _async_stop_hosted_runtime(store: PendingImportStore) -> None:
     runtime = getattr(store, "hosted_runtime", None)
     if runtime is not None:
+        # Some tests and transitional callers supply a lightweight store.
+        # Fence and drain durable hosted writes whenever the store supports them.
+        close_writes = getattr(store, "close_hosted_writes", None)
+        if close_writes is not None:
+            close_writes()
         await runtime.async_stop()
+        drain_writes = getattr(store, "async_drain_hosted_writes", None)
+        if drain_writes is not None:
+            await drain_writes()
 
 
 _NOTIFICATION_CANCEL_GRACE_SECONDS = 1
