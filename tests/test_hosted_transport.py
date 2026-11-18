@@ -1466,3 +1466,34 @@ async def test_source_ack_surfaces_stale_lease_without_remote_text(transport):
     assert caught.value.status == 409 and caught.value.retryable is False
     assert "private" not in str(caught.value)
     assert session.request.call_count == 1
+
+
+@pytest.mark.parametrize("value,expected", [
+    (None, "invalid account URL"),
+    ("https://app.daylight.test/" + "a" * 2100, "invalid account URL"),
+    ("https://app.daylight.test/?access_token=secret", "invalid account URL"),
+    ("https://app.daylight.test/#fragment", "invalid account URL"),
+    ("https://app.daylight.test/connect\\bad", "invalid account URL"),
+    ("https://app.daylight.test/with space", "invalid account URL"),
+    ("https://other.daylight.test/connect", "untrusted account URL"),
+    ("https://APP.DAYLIGHT.TEST/connect", "untrusted account URL"),
+])
+def test_account_url_trust_boundary_errors_are_exact(value, expected):
+    with pytest.raises(vol.Invalid) as raised:
+        _trusted_url(value, "https://app.daylight.test")
+    assert str(raised.value) == expected
+
+
+async def test_start_pairing_rejects_bad_labels_with_exact_error_before_io(transport, monkeypatch):
+    from unittest.mock import AsyncMock
+    client, session = transport
+    mocked = AsyncMock()
+    monkeypatch.setattr(client, "_request", mocked)
+    for invalid in (None, "", 42, "x" * 129, "bad \ud800 unicode"):
+        with pytest.raises(ValueError) as raised:
+            await client.start_pairing(VERIFIER, invalid)
+        assert str(raised.value) == "invalid installation label"
+    mocked.assert_not_awaited()
+    session.request.assert_not_called()
+    await client.start_pairing(VERIFIER, "School Café")
+    assert mocked.await_args.kwargs["body"]["installation_label"] == "School Café"
