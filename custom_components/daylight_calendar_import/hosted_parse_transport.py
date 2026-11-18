@@ -71,7 +71,7 @@ class HostedParseTransport:
 
     async def async_parse(
         self, request: dict[str, Any], attachments: tuple[tuple[str, str, bytes], ...],
-        *, token: str,
+        *, token: str, operation_key: str | None = None,
     ) -> dict[str, Any]:
         """Submit bounded source bytes once and strictly decode the response."""
         try:
@@ -93,10 +93,11 @@ class HostedParseTransport:
         try:
             async with asyncio.timeout(PARSE_TIMEOUT_SECONDS):
                 async with self._session.request(
-                    "POST", self._service.api_origin + "/v1/parse",
+                    "POST", self._service.api_origin + ("/v2/parse" if operation_key else "/v1/parse"),
                     headers={
                         "Accept": "application/json", "Accept-Encoding": "identity",
                         "X-Request-ID": str(uuid4()), "Authorization": "Bearer " + token,
+                        **({"Idempotency-Key": operation_key} if operation_key else {}),
                     },
                     data=body, allow_redirects=False,
                     timeout=aiohttp.ClientTimeout(total=PARSE_TIMEOUT_SECONDS),
@@ -119,7 +120,9 @@ class HostedParseTransport:
                         parse_constant=_reject_constant, parse_float=_number,
                     )
                     _strict_strings(value)
-                    if status != 200:
+                    if status not in ({200, 202} if operation_key else {200}):
+                        if status == 409 and operation_key:
+                            raise HostedParseError("operation_conflict", status=409)
                         self._raise_api_error(value, status, response.headers.get("Retry-After"))
                     if type(value) is not dict:
                         raise ValueError
@@ -132,6 +135,52 @@ class HostedParseTransport:
             raise HostedParseError(
                 "provider_unavailable", status=status, retryable=True, uncertain=True,
             ) from None
+        except (ValueError, UnicodeError, RecursionError, vol.Invalid):
+            raise HostedParseError("provider_invalid_response", status=status) from None
+
+    async def async_operation(self, key: str, *, token: str):
+        """Recover a bounded operation; 404 permits only the original key POST."""
+        from uuid import UUID
+        if str(UUID(key)) != key:
+            raise HostedParseError("invalid_request")
+        return await self.async_v2_get("/parse/operations/" + key, token=token)
+
+    async def async_v2_get(self, path: str, *, token: str):
+        if not (path == "/account" or path.startswith("/parse/operations/")):
+            raise HostedParseError("invalid_request")
+        status = None
+        try:
+            async with asyncio.timeout(PARSE_TIMEOUT_SECONDS):
+                async with self._session.request(
+                    "GET", self._service.api_origin + "/v2" + path,
+                    headers={"Authorization": "Bearer " + token, "Accept": "application/json",
+                             "Accept-Encoding": "identity", "X-Request-ID": str(uuid4())},
+                    allow_redirects=False, auto_decompress=False,
+                    timeout=aiohttp.ClientTimeout(total=PARSE_TIMEOUT_SECONDS),
+                    max_line_size=4096, max_field_size=4096, max_headers=32,
+                ) as response:
+                    status = response.status
+                    if status == 404:
+                        return None
+                    if (300 <= status < 400 or "Content-Encoding" in response.headers
+                            or response.content_type != "application/json"):
+                        raise ValueError
+                    raw = bytearray()
+                    async for chunk in response.content.iter_chunked(16384):
+                        raw.extend(chunk)
+                        if len(raw) > MAX_PARSE_RESPONSE_BYTES:
+                            raise ValueError
+                    value = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs,
+                                       parse_constant=_reject_constant, parse_float=_number)
+                    _strict_strings(value)
+                    if status != 200:
+                        self._raise_api_error(value, status, response.headers.get("Retry-After"))
+                    if type(value) is not dict:
+                        raise ValueError
+                    return value
+        except (TimeoutError, aiohttp.ClientError):
+            raise HostedParseError("operation_recovery_required", status=status,
+                                   uncertain=True) from None
         except (ValueError, UnicodeError, RecursionError, vol.Invalid):
             raise HostedParseError("provider_invalid_response", status=status) from None
 

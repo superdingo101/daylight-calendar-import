@@ -43,6 +43,7 @@ from .providers import ParserProvider, ProviderError, SourceValidationError
 CONF_HOSTED_SERVICE = "hosted_service"
 CONF_HOSTED_AUTOMATIC = "hosted_automatic_lifecycle"
 CONF_HOSTED_DELIVERY_POLL = "hosted_delivery_polling"
+CONF_HOSTED_PARSE_OPERATIONS = "hosted_parse_operations_v2"
 _LOGGER = logging.getLogger(__name__)
 _DELIVERY_INTERVAL = 60
 _MAX_DELIVERY_BACKOFF = 900
@@ -251,6 +252,9 @@ class HostedConnectionRuntime:
         guard()
         return DaylightHostedParserProvider(
             self._hass, service_binding=service, checkpoint=checkpoint, active=active,
+            **({"operation_store": self._hass.data[DOMAIN][self._entry_id],
+                "operation_namespace": self._entry_id + ":" + service.api_origin}
+               if self._options.get(CONF_HOSTED_PARSE_OPERATIONS) is True else {}),
         ), guard
 
     def configure_delivery(self, *, store, route_source, parse_source) -> None:
