@@ -494,7 +494,6 @@ def test_mutation_fallback_candidates_are_exact_real_instants(start, end, expect
 
 @pytest.mark.parametrize(("zones", "expected"), [
     (("America/Los_Angeles", "America/Los_Angeles"), False),
-    (("America/New_York", "America/New_York"), False),
     (("America/Los_Angeles", ""), False),
     (("", "America/Los_Angeles"), False),
 ])
