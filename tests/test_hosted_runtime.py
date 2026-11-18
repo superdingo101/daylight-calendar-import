@@ -874,3 +874,51 @@ async def test_foreground_delivery_conflict_checks_service_handlers_independentl
     store.active_submissions.add(object())
     assert r._foreground_delivery_conflict() is True
     await r.async_stop()
+
+
+@pytest.mark.parametrize("enabled", [True, False, None])
+async def test_m5_parse_session_only_wires_durable_journal_with_explicit_opt_in(
+    runtime, hass, monkeypatch, enabled,
+):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+    r, store = runtime
+    binding = HostedServiceBinding(**SERVICE)
+    credential = BoundCredential(
+        "account_1234567890", "installation_1234567890",
+        "x" * 60, (datetime.now(UTC) + timedelta(days=10)).isoformat(),
+    )
+    store.snapshot = CredentialCheckpoint(
+        service_binding=binding, processing_consent=True, current=credential,
+    )
+    r._verified_parse_credential = credential
+    r._state = HostedConnectionResult("connected", credential_status="current")
+    r._options[module.CONF_HOSTED_PARSE_OPERATIONS] = enabled
+    from custom_components.daylight_calendar_import.const import DOMAIN
+    pending_store = object()
+    hass.data.setdefault(DOMAIN, {})[r._entry_id] = pending_store
+    constructor = Mock(return_value=object())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.hosted_parser.DaylightHostedParserProvider",
+        constructor,
+    )
+    parser, guard = r.parse_session()
+    assert parser is constructor.return_value
+    guard()
+    kwargs = constructor.call_args.kwargs
+    assert kwargs["service_binding"] == binding
+    assert kwargs["checkpoint"]() == store.snapshot
+    assert kwargs["active"]() is True
+    if enabled is True:
+        assert kwargs["operation_store"] is pending_store
+        assert kwargs["operation_namespace"] == "hosted-entry:" + binding.api_origin
+    else:
+        assert "operation_store" not in kwargs
+        assert "operation_namespace" not in kwargs
+    # Admission must be irreversibly fenced after authority rotation.
+    r._parse_generation += 1
+    from custom_components.daylight_calendar_import.providers import ProviderError
+    with pytest.raises(ProviderError, match="Daylight Cloud connection changed"):
+        guard()
+    await r.async_stop()
