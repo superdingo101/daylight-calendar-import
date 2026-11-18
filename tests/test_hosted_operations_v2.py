@@ -177,3 +177,25 @@ async def test_operation_get_enforces_response_limit(transport, monkeypatch):
     with pytest.raises(HostedParseError) as error:
         await client.async_v2_get("/account", token=TOKEN)
     assert error.value.code == "provider_invalid_response"
+
+
+async def test_v2_operation_rejects_noncanonical_uuid(transport):
+    client, session = transport
+    with pytest.raises(HostedParseError) as error:
+        await client.async_operation(KEY.upper(), token=TOKEN)
+    assert error.value.code == "invalid_request"
+    session.request.assert_not_called()
+
+
+async def test_v2_get_preserves_structured_api_errors(transport):
+    client, session = transport
+    session.request.return_value = Response({
+        "schema_version": 1,
+        "error": {"code": "provider_rate_limited", "message": "private",
+                  "retryable": True},
+    }, status=429)
+    with pytest.raises(HostedParseError) as error:
+        await client.async_v2_get("/account", token=TOKEN)
+    assert error.value.code == "provider_rate_limited"
+    assert error.value.status == 429
+    assert "private" not in str(error.value)
