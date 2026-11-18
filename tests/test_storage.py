@@ -3558,3 +3558,26 @@ async def test_hosted_operation_failed_immediate_save_blocks_further_writes(monk
     assert store.accepting_services is False
     with pytest.raises(PendingImportStorageError):
         await store.async_prepare_hosted_operation("identity", hosted_operation_request(), ())
+
+
+async def test_hosted_operation_acceptance_is_atomic_and_replay_is_a_tombstone(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    record, fresh = await store.async_prepare_hosted_operation(
+        "identity", hosted_operation_request(), ())
+    assert fresh
+    with pytest.raises(ValueError, match="unknown hosted operation"):
+        await store.async_add(source_text="Practice", events=[draft()],
+                              hosted_operation_id="unknown")
+    assert not store._hosted_operations["identity"]["accepted"]
+    first = await store.async_add(source_text="Practice", events=[draft()],
+                                  hosted_operation_id=record["key"])
+    assert first is not None
+    assert store._hosted_operations["identity"]["accepted"] is True
+    assert backend.saved[-1]["hosted_parse_operations"]["identity"]["accepted"] is True
+    before = len(backend.saved)
+    second = await store.async_add(source_text="Practice", events=[draft()],
+                                   hosted_operation_id=record["key"])
+    assert second.duplicate is True
+    assert len(backend.saved) == before
