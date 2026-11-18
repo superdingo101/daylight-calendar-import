@@ -3509,7 +3509,7 @@ async def test_hosted_operation_is_durable_before_network_and_reuses_original_pa
     request = hosted_operation_request()
     record, fresh = await store.async_prepare_hosted_operation("identity", request, ())
     assert fresh is True
-    assert backend.saved[-1]["hosted_operations"]["identity"] == record
+    assert backend.saved[-1]["hosted_parse_operations"]["identity"] == record
     assert record["accepted"] is False
     replay = hosted_operation_request()
     replay["source"]["id"] = "new-ephemeral-id"
