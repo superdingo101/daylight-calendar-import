@@ -355,3 +355,27 @@ test('returnable review navigates back after confirmed approval', async ({page})
   const result = await page.evaluate(() => JSON.parse(sessionStorage.getItem(`daylight:return:v1:${'a'.repeat(32)}`)).result);
   expect(result.status).toBe('completed');
 });
+
+
+test("timezone safety disclosures stay visible with full event assumptions and closed extraction details", async ({page}) => {
+  const safety = [
+    "DST fall-back repeats this local hour; confirm first or second occurrence before approval.",
+    "Time zone inferred from venue geography; confirm the venue's local time zone before approval.",
+  ];
+  await page.evaluate(safety => {
+    Object.assign(window.fixture.pending.events[0], {
+      start: "2026-11-01T01:15:00-05:00", end: "2026-11-01T01:45:00-05:00",
+      confidence: 0.9,
+      date_time_assumptions: [...safety, ...Array.from({length: 6}, (_, index) => "Other context " + index)],
+    });
+  }, safety);
+  await openImport(page, "text");
+  await textForm(page).getByRole("textbox").fill(source);
+  await textForm(page).getByRole("button", {name: "Import events", exact: true}).click();
+  await expect(page.getByRole("heading", {name: "School picnic", exact: true})).toBeVisible();
+  await expect(page.locator(".event-diagnostics")).not.toHaveAttribute("open");
+  for (const note of safety) {
+    await expect(page.getByText("Date/time assumption: " + note, {exact: true})).toBeVisible();
+  }
+  await expect(page.getByText("Date/time assumption: Other context 5", {exact: true})).toBeVisible();
+});

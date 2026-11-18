@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
+import logging
 import re
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -22,6 +23,7 @@ from .models import (
 from .sources import SourceDocument, TextSourceAdapter
 
 TASK_NAME = "Extract calendar event drafts"
+_LOGGER = logging.getLogger(__name__)
 PROMPT_TEMPLATE = """Extract every calendar event explicitly supported by the source text and any attached images or PDFs.
 
 Trust boundary:
@@ -34,8 +36,11 @@ Rules:
 - Do not invent dates, times, locations, titles, or durations.
 - If an event lacks enough information to produce both start and end, omit it.
 - For timed events, return ISO 8601 datetimes with explicit UTC offsets calculated for the event date, not the reference date; daylight saving time may differ.
-- Set uses_reference_time_zone to true ONLY when the source supplies local clock times without an explicit time zone or UTC offset. When true, the start/end ISO datetime clock components MUST be the source's *local wall dates and times* in the Home Assistant zone, with corresponding UTC offsets. Never convert these local clock components to UTC or another zone before returning them. Set the flag false for explicit source zones/offsets and all-day events. Preserve explicit source zones even if different from Home Assistant's.
-- For a local clock time specified in a named region, return its IANA identifier in start_time_zone or end_time_zone, as applicable. If one named zone applies to the entire event, return it for both endpoints, even when it matches Home Assistant's zone. Preserve the source wall date and clock time in each named-zone ISO datetime. If that wall time falls in a skipped hour, still return the original clock time with an adjacent offset for validation. Never shift a skipped wall time to a different clock time. Use empty strings for endpoints with only a fixed UTC offset, inferred Home Assistant times, or all-day dates.
+- Set time_zone_basis to explicit when a zone or UTC offset is actually stated in the image, document or supporting text; geographic when an IANA zone is inferred from unambiguous venue geography; ha_fallback only when neither explicit evidence nor reliable geography resolves the zone; unspecified for all-day dates. These are provenance claims, not independently verified source evidence.
+- Set uses_reference_time_zone to true ONLY for ha_fallback. It is false for explicit zones/offsets, geographic inference and all-day events. Preserve the source wall dates and clock times in every zone; never convert them to HA or UTC. Calculate offsets on the event date.
+- For explicit or geographic named zones, return start_time_zone and end_time_zone as IANA identifiers. If one zone applies to the whole event, return it for BOTH endpoints. Use empty strings for explicit fixed offsets, HA fallback and all-day dates. Preserve explicit source zones even when they differ from HA. A local time in a skipped hour must retain its original clock time and an adjacent offset for validation, never a shifted clock time.
+- A venue address or city is geographic context, not an explicitly stated time zone. Infer a geographic IANA zone only when the location supports it unambiguously; disclose that inference in assumptions. A venue timezone differing from HA is not a conflict. If geography is insufficient or ambiguous, use ha_fallback and disclose that the venue timezone needs confirmation. Never manufacture explicit timezone evidence from an address.
+- For explicit abbreviations such as PST/PDT, resolve an IANA zone only when context disambiguates it, and check its offset on the event date. An ambiguous abbreviation or contradictory explicit zones must be disclosed in assumptions for review; never silently choose a different wall time. Compatible IANA names, abbreviations and UTC offsets describing the same event time are not contradictions.
 - At the fall daylight-saving transition, a local clock hour may happen twice (1:00-1:59 AM in many US regions, 2:00-2:59 AM in some others). Use the best-supported offset and disclose the first/second occurrence uncertainty for human review; do not omit an otherwise valid draft solely for this repeated hour.
 - For all-day events, return ISO 8601 dates; end is exclusive, matching calendar semantics.
 - Preserve useful source details in description when appropriate.
@@ -87,17 +92,22 @@ EVENTS_STRUCTURE = vol.Schema(
                     },
                     "uses_reference_time_zone": {
                         "required": True,
-                        "label": "Timed event has no explicit source time zone or UTC offset",
+                        "label": "True only when using the configured HA timezone as fallback",
                         "selector": {"boolean": {}},
+                    },
+                    "time_zone_basis": {
+                        "required": True,
+                        "label": "Timezone provenance claimed by extraction; not independently verified",
+                        "selector": {"select": {"options": ["explicit", "geographic", "ha_fallback", "unspecified"]}},
                     },
                     "start_time_zone": {
                         "required": True,
-                        "label": "Source IANA time zone of start, or an empty string",
+                        "label": "Explicit or geographically inferred start IANA zone; empty for fixed offsets or HA fallback",
                         "selector": {"text": {}},
                     },
                     "end_time_zone": {
                         "required": True,
-                        "label": "Source IANA time zone of end, or an empty string",
+                        "label": "Explicit or geographically inferred end IANA zone; empty for fixed offsets or HA fallback",
                         "selector": {"text": {}},
                     },
                     "location": {
@@ -281,6 +291,7 @@ def _wall_time_candidates(
             candidates[cast(timedelta, candidate.utcoffset())] = candidate
 
     if not candidates:
+        _LOGGER.debug("Timezone validation failed: condition=nonexistent_wall_time zone=%s", zone.key)
         raise _NonexistentLocalTimeError(
             f"uses {wall.isoformat(sep=' ')} which does not exist in {zone.key}. "
             "Check the source and submit a valid local time."
@@ -292,32 +303,38 @@ def _reference_zone_endpoint(value: object, zone: ZoneInfo) -> tuple[str, bool]:
     """Correct local wall time without interpreting a UTC instant as local time."""
     instant, candidates = _wall_time_candidates(value, zone)
     ambiguous = len(candidates) > 1
+    offset = cast(timedelta, instant.utcoffset())
     # A repeated fall-back hour can safely reach the *manual* review inbox.
     # Preserve the provider's valid fold if possible; otherwise use the first.
-    chosen = candidates.get(instant.utcoffset(), next(iter(candidates.values())))
-    if chosen.utcoffset() != instant.utcoffset():
+    chosen = candidates.get(offset, next(iter(candidates.values())))
+    if chosen.utcoffset() != offset:
         # A local clock time mislabelled with last season's offset is repairable.
         # A UTC instant or unrelated timezone offset is not safe to reinterpret.
-        if instant.utcoffset() == timedelta(0) and chosen.utcoffset() != timedelta(0):
+        if offset == timedelta(0) and chosen.utcoffset() != timedelta(0):
             raise DraftValidationError("UTC-formatted inferred local time cannot be safely reinterpreted")
-        if abs(chosen.utcoffset() - instant.utcoffset()) > timedelta(hours=2):
+        if abs(cast(timedelta, chosen.utcoffset()) - offset) > timedelta(hours=2):
             raise DraftValidationError("inferred local time has an unrelated UTC offset")
-    return (cast(str, value).strip() if chosen.utcoffset() == instant.utcoffset() else chosen.isoformat(),
+    return (cast(str, value).strip() if chosen.utcoffset() == offset else chosen.isoformat(),
             ambiguous)
 
 
 def _named_zone_endpoint(
     value: object, zone_name: str, source_clock: str | None, *, check_offset: bool,
+    origin: str = "provider_named",
 ) -> bool:
     """Validate the source wall time and, when required, its supplied offset."""
     if len(zone_name) > 255 or not re.fullmatch(_ZONE_KEY, zone_name, re.ASCII):
+        _LOGGER.debug("Timezone validation failed: condition=malformed_named_identifier")
         raise DraftValidationError("Source time zone must be an IANA time zone name")
     try:
         zone = ZoneInfo(zone_name)
     except ZoneInfoNotFoundError as err:
+        _LOGGER.debug("Timezone validation failed: condition=unsupported_named_identifier")
         raise DraftValidationError("Source IANA time zone is unavailable") from err
 
     instant, candidates = _wall_time_candidates(value, zone)
+    _LOGGER.debug("Timezone candidate validated: origin=%s zone=%s offsets=%s",
+                  origin, zone.key, tuple(str(offset) for offset in candidates))
     if source_clock is not None:
         # The source pattern guarantees an English 12-hour clock and minutes.
         hour, minute = source_clock.split(":")
@@ -329,7 +346,11 @@ def _named_zone_endpoint(
             _wall_time_candidates(original.isoformat(), zone)
             raise DraftValidationError("Extracted clock time differs from the source time")
     if check_offset and instant.utcoffset() not in candidates:
-        raise DraftValidationError("Extracted UTC offset does not match the source time zone")
+        _LOGGER.debug("Timezone validation failed: condition=named_offset_mismatch zone=%s", zone.key)
+        raise DraftValidationError(
+            "Extracted UTC offset does not match the source time zone. "
+            "Specify the event's time zone and local times in supporting text and try again."
+        )
     return len(candidates) > 1
 
 
@@ -344,11 +365,12 @@ def _explicit_zones(raw: dict[str, Any]) -> tuple[str, str]:
 
 def _explicit_zone_ambiguity(
     raw: dict[str, Any], zones: tuple[str, str], source_range: re.Match[str] | None,
-    *, check_offset: bool,
+    *, check_offset: bool, origin: str = "provider_named",
 ) -> bool:
     """Validate both named endpoints and report any repeated local hour."""
     if source_range is not None:
         zones = (source_range["zone"], source_range["zone"])
+        origin = "source_text_record"
     ambiguities = []
     errors = []
     for endpoint, zone in zip(("start", "end"), zones, strict=True):
@@ -357,7 +379,7 @@ def _explicit_zone_ambiguity(
         try:
             ambiguities.append(_named_zone_endpoint(
                 raw.get(endpoint), zone, source_range[endpoint] if source_range else None,
-                check_offset=check_offset,
+                check_offset=check_offset, origin=origin,
             ))
         except _NonexistentLocalTimeError:
             raise
@@ -387,6 +409,7 @@ def _correct_inferred_zone(
         raise DraftValidationError("Home Assistant time zone is unavailable") from err
     start, start_ambiguous = _reference_zone_endpoint(raw.get("start"), zone)
     end, end_ambiguous = _reference_zone_endpoint(raw.get("end"), zone)
+    _LOGGER.debug("Timezone resolution: origin=ha_fallback zone=%s", zone.key)
     ambiguous = start_ambiguous or end_ambiguous
 
     if ambiguous and datetime.fromisoformat(end) <= datetime.fromisoformat(start):
@@ -406,8 +429,8 @@ def _correct_inferred_zone(
                 key=lambda pair: (
                     int(pair[0] != start) + int(pair[1] != end),
                     datetime.fromisoformat(pair[1]) - datetime.fromisoformat(pair[0]),
-                    -datetime.fromisoformat(pair[0]).utcoffset().total_seconds(),
-                    -datetime.fromisoformat(pair[1]).utcoffset().total_seconds(),
+                    -cast(timedelta, datetime.fromisoformat(pair[0]).utcoffset()).total_seconds(),
+                    -cast(timedelta, datetime.fromisoformat(pair[1]).utcoffset()).total_seconds(),
                 ),
             )
     return {**raw, "start": start, "end": end}, ambiguous
@@ -446,6 +469,15 @@ def parse_ai_data(
             inferred = raw.get("uses_reference_time_zone", False)
             if type(inferred) is not bool:
                 raise DraftValidationError("uses_reference_time_zone must be a boolean")
+            basis = raw.get("time_zone_basis", "unspecified")
+            if not isinstance(basis, str) or basis not in ("explicit", "geographic", "ha_fallback", "unspecified"):
+                raise DraftValidationError("time_zone_basis must be explicit, geographic, ha_fallback or unspecified")
+            claimed_reference = inferred
+            # The old event-wide boolean cannot distinguish geography from HA.
+            # New responses declare that distinction; legacy named candidates
+            # remain unverified and must reach review without being retimed.
+            inferred = basis == "ha_fallback" or (basis == "unspecified" and inferred)
+            review_notes: list[str] = []
             corrected_raw = raw
             ambiguous = False
             if raw.get("all_day") is False:
@@ -456,15 +488,63 @@ def parse_ai_data(
                     or raw["title"].strip().casefold() != source_range["title"].strip().casefold()
                 ):
                     source_range = None
+                if source_range is None:
+                    if basis == "geographic":
+                        if not all(zones):
+                            raise DraftValidationError("Geographic timezone inference requires named zones for both endpoints")
+                        review_notes.append("Time zone inferred from venue geography; confirm the venue's local time zone before approval.")
+                    if basis == "ha_fallback":
+                        review_notes.append("Time zone uses Home Assistant fallback; confirm the venue's local time zone before approval.")
+                    if basis == "explicit" and claimed_reference:
+                        review_notes.append("AI timezone flags disagree; explicit zone/offset retained without changing wall times. Confirm the source time zone.")
+                    if basis == "unspecified" and "time_zone_basis" in raw and not inferred:
+                        review_notes.append("AI timezone provenance is unspecified; confirm the event's local time zone before approval.")
+                    if inferred and any(zones) and basis == "unspecified":
+                        # Legacy responses may name a geographically inferred zone
+                        # while also setting the coarse reference flag. HA is not
+                        # authoritative for that candidate. When only one name is
+                        # supplied, validate both local endpoints in that zone.
+                        zones = (zones[0] or zones[1], zones[1] or zones[0])
+                        review_notes.append("AI named timezone provenance is uncertain; times retained in that zone. Please confirm the source time zone before approval.")
                 repair_inferred = inferred and (
                     source_range["zone"] == time_zone if source_range is not None else not any(zones)
                 )
+                _LOGGER.debug(
+                    "Timezone evidence: origin=ai_metadata basis=%s uses_reference=%s named_start=%s named_end=%s matched_source_record=%s",
+                    basis, claimed_reference, bool(zones[0]), bool(zones[1]), source_range is not None,
+                )
                 if source_range is not None or any(zones):
-                    if inferred and source_range is None:
-                        raise DraftValidationError("Named source time zones conflict with inferred time zone")
                     ambiguous = _explicit_zone_ambiguity(
                         raw, zones, source_range, check_offset=not repair_inferred,
                     )
+                    if basis == "ha_fallback" and source_range is None:
+                        # Providers sometimes redundantly copy the HA zone into
+                        # named metadata. The flag alone is not a contradiction.
+                        # Validate names/offsets first, then compare the complete
+                        # sets of valid offsets for BOTH local endpoints. Never
+                        # repair an offset while named evidence is present.
+                        if time_zone is None:
+                            raise DraftValidationError("Home Assistant time zone is unavailable")
+                        try:
+                            reference_zone = ZoneInfo(time_zone)
+                        except (ZoneInfoNotFoundError, ValueError) as err:
+                            raise DraftValidationError("Home Assistant time zone is unavailable") from err
+                        for endpoint, zone_name in zip(("start", "end"), zones, strict=True):
+                            if zone_name:
+                                _, named_offsets = _wall_time_candidates(raw.get(endpoint), ZoneInfo(zone_name))
+                                _, reference_offsets = _wall_time_candidates(raw.get(endpoint), reference_zone)
+                                if named_offsets.keys() != reference_offsets.keys():
+                                    _LOGGER.debug("Timezone validation failed: condition=named_reference_conflict endpoint=%s", endpoint)
+                                    raise DraftValidationError(
+                                        "Named source time zones conflict with inferred time zone. "
+                                        "Specify the event's time zone in supporting text and try again."
+                                    )
+                        reference_ambiguous = _explicit_zone_ambiguity(
+                            raw, (time_zone, time_zone), None, check_offset=True,
+                            origin="ha_fallback",
+                        )
+                        ambiguous = reference_ambiguous or ambiguous
+                        _LOGGER.debug("Timezone resolution: origin=ha_fallback zone=%s condition=compatible_named_metadata", time_zone)
                 if repair_inferred:
                     if time_zone is None:
                         raise DraftValidationError("Home Assistant time zone is unavailable")
@@ -482,8 +562,14 @@ def parse_ai_data(
                 # Review metadata is saved with the event and shown in the inbox.
                 # Until auto-approval exists, users explicitly approve every draft.
                 warnings.append(f"event {index}: {_FALL_BACK_REVIEW_NOTE}")
-                if _FALL_BACK_REVIEW_NOTE not in assumptions and len(assumptions) < 8:
-                    assumptions = (*assumptions, _FALL_BACK_REVIEW_NOTE)
+                review_notes.insert(0, _FALL_BACK_REVIEW_NOTE)
+            if review_notes:
+                # System safety notes take priority over provider disclosures,
+                # remain bounded, and survive persistence/frontend validation.
+                assumptions = tuple(dict.fromkeys((*review_notes, *assumptions)))[:8]
+                for note in review_notes:
+                    if note != _FALL_BACK_REVIEW_NOTE:
+                        warnings.append(f"event {index}: {note}")
             drafts.append(draft)
             event_assumptions.append(assumptions)
         except _NonexistentLocalTimeError as err:

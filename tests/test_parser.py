@@ -622,7 +622,7 @@ def test_repeated_hour_disclosure_does_not_exceed_assumptions_limit():
                 "assumptions": ["Existing assumption"] * 8}
     result = parser.parse_ai_data({"events": [repeated]}, time_zone="America/Los_Angeles")
     assert len(result.events) == 1
-    assert result.event_assumptions[0] == ("Existing assumption",) * 8
+    assert result.event_assumptions[0] == (parser._FALL_BACK_REVIEW_NOTE, "Existing assumption")
     assert "DST fall-back" in result.warnings[0]
 
 
@@ -804,8 +804,8 @@ def test_named_source_repeated_hour_preserves_offset_and_review_warning(offset):
         ("Unknown/Zone", "", False, "IANA time zone is unavailable"),
         (None, "", False, "must be a string"),
         ("", [], False, "must be a string"),
-        ("America/Los_Angeles", "", True, "conflict with inferred time zone"),
-        ("", "America/Los_Angeles", True, "conflict with inferred time zone"),
+        ("America/New_York", "", True, "offset does not match the source time zone"),
+        ("", "America/New_York", True, "offset does not match the source time zone"),
         ("Europe/Berlin", "", False, "offset does not match the source time zone"),
     ],
 )
