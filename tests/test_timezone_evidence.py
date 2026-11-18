@@ -555,9 +555,14 @@ def test_mutation_provenance_disclosures_are_exact_and_durable(
     assert outcome.events[0].end == BASE["end"]
     assert outcome.event_assumptions[0][0] == expected_note
     assert outcome.warnings == [f"event 0: {expected_note}"]
+    # Legacy inferred metadata with only one named endpoint is deliberately
+    # expanded to both endpoints before validation and diagnostic logging.
+    normalized_single_zone = basis == "unspecified" and use_reference and bool(start_zone or end_zone)
+    expected_start_named = bool(start_zone) or normalized_single_zone
+    expected_end_named = bool(end_zone) or normalized_single_zone
     assert ("Timezone evidence: origin=ai_metadata "
             f"basis={basis} uses_reference={use_reference} "
-            f"named_start={bool(start_zone)} named_end={bool(end_zone)} "
+            f"named_start={expected_start_named} named_end={expected_end_named} "
             "matched_source_record=False") in caplog.text
 
 
