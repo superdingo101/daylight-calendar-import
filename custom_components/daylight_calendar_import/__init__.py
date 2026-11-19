@@ -72,6 +72,10 @@ from .settings import effective_ai_task_entity, effective_calendar_options, effe
 from .settings_api import async_register_settings_api
 from .settings import effective_notification_preferences, effective_retry_preferences
 from .retry_scheduler import RetryScheduler
+from .retry_spool import (
+    RetryAttachmentError, async_spool_upload, async_delete_saved,
+    async_replay_source, async_reconcile_spool,
+)
 from .notification_delivery import async_deliver_notifications, MAX_ACTIVE_TASKS as _MAX_NOTIFICATION_TASKS
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .source_routing import plan_source_routing
@@ -524,24 +528,69 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def submit_attachment_source(
         source: SourceDocument, *, reimport_duplicates: bool = False,
-        original_filename: str | None = None,
+        original_filename: str | None = None, owner_user_id: str | None = None,
     ) -> ServiceResponse:
-        """Parse the safe uploaded source, retaining its original name only for display."""
+        """Retain private upload bytes before calling the AI provider."""
         review_title = original_filename if original_filename is not None else source.title
-        if source.upstream_source_id is not None and pending_store.is_source_duplicate(source.upstream_source_id):
+        if (source.upstream_source_id is not None
+                and pending_store.is_source_duplicate(source.upstream_source_id)):
             return _submission_response(PendingImportAddResult(None, True, 0), [], None)
         route = route_review_source(source)
-        activity_id = await pending_store.async_begin_submission(
-            source_kind=source.kind.value, source_title=review_title, received_at=source.received_at
-        )
+        spool_name: str | None = None
+        activity_id: str | None = None
+        if isinstance(source.metadata.get("retry_stage_path"), str):
+            spool_name, digest, size = await async_spool_upload(hass, source)
+        try:
+            kwargs = {}
+            if spool_name is not None:
+                kwargs = {
+                    "retry_source_text": source.text or "",
+                    "retry_source_id": source.upstream_source_id,
+                    "retry_provider": ai_task_entity,
+                    "retry_calendar": route.calendar_entity,
+                    "retry_owner": owner_user_id,
+                    "retry_reimport_duplicates": reimport_duplicates,
+                    "retry_attachment_path": spool_name,
+                    "retry_attachment_sha256": digest,
+                    "retry_attachment_size": size,
+                    "retry_attachment_media_type": (
+                        source.attachments[0].media_type
+                        if source.attachments else "application/pdf"
+                    ),
+                    "retry_attachment_in_ai": bool(source.attachments),
+                    "retry_parser_title": source.title,
+                    "retry_routing_unresolved": route.requires_confirmation,
+                }
+            activity_id = await pending_store.async_begin_submission(
+                source_kind=source.kind.value, source_title=review_title,
+                received_at=source.received_at, **kwargs,
+            )
+        except BaseException:
+            if spool_name is not None:
+                await async_delete_saved(hass, spool_name)
+            raise
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
         try:
-            outcome = await parse_submission(route.parser_source, activity_id)
+            try:
+                outcome = await parse_submission(route.parser_source, activity_id)
+            except ProviderError:
+                job = (pending_store.get_retry_job(activity_id)
+                       if hasattr(pending_store, "get_retry_job") else None)
+                if job is None:
+                    raise
+                return _saved_retry_response(job)
+            job = (pending_store.get_retry_job(activity_id)
+                   if hasattr(pending_store, "get_retry_job") else None)
             label = "PDF" if source.kind is SourceKind.PDF else "Image"
-            attachment_note = f"{label} attachment (SHA-256: {source.attachments[0].sha256})" if source.attachments else ""
+            attachment_note = (
+                f"{label} attachment (SHA-256: {source.attachments[0].sha256})"
+                if source.attachments else ""
+            )
             result = await pending_store.async_add(
-                source_text="\n\n".join(part for part in (source.text, attachment_note) if part),
+                source_text="\n\n".join(
+                    part for part in (source.text, attachment_note) if part
+                ),
                 events=outcome.events,
                 **({"event_assumptions": outcome.event_assumptions}
                    if outcome.event_assumptions else {}),
@@ -553,9 +602,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 warnings=[*outcome.warnings, *route.warnings],
                 routing_unresolved=route.requires_confirmation,
                 activity_id=activity_id,
+                **({"retry_claim": job.claim} if job is not None else {}),
             )
         finally:
             pending_store.active_submissions.discard(task)
+            if spool_name is not None and (
+                not hasattr(pending_store, "get_retry_job")
+                or pending_store.get_retry_job(activity_id) is None
+            ):
+                await async_delete_saved(hass, spool_name)
         return _submission_response(result, [*outcome.warnings, *route.warnings], activity_id)
 
     async def handle_submit_image(call: ServiceCall) -> ServiceResponse:
@@ -566,6 +621,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return await submit_attachment_source(
                 source, reimport_duplicates=call.data.get("reimport_duplicates", False),
                 original_filename=call.data.get("original_filename"),
+                owner_user_id=call.context.user_id if call.context else None,
             )
 
     async def handle_submit_pdf(call: ServiceCall) -> ServiceResponse:
@@ -575,6 +631,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 replace(pdf, upstream_source_id=call.data.get(ATTR_SOURCE_ID)),
                 reimport_duplicates=call.data.get("reimport_duplicates", False),
                 original_filename=call.data.get("original_filename"),
+                owner_user_id=call.context.user_id if call.context else None,
             )
 
     class CalendarApprovalWriter:
