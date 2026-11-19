@@ -8,7 +8,10 @@ from httpx import HTTPStatusError, NetworkError, TimeoutException
 PROVIDER_FAILURE_GUIDANCE = {
     "provider_timeout": "The AI provider timed out. Wait before trying the source again.",
     "provider_rate_limited": "The AI provider rate limit was reached. Wait and check your provider quota before trying again.",
-    "provider_unavailable": "The AI provider is temporarily unavailable. Try again later; if the problem continues, check the configured AI Task and its connection.",
+    "provider_unavailable": (
+        "The AI provider is temporarily unavailable. Try again later; if the problem "
+        "continues, check the configured AI Task and its connection."
+    ),
     "provider_authentication": "The AI provider rejected authentication. Check its credentials and account permissions before trying again.",
     "provider_invalid_response": "The AI provider returned an invalid result. Check the configured AI Task and try the source again.",
     "provider_error": "Parsing failed. Check the configured AI Task and submit the source again.",
