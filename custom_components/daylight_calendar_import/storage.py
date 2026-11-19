@@ -71,6 +71,10 @@ class PendingEventResolutionError(ValueError):
     """Raised when resolving an event without an uncertain write."""
 
 
+class RetryJobConflict(ValueError):
+    """A retry job was cancelled, superseded, or is already running."""
+
+
 @dataclass(frozen=True, slots=True)
 class PendingEvent:
     """A reviewable event with a stable identity."""
@@ -678,6 +682,43 @@ class PendingImportStore:
         """Return retry sources; callers must enforce authorization."""
         return tuple(self._retry_jobs.values())
 
+    async def async_claim_retry(self, job_id: str) -> RetryJob:
+        """Atomically admit at most one manual or scheduled parser attempt."""
+        async with self._lock:
+            job = self._retry_jobs.get(job_id)
+            if job is None or job.state not in ("waiting", "paused", "exhausted"):
+                raise RetryJobConflict("Retry is unavailable or already processing")
+            if job_id in self._items:
+                raise RetryJobConflict("Events are already awaiting review")
+            claimed = replace(job, state="processing", claim=str(uuid4()),
+                              next_attempt_at=None, attempts=job.attempts + 1)
+            jobs = {**self._retry_jobs, job_id: claimed}
+            await self._async_save(self._items, retry_jobs=jobs)
+            return claimed
+
+    async def async_cancel_retry(self, job_id: str) -> RetryJob:
+        """Invalidate a running claim without depending on provider cancellation."""
+        async with self._lock:
+            job = self._retry_jobs.get(job_id)
+            if job is None:
+                raise RetryJobConflict("Saved import not found")
+            if job.state == "cancelled":
+                return job
+            cancelled = replace(job, state="cancelled", claim=None, next_attempt_at=None)
+            jobs = {**self._retry_jobs, job_id: cancelled}
+            await self._async_save(self._items, retry_jobs=jobs)
+            return cancelled
+
+    async def async_delete_retry(self, job_id: str) -> bool:
+        """Delete the private payload; invalidate any late provider response."""
+        async with self._lock:
+            if job_id not in self._retry_jobs:
+                return False
+            jobs = {key: job for key, job in self._retry_jobs.items() if key != job_id}
+            await self._async_save(self._items, retry_jobs=jobs)
+            return True
+
+
     def list_notifications(self) -> tuple[NotificationRecord, ...]:
         """Return immutable requests, unaffected by pending/activity pruning."""
         return self._notifications
@@ -1267,7 +1308,7 @@ class PendingImportStore:
         source_claims.pop(activity_id, None)
         jobs = dict(self._retry_jobs)
         job = jobs.get(activity_id)
-        if job is not None:
+        if job is not None and job.state == "processing":
             jobs[activity_id] = job.after_failure(provider_error_code)
         await self._async_save(
             self._items,
@@ -1536,6 +1577,7 @@ class PendingImportStore:
         source_sender: str | None = None,
         warnings: Iterable[str] = (),
         activity_id: str | None = None,
+        retry_claim: str | None = None,
     ) -> PendingImportAddResult:
         """Persist events, letting the storage transaction finish before cancellation."""
         result, cancelled = await self._async_complete_transaction(
@@ -1552,6 +1594,7 @@ class PendingImportStore:
                 source_sender=source_sender,
                 warnings=warnings,
                 activity_id=activity_id,
+                retry_claim=retry_claim,
             )
         )
         if cancelled:
@@ -1591,6 +1634,12 @@ class PendingImportStore:
         )
 
         async with self._lock:
+            # A late response from a cancelled, deleted or superseded attempt
+            # must never create review events or mark the source handled.
+            if retry_claim is not None:
+                job = self._retry_jobs.get(activity_id)
+                if job is None or job.state != "processing" or job.claim != retry_claim:
+                    raise RetryJobConflict("Retry was cancelled or superseded")
             source_claims = self._source_claims
             source_was_claimed = (
                 activity_id is not None and activity_id in source_claims
