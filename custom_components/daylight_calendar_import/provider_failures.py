@@ -8,7 +8,7 @@ from httpx import HTTPStatusError, NetworkError, TimeoutException
 PROVIDER_FAILURE_GUIDANCE = {
     "provider_timeout": "The AI provider timed out. Wait before trying the source again.",
     "provider_rate_limited": "The AI provider rate limit was reached. Wait and check your provider quota before trying again.",
-    "provider_unavailable": "The AI provider is unavailable. Check the configured AI Task and its connection before trying again.",
+    "provider_unavailable": "The AI provider is temporarily unavailable. Try again later; if the problem continues, check the configured AI Task and its connection.",
     "provider_authentication": "The AI provider rejected authentication. Check its credentials and account permissions before trying again.",
     "provider_invalid_response": "The AI provider returned an invalid result. Check the configured AI Task and try the source again.",
     "provider_error": "Parsing failed. Check the configured AI Task and submit the source again.",
@@ -30,6 +30,14 @@ def classify_provider_failure(error: Exception) -> str:
                 status = current.response.status_code
             else:
                 status = getattr(current, "status_code", None)
+                # Google's optional Gen AI SDK reports APIError HTTP statuses
+                # via .code, not .status_code. Match its typed exception base
+                # without importing a provider dependency for every HA install.
+                if status is None and any(
+                    base.__module__ == "google.genai.errors" and base.__name__ == "APIError"
+                    for base in type(current).__mro__
+                ):
+                    status = getattr(current, "code", None)
             if type(status) is int:
                 if status == 429:
                     return "provider_rate_limited"
