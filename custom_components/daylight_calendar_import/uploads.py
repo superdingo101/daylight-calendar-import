@@ -63,6 +63,7 @@ def _stage_image(
         kind=SourceKind.IMAGE,
         received_at=datetime.now(UTC),
         title=filename,
+        metadata={"retry_stage_path": str(staged_path)},
         attachments=(SourceAttachment(
             id=str(uuid4()), filename=filename, media_type=media_type,
             size_bytes=len(data),
