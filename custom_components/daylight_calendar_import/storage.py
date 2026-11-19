@@ -32,7 +32,7 @@ from .notification_journal import NotificationRecord, notification_record
 from .notification_preferences import NotificationPreferences, DELIVERABLE_NOTIFICATION_CLASSES
 from .source_routing import LEGACY_UNRESOLVED_WARNINGS
 from .provider_failures import PROVIDER_FAILURE_GUIDANCE
-from .retry_jobs import RetryJob, MAX_RETRY_JOBS
+from .retry_jobs import RetryJob
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -980,8 +980,8 @@ class PendingImportStore:
                                      retry_reimport_duplicates: bool = False) -> str:
         """Save original text and activity atomically before invoking an AI provider."""
         async with self._lock:
-            if retry_source_text is not None and len(self._retry_jobs) >= MAX_RETRY_JOBS:
-                raise PendingEventEditError("Retry queue is full; remove saved submissions first")
+            # A hard cap is unsafe until users can retry/cancel retained jobs.
+            # Introduce bounded admission with that lifecycle in the next PR.
             identifier, activity = self._propose_submission_activity(
                 source_kind=source_kind, source_title=source_title, received_at=received_at,
             )
