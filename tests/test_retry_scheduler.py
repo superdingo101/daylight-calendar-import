@@ -230,3 +230,73 @@ async def test_scheduler_stop_cancels_inflight_and_cleanup(monkeypatch):
     await scheduler.async_stop()
     assert hass.tasks[0].cancelled()
     unsub.assert_called_once()
+
+async def test_hourly_retention_runs_even_when_background_retries_disabled(monkeypatch):
+    unsub = Mock()
+    monkeypatch.setattr(retry_scheduler, "async_track_time_interval",
+                        lambda *_args: unsub)
+    hass = scheduler_hass()
+    store = SimpleNamespace(
+        accepting_services=True, list_retry_jobs=lambda: (),
+        async_apply_retention=AsyncMock(),
+    )
+    clean = AsyncMock()
+    scheduler = RetryScheduler(hass, store, lambda: RetrySettings(enabled=False),
+                               AsyncMock(), cleanup=clean)
+    scheduler.start()
+    assert hass.tasks == []
+    scheduler._last_retention = datetime.now(UTC) - timedelta(hours=2)
+    scheduler.kick()
+    await hass.tasks[-1]
+    store.async_apply_retention.assert_awaited_once()
+    clean.assert_awaited_once()
+    count = len(hass.tasks)
+    scheduler.kick()
+    assert len(hass.tasks) == count
+    await scheduler.async_stop()
+
+
+async def test_retention_failure_does_not_expose_exception_and_retries_next_tick(monkeypatch):
+    monkeypatch.setattr(retry_scheduler, "async_track_time_interval",
+                        lambda *_args: Mock())
+    hass = scheduler_hass()
+    store = SimpleNamespace(
+        accepting_services=True, list_retry_jobs=lambda: (),
+        async_apply_retention=AsyncMock(side_effect=OSError("private source data")),
+    )
+    scheduler = RetryScheduler(hass, store, lambda: RetrySettings(), AsyncMock())
+    scheduler.start()
+    scheduler._last_retention = datetime.now(UTC) - timedelta(hours=2)
+    scheduler.kick()
+    await hass.tasks[-1]
+    assert store.async_apply_retention.await_count == 1
+    scheduler.kick()
+    await hass.tasks[-1]
+    assert store.async_apply_retention.await_count == 2
+    await scheduler.async_stop()
+
+
+async def test_scheduler_cancellation_propagates_without_resuming_cleanup(monkeypatch):
+    monkeypatch.setattr(retry_scheduler, "async_track_time_interval",
+                        lambda *_args: Mock())
+    hass = scheduler_hass()
+    store = SimpleNamespace(
+        accepting_services=True, list_retry_jobs=lambda: (),
+        async_apply_retention=AsyncMock(side_effect=asyncio.CancelledError()),
+    )
+    scheduler = RetryScheduler(hass, store, lambda: RetrySettings(), AsyncMock())
+    scheduler.start()
+    scheduler._last_retention = datetime.now(UTC) - timedelta(hours=2)
+    scheduler.kick()
+    with pytest.raises(asyncio.CancelledError):
+        await hass.tasks[-1]
+    await scheduler.async_stop()
+
+
+async def test_retry_delay_saturates_at_one_day():
+    policy = RetrySettings(enabled=True, max_automatic_retries=5, initial_delay_minutes=60)
+    failed = replace(make_job().after_failure("provider_timeout"), automatic_attempts=4,
+                     attempts=7)
+    now = datetime(2026, 11, 18, tzinfo=UTC)
+    due = datetime.fromisoformat(next_retry_at(failed, policy, now))
+    assert timedelta(hours=24) <= due - now < timedelta(hours=29)
