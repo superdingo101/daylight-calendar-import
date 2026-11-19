@@ -497,8 +497,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # The original claim must remain fixed across provider awaits. Reading
         # it after parsing could accidentally adopt a newer attempt's claim,
         # or lose the claim entirely after cancellation/deletion.
-        original_job = pending_store.get_retry_job(activity_id)
-        original_claim = original_job.claim if original_job is not None else None
+        # async_begin_submission always creates a claimed job for text sources.
+        # There is no await between that durable commit and this lookup.
+        original_claim = pending_store.get_retry_job(activity_id).claim
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
         try:
