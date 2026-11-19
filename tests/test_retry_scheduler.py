@@ -294,8 +294,8 @@ async def test_scheduler_cancellation_propagates_without_resuming_cleanup(monkey
 
 
 async def test_retry_delay_saturates_at_one_day():
-    policy = RetrySettings(enabled=True, max_automatic_retries=5, initial_delay_minutes=60)
-    failed = replace(make_job().after_failure("provider_timeout"), automatic_attempts=4,
+    policy = RetrySettings(enabled=True, max_automatic_retries=10, initial_delay_minutes=60)
+    failed = replace(make_job().after_failure("provider_timeout"), automatic_attempts=6,
                      attempts=7)
     now = datetime(2026, 11, 18, tzinfo=UTC)
     due = datetime.fromisoformat(next_retry_at(failed, policy, now))
