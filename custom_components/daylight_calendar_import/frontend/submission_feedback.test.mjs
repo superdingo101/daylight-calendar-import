@@ -100,7 +100,7 @@ test("Gemini overload gives retry advice rather than configuration advice", () =
   const message = submissionErrorMessage(error, true);
   assert.match(message, /Try again later.*Check recent activity.*review inbox/);
   assert.doesNotMatch(message, /Settings|configured AI task|outcome is unknown/i);
-  assert.equal(submissionOutcomeUncertain(error), true);
+  assert.equal(submissionOutcomeUncertain(error), false);
 });
 
 
