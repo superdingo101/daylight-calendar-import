@@ -116,6 +116,10 @@ export function submissionErrorMessage(error, submitted = true) {
   if (/unsupported_capability|does not support.*attachment|attachments.*not supported/i.test(identifier)) {
     return `${detail} Choose an AI task provider that supports attachments, or paste the event details as text.`;
   }
+  // An upstream 503 is transient; don't imply the user's AI Task settings are wrong.
+  if (submitted && /^AI provider is temporarily unavailable\./i.test(detail)) {
+    return `${detail} Check recent activity and the review inbox before retrying this import.`;
+  }
   if (/AI task.*(unavailable|not found)|provider.*unavailable/i.test(identifier)) {
     return `${detail} Check the configured AI task entity in Settings, then try again.`;
   }
