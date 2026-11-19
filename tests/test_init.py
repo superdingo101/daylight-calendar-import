@@ -787,6 +787,8 @@ async def test_submit_text_without_events_records_source_handling(monkeypatch):
     pending_store = SimpleNamespace(
         async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"),
         is_source_duplicate=Mock(return_value=False),
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(),
         async_add=AsyncMock(
             return_value=PendingImportAddResult(
                 pending=None,
@@ -829,6 +831,7 @@ async def test_submit_text_without_events_records_source_handling(monkeypatch):
         warnings=[],
         routing_unresolved=False,
         activity_id="activity-id",
+        retry_claim="test-claim",
     )
 
 
@@ -836,7 +839,9 @@ async def test_submit_text_parse_failure_records_activity_and_reraises(monkeypat
     hass = FakeHass()
     parse = AsyncMock(side_effect=ServiceValidationError("parser unavailable"))
     pending_store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"),
-                                    async_record_parse_failure=AsyncMock(return_value="failed-id"))
+                                    async_record_parse_failure=AsyncMock(return_value="failed-id"),
+                                    get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+                                    active_submissions=set())
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore",
                         lambda _hass: pending_store)
