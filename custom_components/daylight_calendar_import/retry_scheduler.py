@@ -37,6 +37,9 @@ class RetryScheduler:
     def start(self) -> None:
         if self._unsubscribe is not None:
             return
+        # The store already applied retention during async_load; do not
+        # immediately create a cleanup task during integration setup.
+        self._last_retention = datetime.now(UTC)
         self._unsubscribe = async_track_time_interval(
             self._hass, lambda _now: self.kick(), timedelta(minutes=1),
         )
