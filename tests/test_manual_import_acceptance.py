@@ -482,3 +482,77 @@ async def test_disabled_background_retry_is_not_due_even_when_manually_invoked(
     outcome = await runtime.store.retry_runtime._execute(job_id)
     assert outcome["status"] == "not_due"
     assert runtime.generate.await_count == 1
+
+
+async def test_saved_retry_activity_can_be_cancelled_and_deleted(
+    hass, hass_ws_client, manual_runtime,
+):
+    runtime = manual_runtime
+    client = await hass_ws_client(hass)
+    runtime.generate.side_effect = TimeoutError("private provider outage")
+    saved = await _response(client, await _request())
+    job_id = saved["retry_job"]["id"]
+
+    listing = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "list_retry_jobs",
+        "service_data": {}, "return_response": True,
+    })
+    assert listing["success"], listing
+    assert listing["result"]["response"]["jobs"][0]["id"] == job_id
+    assert "source_text" not in listing["result"]["response"]["jobs"][0]
+    activity = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "get_activity",
+        "service_data": {"pending_id": job_id}, "return_response": True,
+    })
+    assert activity["success"], activity
+    assert activity["result"]["response"]["activity"]["retry_job"]["state"] == "waiting"
+
+    cancel = {"type": "call_service", "domain": DOMAIN,
+              "service": "cancel_retry_job", "service_data": {"job_id": job_id},
+              "return_response": True}
+    cancelled = await _call(client, cancel)
+    assert cancelled["success"], cancelled
+    assert cancelled["result"]["response"]["job"]["state"] == "cancelled"
+    duplicate_cancel = await _call(client, cancel)
+    assert duplicate_cancel["success"], duplicate_cancel
+    assert duplicate_cancel["result"]["response"]["job"]["state"] == "cancelled"
+    deleted = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "delete_retry_job",
+        "service_data": {"job_id": job_id}, "return_response": True,
+    })
+    assert deleted["success"], deleted
+    assert deleted["result"]["response"] == {"job_id": job_id, "deleted": True}
+    assert runtime.store.get_retry_job(job_id) is None
+
+
+async def test_provider_response_after_cancel_never_creates_pending_import(
+    hass, hass_ws_client, manual_runtime,
+):
+    runtime = manual_runtime
+    client = await hass_ws_client(hass)
+    control_client = await hass_ws_client(hass)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def late_response(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        return SimpleNamespace(data={"unsupported_recurrence": False, "events": [DRAFT]})
+
+    runtime.generate.side_effect = late_response
+    submission = asyncio.create_task(_call(client, await _request()))
+    await started.wait()
+    jobs = runtime.store.list_retry_jobs()
+    assert len(jobs) == 1
+    job_id = jobs[0].id
+    cancelled = await _call(control_client, {
+        "type": "call_service", "domain": DOMAIN, "service": "cancel_retry_job",
+        "service_data": {"job_id": job_id}, "return_response": True,
+    })
+    assert cancelled["success"], cancelled
+    release.set()
+    result = await submission
+    assert not result["success"], result
+    assert runtime.store.get(job_id) is None
+    assert runtime.store.get_retry_job(job_id).state == "cancelled"
+    runtime.writes.assert_not_awaited()
