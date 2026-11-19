@@ -2,13 +2,17 @@
 export function isSubmissionResponse(response) {
   if (!response || typeof response !== "object" || Array.isArray(response)) return false;
   const pending = response.pending;
-  const status = pending ? "pending_review" : response.duplicate ? "duplicate" : "no_events";
+  const status = pending ? "pending_review" : response.status === "saved_for_retry" ? "saved_for_retry" :
+    response.duplicate ? "duplicate" : "no_events";
   const legacy = !("status" in response) && !("activity_id" in response);
   const skippedSource = pending === null && response.duplicate_source === true &&
     response.duplicate_events === 0 && status === "duplicate";
   const lifecycle = Object.hasOwn(response, "status") && Object.hasOwn(response, "activity_id") &&
     response.status === status &&
     (status !== "pending_review" || response.activity_id === pending.id) &&
+    (status !== "saved_for_retry" || (pending === null &&
+      response.retry_job?.id === response.activity_id &&
+      typeof response.retry_job?.state === "string")) &&
     ((typeof response.activity_id === "string" && response.activity_id.trim().length > 0) ||
       (response.activity_id === null && skippedSource));
   return typeof response.duplicate === "boolean" &&
