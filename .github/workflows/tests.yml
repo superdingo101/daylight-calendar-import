@@ -7,6 +7,12 @@ on:
   # Release-prep PRs created by GITHUB_TOKEN do not fire pull_request CI.
   workflow_dispatch:
 
+# Keep only the latest PR test run. This avoids stale runs competing for
+# hosted runners after a new patch is pushed; release/main runs are separate.
+concurrency:
+  group: daylight-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   frontend:
     name: Review frontend
@@ -45,6 +51,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
         with:
@@ -68,6 +75,7 @@ jobs:
   test-ha-2026-7:
     name: Test Home Assistant 2026.7.4
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
         with:
@@ -106,6 +114,7 @@ jobs:
   test-ha-2026-11:
     name: Test Home Assistant 2026.11.0
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Propagate the plugin exclusion into nested pytest subprocesses as well.
     env:
       PYTEST_ADDOPTS: "-p no:respx"
