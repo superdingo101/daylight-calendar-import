@@ -134,7 +134,10 @@ async def test_old_parser_failure_cannot_override_cancel_delete_or_new_retry(
         await store.async_record_parse_failure(
             job_id, provider_error_code=failure_code, retry_claim=claimed.claim,
         )
-        assert store.get_retry_job(job_id).state == "waiting"
+        finished = store.get_retry_job(job_id)
+        assert finished.state == ("waiting" if failure_code == "provider_unavailable" else "paused")
+        assert finished.claim is None
+        assert finished.last_failure_code == failure_code
         assert store.get_activity(job_id)["status"] == "failed"
 
 
