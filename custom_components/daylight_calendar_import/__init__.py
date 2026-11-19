@@ -612,7 +612,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 not hasattr(pending_store, "get_retry_job")
                 or pending_store.get_retry_job(activity_id) is None
             ):
-                await async_delete_saved(hass, spool_name)
+                try:
+                    await async_delete_saved(hass, spool_name)
+                except OSError:
+                    # A completed, durable import must not be reported as
+                    # failed merely because unlink requires later reconciliation.
+                    _LOGGER.warning("Retained source cleanup deferred until reconciliation")
         return _submission_response(result, [*outcome.warnings, *route.warnings], activity_id)
 
     async def handle_submit_image(call: ServiceCall) -> ServiceResponse:
@@ -776,7 +781,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         job = await authorized_retry_job(call)
         removed = await pending_store.async_delete_retry(job.id)
         if removed:
-            await async_delete_saved(hass, job.attachment_path)
+            try:
+                await async_delete_saved(hass, job.attachment_path)
+            except OSError:
+                _LOGGER.warning("Retained source deletion deferred until reconciliation")
         return {"job_id": job.id, "deleted": removed}
 
     async def execute_retry_job(job_id: str, *, automatic: bool = False) -> ServiceResponse:
