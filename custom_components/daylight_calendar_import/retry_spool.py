@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import replace
 from datetime import datetime
 from hashlib import sha256
 import os
@@ -47,11 +46,16 @@ def _private_root(hass: HomeAssistant) -> Path:
 
 def _spool_copy(hass: HomeAssistant, source_path: str) -> tuple[str, str, int]:
     path = Path(source_path)
-    if (not path.name.startswith("daylight-") or path.is_symlink()
-            or not path.is_file() or not stat.S_ISREG(path.stat().st_mode)):
+    if not path.name.startswith("daylight-"):
         raise RetryAttachmentError("Temporary upload is unavailable")
-    with path.open("rb") as source:
-        data = source.read(_MAX_BYTES + 1)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise RetryAttachmentError("Temporary upload is unavailable")
+            data = source.read(_MAX_BYTES + 1)
+    except (FileNotFoundError, IsADirectoryError, OSError) as err:
+        raise RetryAttachmentError("Temporary upload is unavailable") from err
     if not data or len(data) > _MAX_BYTES:
         raise RetryAttachmentError("Saved upload exceeds the retry size limit")
     digest = sha256(data).hexdigest()
@@ -86,10 +90,14 @@ def _saved_path(hass: HomeAssistant, name: str) -> Path:
 
 def _read_saved(hass: HomeAssistant, job: RetryJob) -> bytes:
     path = _saved_path(hass, job.attachment_path)
-    if path.is_symlink() or not path.is_file() or not stat.S_ISREG(path.stat().st_mode):
-        raise RetryAttachmentError("Saved attachment is missing")
-    with path.open("rb") as handle:
-        data = handle.read(_MAX_BYTES + 1)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise RetryAttachmentError("Saved attachment is missing")
+            data = handle.read(_MAX_BYTES + 1)
+    except (FileNotFoundError, IsADirectoryError, OSError) as err:
+        raise RetryAttachmentError("Saved attachment is missing") from err
     if (not data or len(data) > _MAX_BYTES or len(data) != job.attachment_size
             or sha256(data).hexdigest() != job.attachment_sha256):
         raise RetryAttachmentError("Saved attachment failed integrity verification")
