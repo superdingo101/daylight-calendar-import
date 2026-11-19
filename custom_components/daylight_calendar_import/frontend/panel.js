@@ -1247,6 +1247,17 @@ export class DaylightImportPanel extends HTMLElement {
             "Notification settings changed elsewhere, but refresh failed. " +
             "Your unsaved choices are retained; refresh settings before saving.";
         }
+      } else if (tab === "retry" && isSettingsErrorCode(error, "retry_settings_changed")) {
+        // A saved complete policy must not overwrite newer administrator edits.
+        try {
+          const refreshed = await loadSettings(this._hass);
+          this._settingsDrafts.retry = null;
+          this._applySettingsSnapshot(refreshed);
+          this._settingsError = message;
+        } catch {
+          this._settingsError =
+            "Retry settings changed elsewhere, but could not be refreshed. Refresh settings before saving.";
+        }
       } else if (isDefinitiveSettingsError(error)) {
         this._settingsError = message;
       } else {
