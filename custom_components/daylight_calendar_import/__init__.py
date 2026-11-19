@@ -401,7 +401,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             aliases=aliases,
         )
 
-    async def parse_submission(source: SourceDocument, activity_id: str) -> Any:
+    async def parse_submission(
+        source: SourceDocument, activity_id: str, *, retry_claim: str | None = None,
+    ) -> Any:
         """Finish a stopped parser without obscuring its original error."""
         try:
             return await _async_parse_source(hass, source, ai_task_entity)
@@ -410,9 +412,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if isinstance(error, ProviderError):
                     await pending_store.async_record_parse_failure(
                         activity_id, provider_error_code=error.code,
+                        retry_claim=retry_claim,
                     )
                 else:
-                    await pending_store.async_record_parse_failure(activity_id)
+                    await pending_store.async_record_parse_failure(
+                        activity_id, retry_claim=retry_claim,
+                    )
             except Exception:
                 pass
             raise
@@ -498,7 +503,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pending_store.active_submissions.add(task)
         try:
             try:
-                outcome = await parse_submission(route.parser_source, activity_id)
+                outcome = await parse_submission(
+                    route.parser_source, activity_id, retry_claim=original_claim,
+                )
             except ProviderError:
                 job = pending_store.get_retry_job(activity_id)
                 if job is None:
@@ -748,6 +755,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             except ProviderError as err:
                 await pending_store.async_record_parse_failure(
                     job.id, provider_error_code=err.code,
+                    retry_claim=claimed.claim,
                 )
                 latest = pending_store.get_retry_job(job.id)
                 return (_saved_retry_response(latest) if latest is not None
@@ -767,7 +775,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return {"status": "cancelled", "job_id": job.id}
         except Exception:
             # A deterministic failure must not strand a claimed job until restart.
-            await pending_store.async_record_parse_failure(job.id)
+            await pending_store.async_record_parse_failure(
+                job.id, retry_claim=claimed.claim,
+            )
             raise
         finally:
             pending_store.active_submissions.discard(task)
