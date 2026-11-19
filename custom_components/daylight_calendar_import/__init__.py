@@ -489,19 +489,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             retry_owner=call.context.user_id if call.context else None,
             retry_reimport_duplicates=call.data.get("reimport_duplicates", False),
         )
+        # The original claim must remain fixed across provider awaits. Reading
+        # it after parsing could accidentally adopt a newer attempt's claim,
+        # or lose the claim entirely after cancellation/deletion.
+        original_job = pending_store.get_retry_job(activity_id)
+        original_claim = original_job.claim if original_job is not None else None
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
         try:
             try:
                 outcome = await parse_submission(route.parser_source, activity_id)
             except ProviderError:
-                job = (pending_store.get_retry_job(activity_id)
-                       if hasattr(pending_store, "get_retry_job") else None)
+                job = pending_store.get_retry_job(activity_id)
                 if job is None:
                     raise
                 return _saved_retry_response(job)
-            job = (pending_store.get_retry_job(activity_id)
-                   if hasattr(pending_store, "get_retry_job") else None)
             result = await pending_store.async_add(
                 source_text=source.text,
                 events=outcome.events,
@@ -514,7 +516,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 warnings=[*outcome.warnings, *route.warnings],
                 routing_unresolved=route.requires_confirmation,
                 activity_id=activity_id,
-                **({"retry_claim": job.claim} if job is not None else {}),
+                retry_claim=original_claim,
             )
         finally:
             pending_store.active_submissions.discard(task)
