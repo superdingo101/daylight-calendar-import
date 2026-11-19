@@ -460,7 +460,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         source = TextSourceAdapter().create(call.data[ATTR_TEXT], source_id=source_id)
         route = route_review_source(source)
         activity_id = await pending_store.async_begin_submission(
-            source_kind=source.kind.value, source_title=source.title, received_at=source.received_at
+            source_kind=source.kind.value, source_title=source.title,
+            received_at=source.received_at,
+            retry_source_text=source.text, retry_source_id=source.upstream_source_id,
+            retry_provider=ai_task_entity, retry_calendar=route.calendar_entity,
+            retry_owner=call.context.user_id if call.context else None,
+            retry_reimport_duplicates=call.data.get("reimport_duplicates", False),
         )
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
