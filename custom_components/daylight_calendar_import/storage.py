@@ -622,6 +622,21 @@ class PendingImportStore:
         if journal != self._notifications:
             await self._async_save(self._items, notifications=journal)
 
+    async def async_rearm_retry_jobs(self) -> None:
+        """Schedule retained transient failures when an admin enables retries."""
+        preferences = self.retry_preferences()
+        if not preferences.enabled:
+            return
+        async with self._lock:
+            updated = dict(self._retry_jobs)
+            for job in self._retry_jobs.values():
+                if job.state == "waiting" and job.next_attempt_at is None:
+                    next_at = next_retry_at(job, preferences)
+                    if next_at is not None:
+                        updated[job.id] = replace(job, next_attempt_at=next_at)
+            if updated != self._retry_jobs:
+                await self._async_save(self._items, retry_jobs=updated)
+
     async def async_apply_retention(self) -> None:
         """Prune completed history atomically, without touching unresolved work."""
         async def commit() -> None:
