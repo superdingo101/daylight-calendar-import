@@ -1614,6 +1614,7 @@ class PendingImportStore:
                         self._items,
                         activity=activity,
                         source_claims=source_claims,
+                        retry_jobs={key: job for key, job in self._retry_jobs.items() if key != activity_id},
                     )
                     self._source_claims = source_claims
                 return PendingImportAddResult(
@@ -1670,6 +1671,7 @@ class PendingImportStore:
                         seen_source_fingerprints=seen_sources,
                         activity=activity,
                         source_claims=source_claims,
+                        retry_jobs={key: job for key, job in self._retry_jobs.items() if key != activity_id},
                     )
                     self._seen_source_fingerprints = seen_sources
                     self._source_claims = source_claims
@@ -1678,6 +1680,7 @@ class PendingImportStore:
                         self._items,
                         activity=activity,
                         source_claims=source_claims,
+                        retry_jobs={key: job for key, job in self._retry_jobs.items() if key != activity_id},
                     )
                     self._source_claims = source_claims
                 return PendingImportAddResult(
@@ -1708,6 +1711,7 @@ class PendingImportStore:
                 items,
                 activity=activity,
                 source_claims=source_claims,
+                retry_jobs={key: job for key, job in self._retry_jobs.items() if key != activity_id},
             )
             self._commit_items(items)
             self._source_claims = source_claims
