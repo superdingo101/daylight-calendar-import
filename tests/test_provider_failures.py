@@ -22,6 +22,86 @@ def http_error(status):
     return ClientResponseError(Mock(), (), status=status, message="private token")
 
 
+# Synthetic Google Gen AI SDK hierarchy: APIError.code holds the HTTP status,
+# while ServerError (5xx) and ClientError (4xx) derive from APIError.
+class APIError(Exception):
+    __module__ = "google.genai.errors"
+
+
+class ServerError(APIError):
+    __module__ = "google.genai.errors"
+
+
+class ClientError(APIError):
+    __module__ = "google.genai.errors"
+
+
+def gemini_error(status):
+    error_class = ServerError if type(status) is int and 500 <= status < 600 else ClientError
+    error = error_class("private Gemini response")
+    error.code = status
+    return error
+
+
+@pytest.mark.parametrize(("status", "expected"), [
+    (503, "provider_unavailable"),
+    (500, "provider_unavailable"),
+    (429, "provider_rate_limited"),
+    (401, "provider_authentication"),
+    (403, "provider_authentication"),
+    (400, "provider_error"),
+    ("503", "provider_error"),
+    (True, "provider_error"),
+    (None, "provider_error"),
+])
+def test_gemini_sdk_numeric_code_classification(status, expected):
+    error = gemini_error(status)
+    assert classify_provider_failure(error) == expected
+    wrapper = HomeAssistantError("private wrapper")
+    wrapper.__cause__ = error
+    assert classify_provider_failure(wrapper) == expected
+
+
+def test_unrelated_numeric_code_does_not_fake_a_gemini_http_status():
+    error = RuntimeError("private error with non-HTTP code")
+    error.code = 503
+    assert classify_provider_failure(error) == "provider_error"
+
+
+@pytest.mark.parametrize("wrapped_by_ha", [False, True])
+async def test_gemini_overload_is_private_and_actionable_at_provider_boundary(
+    monkeypatch, wrapped_by_ha,
+):
+    import traceback
+
+    error = gemini_error(503)
+    if wrapped_by_ha:
+        # HA Core's Gemini integration raises HomeAssistantError from APIError.
+        wrapper = HomeAssistantError("private Google error response")
+        wrapper.__cause__ = error
+        error = wrapper
+    generate = AsyncMock(side_effect=error)
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    source_text = "private Christmas dinner details"
+    with pytest.raises(providers.ProviderError) as caught:
+        await providers.AITaskParserProvider(object(), "ai_task.gemini").async_parse(
+            TextSourceAdapter().create(source_text),
+            reference_datetime="2026-11-18T20:35:00-08:00",
+            time_zone="America/Los_Angeles",
+        )
+
+    assert caught.value.code == "provider_unavailable"
+    assert str(caught.value) == "AI provider is temporarily unavailable. Try again later."
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
+    # Traceback includes this test's function name ("private"), so check the
+    # actual sensitive values rather than matching that incidental substring.
+    rendered = "".join(traceback.format_exception(caught.value))
+    for secret in ("private Gemini response", "private Google error response", source_text):
+        assert secret not in rendered
+    generate.assert_awaited_once()
+
+
 @pytest.mark.parametrize(("error", "code"), [
     (TimeoutError("private email"), "provider_timeout"),
     (ConnectionError("private host"), "provider_unavailable"),
@@ -48,7 +128,11 @@ async def test_typed_errors_are_wrapped_without_exposing_messages(monkeypatch, e
             reference_datetime="now", time_zone="UTC",
         )
     assert caught.value.code == code
-    assert str(caught.value) == "AI Task could not parse the source"
+    assert str(caught.value) == (
+        "AI provider is temporarily unavailable. Try again later."
+        if code == "provider_unavailable"
+        else "AI Task could not parse the source"
+    )
     import traceback
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
