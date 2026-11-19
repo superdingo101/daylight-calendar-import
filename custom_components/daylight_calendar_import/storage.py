@@ -1619,6 +1619,7 @@ class PendingImportStore:
         source_sender: str | None = None,
         warnings: Iterable[str] = (),
         activity_id: str | None = None,
+        retry_claim: str | None = None,
     ) -> PendingImportAddResult:
         """Persist only events not already pending or handled."""
         source_text = source_text.strip()
