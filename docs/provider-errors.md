@@ -29,7 +29,7 @@ discovery and exception descriptors are guarded without copying their errors.
 The category and guidance are committed in the existing atomic failed-source
 transaction, including any opted-in failure notification. The notification
 remains generic. Older activities without `failure_code` continue to load.
-This change adds no retries or time limits. Email provider failures retain their
+Manual submissions now preserve a private, bounded retry source when a provider failure occurs. Users can retry or delete the saved source from Recent Activity; administrators can opt in to delayed automatic retries. The source stays under the original reference date and calendar approval still requires human review. See [Saved imports and retries](/configuration/retries). Email provider failures retain their
 existing retryable disposition and are not acknowledged as terminal sources;
-manual submissions propagate the safe provider exception. Cancellation remains
+manual submissions with saved sources return a safe saved-for-retry status. Cancellation remains
 cancellation and does not become a timeout.
