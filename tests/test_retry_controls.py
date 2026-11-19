@@ -90,3 +90,16 @@ async def test_cancelled_attempt_survives_restart(monkeypatch):
     # A late provider exception must not revive an explicitly cancelled job.
     await restored.async_record_parse_failure(job_id, provider_error_code="provider_unavailable")
     assert restored.get_retry_job(job_id).state == "cancelled"
+
+async def test_repeat_provider_failure_after_claim_remains_retriable(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_unavailable")
+    assert store.get_activity(job_id)["status"] == "failed"
+    await store.async_claim_retry(job_id)
+    assert store.get_activity(job_id)["status"] == "processing"
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_unavailable")
+    assert store.get_activity(job_id)["status"] == "failed"
+    assert store.get_retry_job(job_id).state == "waiting"
+    assert store.get_retry_job(job_id).attempts == 2
