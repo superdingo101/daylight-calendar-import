@@ -354,3 +354,39 @@ async def test_retry_submission_defaults_to_no_duplicate_reimport(monkeypatch):
     store = make_store(monkeypatch, FakeStoreBackend())
     activity = await store.async_begin_submission(**source_kwargs())
     assert store.get_retry_job(activity).reimport_duplicates is False
+
+
+async def test_retry_failure_default_guidance_is_stable(monkeypatch):
+    """Protect the fallback advice when no provider-specific guidance was supplied."""
+    store = make_store(monkeypatch, FakeStoreBackend())
+    activity = await store.async_begin_submission(**source_kwargs())
+    async with store._lock:
+        await store._async_record_parse_failure_locked(activity)
+    record = store.get_activity(activity)
+    assert record is not None
+    assert record["status"] == "failed"
+    assert record["guidance"] == (
+        "Parsing failed. Check the configured AI Task and submit the source again."
+    )
+
+
+async def test_retry_failure_only_tags_its_source_and_clears_its_release(monkeypatch):
+    """A provider failure must not contaminate concurrent source activity."""
+    store = make_store(monkeypatch, FakeStoreBackend())
+    failed_id = await store.async_begin_submission(**source_kwargs())
+    other_id = await store.async_begin_submission(**{
+        **source_kwargs(), "retry_source_id": "manual-two",
+    })
+    store._source_claim_releases.update((failed_id, other_id))
+    await store.async_record_parse_failure(
+        failed_id, provider_error_code="provider_unavailable",
+    )
+    failed = store.get_activity(failed_id)
+    other = store.get_activity(other_id)
+    assert failed is not None and other is not None
+    assert failed["status"] == "failed"
+    assert failed["failure_code"] == "provider_unavailable"
+    assert other["status"] == "processing"
+    assert "failure_code" not in other
+    assert failed_id not in store._source_claim_releases
+    assert other_id in store._source_claim_releases
