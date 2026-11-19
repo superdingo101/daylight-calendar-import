@@ -68,10 +68,19 @@ def test_unrelated_numeric_code_does_not_fake_a_gemini_http_status():
     assert classify_provider_failure(error) == "provider_error"
 
 
-async def test_gemini_overload_is_private_and_actionable_at_provider_boundary(monkeypatch):
+@pytest.mark.parametrize("wrapped_by_ha", [False, True])
+async def test_gemini_overload_is_private_and_actionable_at_provider_boundary(
+    monkeypatch, wrapped_by_ha,
+):
     import traceback
 
-    generate = AsyncMock(side_effect=gemini_error(503))
+    error = gemini_error(503)
+    if wrapped_by_ha:
+        # HA Core's Gemini integration raises HomeAssistantError from APIError.
+        wrapper = HomeAssistantError("private Google error response")
+        wrapper.__cause__ = error
+        error = wrapper
+    generate = AsyncMock(side_effect=error)
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     with pytest.raises(providers.ProviderError) as caught:
         await providers.AITaskParserProvider(object(), "ai_task.gemini").async_parse(
