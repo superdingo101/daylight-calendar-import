@@ -325,3 +325,37 @@ reset_deduplication:
       description: Full validated event draft whose handled event fingerprint should be forgotten. Omit source_id when using this field.
       selector:
         object:
+
+list_retry_jobs:
+  name: List saved retries
+  description: Return private-source-free retry status for the authorized user or administrator.
+
+retry_job:
+  name: Retry saved import
+  description: Try extracting a previously saved source using its original date and calendar routing. Events still require manual approval.
+  fields:
+    job_id:
+      name: Saved import ID
+      required: true
+      selector:
+        text:
+
+cancel_retry_job:
+  name: Cancel saved import
+  description: Stop future retry attempts; in-flight responses are invalidated. The input remains saved for a later manual retry.
+  fields:
+    job_id:
+      name: Saved import ID
+      required: true
+      selector:
+        text:
+
+delete_retry_job:
+  name: Delete saved import
+  description: Permanently discard retained retry input and prevent future retries.
+  fields:
+    job_id:
+      name: Saved import ID
+      required: true
+      selector:
+        text:
