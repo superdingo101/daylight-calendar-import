@@ -8,6 +8,8 @@ frontend validator. Only the external AI and calendar boundaries are simulated.
 import asyncio
 import base64
 from io import BytesIO
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -409,3 +411,74 @@ async def test_text_layer_pdf_works_with_text_only_provider(
     assert not directory.exists()
     runtime.writes.assert_not_awaited()
 
+
+
+async def test_background_retry_uses_original_reference_date_and_queues_review(
+    hass, hass_ws_client, manual_runtime,
+):
+    from custom_components.daylight_calendar_import.retry_settings import RetrySettings
+
+    runtime = manual_runtime
+    client = await hass_ws_client(hass)
+    runtime.generate.side_effect = TimeoutError("private provider timeout")
+    saved = await _response(client, await _request(
+        text="Dinner tomorrow from 6pm to 8pm", source_id="background-test",
+    ))
+    assert saved["status"] == "saved_for_retry"
+    job_id = saved["retry_job"]["id"]
+    original = runtime.store.get_retry_job(job_id)
+    original_reference = original.received_at
+    policy = RetrySettings(enabled=True, initial_delay_minutes=15, max_automatic_retries=2)
+    runtime.store.retry_preferences = lambda: policy
+    due = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    runtime.store._retry_jobs[job_id] = replace(original, next_attempt_at=due)
+    runtime.generate.side_effect = None
+    outcome = await runtime.store.retry_runtime._execute(job_id)
+    assert outcome["status"] == "pending_review"
+    assert runtime.store.get_retry_job(job_id) is None
+    assert runtime.store.get(job_id).created_at == original_reference
+    assert runtime.generate.await_count == 2
+    instructions = runtime.generate.await_args.kwargs["instructions"]
+    assert "Reference datetime: " in instructions
+    assert original_reference[:10] in instructions
+    runtime.writes.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mismatch", ["owner", "provider", "calendar"])
+async def test_background_retry_pauses_untrusted_or_changed_configuration(
+    hass, hass_ws_client, manual_runtime, mismatch,
+):
+    from custom_components.daylight_calendar_import.retry_settings import RetrySettings
+
+    runtime = manual_runtime
+    client = await hass_ws_client(hass)
+    runtime.generate.side_effect = TimeoutError("private provider failure")
+    saved = await _response(client, await _request(source_id=f"paused-{mismatch}"))
+    job_id = saved["retry_job"]["id"]
+    job = runtime.store.get_retry_job(job_id)
+    if mismatch == "owner":
+        job = replace(job, owner_user_id=None)
+    elif mismatch == "provider":
+        job = replace(job, provider_entity_id="ai_task.changed")
+    else:
+        job = replace(job, calendar_entity="calendar.forbidden")
+    runtime.store._retry_jobs[job_id] = job
+    runtime.store.retry_preferences = lambda: RetrySettings(enabled=True)
+    outcome = await runtime.store.retry_runtime._execute(job_id)
+    assert outcome["status"] == "paused"
+    assert runtime.store.get_retry_job(job_id).state == "paused"
+    assert runtime.generate.await_count == 1
+
+
+async def test_disabled_background_retry_is_not_due_even_when_manually_invoked(
+    hass, hass_ws_client, manual_runtime,
+):
+    runtime = manual_runtime
+    client = await hass_ws_client(hass)
+    runtime.generate.side_effect = TimeoutError("private outage")
+    saved = await _response(client, await _request(source_id="disabled-schedule"))
+    job_id = saved["retry_job"]["id"]
+    runtime.generate.side_effect = None
+    outcome = await runtime.store.retry_runtime._execute(job_id)
+    assert outcome["status"] == "not_due"
+    assert runtime.generate.await_count == 1
