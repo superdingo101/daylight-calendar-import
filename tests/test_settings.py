@@ -1736,3 +1736,26 @@ async def test_alias_count_limit_also_applies_to_direct_option_replacements():
     with pytest.raises(SettingsValidationError, match="at most 100"):
         await async_save_option_patch(hass, configured, {"calendar_aliases": aliases})
     assert hass.config_entries.updates == []
+
+
+def test_retry_preferences_patch_validates_and_only_persists_changes():
+    from custom_components.daylight_calendar_import.const import CONF_RETRY_PREFERENCES
+    from custom_components.daylight_calendar_import.settings import (
+        effective_retry_preferences, retry_preferences_patch,
+    )
+    baseline = entry()
+    default = effective_retry_preferences(baseline)
+    assert default.enabled is False
+    assert default.initial_delay_minutes == 15
+    assert retry_preferences_patch(baseline, default.as_dict()) == {}
+    patch = retry_preferences_patch(baseline, {
+        "enabled": True, "initial_delay_minutes": 30,
+        "max_automatic_retries": 2, "retention_days": 14,
+    })
+    assert CONF_RETRY_PREFERENCES in patch
+    baseline.options[CONF_RETRY_PREFERENCES] = patch[CONF_RETRY_PREFERENCES]
+    assert effective_retry_preferences(baseline).enabled
+    assert retry_preferences_patch(baseline, patch[CONF_RETRY_PREFERENCES]) == {}
+    with pytest.raises(SettingsValidationError) as error:
+        retry_preferences_patch(baseline, {"initial_delay_minutes": 1})
+    assert error.value.code == "invalid_retries"
