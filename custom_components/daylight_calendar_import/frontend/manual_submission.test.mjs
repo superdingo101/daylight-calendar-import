@@ -364,3 +364,20 @@ test("a completed text re-import rejection clears the override for later submiss
   assert.equal(calls[2].source_id, calls[1].source_id);
   assert.equal(calls[2].reimport_duplicates, undefined);
 });
+
+test("saved provider failures are valid durable responses", async () => {
+  const response = {
+    ...empty, status: "saved_for_retry", activity_id: "job",
+    retry_job: {id: "job", state: "waiting", attempts: 1},
+  };
+  assert.equal(await submitText({callWS: async () => ({response})}, "Christmas Dinner"), response);
+  assert.match(submissionMessage(response), /original input is saved/);
+  for (const invalid of [
+    {...response, retry_job: {id: "other", state: "waiting"}},
+    {...response, retry_job: null},
+    {...response, status: "waiting"},
+  ]) {
+    await assert.rejects(submitText({callWS: async () => ({response: invalid})}, "Dinner"),
+      /unexpected response/);
+  }
+});
