@@ -22,6 +22,73 @@ def http_error(status):
     return ClientResponseError(Mock(), (), status=status, message="private token")
 
 
+class GeminiAPIError(Exception):
+    """Synthetic Google Gen AI SDK base with the documented numeric .code."""
+
+    __module__ = "google.genai.errors"
+
+
+class GeminiServerError(GeminiAPIError):
+    __module__ = "google.genai.errors"
+
+
+# The runtime classifier matches the actual SDK's APIError base, not every
+# unrelated exception with a .code field. Model that inheritance explicitly.
+GeminiAPIError.__name__ = "APIError"
+
+
+def gemini_error(status):
+    error = GeminiServerError("private Gemini response")
+    error.code = status
+    return error
+
+
+@pytest.mark.parametrize(("status", "expected"), [
+    (503, "provider_unavailable"),
+    (500, "provider_unavailable"),
+    (429, "provider_rate_limited"),
+    (401, "provider_authentication"),
+    (403, "provider_authentication"),
+    (400, "provider_error"),
+    ("503", "provider_error"),
+    (True, "provider_error"),
+    (None, "provider_error"),
+])
+def test_gemini_sdk_numeric_code_classification(status, expected):
+    error = gemini_error(status)
+    assert classify_provider_failure(error) == expected
+    wrapper = HomeAssistantError("private wrapper")
+    wrapper.__cause__ = error
+    assert classify_provider_failure(wrapper) == expected
+
+
+def test_unrelated_numeric_code_does_not_fake_a_gemini_http_status():
+    error = RuntimeError("private error with non-HTTP code")
+    error.code = 503
+    assert classify_provider_failure(error) == "provider_error"
+
+
+async def test_gemini_overload_is_private_and_actionable_at_provider_boundary(monkeypatch):
+    import traceback
+
+    generate = AsyncMock(side_effect=gemini_error(503))
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    with pytest.raises(providers.ProviderError) as caught:
+        await providers.AITaskParserProvider(object(), "ai_task.gemini").async_parse(
+            TextSourceAdapter().create("private Christmas dinner details"),
+            reference_datetime="2026-11-18T20:35:00-08:00",
+            time_zone="America/Los_Angeles",
+        )
+
+    assert caught.value.code == "provider_unavailable"
+    assert str(caught.value) == "AI provider is temporarily unavailable. Try again later."
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
+    assert "private" not in "".join(traceback.format_exception(caught.value))
+    generate.assert_awaited_once()
+
+
+
 @pytest.mark.parametrize(("error", "code"), [
     (TimeoutError("private email"), "provider_timeout"),
     (ConnectionError("private host"), "provider_unavailable"),
@@ -48,7 +115,11 @@ async def test_typed_errors_are_wrapped_without_exposing_messages(monkeypatch, e
             reference_datetime="now", time_zone="UTC",
         )
     assert caught.value.code == code
-    assert str(caught.value) == "AI Task could not parse the source"
+    assert str(caught.value) == (
+        "AI provider is temporarily unavailable. Try again later."
+        if code == "provider_unavailable"
+        else "AI Task could not parse the source"
+    )
     import traceback
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
