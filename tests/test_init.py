@@ -1459,6 +1459,7 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
         warnings=[],
         routing_unresolved=False,
         activity_id="activity-id",
+        retry_claim="test-claim",
     )
 
 
