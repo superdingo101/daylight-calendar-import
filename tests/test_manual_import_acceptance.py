@@ -215,17 +215,52 @@ async def test_manual_provider_failure_is_recorded_and_explicit_retry_recovers(h
     runtime = manual_runtime
     client = await hass_ws_client(hass)
     runtime.generate.side_effect = TimeoutError("provider timeout")
-    request = await _request()
-    failed = await _call(client, request)
-    assert failed["success"] is False
+    saved = await _response(client, await _request())
+    assert saved["status"] == "saved_for_retry"
+    job_id = saved["retry_job"]["id"]
+    assert saved["retry_job"]["state"] == "waiting"
+    assert runtime.store.get_retry_job(job_id).source_text == TEXT
     assert runtime.store.list() == ()
-    assert runtime.store.list_activity()[0]["status"] == "failed"
     runtime.writes.assert_not_awaited()
+
+    # A second submission with the same source cannot create a second job.
+    duplicate = await _response(client, await _request())
+    assert duplicate["status"] == "duplicate"
+    runtime.generate.assert_awaited_once()
+
     runtime.generate.side_effect = None
-    recovered = await _response(client, await _request())
-    assert recovered["status"] == "pending_review"
+    retried = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "retry_job",
+        "service_data": {"job_id": job_id}, "return_response": True,
+    })
+    assert retried["success"], retried
+    response = retried["result"]["response"]
+    assert response["status"] == "pending_review"
+    assert response["pending"]["id"] == job_id
+    assert runtime.store.get_retry_job(job_id) is None
     assert runtime.generate.await_count == 2
     runtime.writes.assert_not_awaited()
+
+
+async def test_cancelled_source_can_be_retried_manually(hass, hass_ws_client, manual_runtime):
+    runtime = manual_runtime
+    client = await hass_ws_client(hass)
+    runtime.generate.side_effect = TimeoutError("temporarily unavailable")
+    saved = await _response(client, await _request())
+    job_id = saved["retry_job"]["id"]
+    cancelled = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "cancel_retry_job",
+        "service_data": {"job_id": job_id}, "return_response": True,
+    })
+    assert cancelled["success"], cancelled
+    assert cancelled["result"]["response"]["job"]["state"] == "cancelled"
+    runtime.generate.side_effect = None
+    resumed = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "retry_job",
+        "service_data": {"job_id": job_id}, "return_response": True,
+    })
+    assert resumed["success"], resumed
+    assert resumed["result"]["response"]["status"] == "pending_review"
 
 
 async def test_read_only_user_cannot_submit_or_read_private_drafts(
