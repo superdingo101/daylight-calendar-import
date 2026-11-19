@@ -229,6 +229,10 @@ async def test_manual_submission_persists_provider_category_and_preserves_except
     parse = AsyncMock(side_effect=error)
     store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()),
                             async_begin_submission=AsyncMock(return_value="activity-id"),
+                            # The source is deleted while the provider is running;
+                            # provider errors must still propagate without the job.
+                            get_retry_job=Mock(side_effect=[SimpleNamespace(claim="test-claim"), None]),
+                            active_submissions=set(),
                             async_record_parse_failure=AsyncMock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
@@ -240,7 +244,7 @@ async def test_manual_submission_persists_provider_category_and_preserves_except
     with pytest.raises(providers.ProviderError) as caught:
         await handler(SimpleNamespace(data={"text": "private details"}, context=Context(user_id=None)))
     assert caught.value is error
-    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code="provider_rate_limited")
+    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code="provider_rate_limited", retry_claim="test-claim")
 
 
 async def test_email_failure_retains_retry_and_acknowledgement_semantics():
@@ -322,6 +326,10 @@ async def test_actual_submission_boundary_sanitizes_malformed_provider_contracts
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()),
                             async_begin_submission=AsyncMock(return_value="activity-id"),
+                            # The source is deleted while the provider is running;
+                            # provider errors must still propagate without the job.
+                            get_retry_job=Mock(side_effect=[SimpleNamespace(claim="test-claim"), None]),
+                            active_submissions=set(),
                             async_record_parse_failure=AsyncMock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_review_panel", AsyncMock())
@@ -335,7 +343,7 @@ async def test_actual_submission_boundary_sanitizes_malformed_provider_contracts
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
     assert "private" not in "".join(traceback.format_exception(caught.value))
-    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected)
+    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected, retry_claim="test-claim")
 
 
 @pytest.mark.parametrize(("error", "expected"), [
@@ -359,6 +367,10 @@ async def test_actual_submission_sanitizes_throwing_entity_availability(monkeypa
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()),
                             async_begin_submission=AsyncMock(return_value="activity-id"),
+                            # The source is deleted while the provider is running;
+                            # provider errors must still propagate without the job.
+                            get_retry_job=Mock(side_effect=[SimpleNamespace(claim="test-claim"), None]),
+                            active_submissions=set(),
                             async_record_parse_failure=AsyncMock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_review_panel", AsyncMock())
@@ -374,7 +386,7 @@ async def test_actual_submission_sanitizes_throwing_entity_availability(monkeypa
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
     assert "private" not in "".join(traceback.format_exception(caught.value))
-    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected)
+    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected, retry_claim="test-claim")
     generate.assert_not_awaited()
 
 
@@ -417,6 +429,10 @@ async def test_actual_submission_has_coherent_untrusted_provider_boundaries(monk
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()),
                             async_begin_submission=AsyncMock(return_value="activity-id"),
+                            # The source is deleted while the provider is running;
+                            # provider errors must still propagate without the job.
+                            get_retry_job=Mock(side_effect=[SimpleNamespace(claim="test-claim"), None]),
+                            active_submissions=set(),
                             async_record_parse_failure=AsyncMock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_review_panel", AsyncMock())
@@ -433,7 +449,7 @@ async def test_actual_submission_has_coherent_untrusted_provider_boundaries(monk
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
     assert "private" not in "".join(traceback.format_exception(caught.value))
-    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected)
+    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected, retry_claim="test-claim")
     if phase in ("resolution", "features"):
         generate.assert_not_awaited()
         with pytest.raises(providers.ProviderError) as capabilities_error:
