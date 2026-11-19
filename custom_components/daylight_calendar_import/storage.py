@@ -1016,6 +1016,7 @@ class PendingImportStore:
                                      retry_attachment_media_type: str | None = None,
                                      retry_attachment_size: int | None = None,
                                      retry_attachment_in_ai: bool = True,
+                                     retry_parser_title: str | None = None,
                                      retry_routing_unresolved: bool = False) -> str:
         """Save original text and activity atomically before invoking an AI provider."""
         async with self._lock:
@@ -1036,6 +1037,7 @@ class PendingImportStore:
                     received_at=received_at, provider_entity_id=retry_provider,
                     calendar_entity=retry_calendar, owner_user_id=retry_owner,
                     source_kind=source_kind, source_title=source_title,
+                    parser_title=retry_parser_title,
                     attachment_path=retry_attachment_path,
                     attachment_sha256=retry_attachment_sha256,
                     attachment_media_type=retry_attachment_media_type,
