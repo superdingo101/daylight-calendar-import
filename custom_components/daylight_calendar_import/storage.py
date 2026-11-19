@@ -32,7 +32,8 @@ from .notification_journal import NotificationRecord, notification_record
 from .notification_preferences import NotificationPreferences, DELIVERABLE_NOTIFICATION_CLASSES
 from .source_routing import LEGACY_UNRESOLVED_WARNINGS
 from .provider_failures import PROVIDER_FAILURE_GUIDANCE
-from .retry_jobs import RetryJob, MAX_RETRY_JOBS
+from .retry_jobs import RetryJob, MAX_RETRY_JOBS, RETRYABLE_PROVIDER_CODES
+from .retry_settings import RetrySettings, next_retry_at
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -488,6 +489,7 @@ class PendingImportStore:
         self._activity: tuple[dict[str, Any], ...] = ()
         self._notifications: tuple[NotificationRecord, ...] = ()
         self.notification_preferences: Callable[[], NotificationPreferences] = NotificationPreferences
+        self.retry_preferences: Callable[[], RetrySettings] = RetrySettings
         self.notification_delivery_lock = asyncio.Lock()
         self.on_notifications: Callable[[], None] | None = None
         self._seen_source_fingerprints: tuple[str, ...] = ()
@@ -559,11 +561,16 @@ class PendingImportStore:
             # Each newly completed source is newest in the proposed history.
             # Keep its transition even if later recoveries prune that history.
             recovered_failures.append(activity[-1])
-        recovered_jobs = {
-            identifier: (replace(job, state="waiting", claim=None, next_attempt_at=None)
-                         if job.state == "processing" else job)
-            for identifier, job in self._retry_jobs.items()
-        }
+        recovered_jobs = {}
+        for identifier, job in self._retry_jobs.items():
+            if job.state == "processing":
+                finished = replace(job, state="waiting", claim=None,
+                                   last_failure_code="provider_unavailable")
+                recovered_jobs[identifier] = replace(
+                    finished, next_attempt_at=next_retry_at(finished, self.retry_preferences()),
+                )
+            else:
+                recovered_jobs[identifier] = job
         if interrupted or self._source_claims or recovered_jobs != self._retry_jobs:
             async def commit_recovery() -> None:
                 journal = self._journal_for_activity(tuple(recovered_failures))
@@ -622,8 +629,13 @@ class PendingImportStore:
                 history, journal = self._retained_history(
                     self._items, self._activity, self._source_claims, self._notifications,
                 )
-                if history != self._activity or journal != self._notifications:
-                    await self._async_save(self._items, activity=history, notifications=journal)
+                cutoff = datetime.now(UTC) - timedelta(days=self.retry_preferences().retention_days)
+                jobs = {
+                    identifier: job for identifier, job in self._retry_jobs.items()
+                    if job.state == "processing" or datetime.fromisoformat(job.received_at) >= cutoff
+                }
+                if history != self._activity or journal != self._notifications or jobs != self._retry_jobs:
+                    await self._async_save(self._items, activity=history, notifications=journal, retry_jobs=jobs)
 
         _, cancelled = await self._async_complete_transaction(commit())
         if cancelled:
@@ -682,16 +694,28 @@ class PendingImportStore:
         """Return retry sources; callers must enforce authorization."""
         return tuple(self._retry_jobs.values())
 
-    async def async_claim_retry(self, job_id: str) -> RetryJob:
+    async def async_claim_retry(self, job_id: str, *, automatic: bool = False) -> RetryJob:
         """Atomically admit at most one manual or scheduled parser attempt."""
         async with self._lock:
             job = self._retry_jobs.get(job_id)
             if job is None or job.state not in ("waiting", "paused", "exhausted", "cancelled"):
                 raise RetryJobConflict("Retry is unavailable or already processing")
+            if automatic:
+                prefs = self.retry_preferences()
+                if (not prefs.enabled or job.state != "waiting"
+                        or job.next_attempt_at is None
+                        or datetime.fromisoformat(job.next_attempt_at) > datetime.now(UTC)
+                        or job.automatic_attempts >= prefs.max_automatic_retries):
+                    raise RetryJobConflict("Automatic retry is not due")
+            if job.attempts >= 1000:
+                raise RetryJobConflict("Retry attempt limit reached")
             if job_id in self._items:
                 raise RetryJobConflict("Events are already awaiting review")
-            claimed = replace(job, state="processing", claim=str(uuid4()),
-                              next_attempt_at=None, attempts=job.attempts + 1)
+            claimed = replace(
+                job, state="processing", claim=str(uuid4()),
+                next_attempt_at=None, attempts=job.attempts + 1,
+                automatic_attempts=job.automatic_attempts + int(automatic),
+            )
             jobs = {**self._retry_jobs, job_id: claimed}
             await self._async_save(self._items, retry_jobs=jobs)
             return claimed
@@ -1309,7 +1333,13 @@ class PendingImportStore:
         jobs = dict(self._retry_jobs)
         job = jobs.get(activity_id)
         if job is not None and job.state == "processing":
-            jobs[activity_id] = job.after_failure(provider_error_code)
+            finished = job.after_failure(provider_error_code)
+            prefs = self.retry_preferences()
+            next_at = next_retry_at(finished, prefs)
+            if (prefs.enabled and provider_error_code in RETRYABLE_PROVIDER_CODES
+                    and finished.automatic_attempts >= prefs.max_automatic_retries):
+                finished = replace(finished, state="exhausted")
+            jobs[activity_id] = replace(finished, next_attempt_at=next_at)
         await self._async_save(
             self._items,
             activity=activity,
