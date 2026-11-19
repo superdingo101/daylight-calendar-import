@@ -103,3 +103,36 @@ async def test_repeat_provider_failure_after_claim_remains_retriable(monkeypatch
     assert store.get_activity(job_id)["status"] == "failed"
     assert store.get_retry_job(job_id).state == "waiting"
     assert store.get_retry_job(job_id).attempts == 2
+
+
+@pytest.mark.parametrize("failure_code", [None, "provider_unavailable"])
+@pytest.mark.parametrize("change", ["cancel", "delete", "new_claim"])
+async def test_old_parser_failure_cannot_override_cancel_delete_or_new_retry(
+    monkeypatch, failure_code, change,
+):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    original = store.get_retry_job(job_id)
+    await store.async_cancel_retry(job_id)
+    if change == "delete":
+        assert await store.async_delete_retry(job_id)
+    elif change == "new_claim":
+        claimed = await store.async_claim_retry(job_id)
+        assert claimed.claim != original.claim
+    await store.async_record_parse_failure(
+        job_id, provider_error_code=failure_code, retry_claim=original.claim,
+    )
+    latest = store.get_retry_job(job_id)
+    if change == "delete":
+        assert latest is None
+    elif change == "cancel":
+        assert latest.state == "cancelled"
+    else:
+        assert latest == claimed
+        assert store.get_activity(job_id)["status"] == "processing"
+        await store.async_record_parse_failure(
+            job_id, provider_error_code=failure_code, retry_claim=claimed.claim,
+        )
+        assert store.get_retry_job(job_id).state == "waiting"
+        assert store.get_activity(job_id)["status"] == "failed"
