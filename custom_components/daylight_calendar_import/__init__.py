@@ -296,6 +296,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pending_store.notification_tasks = registry.setdefault(entry.entry_id, set())
     try:
         await pending_store.async_load()
+        if hasattr(pending_store, "async_rearm_retry_jobs"):
+            await pending_store.async_rearm_retry_jobs()
     except PendingImportStorageError:
         ir.async_create_issue(
             hass, DOMAIN, "storage_recovery", is_fixable=False,
