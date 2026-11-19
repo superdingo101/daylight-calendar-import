@@ -44,6 +44,7 @@ CONF_EMAIL_VERIFY_SSL = "email_verify_ssl"
 CONF_CALENDAR_ALIASES = "calendar_aliases"
 CONF_CONFLICT_CALENDAR_ENTITIES = "conflict_calendar_entities"
 CONF_NOTIFICATION_PREFERENCES = "notification_preferences"
+CONF_RETRY_PREFERENCES = "retry_preferences"
 CONF_EMAIL_SENDER_ALLOWLIST = "email_sender_allowlist"
 
 # Count Unicode code points before normalization; never silently truncate sources.
