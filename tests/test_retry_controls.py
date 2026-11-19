@@ -232,3 +232,41 @@ async def test_cancel_clears_schedule_idempotently_and_delete_is_scoped(monkeypa
     assert store.get_retry_job(second) == second_job
     assert [job.id for job in store.list_retry_jobs()] == [second]
     assert [raw["id"] for raw in backend.saved[-1]["retry_jobs"]] == [second]
+
+
+@pytest.mark.parametrize(("code", "expected_state"), [
+    ("provider_unavailable", "waiting"),
+    ("provider_timeout", "waiting"),
+    ("provider_rate_limited", "waiting"),
+    ("provider_error", "paused"),
+    ("provider_authentication", "paused"),
+    ("provider_invalid_response", "paused"),
+    (None, "paused"),
+])
+async def test_parse_failure_classifies_each_provider_code_and_releases_claim(
+    monkeypatch, code, expected_state,
+):
+    """Only transient provider failures are retriable; all release their claim."""
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    activity_id = await store.async_begin_submission(**source_kwargs())
+    initial = store.get_retry_job(activity_id)
+    assert initial.state == "processing" and initial.claim is not None
+    await store.async_record_parse_failure(
+        activity_id, provider_error_code=code, retry_claim=initial.claim,
+    )
+    retry = store.get_retry_job(activity_id)
+    assert retry is not None
+    assert retry.state == expected_state
+    assert retry.claim is None
+    assert retry.last_failure_code == code
+    assert retry.attempts == initial.attempts
+    assert retry.source_text == initial.source_text
+    assert retry.source_id == initial.source_id
+    assert store.get_activity(activity_id)["status"] == "failed"
+    if code is not None:
+        assert store.get_activity(activity_id)["failure_code"] == code
+    snapshot = backend.saved[-1]["retry_jobs"][0]
+    assert snapshot["state"] == expected_state
+    assert snapshot["claim"] is None
+    assert snapshot["last_failure_code"] == code
