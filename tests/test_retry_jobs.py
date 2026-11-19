@@ -65,7 +65,7 @@ async def test_completed_parse_removes_private_retry_source_in_same_transaction(
     assert (result.pending is not None) is bool(events)
     assert store.get_retry_job(activity) is None
     assert "retry_jobs" not in backend.saved[-1]
-    assert store.is_source_duplicate("manual-one")
+    assert store.is_source_duplicate("manual-one") is bool(events)
     backend.load_result = backend.saved[-1]
     restored = make_store(monkeypatch, backend)
     await restored.async_load()
@@ -98,3 +98,79 @@ def test_bad_retry_record_fails_closed():
             RetryJob.from_dict(corrupt)
     with pytest.raises(ValueError, match="orphaned retry job"):
         _decode_storage_data({"items": [], "retry_jobs": [valid]})
+
+@pytest.mark.parametrize(("overrides", "message"), [
+    ({"unsupported": "field"}, "fields"),
+    ({"id": ""}, "identity"),
+    ({"source_id": 3}, "identity"),
+    ({"provider_entity_id": "x" * 2049}, "identity"),
+    ({"received_at": "not a timestamp"}, "timestamp"),
+    ({"next_attempt_at": "not a timestamp"}, "timestamp"),
+    ({"next_attempt_at": "2026-11-18T00:00:00"}, "timezone"),
+    ({"claim": None}, "claim"),
+    ({"claim": 42}, "claim"),
+    ({"claim": "x" * 129}, "claim"),
+    ({"last_failure_code": "unsupported"}, "failure"),
+    ({"last_failure_code": 503}, "failure"),
+    ({"owner_user_id": 9}, "metadata"),
+    ({"source_title": "x" * 2049}, "metadata"),
+    ({"routing_unresolved": 1}, "flags"),
+    ({"reimport_duplicates": 0}, "flags"),
+    ({"attachment_size": 0}, "size"),
+    ({"attachment_size": True}, "size"),
+    ({"attachment_size": 10 * 1024 * 1024 + 1}, "size"),
+    ({"source_text": " "}, "payload"),
+    ({"attachment_path": "/tmp/source"}, "payload"),
+    ({"source_kind": "pdf", "attachment_path": "/tmp/source"}, "metadata"),
+    ({"source_kind": "image", "attachment_sha256": "abcd"}, "metadata"),
+    ({"source_kind": "image", "attachment_media_type": "image/png"}, "metadata"),
+    ({"source_kind": "pdf", "attachment_size": 100}, "metadata"),
+    ({"state": "processing", "attempts": -1}, "lifecycle"),
+    ({"state": "waiting", "attempts": 1001}, "lifecycle"),
+])
+def test_retry_snapshot_rejects_corrupt_individual_fields(overrides, message):
+    raw = RetryJob.create(
+        activity_id="activity", source_text="private event", source_id="source",
+        received_at=datetime.now(UTC), provider_entity_id="ai_task.gemini",
+        calendar_entity="calendar.family", owner_user_id="user-1",
+    ).as_dict()
+    raw.update(overrides)
+    with pytest.raises(ValueError, match=message):
+        RetryJob.from_dict(raw)
+
+
+def test_retry_snapshot_rejects_wrong_container_and_accepts_valid_file_metadata():
+    with pytest.raises(ValueError, match="fields"):
+        RetryJob.from_dict("not a dict")
+    valid = RetryJob.create(
+        activity_id="pdf", source_text="private extracted PDF text", source_id="source",
+        received_at=datetime.now(UTC), provider_entity_id="ai_task.gemini",
+        calendar_entity="calendar.family", owner_user_id=None,
+        source_kind="pdf", attachment_path="/tmp/spool/file",
+        attachment_sha256="a" * 64, attachment_media_type="application/pdf",
+        attachment_size=128,
+    )
+    assert RetryJob.from_dict(valid.as_dict()) == valid
+
+
+async def test_retry_storage_queue_capacity_and_invalid_configuration(monkeypatch):
+    from dataclasses import replace
+    from custom_components.daylight_calendar_import.retry_jobs import MAX_RETRY_JOBS
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    with pytest.raises(ValueError, match="Missing retry source configuration"):
+        await store.async_begin_submission(
+            source_kind="manual_text", source_title=None, received_at=datetime.now(UTC),
+            retry_source_text="private",
+        )
+    initial = RetryJob.create(
+        activity_id="first", source_text="private", source_id="source",
+        received_at=datetime.now(UTC), provider_entity_id="ai_task.gemini",
+        calendar_entity="calendar.family", owner_user_id="user",
+    )
+    store._retry_jobs = {
+        str(index): replace(initial, id=str(index)) for index in range(MAX_RETRY_JOBS)
+    }
+    assert len(store.list_retry_jobs()) == MAX_RETRY_JOBS
+    with pytest.raises(PendingEventEditError, match="Retry queue is full"):
+        await store.async_begin_submission(**source_kwargs())
