@@ -937,7 +937,9 @@ async def test_submit_attachment_parse_failure_records_activity(monkeypatch):
     with pytest.raises(ServiceValidationError, match="parser unavailable"):
         await submit(SimpleNamespace(data={ATTR_FILE_ID: "a" * 32, ATTR_TEXT: "private details"},
                                      context=Context(user_id=None)))
-    store.async_record_parse_failure.assert_awaited_once_with("activity-id")
+    store.async_record_parse_failure.assert_awaited_once_with(
+        "activity-id", retry_claim=None,
+    )
     assert store.async_begin_submission.await_args.kwargs == {
         "source_kind": "image", "source_title": "flyer.png", "received_at": source.received_at,
     }
@@ -3184,7 +3186,9 @@ async def test_manual_submission_serializes_source_id_after_authorization(
         assert store.active_service_handlers == set()
         assert store.active_submissions == set()
         if completion != "success":
-            store.async_record_parse_failure.assert_awaited_once_with("activity-id")
+            store.async_record_parse_failure.assert_awaited_once_with(
+                "activity-id", retry_claim=("test-claim" if service == SERVICE_SUBMIT_TEXT else None),
+            )
 
         # A failed or cancelled request releases its ephemeral claim. Successful
         # requests also release it; the existing durable duplicate check applies.
