@@ -685,6 +685,91 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for calendar_entity in allowed_calendars:
             await _async_check_entity_control_permission(hass, calendar_entity, call.context)
 
+    async def authorized_retry_job(call: ServiceCall):
+        """Protect saved sources using the existing AI/calendar ACL and ownership."""
+        await check_read_permission(call)
+        job = pending_store.get_retry_job(call.data[ATTR_JOB_ID])
+        if job is None:
+            raise ServiceValidationError("Saved import not found")
+        if job.owner_user_id and job.owner_user_id != call.context.user_id:
+            user = await hass.auth.async_get_user(call.context.user_id)
+            if user is None or not user.is_admin:
+                raise Unauthorized(context=call.context, permission=POLICY_CONTROL)
+        return job
+
+    async def handle_list_retry_jobs(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        user = await hass.auth.async_get_user(call.context.user_id)
+        admin = bool(user and user.is_admin)
+        return {"jobs": [
+            job.summary() for job in pending_store.list_retry_jobs()
+            if job.owner_user_id == call.context.user_id or admin
+        ]}
+
+    async def handle_cancel_retry_job(call: ServiceCall) -> ServiceResponse:
+        job = await authorized_retry_job(call)
+        cancelled = await pending_store.async_cancel_retry(job.id)
+        return {"job": cancelled.summary()}
+
+    async def handle_delete_retry_job(call: ServiceCall) -> ServiceResponse:
+        job = await authorized_retry_job(call)
+        removed = await pending_store.async_delete_retry(job.id)
+        return {"job_id": job.id, "deleted": removed}
+
+    async def handle_retry_job(call: ServiceCall) -> ServiceResponse:
+        job = await authorized_retry_job(call)
+        if job.provider_entity_id != ai_task_entity:
+            raise ServiceValidationError(
+                "The AI Task changed since this import was saved. Verify settings before retrying."
+            )
+        if job.calendar_entity not in allowed_calendars:
+            raise ServiceValidationError("The saved calendar is no longer permitted")
+        if job.source_kind != "manual_text":
+            raise ServiceValidationError("Retrying this source type is not supported yet")
+        source = TextSourceAdapter().create(job.source_text, source_id=job.source_id)
+        source = replace(source, received_at=datetime.fromisoformat(job.received_at))
+        route = route_review_source(source)
+        if route.calendar_entity != job.calendar_entity:
+            raise ServiceValidationError("Calendar routing changed. Review the saved import.")
+        try:
+            claimed = await pending_store.async_claim_retry(job.id)
+        except RetryJobConflict as err:
+            raise ServiceValidationError(str(err)) from err
+        task = asyncio.current_task()
+        pending_store.active_submissions.add(task)
+        try:
+            try:
+                outcome = await _async_parse_source(
+                    hass, route.parser_source, ai_task_entity,
+                    reference_datetime=source.received_at,
+                )
+            except ProviderError as err:
+                await pending_store.async_record_parse_failure(
+                    job.id, provider_error_code=err.code,
+                )
+                latest = pending_store.get_retry_job(job.id)
+                return (_saved_retry_response(latest) if latest is not None
+                        else {"status": "cancelled", "job_id": job.id})
+            result = await pending_store.async_add(
+                source_text=claimed.source_text, events=outcome.events,
+                event_assumptions=outcome.event_assumptions or None,
+                source_id=claimed.source_id,
+                calendar_entity=claimed.calendar_entity,
+                routing_unresolved=route.requires_confirmation,
+                reimport_duplicates=claimed.reimport_duplicates,
+                warnings=[*outcome.warnings, *route.warnings],
+                activity_id=job.id, retry_claim=claimed.claim,
+            )
+            return _submission_response(result, [*outcome.warnings, *route.warnings], job.id)
+        except RetryJobConflict:
+            return {"status": "cancelled", "job_id": job.id}
+        except Exception:
+            # A deterministic failure must not strand a claimed job until restart.
+            await pending_store.async_record_parse_failure(job.id)
+            raise
+        finally:
+            pending_store.active_submissions.discard(task)
+
     async def handle_reset_deduplication(call: ServiceCall) -> ServiceResponse:
         """Authorize an explicit reset of one handled source or event identity."""
         await check_read_permission(call)
@@ -774,6 +859,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await check_read_permission(call)
         return {"activity": [
             {**{key: value for key, value in record.items() if key != "transitions"},
+             **({"retry_job": pending_store.get_retry_job(record["id"]).summary()}
+                if getattr(pending_store, "get_retry_job", lambda _id: None)(record["id"])
+                else {}),
              **({"notification_delivery_failed": True} if any(
                  step.get("type") == "notification_delivery_failed"
                  for step in record.get("transitions", ())
@@ -787,6 +875,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         record = pending_store.get_activity(pending_id)
         if record is None:
             raise ServiceValidationError(f"Activity not found: {pending_id}")
+        job = (pending_store.get_retry_job(pending_id)
+               if hasattr(pending_store, "get_retry_job") else None)
+        if job is not None:
+            record["retry_job"] = job.summary()
         return {"activity": record}
 
     async def handle_get_pending_event(call: ServiceCall) -> ServiceResponse:
@@ -1039,6 +1131,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             DOMAIN, SERVICE_GET_ACTIVITY, tracked(handle_get_activity),
             schema=PENDING_SCHEMA, supports_response=SupportsResponse.ONLY,
         )
+        hass.services.async_register(
+            DOMAIN, SERVICE_LIST_RETRY_JOBS, tracked(handle_list_retry_jobs),
+            supports_response=SupportsResponse.ONLY,
+        )
+        for service, handler in (
+            (SERVICE_RETRY_JOB, handle_retry_job),
+            (SERVICE_CANCEL_RETRY_JOB, handle_cancel_retry_job),
+            (SERVICE_DELETE_RETRY_JOB, handle_delete_retry_job),
+        ):
+            hass.services.async_register(
+                DOMAIN, service, tracked(handler),
+                schema=RETRY_JOB_SCHEMA, supports_response=SupportsResponse.ONLY,
+            )
         hass.services.async_register(
             DOMAIN, SERVICE_RESET_DEDUPLICATION, tracked(handle_reset_deduplication),
             schema=RESET_DEDUPLICATION_SCHEMA, supports_response=SupportsResponse.ONLY,
