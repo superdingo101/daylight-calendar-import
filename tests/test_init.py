@@ -192,6 +192,8 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
     pending_store = SimpleNamespace(
         async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"),
         is_source_duplicate=is_source_duplicate,
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(),
         async_add=AsyncMock(
             return_value=PendingImportAddResult(
                 pending=submitted,
@@ -257,6 +259,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
         warnings=[],
         routing_unresolved=False,
         activity_id="activity-id",
+        retry_claim="test-claim",
     )
 
     approve_handler, approve_kwargs = hass.services.handlers[
