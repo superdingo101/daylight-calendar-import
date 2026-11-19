@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from custom_components.daylight_calendar_import.retry_jobs import RetryJob
-from custom_components.daylight_calendar_import.storage import PendingEventEditError, _decode_storage_data
+from custom_components.daylight_calendar_import.storage import _decode_storage_data
 from tests.test_storage import FakeStoreBackend, draft, make_store
 
 
@@ -153,9 +153,8 @@ def test_retry_snapshot_rejects_wrong_container_and_accepts_valid_file_metadata(
     assert RetryJob.from_dict(valid.as_dict()) == valid
 
 
-async def test_retry_storage_queue_capacity_and_invalid_configuration(monkeypatch):
-    from dataclasses import replace
-    from custom_components.daylight_calendar_import.retry_jobs import MAX_RETRY_JOBS
+async def test_retry_storage_admission_without_drain_and_invalid_configuration(monkeypatch):
+    """Until retry/cancel exists, retained failures must never permanently block new imports."""
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
     with pytest.raises(ValueError, match="Missing retry source configuration"):
@@ -163,14 +162,21 @@ async def test_retry_storage_queue_capacity_and_invalid_configuration(monkeypatc
             source_kind="manual_text", source_title=None, received_at=datetime.now(UTC),
             retry_source_text="private",
         )
-    initial = RetryJob.create(
-        activity_id="first", source_text="private", source_id="source",
-        received_at=datetime.now(UTC), provider_entity_id="ai_task.gemini",
-        calendar_entity="calendar.family", owner_user_id="user",
-    )
-    store._retry_jobs = {
-        str(index): replace(initial, id=str(index)) for index in range(MAX_RETRY_JOBS)
-    }
-    assert len(store.list_retry_jobs()) == MAX_RETRY_JOBS
-    with pytest.raises(PendingEventEditError, match="Retry queue is full"):
-        await store.async_begin_submission(**source_kwargs())
+
+    for index in range(100):
+        job_id = await store.async_begin_submission(
+            **{**source_kwargs(), "retry_source_id": f"source-{index}"}
+        )
+        await store.async_record_parse_failure(
+            job_id, provider_error_code="provider_unavailable"
+        )
+    assert len(store.list_retry_jobs()) == 100
+
+    admitted = await store.async_begin_submission(**source_kwargs())
+    assert len(store.list_retry_jobs()) == 101
+    assert store.get_retry_job(admitted).source_id == "manual-one"
+    backend.load_result = backend.saved[-1]
+    restored = make_store(monkeypatch, backend)
+    await restored.async_load()
+    assert len(restored.list_retry_jobs()) == 101
+    assert restored.get_retry_job(admitted).state == "waiting"
