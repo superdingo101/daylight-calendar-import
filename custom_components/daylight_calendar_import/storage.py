@@ -686,7 +686,7 @@ class PendingImportStore:
         """Atomically admit at most one manual or scheduled parser attempt."""
         async with self._lock:
             job = self._retry_jobs.get(job_id)
-            if job is None or job.state not in ("waiting", "paused", "exhausted"):
+            if job is None or job.state not in ("waiting", "paused", "exhausted", "cancelled"):
                 raise RetryJobConflict("Retry is unavailable or already processing")
             if job_id in self._items:
                 raise RetryJobConflict("Events are already awaiting review")
