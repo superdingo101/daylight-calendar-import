@@ -733,6 +733,18 @@ class PendingImportStore:
             await self._async_save(self._items, retry_jobs=jobs)
             return cancelled
 
+    async def async_pause_retry(self, job_id: str) -> RetryJob | None:
+        """Stop scheduling a job after changes to permissions or configuration."""
+        async with self._lock:
+            job = self._retry_jobs.get(job_id)
+            if job is None or job.state == "cancelled":
+                return job
+            paused = replace(job, state="paused", claim=None, next_attempt_at=None)
+            await self._async_save(
+                self._items, retry_jobs={**self._retry_jobs, job_id: paused},
+            )
+            return paused
+
     async def async_delete_retry(self, job_id: str) -> bool:
         """Delete the private payload; invalidate any late provider response."""
         async with self._lock:
