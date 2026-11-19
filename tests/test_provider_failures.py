@@ -82,9 +82,10 @@ async def test_gemini_overload_is_private_and_actionable_at_provider_boundary(
         error = wrapper
     generate = AsyncMock(side_effect=error)
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    source_text = "private Christmas dinner details"
     with pytest.raises(providers.ProviderError) as caught:
         await providers.AITaskParserProvider(object(), "ai_task.gemini").async_parse(
-            TextSourceAdapter().create("private Christmas dinner details"),
+            TextSourceAdapter().create(source_text),
             reference_datetime="2026-11-18T20:35:00-08:00",
             time_zone="America/Los_Angeles",
         )
@@ -93,7 +94,11 @@ async def test_gemini_overload_is_private_and_actionable_at_provider_boundary(
     assert str(caught.value) == "AI provider is temporarily unavailable. Try again later."
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
-    assert "private" not in "".join(traceback.format_exception(caught.value))
+    # Traceback includes this test's function name ("private"), so check the
+    # actual sensitive values rather than matching that incidental substring.
+    rendered = "".join(traceback.format_exception(caught.value))
+    for secret in ("private Gemini response", "private Google error response", source_text):
+        assert secret not in rendered
     generate.assert_awaited_once()
 
 
