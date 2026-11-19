@@ -22,23 +22,23 @@ def http_error(status):
     return ClientResponseError(Mock(), (), status=status, message="private token")
 
 
-class GeminiAPIError(Exception):
-    """Synthetic Google Gen AI SDK base with the documented numeric .code."""
-
+# Synthetic Google Gen AI SDK hierarchy: APIError.code holds the HTTP status,
+# while ServerError (5xx) and ClientError (4xx) derive from APIError.
+class APIError(Exception):
     __module__ = "google.genai.errors"
 
 
-class GeminiServerError(GeminiAPIError):
+class ServerError(APIError):
     __module__ = "google.genai.errors"
 
 
-# The runtime classifier matches the actual SDK's APIError base, not every
-# unrelated exception with a .code field. Model that inheritance explicitly.
-GeminiAPIError.__name__ = "APIError"
+class ClientError(APIError):
+    __module__ = "google.genai.errors"
 
 
 def gemini_error(status):
-    error = GeminiServerError("private Gemini response")
+    error_class = ServerError if type(status) is int and 500 <= status < 600 else ClientError
+    error = error_class("private Gemini response")
     error.code = status
     return error
 
@@ -86,7 +86,6 @@ async def test_gemini_overload_is_private_and_actionable_at_provider_boundary(mo
     assert caught.value.__suppress_context__ is True
     assert "private" not in "".join(traceback.format_exception(caught.value))
     generate.assert_awaited_once()
-
 
 
 @pytest.mark.parametrize(("error", "code"), [
