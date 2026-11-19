@@ -51,6 +51,11 @@ from .const import (
     SERVICE_SUBMIT_TEXT,
     SERVICE_SUBMIT_IMAGE,
     SERVICE_SUBMIT_PDF,
+    SERVICE_LIST_RETRY_JOBS,
+    SERVICE_RETRY_JOB,
+    SERVICE_CANCEL_RETRY_JOB,
+    SERVICE_DELETE_RETRY_JOB,
+    ATTR_JOB_ID,
 )
 from .email_runtime import (
     async_setup_email_runtime,
@@ -71,6 +76,7 @@ from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .source_routing import plan_source_routing
 from .uploads import async_image_source
 from .storage import (
+    RetryJobConflict,
     PendingEventEditError,
     PendingEventResolutionError,
     PendingEvent,
@@ -91,6 +97,10 @@ _ENTRY_SERVICES = (
     SERVICE_SUBMIT_TEXT,
     SERVICE_SUBMIT_IMAGE,
     SERVICE_SUBMIT_PDF,
+    SERVICE_LIST_RETRY_JOBS,
+    SERVICE_RETRY_JOB,
+    SERVICE_CANCEL_RETRY_JOB,
+    SERVICE_DELETE_RETRY_JOB,
     SERVICE_APPROVE_PENDING,
     SERVICE_REJECT_PENDING,
     SERVICE_LIST_PENDING,
@@ -126,6 +136,15 @@ def _submission_response(
         "duplicate_source": result.duplicate_source,
         "duplicate_events": result.duplicate_events,
         "warnings": warnings,
+    }
+
+
+def _saved_retry_response(job) -> ServiceResponse:
+    """Describe a durable source awaiting another parser attempt."""
+    return {
+        "status": "saved_for_retry", "activity_id": job.id,
+        "pending": None, "duplicate": False, "duplicate_source": False,
+        "duplicate_events": 0, "warnings": [], "retry_job": job.summary(),
     }
 
 
@@ -173,6 +192,9 @@ SUBMIT_IMAGE_SCHEMA = vol.Schema(
 SUBMIT_PDF_SCHEMA = SUBMIT_IMAGE_SCHEMA
 PENDING_SCHEMA = vol.Schema(
     {vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1))}
+)
+RETRY_JOB_SCHEMA = vol.Schema(
+    {vol.Required(ATTR_JOB_ID): vol.All(cv.string, vol.Length(min=1))}
 )
 PENDING_EVENT_SCHEMA = vol.Schema(
     {
@@ -470,7 +492,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
         try:
-            outcome = await parse_submission(route.parser_source, activity_id)
+            try:
+                outcome = await parse_submission(route.parser_source, activity_id)
+            except ProviderError:
+                job = (pending_store.get_retry_job(activity_id)
+                       if hasattr(pending_store, "get_retry_job") else None)
+                if job is None:
+                    raise
+                return _saved_retry_response(job)
+            job = (pending_store.get_retry_job(activity_id)
+                   if hasattr(pending_store, "get_retry_job") else None)
             result = await pending_store.async_add(
                 source_text=source.text,
                 events=outcome.events,
@@ -483,6 +514,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 warnings=[*outcome.warnings, *route.warnings],
                 routing_unresolved=route.requires_confirmation,
                 activity_id=activity_id,
+                **({"retry_claim": job.claim} if job is not None else {}),
             )
         finally:
             pending_store.active_submissions.discard(task)
