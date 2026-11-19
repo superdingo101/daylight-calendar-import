@@ -548,3 +548,30 @@ async def test_provider_boundary_does_not_convert_cancellation(monkeypatch, phas
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     with pytest.raises(asyncio.CancelledError):
         await provider.async_parse(TextSourceAdapter().create("source"), reference_datetime="now", time_zone="UTC")
+
+
+def test_gemini_code_requires_exact_sdk_module_and_api_error_base():
+    """Arbitrary exception types must not confer trust on their numeric .code."""
+    foreign_api_error = type("APIError", (Exception,), {"__module__": "other.sdk"})
+    unrelated_google_error = type(
+        "UnrelatedError", (Exception,), {"__module__": "google.genai.errors"}
+    )
+    for error_type in (foreign_api_error, unrelated_google_error):
+        error = error_type("private failure")
+        error.code = 503
+        assert classify_provider_failure(error) == "provider_error"
+
+
+def test_provider_failure_cause_walk_honors_sixteen_exception_limit():
+    """A deeply nested cause must not change the result past the safety bound."""
+    timeout = TimeoutError("private timeout")
+    at_limit = timeout
+    for _ in range(15):
+        wrapper = RuntimeError("private wrapper")
+        wrapper.__cause__ = at_limit
+        at_limit = wrapper
+    assert classify_provider_failure(at_limit) == "provider_timeout"
+
+    beyond_limit = RuntimeError("private outer wrapper")
+    beyond_limit.__cause__ = at_limit
+    assert classify_provider_failure(beyond_limit) == "provider_error"
