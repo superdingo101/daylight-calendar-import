@@ -136,3 +136,99 @@ async def test_old_parser_failure_cannot_override_cancel_delete_or_new_retry(
         )
         assert store.get_retry_job(job_id).state == "waiting"
         assert store.get_activity(job_id)["status"] == "failed"
+
+
+@pytest.mark.parametrize("state", ["waiting", "paused", "exhausted", "cancelled"])
+async def test_retry_claim_restarts_each_eligible_state_and_clears_schedule(
+    monkeypatch, state,
+):
+    """A manual retry must reclaim any stopped job, not just waiting jobs."""
+    from dataclasses import replace
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    original = store.get_retry_job(job_id)
+    if state != "cancelled":
+        await store.async_record_parse_failure(
+            job_id, provider_error_code="provider_unavailable",
+            retry_claim=original.claim,
+        )
+    else:
+        await store.async_cancel_retry(job_id)
+    stopped = replace(
+        store.get_retry_job(job_id), state=state, claim=None,
+        next_attempt_at=datetime(2030, 1, 1, tzinfo=UTC).isoformat(),
+    )
+    store._retry_jobs[job_id] = stopped
+    claimed = await store.async_claim_retry(job_id)
+    assert claimed.id == job_id
+    assert claimed.state == "processing"
+    assert claimed.claim is not None
+    assert claimed.claim != original.claim
+    assert claimed.next_attempt_at is None
+    assert claimed.attempts == stopped.attempts + 1
+    assert claimed.source_text == stopped.source_text
+    assert store.get_activity(job_id)["status"] == "processing"
+    assert store.get_activity(job_id)["transitions"][-1]["type"] == "processing"
+    assert backend.saved[-1]["retry_jobs"][0]["claim"] == claimed.claim
+    assert backend.saved[-1]["retry_jobs"][0]["next_attempt_at"] is None
+
+
+async def test_pending_events_block_claim_without_modifying_retry_job(monkeypatch):
+    """Even an otherwise eligible job cannot admit another pending draft."""
+    from custom_components.daylight_calendar_import.storage import PendingImport
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(
+        job_id, provider_error_code="provider_timeout",
+    )
+    previous = store.get_retry_job(job_id)
+    store._items[job_id] = PendingImport.create(
+        source_text="existing review", events=[draft()],
+    )
+    before = backend.save_attempts
+    with pytest.raises(RetryJobConflict, match="awaiting review"):
+        await store.async_claim_retry(job_id)
+    assert store.get_retry_job(job_id) == previous
+    assert backend.save_attempts == before
+
+
+async def test_cancel_clears_schedule_idempotently_and_delete_is_scoped(monkeypatch):
+    """Cancel keeps input, whereas delete discards only the selected input."""
+    from dataclasses import replace
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    first = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(
+        first, provider_error_code="provider_rate_limited",
+    )
+    store._retry_jobs[first] = replace(
+        store.get_retry_job(first),
+        next_attempt_at=datetime(2030, 1, 1, tzinfo=UTC).isoformat(),
+    )
+    second_kwargs = {
+        **source_kwargs(),
+        "retry_source_id": "manual-two",
+        "retry_source_text": "Second private event",
+    }
+    second = await store.async_begin_submission(**second_kwargs)
+    second_job = store.get_retry_job(second)
+    cancelled = await store.async_cancel_retry(first)
+    assert cancelled.state == "cancelled"
+    assert cancelled.next_attempt_at is None
+    assert cancelled.claim is None
+    assert cancelled.source_text == source_kwargs()["retry_source_text"]
+    previous_saves = backend.save_attempts
+    assert await store.async_cancel_retry(first) == cancelled
+    assert backend.save_attempts == previous_saves
+    assert store.get_retry_job(second) == second_job
+
+    assert await store.async_delete_retry(first)
+    assert store.get_retry_job(first) is None
+    assert store.get_retry_job(second) == second_job
+    assert [job.id for job in store.list_retry_jobs()] == [second]
+    assert [raw["id"] for raw in backend.saved[-1]["retry_jobs"]] == [second]
