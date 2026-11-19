@@ -457,6 +457,7 @@ async def test_provider_response_after_cancel_never_creates_pending_import(
 ):
     runtime = manual_runtime
     client = await hass_ws_client(hass)
+    control_client = await hass_ws_client(hass)
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -471,7 +472,7 @@ async def test_provider_response_after_cancel_never_creates_pending_import(
     jobs = runtime.store.list_retry_jobs()
     assert len(jobs) == 1
     job_id = jobs[0].id
-    cancelled = await _call(client, {
+    cancelled = await _call(control_client, {
         "type": "call_service", "domain": DOMAIN, "service": "cancel_retry_job",
         "service_data": {"job_id": job_id}, "return_response": True,
     })
