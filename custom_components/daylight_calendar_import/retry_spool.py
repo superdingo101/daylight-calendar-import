@@ -145,7 +145,7 @@ async def async_replay_source(
     try:
         yield SourceDocument(
             id=job.id, kind=kind, received_at=received_at,
-            text=job.source_text or None, title=job.source_title,
+            text=job.source_text or None, title=job.parser_title,
             upstream_source_id=job.source_id, attachments=attachments,
         )
     finally:
