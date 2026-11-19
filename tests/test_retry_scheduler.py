@@ -1,0 +1,232 @@
+"""Retry policy, scheduling, restart and retention regression tests."""
+
+import asyncio
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from custom_components.daylight_calendar_import import retry_scheduler
+from custom_components.daylight_calendar_import.retry_jobs import RetryJob
+from custom_components.daylight_calendar_import.retry_settings import (
+    RetrySettings, RetrySettingsError, next_retry_at, normalize_retry_settings,
+)
+from custom_components.daylight_calendar_import.retry_scheduler import RetryScheduler
+from custom_components.daylight_calendar_import.storage import RetryJobConflict
+from tests.test_retry_jobs import source_kwargs
+from tests.test_storage import FakeStoreBackend, make_store
+
+
+def make_job():
+    return RetryJob.create(
+        activity_id="retry-job", source_text="family dinner", source_id="source",
+        received_at=datetime(2026, 11, 18, tzinfo=UTC),
+        provider_entity_id="ai_task.gemini", calendar_entity="calendar.family",
+        owner_user_id="owner",
+    )
+
+
+def test_default_retry_policy_is_off_and_bounded():
+    default = RetrySettings()
+    assert default.as_dict() == {
+        "enabled": False, "initial_delay_minutes": 15,
+        "max_automatic_retries": 3, "retention_days": 7,
+    }
+    assert normalize_retry_settings({}) == default
+    assert normalize_retry_settings(default.as_dict()) == default
+    assert normalize_retry_settings({"enabled": True, "initial_delay_minutes": 60,
+        "max_automatic_retries": 5, "retention_days": 30}).enabled
+
+
+@pytest.mark.parametrize(("settings", "message"), [
+    (None, "Invalid retry settings"),
+    ("abc", "Invalid retry settings"),
+    ({"unexpected": True}, "Invalid retry settings"),
+    ({"enabled": 1}, "Choose a valid retry setting"),
+    ({"enabled": "true"}, "Choose a valid retry setting"),
+    ({"initial_delay_minutes": 5}, "Choose a valid retry setting"),
+    ({"initial_delay_minutes": True}, "Choose a valid retry setting"),
+    ({"initial_delay_minutes": "15"}, "Choose a valid retry setting"),
+    ({"max_automatic_retries": 0}, "between one and five"),
+    ({"max_automatic_retries": 6}, "between one and five"),
+    ({"max_automatic_retries": True}, "between one and five"),
+    ({"retention_days": 0}, "retention period"),
+    ({"retention_days": 31}, "retention period"),
+    ({"retention_days": False}, "retention period"),
+])
+def test_retry_policy_rejects_invalid_configuration(settings, message):
+    with pytest.raises(RetrySettingsError, match=message):
+        normalize_retry_settings(settings)
+
+
+def test_retry_schedule_is_explicit_exponential_and_preserves_timezone():
+    now = datetime(2026, 11, 18, 20, 0, tzinfo=UTC)
+    job = make_job()
+    policy = RetrySettings(enabled=True, initial_delay_minutes=15)
+    assert next_retry_at(job, policy, now) is None  # not failed yet
+    failed = job.after_failure("provider_unavailable")
+    assert next_retry_at(failed, RetrySettings(), now) is None
+    first = datetime.fromisoformat(next_retry_at(failed, policy, now))
+    assert now + timedelta(minutes=15) <= first < now + timedelta(minutes=18)
+    assert next_retry_at(failed, policy, now) == first.isoformat()
+    second = datetime.fromisoformat(next_retry_at(
+        replace(failed, automatic_attempts=1), policy, now))
+    assert now + timedelta(minutes=30) <= second < now + timedelta(minutes=36)
+    assert next_retry_at(replace(failed, automatic_attempts=3), policy, now) is None
+    limited = datetime.fromisoformat(next_retry_at(
+        replace(failed, last_failure_code="provider_rate_limited"), policy, now))
+    assert limited >= now + timedelta(minutes=30)
+    assert next_retry_at(failed.after_failure("provider_authentication"), policy, now) is None
+    with pytest.raises(ValueError, match="timezone"):
+        next_retry_at(failed, policy, datetime(2026, 11, 18))
+
+
+async def test_auto_retry_is_persisted_only_after_due_and_budgeted(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    policy = RetrySettings(enabled=True, initial_delay_minutes=15, max_automatic_retries=2)
+    store.retry_preferences = lambda: policy
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_unavailable")
+    job = store.get_retry_job(job_id)
+    assert job.state == "waiting" and job.next_attempt_at
+    with pytest.raises(RetryJobConflict, match="not due"):
+        await store.async_claim_retry(job_id, automatic=True)
+    # Simulate the due time without waiting; the durable timestamp is authoritative.
+    from dataclasses import replace
+    store._retry_jobs[job_id] = replace(job, next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    active = await store.async_claim_retry(job_id, automatic=True)
+    assert active.automatic_attempts == 1
+    assert active.attempts == 2
+    assert store.get_activity(job_id)["status"] == "processing"
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_unavailable")
+    scheduled = store.get_retry_job(job_id)
+    assert scheduled.state == "waiting" and scheduled.next_attempt_at
+    store._retry_jobs[job_id] = replace(scheduled, next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    await store.async_claim_retry(job_id, automatic=True)
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_unavailable")
+    assert store.get_retry_job(job_id).state == "exhausted"
+    assert store.get_retry_job(job_id).next_attempt_at is None
+
+
+async def test_rearm_saved_disabled_jobs_when_enabled(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_timeout")
+    assert store.get_retry_job(job_id).next_attempt_at is None
+    await store.async_rearm_retry_jobs()
+    assert store.get_retry_job(job_id).next_attempt_at is None
+    store.retry_preferences = lambda: RetrySettings(enabled=True)
+    await store.async_rearm_retry_jobs()
+    first = store.get_retry_job(job_id).next_attempt_at
+    assert first is not None
+    await store.async_rearm_retry_jobs()
+    assert store.get_retry_job(job_id).next_attempt_at == first
+
+
+async def test_expired_source_retention_never_drops_processing_work(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    store.retry_preferences = lambda: RetrySettings(enabled=False, retention_days=1)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    original = store.get_retry_job(job_id)
+    store._retry_jobs[job_id] = replace(
+        original, state="waiting", claim=None, received_at="2026-01-01T00:00:00+00:00",
+    )
+    await store.async_apply_retention()
+    assert store.get_retry_job(job_id) is None
+    job_id2 = await store.async_begin_submission(**source_kwargs())
+    processing = store.get_retry_job(job_id2)
+    store._retry_jobs[job_id2] = replace(processing, received_at="2026-01-01T00:00:00+00:00")
+    await store.async_apply_retention()
+    assert store.get_retry_job(job_id2) is not None
+
+
+def scheduler_hass():
+    tasks = []
+    def create(coro, name, eager_start=False):
+        task = asyncio.create_task(coro, name=name)
+        tasks.append(task)
+        return task
+    return SimpleNamespace(async_create_task=create, tasks=tasks)
+
+
+async def test_scheduler_runs_one_due_job_without_overlapping(monkeypatch):
+    unsub = Mock()
+    callbacks = []
+    monkeypatch.setattr(retry_scheduler, "async_track_time_interval",
+                        lambda _hass, cb, _interval: callbacks.append(cb) or unsub)
+    hass = scheduler_hass()
+    store = SimpleNamespace(accepting_services=True, list_retry_jobs=Mock(return_value=()))
+    run = AsyncMock()
+    policy = lambda: RetrySettings(enabled=True)
+    scheduler = RetryScheduler(hass, store, policy, run)
+    scheduler.start()
+    scheduler.start()
+    assert len(callbacks) == 1
+    assert len(hass.tasks) == 0
+    due = replace(make_job().after_failure("provider_unavailable"),
+                  next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    later = replace(due, id="later", next_attempt_at=(datetime.now(UTC) + timedelta(minutes=10)).isoformat())
+    store.list_retry_jobs.return_value = (later, due, replace(due, id="due2"))
+    callbacks[0](datetime.now(UTC))
+    assert len(hass.tasks) == 1
+    scheduler.kick()
+    assert len(hass.tasks) == 1
+    await hass.tasks[0]
+    run.assert_awaited_once_with(due.id)
+    await scheduler.async_stop()
+    unsub.assert_called_once()
+    scheduler.kick()
+    assert len(hass.tasks) == 1
+    await scheduler.async_stop()
+
+
+async def test_scheduler_rejects_not_due_paused_or_disabled_and_sanitizes_errors(monkeypatch):
+    unsub = Mock()
+    monkeypatch.setattr(retry_scheduler, "async_track_time_interval",
+                        lambda *_args: unsub)
+    hass = scheduler_hass()
+    due = replace(make_job().after_failure("provider_unavailable"),
+                  next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    store = SimpleNamespace(accepting_services=False, list_retry_jobs=Mock(return_value=(due,)))
+    run = AsyncMock(side_effect=RuntimeError("private provider response"))
+    settings = [RetrySettings(enabled=False)]
+    scheduler = RetryScheduler(hass, store, lambda: settings[0], run)
+    scheduler.start()
+    scheduler.kick()
+    assert not hass.tasks
+    settings[0] = RetrySettings(enabled=True)
+    scheduler.kick()
+    assert not hass.tasks
+    store.accepting_services = True
+    scheduler.kick()
+    await hass.tasks[0]
+    run.assert_awaited_once_with(due.id)
+    store.list_retry_jobs.return_value = (replace(due, state="paused"),)
+    scheduler.kick()
+    assert len(hass.tasks) == 1
+    await scheduler.async_stop()
+
+
+async def test_scheduler_stop_cancels_inflight_and_cleanup(monkeypatch):
+    unsub = Mock()
+    monkeypatch.setattr(retry_scheduler, "async_track_time_interval",
+                        lambda *_args: unsub)
+    hass = scheduler_hass()
+    due = replace(make_job().after_failure("provider_unavailable"),
+                  next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    store = SimpleNamespace(accepting_services=True, list_retry_jobs=lambda: (due,))
+    started = asyncio.Event()
+    async def execute(_job_id):
+        started.set()
+        await asyncio.sleep(3600)
+    scheduler = RetryScheduler(hass, store, lambda: RetrySettings(enabled=True), execute)
+    scheduler.start()
+    await started.wait()
+    await scheduler.async_stop()
+    assert hass.tasks[0].cancelled()
+    unsub.assert_called_once()
