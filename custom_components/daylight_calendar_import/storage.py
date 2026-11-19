@@ -32,6 +32,7 @@ from .notification_journal import NotificationRecord, notification_record
 from .notification_preferences import NotificationPreferences, DELIVERABLE_NOTIFICATION_CLASSES
 from .source_routing import LEGACY_UNRESOLVED_WARNINGS
 from .provider_failures import PROVIDER_FAILURE_GUIDANCE
+from .retry_jobs import RetryJob
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ _STORAGE_NOTIFICATIONS = "notifications"
 _STORAGE_SOURCE_CLAIMS = "source_claims"
 _STORAGE_SEEN_SOURCES = "seen_source_fingerprints"
 _STORAGE_SEEN_EVENTS = "seen_event_fingerprints"
+_STORAGE_RETRY_JOBS = "retry_jobs"
 
 
 class PendingImportStorageError(RuntimeError):
@@ -358,7 +360,8 @@ class PendingImport:
 def _decode_storage_data(data: Any) -> tuple:
     """Decode all durable collections before installing any of the snapshot."""
     fields = {_STORAGE_ITEMS, _STORAGE_ACTIVITY, _STORAGE_NOTIFICATIONS,
-              _STORAGE_SOURCE_CLAIMS, _STORAGE_SEEN_SOURCES, _STORAGE_SEEN_EVENTS}
+              _STORAGE_SOURCE_CLAIMS, _STORAGE_SEEN_SOURCES, _STORAGE_SEEN_EVENTS,
+              _STORAGE_RETRY_JOBS}
     if not isinstance(data, dict) or set(data) - fields:
         raise ValueError("unsupported pending storage envelope")
 
@@ -448,7 +451,12 @@ def _decode_storage_data(data: Any) -> tuple:
         text(identifier)
         text(fingerprint)
         stored_fingerprint(fingerprint, "source")
-    return {item.id: item for item in loaded_items}, tuple(activity), journal, *histories, dict(claims)
+    jobs = tuple(RetryJob.from_dict(raw) for raw in rows(_STORAGE_RETRY_JOBS))
+    unique([job.id for job in jobs])
+    if any(job.id not in {record["id"] for record in activity} for job in jobs):
+        raise ValueError("orphaned retry job")
+    return ({item.id: item for item in loaded_items}, tuple(activity), journal,
+            *histories, dict(claims), {job.id: job for job in jobs})
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,6 +489,7 @@ class PendingImportStore:
         self._seen_source_fingerprints: tuple[str, ...] = ()
         self._seen_event_fingerprints: tuple[str, ...] = ()
         self._source_claims: dict[str, str] = {}
+        self._retry_jobs: dict[str, RetryJob] = {}
         self._source_claim_releases: set[str] = set()
         self._source_claim_release_provider_codes: dict[str, str] = {}
         self._reprocessing: set[str] = set()
@@ -513,9 +522,10 @@ class PendingImportStore:
             data = await self._store.async_load()
             if data is None:
                 if any((self._items, self._activity, self._notifications, self._source_claims,
-                        self._seen_source_fingerprints, self._seen_event_fingerprints)):
+                        self._seen_source_fingerprints, self._seen_event_fingerprints,
+                        self._retry_jobs)):
                     raise PendingImportStorageError(_STORAGE_ERROR)
-                snapshot = ({}, (), (), (), (), {})
+                snapshot = ({}, (), (), (), (), {}, {})
             else:
                 snapshot = _decode_storage_data(data)
         except Exception:
@@ -524,7 +534,7 @@ class PendingImportStore:
             raise PendingImportStorageError(_STORAGE_ERROR) from None
 
         (self._items, self._activity, self._notifications, self._seen_source_fingerprints,
-         self._seen_event_fingerprints, self._source_claims) = snapshot
+         self._seen_event_fingerprints, self._source_claims, self._retry_jobs) = snapshot
         self._storage_blocked = False
         self._source_claim_releases = set()
         self._source_claim_release_provider_codes = {}
@@ -545,11 +555,16 @@ class PendingImportStore:
             # Each newly completed source is newest in the proposed history.
             # Keep its transition even if later recoveries prune that history.
             recovered_failures.append(activity[-1])
-        if interrupted or self._source_claims:
+        recovered_jobs = {
+            identifier: (replace(job, state="waiting", claim=None, next_attempt_at=None)
+                         if job.state == "processing" else job)
+            for identifier, job in self._retry_jobs.items()
+        }
+        if interrupted or self._source_claims or recovered_jobs != self._retry_jobs:
             async def commit_recovery() -> None:
                 journal = self._journal_for_activity(tuple(recovered_failures))
                 await self._async_save(self._items, activity=activity, source_claims={},
-                                       notifications=journal)
+                                       notifications=journal, retry_jobs=recovered_jobs)
                 self._source_claims = {}
 
             _, cancelled = await self._async_complete_transaction(commit_recovery())
@@ -619,7 +634,7 @@ class PendingImportStore:
         cutoff = now - timedelta(days=COMPLETED_HISTORY_DAYS)
         active_provider_names = {task.get_name() for task in getattr(self, "notification_tasks", ())
                                  if not task.done()}
-        protected = set(items) | set(claims) | self._source_claim_releases | {
+        protected = set(items) | set(claims) | set(self._retry_jobs) | self._source_claim_releases | {
             item["id"] for item in history if item.get("status") in ("discovered", "processing")
         } | {record.import_id for record in journal if record.status == "pending"
              or f"Daylight notify {record.event.idempotency_key}" in active_provider_names}
@@ -654,6 +669,14 @@ class PendingImportStore:
             :max(0, len(completed_records) - TERMINAL_NOTIFICATION_LIMIT)]}
         journal = tuple(record for record in journal if record.event.idempotency_key not in remove_keys)
         return history, journal
+
+    def get_retry_job(self, job_id: str) -> RetryJob | None:
+        """Return a private retry source for authorized service handlers only."""
+        return self._retry_jobs.get(job_id)
+
+    def list_retry_jobs(self) -> tuple[RetryJob, ...]:
+        """Return retry sources; callers must enforce authorization."""
+        return tuple(self._retry_jobs.values())
 
     def list_notifications(self) -> tuple[NotificationRecord, ...]:
         """Return immutable requests, unaffected by pending/activity pruning."""
@@ -905,15 +928,31 @@ class PendingImportStore:
             return identifier
 
     async def async_begin_submission(self, *, source_kind: str, source_title: str | None,
-                                     received_at: datetime) -> str:
-        """Checkpoint a private source summary before invoking the parser."""
+                                     received_at: datetime, retry_source_text: str | None = None,
+                                     retry_source_id: str | None = None,
+                                     retry_provider: str | None = None,
+                                     retry_calendar: str | None = None,
+                                     retry_owner: str | None = None,
+                                     retry_reimport_duplicates: bool = False) -> str:
+        """Save original text and activity atomically before invoking an AI provider."""
         async with self._lock:
+            # A hard cap is unsafe until users can retry/cancel retained jobs.
+            # Introduce bounded admission with that lifecycle in the next PR.
             identifier, activity = self._propose_submission_activity(
-                source_kind=source_kind,
-                source_title=source_title,
-                received_at=received_at,
+                source_kind=source_kind, source_title=source_title, received_at=received_at,
             )
-            await self._async_save(self._items, activity=activity)
+            jobs = dict(self._retry_jobs)
+            if retry_source_text is not None:
+                if retry_provider is None or retry_calendar is None or source_kind != "manual_text":
+                    raise ValueError("Missing retry source configuration")
+                jobs[identifier] = RetryJob.create(
+                    activity_id=identifier, source_text=retry_source_text,
+                    source_id=retry_source_id or f"retry-{identifier}",
+                    received_at=received_at, provider_entity_id=retry_provider,
+                    calendar_entity=retry_calendar, owner_user_id=retry_owner,
+                    reimport_duplicates=retry_reimport_duplicates,
+                )
+            await self._async_save(self._items, activity=activity, retry_jobs=jobs)
             return identifier
 
     async def _async_complete_transaction(
@@ -1226,10 +1265,15 @@ class PendingImportStore:
             )
         source_claims = dict(self._source_claims)
         source_claims.pop(activity_id, None)
+        jobs = dict(self._retry_jobs)
+        job = jobs.get(activity_id)
+        if job is not None:
+            jobs[activity_id] = job.after_failure(provider_error_code)
         await self._async_save(
             self._items,
             activity=activity,
             source_claims=source_claims,
+            retry_jobs=jobs,
         )
         self._source_claims = source_claims
         self._source_claim_releases.discard(activity_id)
@@ -1570,6 +1614,7 @@ class PendingImportStore:
                         self._items,
                         activity=activity,
                         source_claims=source_claims,
+                        retry_jobs={key: job for key, job in self._retry_jobs.items() if key != activity_id},
                     )
                     self._source_claims = source_claims
                 return PendingImportAddResult(
@@ -1626,6 +1671,7 @@ class PendingImportStore:
                         seen_source_fingerprints=seen_sources,
                         activity=activity,
                         source_claims=source_claims,
+                        retry_jobs={key: job for key, job in self._retry_jobs.items() if key != activity_id},
                     )
                     self._seen_source_fingerprints = seen_sources
                     self._source_claims = source_claims
@@ -1634,6 +1680,7 @@ class PendingImportStore:
                         self._items,
                         activity=activity,
                         source_claims=source_claims,
+                        retry_jobs={key: job for key, job in self._retry_jobs.items() if key != activity_id},
                     )
                     self._source_claims = source_claims
                 return PendingImportAddResult(
@@ -1664,6 +1711,7 @@ class PendingImportStore:
                 items,
                 activity=activity,
                 source_claims=source_claims,
+                retry_jobs={key: job for key, job in self._retry_jobs.items() if key != activity_id},
             )
             self._commit_items(items)
             self._source_claims = source_claims
@@ -1972,6 +2020,10 @@ class PendingImportStore:
         return any(
             claim_fingerprint == fingerprint and claim_id != exclude_claim_id
             for claim_id, claim_fingerprint in self._source_claims.items()
+        ) or any(
+            build_source_fingerprint(job.source_id) == fingerprint
+            and job.id != exclude_claim_id and job.state != "cancelled"
+            for job in self._retry_jobs.values()
         )
 
     def _active_event_fingerprints(self) -> set[str]:
@@ -1990,6 +2042,7 @@ class PendingImportStore:
         activity: tuple[dict[str, Any], ...] | None = None,
         source_claims: dict[str, str] | None = None,
         notifications: tuple[NotificationRecord, ...] | None = None,
+        retry_jobs: dict[str, RetryJob] | None = None,
     ) -> None:
         """Persist a proposed collection and deduplication history."""
         if self._storage_blocked:
@@ -2014,6 +2067,9 @@ class PendingImportStore:
         claims = self._source_claims if source_claims is None else source_claims
         if claims:
             data[_STORAGE_SOURCE_CLAIMS] = dict(claims)
+        jobs = self._retry_jobs if retry_jobs is None else retry_jobs
+        if jobs:
+            data[_STORAGE_RETRY_JOBS] = [job.as_dict() for job in jobs.values()]
         history = self._activity if activity is None else activity
         journal = (self._journal_for_activity(activity) if activity is not None else self._notifications
                    ) if notifications is None else notifications
@@ -2025,6 +2081,7 @@ class PendingImportStore:
         await self._store.async_save(data)
         self._activity = history
         self._notifications = journal
+        self._retry_jobs = jobs
         if self.on_notifications is not None:
             try:
                 self.on_notifications()

@@ -221,10 +221,13 @@ async def test_manual_provider_failure_is_recorded_and_explicit_retry_recovers(h
     assert runtime.store.list() == ()
     assert runtime.store.list_activity()[0]["status"] == "failed"
     runtime.writes.assert_not_awaited()
+    # Failed sources are now retained under their original source ID. Repeated
+    # submissions do not bypass the durable retry queue and create new jobs.
     runtime.generate.side_effect = None
-    recovered = await _response(client, await _request())
-    assert recovered["status"] == "pending_review"
-    assert runtime.generate.await_count == 2
+    duplicate = await _response(client, await _request())
+    assert duplicate["status"] == "duplicate"
+    assert runtime.generate.await_count == 1
+    assert len(runtime.store.list_retry_jobs()) == 1
     runtime.writes.assert_not_awaited()
 
 
