@@ -849,7 +849,9 @@ async def test_submit_text_parse_failure_records_activity_and_reraises(monkeypat
     submit = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
     with pytest.raises(ServiceValidationError, match="parser unavailable"):
         await submit(SimpleNamespace(data={ATTR_TEXT: "private details"}, context=Context(user_id=None)))
-    pending_store.async_record_parse_failure.assert_awaited_once_with("activity-id")
+    pending_store.async_record_parse_failure.assert_awaited_once_with(
+        "activity-id", retry_claim="test-claim",
+    )
     assert pending_store.async_begin_submission.await_args.kwargs["source_kind"] == "manual_text"
     pending_store.async_record_parse_failure.side_effect = RuntimeError("disk full")
     with pytest.raises(ServiceValidationError, match="parser unavailable"):
