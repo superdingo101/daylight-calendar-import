@@ -70,7 +70,8 @@ from .providers import SourceValidationError, ProviderError
 from .review_panel import async_register_review_panel, async_remove_review_panel
 from .settings import effective_ai_task_entity, effective_calendar_options, effective_calendar_intelligence
 from .settings_api import async_register_settings_api
-from .settings import effective_notification_preferences
+from .settings import effective_notification_preferences, effective_retry_preferences
+from .retry_scheduler import RetryScheduler
 from .notification_delivery import async_deliver_notifications, MAX_ACTIVE_TASKS as _MAX_NOTIFICATION_TASKS
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .source_routing import plan_source_routing
@@ -287,6 +288,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id, None)
     pending_store = PendingImportStore(hass)
     pending_store.notification_preferences = lambda: effective_notification_preferences(entry)
+    pending_store.retry_preferences = lambda: effective_retry_preferences(entry)
     # Retention must see live providers from the previous entry before loading.
     # Keep task ownership across config-entry reloads. Providers that ignore
     # cancellation must not become invisible when the old store unloads.
