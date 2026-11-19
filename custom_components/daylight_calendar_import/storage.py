@@ -693,7 +693,10 @@ class PendingImportStore:
             claimed = replace(job, state="processing", claim=str(uuid4()),
                               next_attempt_at=None, attempts=job.attempts + 1)
             jobs = {**self._retry_jobs, job_id: claimed}
-            await self._async_save(self._items, retry_jobs=jobs)
+            # Restart the activity lifecycle in the same commit as the claim,
+            # so a second provider failure is not discarded as already terminal.
+            activity = self._finish_submission(job_id, "processing")
+            await self._async_save(self._items, retry_jobs=jobs, activity=activity)
             return claimed
 
     async def async_cancel_retry(self, job_id: str) -> RetryJob:
