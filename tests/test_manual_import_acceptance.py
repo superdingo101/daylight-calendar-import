@@ -556,3 +556,119 @@ async def test_provider_response_after_cancel_never_creates_pending_import(
     assert runtime.store.get(job_id) is None
     assert runtime.store.get_retry_job(job_id).state == "cancelled"
     runtime.writes.assert_not_awaited()
+
+
+@pytest.mark.parametrize("kind", ["image", "pdf"])
+async def test_uploaded_source_outage_survives_upload_cleanup_and_manual_retry(
+    hass, hass_ws_client, hass_client, manual_runtime, tmp_path, kind,
+):
+    runtime = manual_runtime
+    if kind == "pdf":
+        writer = PdfWriter()
+        page = writer.add_blank_page(width=200, height=200)
+        stream = DecodedStreamObject()
+        stream.set_data(b"0 0 100 100 re f")
+        page[NameObject("/Contents")] = writer._add_object(stream)
+        output = BytesIO()
+        writer.write(output)
+        raw = output.getvalue()
+    else:
+        raw = PNG
+    media_dir = tmp_path / "media"
+    hass.config.media_dirs = {"local": str(media_dir)}
+    http = await hass_client()
+    multipart = FormData()
+    multipart.add_field(
+        "file", raw, filename=f"daylight-upload.{kind if kind == 'pdf' else 'png'}",
+        content_type="application/pdf" if kind == "pdf" else "image/png",
+    )
+    uploaded = await http.post("/api/file_upload", data=multipart)
+    assert uploaded.status == 200
+    file_id = (await uploaded.json())["file_id"]
+    upload_dir = hass.data["file_upload"].file_dir(file_id)
+    runtime.generate.side_effect = TimeoutError("private provider overload")
+    client = await hass_ws_client(hass)
+    response = await _response(client, await _request(
+        kind, file_id=file_id, data=raw, source_id=f"durable-{kind}",
+        filename=f"Original family flyer.{kind if kind == 'pdf' else 'png'}",
+    ))
+    assert response["status"] == "saved_for_retry"
+    job_id = response["retry_job"]["id"]
+    job = runtime.store.get_retry_job(job_id)
+    assert job.source_kind == kind
+    assert job.source_title.startswith("Original family")
+    assert job.attachment_path
+    private = Path(hass.config.path("daylight_calendar_import_retry")) / job.attachment_path
+    assert private.read_bytes() == raw
+    assert not upload_dir.exists()
+    assert not list(media_dir.glob("**/*"))
+
+    runtime.generate.side_effect = None
+    retry = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "retry_job",
+        "service_data": {"job_id": job_id}, "return_response": True,
+    })
+    assert retry["success"], retry
+    assert retry["result"]["response"]["status"] == "pending_review"
+    assert runtime.store.get_retry_job(job_id) is None
+    assert not private.exists()
+    assert not list(media_dir.glob("**/*"))
+    assert runtime.generate.await_count == 2
+    assert runtime.generate.await_args.kwargs["attachments"][0]["media_content_type"] == (
+        "application/pdf" if kind == "pdf" else "image/png"
+    )
+    runtime.writes.assert_not_awaited()
+
+
+async def test_text_layer_pdf_is_retained_but_replayed_without_ai_attachment(
+    hass, hass_ws_client, hass_client, manual_runtime, tmp_path,
+):
+    runtime = manual_runtime
+    runtime.entity.supported_features = 0
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=300)
+    font = writer._add_object(DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    }))
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): font}),
+    })
+    content = DecodedStreamObject()
+    content.set_data(b"BT /F1 12 Tf 20 200 Td (School concert November 12, 2026, 7-8 PM) Tj ET")
+    page[NameObject("/Contents")] = writer._add_object(content)
+    output = BytesIO()
+    writer.write(output)
+    raw = output.getvalue()
+    media_dir = tmp_path / "media"
+    hass.config.media_dirs = {"local": str(media_dir)}
+    http = await hass_client()
+    multipart = FormData()
+    multipart.add_field("file", raw, filename="daylight-text.pdf", content_type="application/pdf")
+    uploaded = await http.post("/api/file_upload", data=multipart)
+    assert uploaded.status == 200
+    file_id = (await uploaded.json())["file_id"]
+    runtime.generate.side_effect = TimeoutError("temporary outage")
+    client = await hass_ws_client(hass)
+    saved = await _response(client, await _request(
+        "pdf", file_id=file_id, data=raw, source_id="durable-text-pdf",
+        filename="Original text flyer.pdf",
+    ))
+    assert saved["status"] == "saved_for_retry"
+    job_id = saved["retry_job"]["id"]
+    job = runtime.store.get_retry_job(job_id)
+    assert job.source_kind == "pdf"
+    assert job.attachment_in_ai is False
+    assert job.attachment_path
+    runtime.generate.side_effect = None
+    result = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "retry_job",
+        "service_data": {"job_id": job_id}, "return_response": True,
+    })
+    assert result["success"], result
+    assert result["result"]["response"]["status"] == "pending_review"
+    assert "attachments" not in runtime.generate.await_args.kwargs
+    assert runtime.store.get_retry_job(job_id) is None
+    assert not (Path(hass.config.path("daylight_calendar_import_retry")) / job.attachment_path).exists()
+    assert not list(media_dir.glob("**/*"))
