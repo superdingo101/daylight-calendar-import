@@ -717,7 +717,8 @@ class PendingImportStore:
                 automatic_attempts=job.automatic_attempts + int(automatic),
             )
             jobs = {**self._retry_jobs, job_id: claimed}
-            await self._async_save(self._items, retry_jobs=jobs)
+            activity = self._finish_submission(job_id, "processing")
+            await self._async_save(self._items, retry_jobs=jobs, activity=activity)
             return claimed
 
     async def async_cancel_retry(self, job_id: str) -> RetryJob:
