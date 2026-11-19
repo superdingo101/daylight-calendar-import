@@ -300,6 +300,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pending_store.notification_tasks = registry.setdefault(entry.entry_id, set())
     try:
         await pending_store.async_load()
+        if hasattr(pending_store, "async_rearm_retry_jobs"):
+            await pending_store.async_rearm_retry_jobs()
         if hasattr(pending_store, "list_retry_jobs"):
             await async_reconcile_spool(hass, pending_store.list_retry_jobs())
     except PendingImportStorageError:
@@ -1322,6 +1324,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pending_store.retry_runtime = RetryScheduler(
             hass, pending_store, pending_store.retry_preferences,
             lambda job_id: execute_retry_job(job_id, automatic=True),
+            cleanup=lambda: async_reconcile_spool(
+                hass, pending_store.list_retry_jobs(),
+            ),
         )
         pending_store.retry_runtime.start()
         runtime = pending_store.email_runtime
