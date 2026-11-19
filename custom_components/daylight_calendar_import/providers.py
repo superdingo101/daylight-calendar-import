@@ -181,9 +181,13 @@ class AITaskParserProvider:
                 **({"attachments": attachments} if attachments else {}),
             )
         except Exception as err:
-            raise ProviderError(
-                classify_provider_failure(err), "AI Task could not parse the source"
-            ) from None
+            code = classify_provider_failure(err)
+            message = (
+                "AI provider is temporarily unavailable. Try again later."
+                if code == "provider_unavailable"
+                else "AI Task could not parse the source"
+            )
+            raise ProviderError(code, message) from None
         try:
             if not isinstance(result.data.get("unsupported_recurrence"), bool):
                 raise ValueError("AI Task result must declare unsupported_recurrence")
