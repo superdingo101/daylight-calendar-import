@@ -1010,7 +1010,13 @@ class PendingImportStore:
                                      retry_provider: str | None = None,
                                      retry_calendar: str | None = None,
                                      retry_owner: str | None = None,
-                                     retry_reimport_duplicates: bool = False) -> str:
+                                     retry_reimport_duplicates: bool = False,
+                                     retry_attachment_path: str | None = None,
+                                     retry_attachment_sha256: str | None = None,
+                                     retry_attachment_media_type: str | None = None,
+                                     retry_attachment_size: int | None = None,
+                                     retry_attachment_in_ai: bool = True,
+                                     retry_routing_unresolved: bool = False) -> str:
         """Save original text and activity atomically before invoking an AI provider."""
         async with self._lock:
             if retry_source_text is not None and len(self._retry_jobs) >= MAX_RETRY_JOBS:
@@ -1020,13 +1026,22 @@ class PendingImportStore:
             )
             jobs = dict(self._retry_jobs)
             if retry_source_text is not None:
-                if retry_provider is None or retry_calendar is None or source_kind != "manual_text":
+                if (retry_provider is None or retry_calendar is None
+                        or source_kind not in ("manual_text", "image", "pdf")
+                        or (source_kind != "manual_text" and retry_attachment_path is None)):
                     raise ValueError("Missing retry source configuration")
                 jobs[identifier] = RetryJob.create(
                     activity_id=identifier, source_text=retry_source_text,
                     source_id=retry_source_id or f"retry-{identifier}",
                     received_at=received_at, provider_entity_id=retry_provider,
                     calendar_entity=retry_calendar, owner_user_id=retry_owner,
+                    source_kind=source_kind, source_title=source_title,
+                    attachment_path=retry_attachment_path,
+                    attachment_sha256=retry_attachment_sha256,
+                    attachment_media_type=retry_attachment_media_type,
+                    attachment_size=retry_attachment_size,
+                    attachment_in_ai=retry_attachment_in_ai,
+                    routing_unresolved=retry_routing_unresolved,
                     reimport_duplicates=retry_reimport_duplicates,
                 )
             await self._async_save(self._items, activity=activity, retry_jobs=jobs)
