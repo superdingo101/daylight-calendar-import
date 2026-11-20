@@ -874,8 +874,19 @@ def test_pdf_read_is_bounded_before_extraction(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pdfs, "process_uploaded_file", process)
     source, staged = pdfs._stage_pdf(UploadHass({}), "a" * 32, {}, "")
-    assert source.text == "Meeting Friday"
-    assert staged is None
+    try:
+        assert source.text == "Meeting Friday"
+        # Text-layer PDFs still retain their original bytes for later retries.
+        # This copy is private and is not submitted as an AI attachment.
+        assert source.attachments == ()
+        assert staged is not None
+        assert staged.is_file()
+        assert staged.read_bytes() == make_pdf("Meeting Friday")
+        assert source.metadata["retry_stage_path"] == str(staged)
+        assert source.metadata["sha256"] == sha256(staged.read_bytes()).hexdigest()
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
 
 
 async def test_maximum_allowed_pdf_is_accepted(uploaded_file, monkeypatch):
