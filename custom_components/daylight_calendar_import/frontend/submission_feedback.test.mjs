@@ -92,6 +92,18 @@ test("errors give actionable permissions, provider, size, PDF and transport reco
 });
 
 
+test("Gemini overload gives retry advice rather than configuration advice", () => {
+  const error = {
+    code: "home_assistant_error",
+    message: "AI provider is temporarily unavailable. Try again later.",
+  };
+  const message = submissionErrorMessage(error, true);
+  assert.match(message, /Try again later.*Check recent activity.*review inbox/);
+  assert.doesNotMatch(message, /Settings|configured AI task|outcome is unknown/i);
+  assert.equal(submissionOutcomeUncertain(error), false);
+});
+
+
 test("file validation guidance appears once, without losing detail or fallback advice", () => {
   const cases = [
     [{code: "source_too_large", message: "Choose a file no larger than 10 MiB."},

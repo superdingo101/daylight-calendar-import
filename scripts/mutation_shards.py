@@ -6,6 +6,7 @@ No cross-PR verdict caches and no partial-job successes.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import importlib.metadata
 import platform
@@ -88,6 +89,9 @@ def source_paths() -> list[str]:
 
 
 def create_manifest(sha: str, count: int = SHARDS) -> dict:
+    if count == 12:
+        from scripts.mutation_split import split_manifest
+        return split_manifest(sha)
     if count < 1 or count > MAX_SHARDS:
         raise ValueError(f"Shard count must be 1..{MAX_SHARDS}")
     if not re.fullmatch(r"[0-9a-f]{40}", sha) or git("rev-parse", "HEAD") != sha:
@@ -131,6 +135,10 @@ def verify_manifest(manifest: dict) -> None:
         k: v for k, v in manifest.items() if k != "manifest_sha256"
     })):
         raise ValueError("Manifest checksum mismatch")
+    if manifest.get("shard_count") == 12:
+        from scripts.mutation_split import verify_manifest as verify_split_manifest
+        verify_split_manifest(manifest)
+        return
     expected = create_manifest(manifest["target_sha"], manifest["shard_count"])
     if manifest != expected:
         raise ValueError("Manifest no longer matches exact checkout and module partition")
@@ -253,6 +261,9 @@ def record(manifest_path: Path, index: int, out: Path, duration: int) -> dict:
     # The runner must restore pyproject.toml before validation and recording.
     verify_manifest(manifest)
     entry = shard_entry(manifest, index)
+    if "mutant_names" in entry:
+        from scripts.mutation_split import record as record_split
+        return record_split(manifest, entry, index, out, duration)
     stats = stats_checked(json.loads(STATS.read_text()), require_nonempty=True)
     if duration < 0:
         raise ValueError("Invalid elapsed time")
@@ -301,7 +312,15 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
         runner_image_versions[str(index)] = current_environment["runner_image_version"]
         counts = stats_checked(obj.get("stats"), require_nonempty=True)
         validate_mutants(obj.get("mutants"), entry["modules"], counts)
-        all_mutants.update(obj["mutants"])
+        if "mutant_names" in entry:
+            if (entry["modules"] != [manifest["split_source"]]
+                    or sorted(obj["mutants"][manifest["split_source"]]) != entry["mutant_names"]):
+                raise ValueError(f"Split shard {index} omitted or replaced mutants")
+        for module, verdicts in obj["mutants"].items():
+            merged = all_mutants.setdefault(module, {})
+            if set(merged).intersection(verdicts):
+                raise ValueError("Duplicate mutant identity across clean shards")
+            merged.update(verdicts)
         for key, value in counts.items():
             sums[key] += value
         secs = obj.get("seconds")
@@ -309,7 +328,13 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
             raise ValueError(f"Shard {index} missing valid runtime")
         runtimes[str(index)] = secs
         observed_modules.extend(entry["modules"])
-    if sorted(observed_modules) != source_paths() or len(set(observed_modules)) != len(observed_modules):
+    if manifest["shard_count"] == 12:
+        actual = Counter(observed_modules)
+        expected = {module: (5 if module == manifest["split_source"] else 1)
+                    for module in source_paths()}
+        if dict(actual) != expected:
+            raise ValueError("Split source module coverage is incomplete or duplicated")
+    elif sorted(observed_modules) != source_paths() or len(set(observed_modules)) != len(observed_modules):
         raise ValueError("Module coverage is incomplete or duplicated")
     validate_mutants(all_mutants, source_paths(), sums)
     score = 100 * (sums["killed"] + sums["timeout"]) / (sums["total"] - sums["skipped"]) if sums["total"] > sums["skipped"] else 0
@@ -320,7 +345,7 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
         "score": round(score, 6), "shard_seconds": runtimes,
         "environment": resolved_environment,
         "runner_image_versions": runner_image_versions,
-        "modules": sorted(observed_modules), "mutants": all_mutants,
+        "modules": source_paths(), "mutants": all_mutants,
         "complete": True,
     }
     # Keep the original quality checker and exactly its global threshold.

@@ -556,3 +556,177 @@ async def test_provider_response_after_cancel_never_creates_pending_import(
     assert runtime.store.get(job_id) is None
     assert runtime.store.get_retry_job(job_id).state == "cancelled"
     runtime.writes.assert_not_awaited()
+
+
+async def test_saved_retry_activity_can_be_cancelled_and_deleted(
+    hass, hass_ws_client, manual_runtime,
+):
+    runtime = manual_runtime
+    client = await hass_ws_client(hass)
+    runtime.generate.side_effect = TimeoutError("private provider outage")
+    saved = await _response(client, await _request())
+    job_id = saved["retry_job"]["id"]
+
+    listing = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "list_retry_jobs",
+        "service_data": {}, "return_response": True,
+    })
+    assert listing["success"], listing
+    assert listing["result"]["response"]["jobs"][0]["id"] == job_id
+    assert "source_text" not in listing["result"]["response"]["jobs"][0]
+    activity = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "get_activity",
+        "service_data": {"pending_id": job_id}, "return_response": True,
+    })
+    assert activity["success"], activity
+    assert activity["result"]["response"]["activity"]["retry_job"]["state"] == "waiting"
+
+    cancel = {"type": "call_service", "domain": DOMAIN,
+              "service": "cancel_retry_job", "service_data": {"job_id": job_id},
+              "return_response": True}
+    cancelled = await _call(client, cancel)
+    assert cancelled["success"], cancelled
+    assert cancelled["result"]["response"]["job"]["state"] == "cancelled"
+    duplicate_cancel = await _call(client, cancel)
+    assert duplicate_cancel["success"], duplicate_cancel
+    assert duplicate_cancel["result"]["response"]["job"]["state"] == "cancelled"
+    deleted = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "delete_retry_job",
+        "service_data": {"job_id": job_id}, "return_response": True,
+    })
+    assert deleted["success"], deleted
+    assert deleted["result"]["response"] == {"job_id": job_id, "deleted": True}
+    assert runtime.store.get_retry_job(job_id) is None
+
+
+@pytest.mark.parametrize("action", ["cancel_retry_job", "delete_retry_job"])
+async def test_provider_response_after_cancel_or_delete_never_creates_pending_import(
+    hass, hass_ws_client, manual_runtime, action,
+):
+    runtime = manual_runtime
+    client = await hass_ws_client(hass)
+    control_client = await hass_ws_client(hass)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def late_response(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        return SimpleNamespace(data={"unsupported_recurrence": False, "events": [DRAFT]})
+
+    runtime.generate.side_effect = late_response
+    submission = asyncio.create_task(_call(client, await _request()))
+    await started.wait()
+    jobs = runtime.store.list_retry_jobs()
+    assert len(jobs) == 1
+    job_id = jobs[0].id
+    changed = await _call(control_client, {
+        "type": "call_service", "domain": DOMAIN, "service": action,
+        "service_data": {"job_id": job_id}, "return_response": True,
+    })
+    assert changed["success"], changed
+    release.set()
+    result = await submission
+    assert not result["success"], result
+    assert runtime.store.get(job_id) is None
+    if action == "cancel_retry_job":
+        assert runtime.store.get_retry_job(job_id).state == "cancelled"
+    else:
+        assert runtime.store.get_retry_job(job_id) is None
+    runtime.writes.assert_not_awaited()
+
+
+async def test_original_provider_response_cannot_use_restarted_retry_claim(
+    hass, hass_ws_client, manual_runtime,
+):
+    """Cancelling and retrying must not let the original parser commit."""
+    runtime = manual_runtime
+    original_client = await hass_ws_client(hass)
+    control_client = await hass_ws_client(hass)
+    retry_client = await hass_ws_client(hass)
+    original_started = asyncio.Event()
+    retry_started = asyncio.Event()
+    release_original = asyncio.Event()
+    release_retry = asyncio.Event()
+    attempts = 0
+
+    async def held_response(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            original_started.set()
+            await release_original.wait()
+        else:
+            retry_started.set()
+            await release_retry.wait()
+        return SimpleNamespace(data={"unsupported_recurrence": False, "events": [DRAFT]})
+
+    runtime.generate.side_effect = held_response
+    original_request = await _request()
+    original_task = asyncio.create_task(_call(original_client, original_request))
+    await original_started.wait()
+    job_id = runtime.store.list_retry_jobs()[0].id
+    initial_claim = runtime.store.get_retry_job(job_id).claim
+    cancelled = await _call(control_client, {
+        "type": "call_service", "domain": DOMAIN, "service": "cancel_retry_job",
+        "service_data": {"job_id": job_id}, "return_response": True,
+    })
+    assert cancelled["success"], cancelled
+
+    retry_task = asyncio.create_task(_call(retry_client, {
+        "type": "call_service", "domain": DOMAIN, "service": "retry_job",
+        "service_data": {"job_id": job_id}, "return_response": True,
+    }))
+    await retry_started.wait()
+    assert runtime.store.get_retry_job(job_id).claim != initial_claim
+    release_original.set()
+    old_result = await original_task
+    assert not old_result["success"], old_result
+    assert runtime.store.get(job_id) is None
+    assert runtime.store.get_retry_job(job_id).state == "processing"
+
+    release_retry.set()
+    retry_result = await retry_task
+    assert retry_result["success"], retry_result
+    assert retry_result["result"]["response"]["status"] == "pending_review"
+    assert runtime.store.get(job_id) is not None
+    assert runtime.store.get_retry_job(job_id) is None
+    runtime.writes.assert_not_awaited()
+
+
+@pytest.mark.parametrize("action", ["cancel_retry_job", "delete_retry_job"])
+async def test_late_provider_error_does_not_revive_cancelled_or_deleted_source(
+    hass, hass_ws_client, manual_runtime, action,
+):
+    runtime = manual_runtime
+    original_client = await hass_ws_client(hass)
+    control_client = await hass_ws_client(hass)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def late_failure(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        raise TimeoutError("provider unavailable")
+
+    runtime.generate.side_effect = late_failure
+    request = await _request()
+    submission = asyncio.create_task(_call(original_client, request))
+    await started.wait()
+    job_id = runtime.store.list_retry_jobs()[0].id
+    changed = await _call(control_client, {
+        "type": "call_service", "domain": DOMAIN, "service": action,
+        "service_data": {"job_id": job_id}, "return_response": True,
+    })
+    assert changed["success"], changed
+    release.set()
+    result = await submission
+    if action == "delete_retry_job":
+        assert not result["success"], result
+        assert runtime.store.get_retry_job(job_id) is None
+    else:
+        assert result["success"], result
+        assert result["result"]["response"]["retry_job"]["state"] == "cancelled"
+        assert runtime.store.get_retry_job(job_id).state == "cancelled"
+    assert runtime.store.get(job_id) is None
+    runtime.writes.assert_not_awaited()

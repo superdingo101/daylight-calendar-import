@@ -17,7 +17,6 @@ RETRYABLE_PROVIDER_CODES = frozenset({
     "provider_unavailable", "provider_timeout", "provider_rate_limited",
 })
 RETRY_STATES = frozenset({"processing", "waiting", "paused", "exhausted", "cancelled"})
-MAX_RETRY_JOBS = 100
 
 
 @dataclass(frozen=True, slots=True)
