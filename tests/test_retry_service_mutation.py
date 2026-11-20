@@ -340,6 +340,80 @@ async def test_retry_unexpected_parser_failure_records_exact_claim_and_reraises(
     assert s.store.active_submissions == set()
 
 
+
+async def test_automatic_retry_rejects_missing_source_without_claim_or_parse(
+    service_setup, monkeypatch,
+):
+    s = await service_setup()
+    s.store.get_retry_job.return_value = None
+    parser = AsyncMock()
+    monkeypatch.setattr("custom_components.daylight_calendar_import._async_parse_source", parser)
+    s.store.async_pause_retry = AsyncMock()
+    assert await s.store.retry_runtime._execute("missing-job") == {
+        "status": "not_found", "job_id": "missing-job",
+    }
+    s.store.get_retry_job.assert_called_once_with("missing-job")
+    s.store.async_claim_retry.assert_not_awaited()
+    s.store.async_pause_retry.assert_not_awaited()
+    parser.assert_not_awaited()
+
+
+@pytest.mark.parametrize("reason", [
+    "no_owner", "missing_actor", "inactive_actor", "denied_calendar",
+    "unsupported_kind", "route_change",
+])
+async def test_automatic_retry_preflight_revocation_pauses_without_parsing(
+    service_setup, monkeypatch, reason,
+):
+    """Permissions, routing and supported source kind are rechecked on every tick."""
+    from custom_components.daylight_calendar_import.source_routing import SourceRoutingPlan
+
+    job = saved_job(
+        state="waiting", claim=None,
+        owner_user_id=None if reason == "no_owner" else "owner",
+        source_kind="image" if reason == "unsupported_kind" else "manual_text",
+    )
+    s = await service_setup(job=job)
+    s.store.async_pause_retry = AsyncMock(return_value=replace(job, state="paused"))
+    parser = AsyncMock()
+    monkeypatch.setattr("custom_components.daylight_calendar_import._async_parse_source", parser)
+    s.hass.auth.user.is_active = True
+    if reason == "missing_actor":
+        s.hass.auth.user = None
+    elif reason == "inactive_actor":
+        s.hass.auth.user.is_active = False
+    elif reason == "denied_calendar":
+        s.permissions.allowed = {"ai_task.test": True, "calendar.family": False}
+    elif reason == "route_change":
+        monkeypatch.setattr(
+            "custom_components.daylight_calendar_import.plan_source_routing",
+            lambda source, **kwargs: SourceRoutingPlan(source, "calendar.other"),
+        )
+    assert await s.store.retry_runtime._execute(job.id) == {
+        "status": "paused", "job_id": job.id,
+    }
+    s.store.async_pause_retry.assert_awaited_once_with(job.id)
+    s.store.async_claim_retry.assert_not_awaited()
+    parser.assert_not_awaited()
+
+
+async def test_automatic_retry_with_active_owner_rechecks_acl_before_durable_claim(
+    service_setup, monkeypatch,
+):
+    s = await service_setup()
+    s.hass.auth.user.is_active = True
+    parser = AsyncMock(return_value=ParseOutcome([draft()], []))
+    monkeypatch.setattr("custom_components.daylight_calendar_import._async_parse_source", parser)
+    result = await s.store.retry_runtime._execute(s.job.id)
+    assert result["status"] == "pending_review"
+    s.store.async_claim_retry.assert_awaited_once_with(s.job.id, automatic=True)
+    assert s.permissions.calls == [
+        ("ai_task.test", POLICY_CONTROL),
+        ("calendar.family", POLICY_CONTROL),
+    ]
+    parser.assert_awaited_once()
+
+
 async def test_retry_route_change_is_rejected_before_claim(service_setup, monkeypatch):
     """A saved source must not silently target a different calendar on retry."""
     from custom_components.daylight_calendar_import.source_routing import SourceRoutingPlan
