@@ -15,7 +15,8 @@ permissions:
 
 concurrency:
   group: mutation-parity-pr280
-  cancel-in-progress: false
+  # Supersede the old attempt, which already failed shard diagnostics.
+  cancel-in-progress: true
 
 jobs:
   original-versus-split:
