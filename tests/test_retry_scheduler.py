@@ -326,7 +326,7 @@ async def test_lowered_retry_budget_retires_an_already_due_job_atomically(monkey
     assert exhausted.state == "exhausted"
     assert exhausted.automatic_attempts == 1
     assert exhausted.next_attempt_at is None
-    assert backend.data["retry_jobs"][job_id]["state"] == "exhausted"
+    assert [record["state"] for record in backend.saved[-1]["retry_jobs"] if record["id"] == job_id] == ["exhausted"]
     with pytest.raises(RetryJobConflict, match="Automatic retry"):
         await store.async_claim_retry(job_id, automatic=True)
     # A reload/rearm must never revive a retired job just because the budget
