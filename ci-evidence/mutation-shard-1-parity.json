@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "description": "Permanent verified proof from PR #280 one-time clean original-shard-1 versus five-way mutant partition. Captured before removing the temporary CI workflow.",
+  "proof_source": {
+    "workflow_run_id": 44659530656,
+    "workflow_run_url": "https://github.com/superdingo101/daylight-calendar-import/actions/runs/44659530656",
+    "workflow_conclusion": "success",
+    "completed_at_utc": "2026-11-20T03:04:24Z",
+    "artifact_name": "mutation-original-vs-split-parity",
+    "artifact_id": 14597731839,
+    "aggregate_artifact_name": "mutation-sharded-aggregate",
+    "aggregate_artifact_id": 14596615979,
+    "tested_commit": "5e5aa315e02f3cd9e450cb0cdd2f91af9c24477e"
+  },
+  "parity_artifact": {
+    "equivalent": true,
+    "execution_environment_sha256": "8c7aa347322f3535a5dd467320d6f66d51d45058221fd6425196be6ab30763f7",
+    "mutant_count": 1876,
+    "mutant_outcomes_sha256": "7d94c3ceb50efb909bed325552b4989056c2c762321111db27a6b3b3a409c42d",
+    "original_shards": 8,
+    "schema": 1,
+    "split_shards": 12,
+    "target_sha": "5e5aa315e02f3cd9e450cb0cdd2f91af9c24477e"
+  },
+  "full_project_aggregate": {
+    "schema": 1,
+    "complete": true,
+    "mode": "complete-sharded",
+    "target_sha": "5e5aa315e02f3cd9e450cb0cdd2f91af9c24477e",
+    "manifest_sha256": "7e8aadcb7b1c345120053946f29ffaf763fdcd8dff1fbc1c5c3bf661282f3de0",
+    "shard_count": 12,
+    "score": 95.376121,
+    "baseline_minimum": 95.22,
+    "stats": {
+      "killed": 11038,
+      "no_tests": 0,
+      "segfault": 0,
+      "skipped": 0,
+      "survived": 536,
+      "suspicious": 0,
+      "timeout": 18,
+      "total": 11592
+    }
+  }
+}
