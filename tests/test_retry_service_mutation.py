@@ -341,6 +341,19 @@ async def test_retry_unexpected_parser_failure_records_exact_claim_and_reraises(
 
 
 
+async def test_manual_retry_cannot_execute_after_job_deleted_between_permission_and_claim(
+    service_setup,
+):
+    """Authorization is not a durable claim: deletion before execution wins."""
+    s = await service_setup()
+    s.store.get_retry_job.side_effect = [s.job, None]
+    with pytest.raises(ServiceValidationError, match="Saved import not found"):
+        await s.invoke(SERVICE_RETRY_JOB, job_id=s.job.id)
+    assert s.store.get_retry_job.call_count == 2
+    s.store.async_claim_retry.assert_not_awaited()
+    s.store.async_add.assert_not_awaited()
+
+
 async def test_automatic_retry_rejects_missing_source_without_claim_or_parse(
     service_setup, monkeypatch,
 ):
