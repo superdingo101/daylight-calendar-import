@@ -207,7 +207,7 @@ async def test_owner_delete_returns_exact_identity_and_never_parses(service_setu
 @pytest.mark.parametrize(("overrides", "message"), [
     ({"provider_entity_id": "ai_task.changed"}, "The saved AI Task or calendar changed. Verify settings before retrying."),
     ({"calendar_entity": "calendar.no_longer_allowed"}, "The saved AI Task or calendar changed. Verify settings before retrying."),
-    ({"source_kind": "image"}, "Retrying this source type is not supported yet"),
+    ({"source_kind": "unsupported"}, "Saved source kind is not supported"),
 ])
 async def test_retry_preflight_blocks_stale_or_unsupported_source(
     service_setup, monkeypatch, overrides, message,
@@ -254,6 +254,8 @@ async def test_retry_claim_and_success_restore_original_source_and_review_contra
         events=outcome.events,
         event_assumptions=None,
         source_id=s.claimed.source_id,
+        source_kind=s.claimed.source_kind,
+        source_title=s.claimed.source_title,
         calendar_entity=s.claimed.calendar_entity,
         routing_unresolved=False,
         reimport_duplicates=True,
