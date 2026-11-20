@@ -753,8 +753,11 @@ async def test_scanned_pdf_without_local_media_is_explicit(uploaded_file):
 
 
 @pytest.mark.parametrize("incomplete_exists", [True, False])
-async def test_failed_pdf_staging_cleans_incomplete_copy(uploaded_file, tmp_path, monkeypatch, incomplete_exists):
-    uploaded_file.write_bytes(make_pdf())
+@pytest.mark.parametrize("has_text", [True, False], ids=["text-layer", "scanned"])
+async def test_failed_pdf_staging_cleans_incomplete_copy(
+    uploaded_file, tmp_path, monkeypatch, incomplete_exists, has_text,
+):
+    uploaded_file.write_bytes(make_pdf("Meeting Friday" if has_text else None))
     staged = tmp_path / "partial.pdf"
     if incomplete_exists:
         staged.write_bytes(b"partial")

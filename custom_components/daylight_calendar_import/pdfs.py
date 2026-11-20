@@ -75,7 +75,14 @@ def _stage_pdf(
         # context exits; the retry spool makes a private copy if admitted.
         with tempfile.NamedTemporaryFile(prefix="daylight-", suffix=".pdf",
                                          delete=False) as staged:
-            staged.write(data)
+            try:
+                staged.write(data)
+            except BaseException:
+                # The file is delete=False because retry admission must use
+                # its bytes after this executor returns.  A failed write has
+                # no later intake cleanup path: erase the partial private PDF.
+                Path(staged.name).unlink(missing_ok=True)
+                raise
         staged_path = Path(staged.name)
         return SourceDocument(
             id=str(uuid4()), kind=SourceKind.PDF, received_at=datetime.now(UTC),
