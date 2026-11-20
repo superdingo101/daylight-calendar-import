@@ -345,7 +345,7 @@ def reduce(manifest_path: Path, results_dir: Path, out: Path) -> dict:
         "score": round(score, 6), "shard_seconds": runtimes,
         "environment": resolved_environment,
         "runner_image_versions": runner_image_versions,
-        "modules": sorted(observed_modules), "mutants": all_mutants,
+        "modules": source_paths(), "mutants": all_mutants,
         "complete": True,
     }
     # Keep the original quality checker and exactly its global threshold.
