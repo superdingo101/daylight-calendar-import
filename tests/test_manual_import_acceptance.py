@@ -436,6 +436,12 @@ async def test_background_retry_uses_original_reference_date_and_queues_review(
         .replace(microsecond=0).isoformat(),
     )
     original_reference = original.received_at
+    # The saved job and activity originate from the same submission. Simulate
+    # their shared historical timestamp so the pending review must preserve it.
+    runtime.store._activity = tuple(
+        {**record, "created_at": original_reference} if record["id"] == job_id else record
+        for record in runtime.store._activity
+    )
     policy = RetrySettings(enabled=True, initial_delay_minutes=15, max_automatic_retries=2)
     runtime.store.retry_preferences = lambda: policy
     due = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
