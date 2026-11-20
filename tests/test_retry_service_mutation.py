@@ -119,7 +119,7 @@ async def test_retry_service_registration_exact_schema_and_response_contract(ser
 
 
 @pytest.mark.parametrize(("is_admin", "expected_ids"), [
-    (False, ["owned"]), (True, ["owned", "other"]),
+    (False, ["owned"]), (True, ["owned", "other", "unowned"]),
 ])
 async def test_retry_list_hides_other_users_and_private_source(service_setup, is_admin, expected_ids):
     s = await service_setup(is_admin=is_admin)
@@ -128,7 +128,7 @@ async def test_retry_list_hides_other_users_and_private_source(service_setup, is
     no_owner = saved_job(id="unowned", owner_user_id=None)
     s.store.list_retry_jobs.return_value = [owned, other, no_owner]
     result = await s.invoke(SERVICE_LIST_RETRY_JOBS)
-    assert result == {"jobs": [job.summary() for job in (owned, other) if job.id in expected_ids]}
+    assert result == {"jobs": [job.summary() for job in (owned, other, no_owner) if job.id in expected_ids]}
     assert "source_text" not in str(result)
     assert "manual-1" not in str(result)
     assert s.store.async_claim_retry.await_count == 0
