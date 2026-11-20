@@ -766,3 +766,123 @@ async def test_storage_cancellation_finalizes_only_owned_claim_and_survives_rest
         job_id, provider_error_code="provider_timeout", retry_claim=active.claim,
     )
     assert store.get_retry_job(job_id) == claimed
+
+
+async def test_rearm_skips_nonwaiting_record_and_schedules_later_waiting_record(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    first = await store.async_begin_submission(**source_kwargs())
+    second = await store.async_begin_submission(**{
+        **source_kwargs(), "retry_source_id": "another-import",
+    })
+    await store.async_record_parse_failure(second, provider_error_code="provider_timeout")
+    assert store.get_retry_job(first).state == "processing"
+    assert store.get_retry_job(second).next_attempt_at is None
+    store.retry_preferences = lambda: RetrySettings(enabled=True)
+    await store.async_rearm_retry_jobs()
+    assert store.get_retry_job(first).state == "processing"
+    scheduled = store.get_retry_job(second)
+    assert scheduled.state == "waiting"
+    assert scheduled.next_attempt_at is not None
+    assert [item["next_attempt_at"] for item in backend.saved[-1]["retry_jobs"]
+            if item["id"] == second] == [scheduled.next_attempt_at]
+
+
+@pytest.mark.parametrize(("kind", "expected"), [
+    ("notfound", "Retry is unavailable or already processing"),
+    ("processing", "Retry is unavailable or already processing"),
+    ("disabled", "Automatic retry is not due"),
+    ("paused", "Automatic retry is not due"),
+    ("no_timestamp", "Automatic retry is not due"),
+    ("budget", "Automatic retry is not due"),
+    ("review", "Events are already awaiting review"),
+])
+async def test_claim_retry_refuses_ineligible_without_mutating_state(
+    monkeypatch, kind, expected,
+):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    store.retry_preferences = lambda: RetrySettings(enabled=kind != "disabled", max_automatic_retries=2)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_unavailable")
+    waiting = store.get_retry_job(job_id)
+    prepared = replace(waiting, next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    if kind == "notfound":
+        target = "unknown-job"
+    else:
+        target = job_id
+        if kind == "processing":
+            prepared = replace(prepared, state="processing", claim="claimed")
+        if kind == "paused":
+            prepared = replace(prepared, state="paused")
+        if kind == "no_timestamp":
+            prepared = replace(prepared, next_attempt_at=None)
+        if kind == "budget":
+            prepared = replace(prepared, automatic_attempts=2, attempts=3)
+        if kind == "review":
+            from tests.test_storage import draft
+            from custom_components.daylight_calendar_import.storage import PendingImport
+            store._items[job_id] = PendingImport.create(
+                source_text="review", events=[draft()],
+            )
+        store._retry_jobs[job_id] = prepared
+    saved = len(backend.saved)
+    with pytest.raises(RetryJobConflict) as exc:
+        await store.async_claim_retry(target, automatic=kind not in ("notfound", "processing", "review"))
+    assert str(exc.value) == expected
+    if kind != "notfound":
+        assert store.get_retry_job(job_id) == prepared
+    assert len(backend.saved) == saved
+
+
+async def test_automatic_claim_is_due_at_exact_stored_timestamp(monkeypatch):
+    import custom_components.daylight_calendar_import.storage as storage_module
+
+    moment = datetime(2026, 11, 20, 12, tzinfo=UTC)
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    store.retry_preferences = lambda: RetrySettings(enabled=True, max_automatic_retries=1)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_unavailable")
+    job = store.get_retry_job(job_id)
+    store._retry_jobs[job_id] = replace(job, next_attempt_at=moment.isoformat())
+
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment
+
+    monkeypatch.setattr(storage_module, "datetime", FixedClock)
+    claimed = await store.async_claim_retry(job_id, automatic=True)
+    assert claimed.state == "processing"
+    assert claimed.automatic_attempts == 1
+    assert claimed.attempts == 2
+    assert claimed.next_attempt_at is None
+    assert claimed.claim is not None
+    assert store.get_activity(job_id)["status"] == "processing"
+    await store.async_record_parse_failure(
+        job_id, provider_error_code="provider_unavailable", retry_claim=claimed.claim,
+    )
+    assert store.get_retry_job(job_id).state == "exhausted"
+    with pytest.raises(RetryJobConflict) as exc:
+        await store.async_claim_retry(job_id, automatic=True)
+    assert str(exc.value) == "Automatic retry is not due"
+
+
+async def test_interrupted_processing_restart_sets_failure_code_and_durable_backoff(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    backend.load_result = backend.saved[-1]
+    restored = make_store(monkeypatch, backend)
+    restored.retry_preferences = lambda: RetrySettings(enabled=True)
+    await restored.async_load()
+    job = restored.get_retry_job(job_id)
+    assert job.state == "waiting"
+    assert job.claim is None
+    assert job.last_failure_code == "provider_unavailable"
+    assert job.automatic_attempts == 0
+    assert datetime.fromisoformat(job.next_attempt_at) > datetime.now(UTC)
+    assert restored.get_activity(job_id)["status"] == "failed"
+    assert [item["last_failure_code"] for item in backend.saved[-1]["retry_jobs"]
+            if item["id"] == job_id] == ["provider_unavailable"]
