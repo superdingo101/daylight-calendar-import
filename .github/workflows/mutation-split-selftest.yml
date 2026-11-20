@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: mutation-split-selftest-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
