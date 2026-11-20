@@ -753,8 +753,11 @@ async def test_scanned_pdf_without_local_media_is_explicit(uploaded_file):
 
 
 @pytest.mark.parametrize("incomplete_exists", [True, False])
-async def test_failed_pdf_staging_cleans_incomplete_copy(uploaded_file, tmp_path, monkeypatch, incomplete_exists):
-    uploaded_file.write_bytes(make_pdf())
+@pytest.mark.parametrize("has_text", [True, False], ids=["text-layer", "scanned"])
+async def test_failed_pdf_staging_cleans_incomplete_copy(
+    uploaded_file, tmp_path, monkeypatch, incomplete_exists, has_text,
+):
+    uploaded_file.write_bytes(make_pdf("Meeting Friday" if has_text else None))
     staged = tmp_path / "partial.pdf"
     if incomplete_exists:
         staged.write_bytes(b"partial")
@@ -874,8 +877,19 @@ def test_pdf_read_is_bounded_before_extraction(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pdfs, "process_uploaded_file", process)
     source, staged = pdfs._stage_pdf(UploadHass({}), "a" * 32, {}, "")
-    assert source.text == "Meeting Friday"
-    assert staged is None
+    try:
+        assert source.text == "Meeting Friday"
+        # Text-layer PDFs still retain their original bytes for later retries.
+        # This copy is private and is not submitted as an AI attachment.
+        assert source.attachments == ()
+        assert staged is not None
+        assert staged.is_file()
+        assert staged.read_bytes() == make_pdf("Meeting Friday")
+        assert source.metadata["retry_stage_path"] == str(staged)
+        assert source.metadata["sha256"] == sha256(staged.read_bytes()).hexdigest()
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
 
 
 async def test_maximum_allowed_pdf_is_accepted(uploaded_file, monkeypatch):

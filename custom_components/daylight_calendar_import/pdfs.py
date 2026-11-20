@@ -71,10 +71,24 @@ def _stage_pdf(
     digest = sha256(data).hexdigest()
     text = "\n\n".join(part for part in (context.strip(), extracted) if part) or None
     if not needs_attachment:
+        # Keep the original validated bytes available only until the intake
+        # context exits; the retry spool makes a private copy if admitted.
+        with tempfile.NamedTemporaryFile(prefix="daylight-", suffix=".pdf",
+                                         delete=False) as staged:
+            try:
+                staged.write(data)
+            except BaseException:
+                # The file is delete=False because retry admission must use
+                # its bytes after this executor returns.  A failed write has
+                # no later intake cleanup path: erase the partial private PDF.
+                Path(staged.name).unlink(missing_ok=True)
+                raise
+        staged_path = Path(staged.name)
         return SourceDocument(
             id=str(uuid4()), kind=SourceKind.PDF, received_at=datetime.now(UTC),
-            text=text, title=filename, metadata={"sha256": digest},
-        ), None
+            text=text, title=filename,
+            metadata={"sha256": digest, "retry_stage_path": str(staged_path)},
+        ), staged_path
 
     if not media_dirs:
         raise SourceValidationError("media_storage_unavailable", "No local media directory configured")
@@ -90,7 +104,8 @@ def _stage_pdf(
     staged_path = Path(staged.name)
     return SourceDocument(
         id=str(uuid4()), kind=SourceKind.PDF, received_at=datetime.now(UTC), text=text,
-        title=filename, attachments=(SourceAttachment(
+        title=filename, metadata={"retry_stage_path": str(staged_path)},
+        attachments=(SourceAttachment(
             id=str(uuid4()), filename=filename, media_type="application/pdf",
             size_bytes=len(data), sha256=digest,
             content_ref=f"media-source://media_source/{media_alias}/{staged_path.name}",

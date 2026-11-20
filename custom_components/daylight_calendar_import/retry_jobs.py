@@ -38,10 +38,12 @@ class RetryJob:
     next_attempt_at: str | None = None
     source_kind: str = "manual_text"
     source_title: str | None = None
+    parser_title: str | None = None
     attachment_path: str | None = None
     attachment_sha256: str | None = None
     attachment_media_type: str | None = None
     attachment_size: int | None = None
+    attachment_in_ai: bool = True
     routing_unresolved: bool = False
     reimport_duplicates: bool = False
 
@@ -50,9 +52,11 @@ class RetryJob:
         cls, *, activity_id: str, source_text: str, source_id: str,
         received_at: datetime, provider_entity_id: str, calendar_entity: str,
         owner_user_id: str | None, source_kind: str = "manual_text",
-        source_title: str | None = None, attachment_path: str | None = None,
+        source_title: str | None = None, parser_title: str | None = None,
+        attachment_path: str | None = None,
         attachment_sha256: str | None = None, attachment_media_type: str | None = None,
-        attachment_size: int | None = None, routing_unresolved: bool = False,
+        attachment_size: int | None = None, attachment_in_ai: bool = True,
+        routing_unresolved: bool = False,
         reimport_duplicates: bool = False,
     ) -> "RetryJob":
         return cls.from_dict({
@@ -60,8 +64,10 @@ class RetryJob:
             "received_at": received_at.isoformat(), "provider_entity_id": provider_entity_id,
             "calendar_entity": calendar_entity, "owner_user_id": owner_user_id,
             "source_kind": source_kind, "source_title": source_title,
+            "parser_title": parser_title,
             "attachment_path": attachment_path, "attachment_sha256": attachment_sha256,
             "attachment_media_type": attachment_media_type, "attachment_size": attachment_size,
+            "attachment_in_ai": attachment_in_ai,
             "routing_unresolved": routing_unresolved,
             "reimport_duplicates": reimport_duplicates,
             "claim": str(uuid4()), "state": "processing", "attempts": 1,
@@ -105,11 +111,12 @@ class RetryJob:
             raise ValueError("invalid retry failure")
         if job.source_kind not in ("manual_text", "image", "pdf"):
             raise ValueError("unsupported retry source kind")
-        for value in (job.owner_user_id, job.source_title, job.attachment_path,
+        for value in (job.owner_user_id, job.source_title, job.parser_title, job.attachment_path,
                       job.attachment_sha256, job.attachment_media_type):
             if value is not None and (not isinstance(value, str) or len(value) > 2048):
                 raise ValueError("invalid retry metadata")
-        if type(job.routing_unresolved) is not bool or type(job.reimport_duplicates) is not bool:
+        if (type(job.routing_unresolved) is not bool or type(job.reimport_duplicates) is not bool
+                or type(job.attachment_in_ai) is not bool):
             raise ValueError("invalid retry flags")
         if job.attachment_size is not None and (
             type(job.attachment_size) is not int or not 1 <= job.attachment_size <= 10 * 1024 * 1024

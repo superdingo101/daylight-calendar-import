@@ -72,6 +72,10 @@ from .settings import effective_ai_task_entity, effective_calendar_options, effe
 from .settings_api import async_register_settings_api
 from .settings import effective_notification_preferences, effective_retry_preferences
 from .retry_scheduler import RetryScheduler
+from .retry_spool import (
+    RetryAttachmentError, async_spool_upload, async_delete_saved,
+    async_replay_source, async_reconcile_spool, async_clear_spool,
+)
 from .notification_delivery import async_deliver_notifications, MAX_ACTIVE_TASKS as _MAX_NOTIFICATION_TASKS
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .source_routing import plan_source_routing
@@ -287,6 +291,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise RuntimeError("Previous Daylight sensor rollback is incomplete")
         hass.data[DOMAIN].pop(entry.entry_id, None)
     pending_store = PendingImportStore(hass)
+    # Source admission and retention must see the same committed job set.
+    pending_store.retry_spool_lock = asyncio.Lock()
     pending_store.notification_preferences = lambda: effective_notification_preferences(entry)
     pending_store.retry_preferences = lambda: effective_retry_preferences(entry)
     # Retention must see live providers from the previous entry before loading.
@@ -298,6 +304,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await pending_store.async_load()
         if hasattr(pending_store, "async_rearm_retry_jobs"):
             await pending_store.async_rearm_retry_jobs()
+        if hasattr(pending_store, "list_retry_jobs"):
+            await async_reconcile_spool(
+                hass, pending_store.list_retry_jobs,
+                lock=pending_store.retry_spool_lock,
+            )
     except PendingImportStorageError:
         ir.async_create_issue(
             hass, DOMAIN, "storage_recovery", is_fixable=False,
@@ -536,24 +547,82 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def submit_attachment_source(
         source: SourceDocument, *, reimport_duplicates: bool = False,
-        original_filename: str | None = None,
+        original_filename: str | None = None, owner_user_id: str | None = None,
     ) -> ServiceResponse:
-        """Parse the safe uploaded source, retaining its original name only for display."""
+        """Retain private upload bytes before calling the AI provider."""
         review_title = original_filename if original_filename is not None else source.title
-        if source.upstream_source_id is not None and pending_store.is_source_duplicate(source.upstream_source_id):
+        if (source.upstream_source_id is not None
+                and pending_store.is_source_duplicate(source.upstream_source_id)):
             return _submission_response(PendingImportAddResult(None, True, 0), [], None)
         route = route_review_source(source)
-        activity_id = await pending_store.async_begin_submission(
-            source_kind=source.kind.value, source_title=review_title, received_at=source.received_at
-        )
+        spool_name: str | None = None
+        activity_id: str | None = None
+        # Hold this gate from disk creation through the durable job commit.
+        # Retention takes the same gate and reads the jobs only afterward.
+        async with pending_store.retry_spool_lock:
+            try:
+                if isinstance(source.metadata.get("retry_stage_path"), str):
+                    spool_name, digest, size = await async_spool_upload(hass, source)
+                kwargs = {}
+                if spool_name is not None:
+                    kwargs = {
+                        "retry_source_text": source.text or "",
+                        "retry_source_id": source.upstream_source_id,
+                        "retry_provider": ai_task_entity,
+                        "retry_calendar": route.calendar_entity,
+                        "retry_owner": owner_user_id,
+                        "retry_reimport_duplicates": reimport_duplicates,
+                        "retry_attachment_path": spool_name,
+                        "retry_attachment_sha256": digest,
+                        "retry_attachment_size": size,
+                        "retry_attachment_media_type": (
+                            source.attachments[0].media_type
+                            if source.attachments else "application/pdf"
+                        ),
+                        "retry_attachment_in_ai": bool(source.attachments),
+                        "retry_parser_title": source.title,
+                        "retry_routing_unresolved": route.requires_confirmation,
+                    }
+                activity_id = await pending_store.async_begin_submission(
+                    source_kind=source.kind.value, source_title=review_title,
+                    received_at=source.received_at, **kwargs,
+                )
+                # Never adopt a replacement claim after the provider await.
+                original_claim = (
+                    pending_store.get_retry_job(activity_id).claim
+                    if spool_name is not None else None
+                )
+            except BaseException:
+                if spool_name is not None and not any(
+                    job.attachment_path == spool_name
+                    for job in pending_store.list_retry_jobs()
+                ):
+                    await asyncio.shield(async_delete_saved(hass, spool_name))
+                raise
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
         try:
-            outcome = await parse_submission(route.parser_source, activity_id)
+            try:
+                outcome = await parse_submission(
+                    route.parser_source, activity_id, retry_claim=original_claim,
+                )
+            except ProviderError:
+                job = (pending_store.get_retry_job(activity_id)
+                       if hasattr(pending_store, "get_retry_job") else None)
+                if job is None:
+                    raise
+                return _saved_retry_response(job)
+            job = (pending_store.get_retry_job(activity_id)
+                   if hasattr(pending_store, "get_retry_job") else None)
             label = "PDF" if source.kind is SourceKind.PDF else "Image"
-            attachment_note = f"{label} attachment (SHA-256: {source.attachments[0].sha256})" if source.attachments else ""
+            attachment_note = (
+                f"{label} attachment (SHA-256: {source.attachments[0].sha256})"
+                if source.attachments else ""
+            )
             result = await pending_store.async_add(
-                source_text="\n\n".join(part for part in (source.text, attachment_note) if part),
+                source_text="\n\n".join(
+                    part for part in (source.text, attachment_note) if part
+                ),
                 events=outcome.events,
                 **({"event_assumptions": outcome.event_assumptions}
                    if outcome.event_assumptions else {}),
@@ -565,9 +634,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 warnings=[*outcome.warnings, *route.warnings],
                 routing_unresolved=route.requires_confirmation,
                 activity_id=activity_id,
+                retry_claim=original_claim,
             )
         finally:
             pending_store.active_submissions.discard(task)
+            if spool_name is not None and (
+                not hasattr(pending_store, "get_retry_job")
+                or pending_store.get_retry_job(activity_id) is None
+            ):
+                try:
+                    await async_delete_saved(hass, spool_name)
+                except OSError:
+                    # A completed, durable import must not be reported as
+                    # failed merely because unlink requires later reconciliation.
+                    _LOGGER.warning("Retained source cleanup deferred until reconciliation")
         return _submission_response(result, [*outcome.warnings, *route.warnings], activity_id)
 
     async def handle_submit_image(call: ServiceCall) -> ServiceResponse:
@@ -578,6 +658,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return await submit_attachment_source(
                 source, reimport_duplicates=call.data.get("reimport_duplicates", False),
                 original_filename=call.data.get("original_filename"),
+                owner_user_id=call.context.user_id if call.context else None,
             )
 
     async def handle_submit_pdf(call: ServiceCall) -> ServiceResponse:
@@ -587,6 +668,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 replace(pdf, upstream_source_id=call.data.get(ATTR_SOURCE_ID)),
                 reimport_duplicates=call.data.get("reimport_duplicates", False),
                 original_filename=call.data.get("original_filename"),
+                owner_user_id=call.context.user_id if call.context else None,
             )
 
     class CalendarApprovalWriter:
@@ -728,6 +810,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_delete_retry_job(call: ServiceCall) -> ServiceResponse:
         job = await authorized_retry_job(call)
         removed = await pending_store.async_delete_retry(job.id)
+        if removed:
+            try:
+                await async_delete_saved(hass, job.attachment_path)
+            except OSError:
+                _LOGGER.warning("Retained source deletion deferred until reconciliation")
         return {"job_id": job.id, "deleted": removed}
 
     async def execute_retry_job(job_id: str, *, automatic: bool = False) -> ServiceResponse:
@@ -760,72 +847,95 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await pending_store.async_pause_retry(job.id, expected_job=job)
                 return {"status": "paused", "job_id": job.id}
             raise ServiceValidationError("The saved AI Task or calendar changed. Verify settings before retrying.")
-        if job.source_kind != "manual_text":
+        if job.source_kind not in ("manual_text", "image", "pdf"):
             if automatic:
                 await pending_store.async_pause_retry(job.id, expected_job=job)
                 return {"status": "paused", "job_id": job.id}
-            raise ServiceValidationError("Retrying this source type is not supported yet")
-        source = TextSourceAdapter().create(job.source_text, source_id=job.source_id)
-        source = replace(source, received_at=datetime.fromisoformat(job.received_at))
-        route = route_review_source(source)
-        if route.calendar_entity != job.calendar_entity:
+            raise ServiceValidationError("Saved source kind is not supported")
+        try:
+            async with async_replay_source(hass, job) as source:
+                route = route_review_source(source)
+                if route.calendar_entity != job.calendar_entity:
+                    if automatic:
+                        await pending_store.async_pause_retry(job.id, expected_job=job)
+                        return {"status": "paused", "job_id": job.id}
+                    raise ServiceValidationError("Calendar routing changed. Review the saved import.")
+                try:
+                    claimed = await pending_store.async_claim_retry(job.id, automatic=automatic)
+                except RetryJobConflict as err:
+                    if automatic:
+                        return {"status": "not_due", "job_id": job.id}
+                    raise ServiceValidationError(str(err)) from err
+                task = asyncio.current_task()
+                pending_store.active_submissions.add(task)
+                try:
+                    try:
+                        outcome = await _async_parse_source(
+                            hass, route.parser_source, ai_task_entity,
+                            reference_datetime=source.received_at,
+                        )
+                    except ProviderError as err:
+                        await pending_store.async_record_parse_failure(
+                            job.id, provider_error_code=err.code,
+                            retry_claim=claimed.claim,
+                        )
+                        latest = pending_store.get_retry_job(job.id)
+                        return (_saved_retry_response(latest) if latest is not None
+                                else {"status": "cancelled", "job_id": job.id})
+                    attachment_note = ""
+                    if source.attachments:
+                        label = "PDF" if source.kind is SourceKind.PDF else "Image"
+                        attachment_note = (
+                            f"{label} attachment (SHA-256: {source.attachments[0].sha256})"
+                        )
+                    result = await pending_store.async_add(
+                        source_text="\n\n".join(
+                            part for part in (claimed.source_text, attachment_note) if part
+                        ),
+                        events=outcome.events,
+                        event_assumptions=outcome.event_assumptions or None,
+                        source_id=claimed.source_id,
+                        source_kind=claimed.source_kind,
+                        source_title=claimed.source_title,
+                        calendar_entity=claimed.calendar_entity,
+                        routing_unresolved=route.requires_confirmation,
+                        reimport_duplicates=claimed.reimport_duplicates,
+                        warnings=[*outcome.warnings, *route.warnings],
+                        activity_id=job.id, retry_claim=claimed.claim,
+                    )
+                    if pending_store.get_retry_job(job.id) is None:
+                        try:
+                            await async_delete_saved(hass, job.attachment_path)
+                        except OSError:
+                            _LOGGER.warning("Retried source cleanup deferred until reconciliation")
+                    return _submission_response(
+                        result, [*outcome.warnings, *route.warnings], job.id,
+                    )
+                except RetryJobConflict:
+                    return {"status": "cancelled", "job_id": job.id}
+                except asyncio.CancelledError:
+                    # The scheduler may stop during a provider call. Finish the
+                    # exact owned claim without altering a newer manual retry.
+                    await pending_store.async_record_parse_failure(
+                        job.id,
+                        provider_error_code=claimed.last_failure_code or "provider_unavailable",
+                        retry_claim=claimed.claim,
+                    )
+                    raise
+                except Exception:
+                    await pending_store.async_record_parse_failure(
+                        job.id, retry_claim=claimed.claim,
+                    )
+                    raise
+                finally:
+                    pending_store.active_submissions.discard(task)
+        except RetryAttachmentError as err:
+            await pending_store.async_pause_retry(job.id, expected_job=job)
             if automatic:
-                await pending_store.async_pause_retry(job.id, expected_job=job)
                 return {"status": "paused", "job_id": job.id}
-            raise ServiceValidationError("Calendar routing changed. Review the saved import.")
-        try:
-            claimed = await pending_store.async_claim_retry(job.id, automatic=automatic)
-        except RetryJobConflict as err:
-            if automatic:
-                return {"status": "not_due", "job_id": job.id}
-            raise ServiceValidationError(str(err)) from err
-        task = asyncio.current_task()
-        pending_store.active_submissions.add(task)
-        try:
-            try:
-                outcome = await _async_parse_source(
-                    hass, route.parser_source, ai_task_entity,
-                    reference_datetime=source.received_at,
-                )
-            except ProviderError as err:
-                await pending_store.async_record_parse_failure(
-                    job.id, provider_error_code=err.code,
-                    retry_claim=claimed.claim,
-                )
-                latest = pending_store.get_retry_job(job.id)
-                return (_saved_retry_response(latest) if latest is not None
-                        else {"status": "cancelled", "job_id": job.id})
-            result = await pending_store.async_add(
-                source_text=claimed.source_text, events=outcome.events,
-                event_assumptions=outcome.event_assumptions or None,
-                source_id=claimed.source_id,
-                calendar_entity=claimed.calendar_entity,
-                routing_unresolved=route.requires_confirmation,
-                reimport_duplicates=claimed.reimport_duplicates,
-                warnings=[*outcome.warnings, *route.warnings],
-                activity_id=job.id, retry_claim=claimed.claim,
-            )
-            return _submission_response(result, [*outcome.warnings, *route.warnings], job.id)
-        except RetryJobConflict:
-            return {"status": "cancelled", "job_id": job.id}
-        except asyncio.CancelledError:
-            # Scheduler shutdown must not leave a durable processing claim
-            # stranded on the still-loaded entry when platform unload fails.
-            # The storage transaction completes despite cancellation and only
-            # finalizes this exact claim, never a newer manual retry.
-            await pending_store.async_record_parse_failure(
-                job.id,
-                provider_error_code=claimed.last_failure_code or "provider_unavailable",
-                retry_claim=claimed.claim,
-            )
-            raise
-        except Exception:
-            await pending_store.async_record_parse_failure(
-                job.id, retry_claim=claimed.claim,
-            )
-            raise
-        finally:
-            pending_store.active_submissions.discard(task)
+            raise ServiceValidationError(
+                "The saved attachment is unavailable or failed validation."
+            ) from err
 
     async def handle_retry_job(call: ServiceCall) -> ServiceResponse:
         job = await authorized_retry_job(call)
@@ -1254,6 +1364,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pending_store.retry_runtime = RetryScheduler(
             hass, pending_store, pending_store.retry_preferences,
             lambda job_id: execute_retry_job(job_id, automatic=True),
+            cleanup=lambda: async_reconcile_spool(
+                hass, pending_store.list_retry_jobs,
+                lock=pending_store.retry_spool_lock,
+            ),
         )
         pending_store.retry_runtime.start()
         runtime = pending_store.email_runtime
@@ -1399,6 +1513,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
         evict_when_idle()
 
     await PendingImportStore(hass).async_remove_storage()
+    await async_clear_spool(hass)
 
 
 async def _parse_text_with_ai_task(

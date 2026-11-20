@@ -133,6 +133,20 @@ async def test_late_cleanup_tolerates_already_removed_media(tmp_path):
     await uploads._cleanup_late_staging(UploadHass(tmp_path / "media"), staging)
 
 
+async def test_late_cleanup_without_any_staged_path_does_not_unlink(tmp_path):
+    """A completed stage with no media artifact cannot trigger a delete."""
+    staging = asyncio.get_running_loop().create_future()
+    staging.set_result((object(), None))
+    hass = UploadHass(tmp_path / "media")
+
+    async def unexpected_unlink(*_args):
+        pytest.fail("no cleanup executor work is needed without a staged path")
+
+    hass.async_add_executor_job = unexpected_unlink
+    await uploads._cleanup_late_staging(hass, staging)
+    assert not (tmp_path / "media").exists()
+
+
 @pytest.mark.parametrize(("data", "code"), [
     (b"", "empty_attachment"),
     (b"not an image", "unsupported_media"),

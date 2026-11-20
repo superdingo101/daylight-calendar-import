@@ -68,7 +68,8 @@
           "configuration/ai-task",
           "configuration/calendars-routing",
           "configuration/email",
-          "configuration/notifications-automations"
+          "configuration/notifications-automations",
+          "configuration/retries"
         ],
         "expanded": true
       },

@@ -1,0 +1,69 @@
+---
+title: "Saved imports and retries"
+description: "Recover safely from temporary AI provider outages without submitting the same invitation again."
+---
+
+Daylight saves manual submissions before asking your configured Home Assistant AI Task
+to extract calendar events. If the provider times out, is overloaded, or temporarily
+rate-limits requests, the original source stays available for a later attempt.
+
+Saved imports do **not** create calendar events. When parsing succeeds, the extracted
+candidates appear in **Review Inbox**, where each event still requires your approval.
+
+## Retry a saved import
+
+1. Open **Daylight Import → Recent Activity**.
+2. Select the failed submission to see its saved retry status.
+3. Choose **Retry now** to try again, **Cancel retries** to stop automatic
+   attempts while keeping the source, or **Delete saved input** to discard it.
+
+A second import using an unchanged source identity does not create a second queue
+entry while the first is retained. Retry the saved job instead. Each manual or
+scheduled attempt preserves the original submission timestamp, so phrases such as
+"tomorrow" are interpreted relative to when the source was submitted.
+
+Cancelled jobs are not automatically resumed. Users may explicitly retry a cancelled
+job before its retained source expires. Deletion removes the original source copy
+and prevents any late provider response from adding review candidates.
+
+## Enable background retries
+
+In **Daylight Import → Settings → Retries**, opt in to automatic retries.
+
+| Setting | Default | Available choices |
+| --- | --- | --- |
+| Automatic retries | Off | On / Off |
+| Initial delay | 15 minutes | 15, 30 or 60 minutes |
+| Maximum automatic attempts | 3 | 1–5 |
+| Saved source retention | 7 days | 1, 7, 14 or 30 days |
+
+Transient provider errors are retried with bounded exponential backoff and jitter.
+Rate-limit failures use a more conservative delay. Invalid credentials,
+unsupported files, and invalid event timestamps are not automatically retried.
+
+Daylight retains the source and a safe failure category after a retry budget is
+exhausted so you can manually retry or delete it. It rechecks provider/calendar
+selection and the submitting user's current permissions before unattended work.
+A changed or unauthorized configuration pauses the job instead of submitting to
+a different provider or destination silently.
+
+A Home Assistant restart does not erase saved retry jobs. Automatic retries occur
+only while Home Assistant is running. Overdue jobs are reconsidered on startup,
+subject to the configured limits and authorization checks.
+
+## Privacy and attachments
+
+Saved text and original image/PDF bytes may include personal or family information.
+The retry queue persists them privately on the Home Assistant instance until
+they succeed, are deleted, or expire. Image/PDF bytes are kept in a private local
+spool and checked for integrity before retrying; temporary AI-visible copies
+are removed after each attempt.
+
+Avoid placing Home Assistant's private storage or saved source folder on a public
+file share. Configure backups and retention according to your household's needs.
+Notification summaries and activity lists do not expose the original saved text
+or the private filesystem path.
+
+Direct IMAP polling has separate receipt and acknowledgment rules. This feature
+covers manually submitted text, images and PDFs; it does not automatically replay
+failed email messages through the manual retry queue.

@@ -8,8 +8,7 @@ Only a manual-text import that is still entirely awaiting review has its genuine
 original source available. Email records retain private source summaries, not the
 original message; uploaded images/PDFs have already been deleted. These sources,
 completed imports, and imports with handled or uncertain events cannot be
-reprocessed. Resubmit unavailable source material instead. Failed submissions
-retain no raw source and must also be resubmitted.
+reprocessed. Resubmit unavailable source material instead. Failed manual submissions can now retain the original source in the separate private retry queue; use **Retry now** in Recent Activity rather than reprocessing a pending review import. Email sources still have separate retry and acknowledgement semantics. See [Saved imports and retries](/configuration/retries).
 
 The action requires an authenticated user with control access to the configured
 AI Task and every allowed calendar, matching access to private pending details.
