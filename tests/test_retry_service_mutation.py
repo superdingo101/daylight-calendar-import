@@ -173,8 +173,9 @@ async def test_retry_actions_reject_anonymous_or_calendar_denied(service_setup, 
 async def test_retry_actions_missing_job_return_exact_error(service_setup, service):
     s = await service_setup()
     s.store.get_retry_job.return_value = None
-    with pytest.raises(ServiceValidationError, match="Saved import not found"):
+    with pytest.raises(ServiceValidationError) as exc:
         await s.invoke(service, job_id="does-not-exist")
+    assert str(exc.value) == "Saved import not found"
     s.store.get_retry_job.assert_called_once_with("does-not-exist")
 
 
@@ -198,7 +199,7 @@ async def test_owner_delete_returns_exact_identity_and_never_parses(service_setu
 
 
 @pytest.mark.parametrize(("overrides", "message"), [
-    ({"provider_entity_id": "ai_task.changed"}, "The AI Task changed since this import was saved"),
+    ({"provider_entity_id": "ai_task.changed"}, "The AI Task changed since this import was saved. Verify settings before retrying."),
     ({"calendar_entity": "calendar.no_longer_allowed"}, "The saved calendar is no longer permitted"),
     ({"source_kind": "image"}, "Retrying this source type is not supported yet"),
 ])
@@ -208,8 +209,9 @@ async def test_retry_preflight_blocks_stale_or_unsupported_source(
     s = await service_setup(job=saved_job(**overrides))
     parser = AsyncMock()
     monkeypatch.setattr("custom_components.daylight_calendar_import._async_parse_source", parser)
-    with pytest.raises(ServiceValidationError, match=message):
+    with pytest.raises(ServiceValidationError) as exc:
         await s.invoke(SERVICE_RETRY_JOB, job_id=s.job.id)
+    assert str(exc.value) == message
     s.store.async_claim_retry.assert_not_awaited()
     parser.assert_not_awaited()
     s.store.async_add.assert_not_awaited()
@@ -328,3 +330,64 @@ async def test_retry_unexpected_parser_failure_records_exact_claim_and_reraises(
         s.job.id, retry_claim=s.claimed.claim,
     )
     assert s.store.active_submissions == set()
+
+
+async def test_retry_route_change_is_rejected_before_claim(service_setup, monkeypatch):
+    """A saved source must not silently target a different calendar on retry."""
+    from custom_components.daylight_calendar_import.source_routing import SourceRoutingPlan
+
+    s = await service_setup()
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.plan_source_routing",
+        lambda source, **kwargs: SourceRoutingPlan(source, "calendar.other"),
+    )
+    with pytest.raises(ServiceValidationError) as exc:
+        await s.invoke(SERVICE_RETRY_JOB, job_id=s.job.id)
+    assert str(exc.value) == "Calendar routing changed. Review the saved import."
+    s.store.async_claim_retry.assert_not_awaited()
+    s.store.async_add.assert_not_awaited()
+
+
+async def test_retry_rejects_competing_claim_and_surfaces_exact_conflict(
+    service_setup, monkeypatch,
+):
+    s = await service_setup()
+    s.store.async_claim_retry.side_effect = RetryJobConflict("Retry is already processing")
+    parser = AsyncMock()
+    monkeypatch.setattr("custom_components.daylight_calendar_import._async_parse_source", parser)
+    with pytest.raises(ServiceValidationError) as exc:
+        await s.invoke(SERVICE_RETRY_JOB, job_id=s.job.id)
+    assert str(exc.value) == "Retry is already processing"
+    s.store.async_claim_retry.assert_awaited_once_with(s.job.id)
+    parser.assert_not_awaited()
+
+
+async def test_retry_preserves_nonempty_time_assumptions_and_route_disclosures(
+    service_setup, monkeypatch,
+):
+    """Timezone uncertainty and unresolved calendar routing must survive retry."""
+    from custom_components.daylight_calendar_import.source_routing import SourceRoutingPlan
+
+    s = await service_setup()
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.plan_source_routing",
+        lambda source, **kwargs: SourceRoutingPlan(
+            source, "calendar.family", ("Confirm the destination",), True,
+        ),
+    )
+    assumptions = [("Timezone requires review",)]
+    outcome = ParseOutcome([draft()], ["AI needs review"], assumptions)
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import._async_parse_source",
+        AsyncMock(return_value=outcome),
+    )
+    response = await s.invoke(SERVICE_RETRY_JOB, job_id=s.job.id)
+    assert response["status"] == "pending_review"
+    assert response["warnings"] == ["AI needs review", "Confirm the destination"]
+    args, kwargs = s.store.async_add.await_args
+    assert args == ()
+    assert kwargs["event_assumptions"] == assumptions
+    assert kwargs["warnings"] == ["AI needs review", "Confirm the destination"]
+    assert kwargs["routing_unresolved"] is True
+    assert kwargs["activity_id"] == s.job.id
+    assert kwargs["retry_claim"] == s.claimed.claim
