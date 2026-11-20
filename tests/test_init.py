@@ -75,6 +75,19 @@ from custom_components.daylight_calendar_import.storage import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_scheduler_timer_for_service_harnesses(monkeypatch):
+    """The FakeHass service harness has no HA event loop/timer integration.
+
+    RetryScheduler has dedicated timer, cleanup, and dispatch tests; here the
+    service setup and authorization behavior should run without real timers.
+    """
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.retry_scheduler.async_track_time_interval",
+        Mock(return_value=Mock()),
+    )
+
+
 class FakeServices:
     def __init__(self):
         self.handlers = {}
