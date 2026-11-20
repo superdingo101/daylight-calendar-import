@@ -740,7 +740,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if automatic:
             # Background work must not outlive the submitting user's permissions.
             if job.owner_user_id is None:
-                await pending_store.async_pause_retry(job.id)
+                await pending_store.async_pause_retry(job.id, expected_job=job)
                 return {"status": "paused", "job_id": job.id}
             try:
                 actor = await hass.auth.async_get_user(job.owner_user_id)
@@ -752,17 +752,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         hass, entity, Context(user_id=job.owner_user_id),
                     )
             except (Unauthorized, UnknownUser):
-                await pending_store.async_pause_retry(job.id)
+                await pending_store.async_pause_retry(job.id, expected_job=job)
                 return {"status": "paused", "job_id": job.id}
         if (job.provider_entity_id != ai_task_entity
                 or job.calendar_entity not in allowed_calendars):
             if automatic:
-                await pending_store.async_pause_retry(job.id)
+                await pending_store.async_pause_retry(job.id, expected_job=job)
                 return {"status": "paused", "job_id": job.id}
             raise ServiceValidationError("The saved AI Task or calendar changed. Verify settings before retrying.")
         if job.source_kind != "manual_text":
             if automatic:
-                await pending_store.async_pause_retry(job.id)
+                await pending_store.async_pause_retry(job.id, expected_job=job)
                 return {"status": "paused", "job_id": job.id}
             raise ServiceValidationError("Retrying this source type is not supported yet")
         source = TextSourceAdapter().create(job.source_text, source_id=job.source_id)
@@ -770,7 +770,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         route = route_review_source(source)
         if route.calendar_entity != job.calendar_entity:
             if automatic:
-                await pending_store.async_pause_retry(job.id)
+                await pending_store.async_pause_retry(job.id, expected_job=job)
                 return {"status": "paused", "job_id": job.id}
             raise ServiceValidationError("Calendar routing changed. Review the saved import.")
         try:
@@ -808,6 +808,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return _submission_response(result, [*outcome.warnings, *route.warnings], job.id)
         except RetryJobConflict:
             return {"status": "cancelled", "job_id": job.id}
+        except asyncio.CancelledError:
+            # Scheduler shutdown must not leave a durable processing claim
+            # stranded on the still-loaded entry when platform unload fails.
+            # The storage transaction completes despite cancellation and only
+            # finalizes this exact claim, never a newer manual retry.
+            await pending_store.async_record_parse_failure(
+                job.id,
+                provider_error_code=claimed.last_failure_code or "provider_unavailable",
+                retry_claim=claimed.claim,
+            )
+            raise
         except Exception:
             await pending_store.async_record_parse_failure(
                 job.id, retry_claim=claimed.claim,
