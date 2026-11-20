@@ -6,6 +6,7 @@ format so an unsuccessful mutation gate remains easy to investigate.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -14,7 +15,7 @@ NAMES_PATH = Path("mutation-survivor-names.txt")
 REPORT_PATH = Path("mutation-survivor-report.txt")
 
 
-def export_survivors(*, paths, metadata_factory, diff_for_mutant, status_by_exit_code) -> int:
+def export_survivors(*, paths, metadata_factory, diff_for_mutant, status_by_exit_code, selected=None) -> int:
     """Write all diagnostics using explicitly supplied mutmut data sources.
 
     This core remains importable in the older Home Assistant test environment,
@@ -23,6 +24,7 @@ def export_survivors(*, paths, metadata_factory, diff_for_mutant, status_by_exit
     found_mutants = False
     survivor_count = 0
     export_failures = 0
+    seen_selected = set()
 
     with (
         RESULTS_PATH.open("w", encoding="utf-8") as results,
@@ -37,6 +39,9 @@ def export_survivors(*, paths, metadata_factory, diff_for_mutant, status_by_exit
             found_mutants = True
 
             for mutant, exit_code in metadata.exit_code_by_key.items():
+                if selected is not None and mutant not in selected:
+                    continue
+                seen_selected.add(mutant)
                 status = status_by_exit_code[exit_code]
                 if status == "killed":
                     continue
@@ -57,6 +62,9 @@ def export_survivors(*, paths, metadata_factory, diff_for_mutant, status_by_exit
 
                 report.write(f"===== {mutant} =====\n# {mutant}: survived\n{diff}\n\n")
 
+    if selected is not None and seen_selected != selected:
+        print("ERROR: selected mutation diagnostics are missing identities", file=sys.stderr)
+        return 1
     if not found_mutants:
         print("ERROR: no mutation results found; was `mutmut run` completed?", file=sys.stderr)
         return 1
@@ -75,11 +83,22 @@ def main() -> int:
     from mutmut.stats import status_by_exit_code
     from mutmut.utils.file_utils import walk_mutatable_files
 
+    selected = None
+    index = os.environ.get("MUTATION_SHARD_INDEX")
+    if index is not None:
+        from scripts import mutation_shards as ms
+        manifest = ms.load_manifest(ms.MANIFEST)
+        ms.verify_manifest(manifest)
+        entry = ms.shard_entry(manifest, int(index))
+        if "mutant_names" in entry:
+            selected = set(entry["mutant_names"])
+
     return export_survivors(
         paths=walk_mutatable_files(),
         metadata_factory=SourceFileMutationData,
         diff_for_mutant=get_diff_for_mutant,
         status_by_exit_code=status_by_exit_code,
+        selected=selected,
     )
 
 
