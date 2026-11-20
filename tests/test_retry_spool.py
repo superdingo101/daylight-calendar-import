@@ -304,25 +304,26 @@ async def test_spool_requires_a_private_staging_path(spool_hass, tmp_path):
     assert not (tmp_path / "daylight_calendar_import_retry").exists()
 
 
-async def test_cancelled_spool_executor_that_fails_does_not_escape_or_store_bytes(
-    spool_hass, tmp_path, monkeypatch,
+async def test_cancelled_spool_executor_failure_is_consumed(
+    spool_hass, tmp_path,
 ):
+    """Deliver the executor error only after cancellation owns the future."""
     path = tmp_path / "daylight-source.png"
     path.write_bytes(b"source bytes")
-    entered, release = Event(), Event()
-
-    def fail_late(_hass, _source_path):
-        entered.set()
-        assert release.wait(5)
-        raise RetryAttachmentError("source vanished")
-
-    monkeypatch.setattr(spool_module, "_spool_copy", fail_late)
+    pending = asyncio.get_running_loop().create_future()
+    spool_hass.async_add_executor_job = lambda *_args: pending
     task = asyncio.create_task(async_spool_upload(spool_hass, source_for_stage(path)))
-    assert await asyncio.to_thread(entered.wait, 5)
+    await asyncio.sleep(0)
+    assert not task.done()
     task.cancel()
-    release.set()
+    # Force the cancelled coroutine to attach its exception-consuming await
+    # before the controlled executor fails; never race teardown.
+    await asyncio.sleep(0)
+    assert not task.done()
+    pending.set_exception(RetryAttachmentError("source vanished"))
     with pytest.raises(asyncio.CancelledError):
         await task
+    assert pending.done()
     assert not (tmp_path / "daylight_calendar_import_retry").exists()
 
 
@@ -371,29 +372,35 @@ def test_failed_media_write_cleans_the_temporary_ai_file(
 
 
 async def test_cancelled_media_stager_failure_is_consumed(
-    spool_hass, tmp_path, monkeypatch,
+    spool_hass, tmp_path,
 ):
+    """A stage failure after cancellation is observed and leaves no media."""
     path = tmp_path / "daylight-source.png"
     path.write_bytes(b"private")
     source = source_for_stage(path)
     name, digest, size = await async_spool_upload(spool_hass, source)
-    entered, release = Event(), Event()
+    pending = asyncio.get_running_loop().create_future()
+    staging_started = asyncio.Event()
+    original_executor = spool_hass.async_add_executor_job
 
-    def fail_late(_hass, _data, _suffix):
-        entered.set()
-        assert release.wait(5)
-        raise RetryAttachmentError("cannot stage")
+    def controlled_executor(func, *args):
+        if func is spool_module._stage_for_ai:
+            staging_started.set()
+            return pending
+        return original_executor(func, *args)
 
-    monkeypatch.setattr(spool_module, "_stage_for_ai", fail_late)
+    spool_hass.async_add_executor_job = controlled_executor
 
     async def replay():
         async with async_replay_source(spool_hass, job_for_spool(source, name, digest, size)):
             pytest.fail("the cancelled stage must not reach the provider")
 
     task = asyncio.create_task(replay())
-    assert await asyncio.to_thread(entered.wait, 5)
+    await asyncio.wait_for(staging_started.wait(), 5)
     task.cancel()
-    release.set()
+    await asyncio.sleep(0)
+    assert not task.done()
+    pending.set_exception(RetryAttachmentError("cannot stage"))
     with pytest.raises(asyncio.CancelledError):
         await task
     assert list((tmp_path / "media").glob("daylight-retry-*")) == []
