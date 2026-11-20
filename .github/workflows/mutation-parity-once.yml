@@ -1,7 +1,8 @@
 name: ONE-TIME mutation shard-1 parity (PR 280)
 
 # This temporary workflow runs exactly when it is introduced into PR #280.
-# Subsequent source/test commits do NOT retrigger it. After parity succeeds,
+# Subsequent source/test commits do NOT retrigger it. This update reruns parity
+# after correcting the diagnostic export invocation. After parity succeeds,
 # archive the SHA-bound artifact and remove this file in a separate commit.
 on:
   pull_request:
