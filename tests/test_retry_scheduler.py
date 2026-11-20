@@ -996,7 +996,12 @@ async def test_scheduler_pause_waiting_without_snapshot_is_idempotent(monkeypatc
 
 async def test_home_assistant_real_time_changed_event_executes_due_retry(hass):
     """Do not merely invoke a captured stub: exercise HA's real timer dispatch."""
-    from pytest_homeassistant_custom_component.common import async_fire_time_changed
+    from importlib.util import find_spec
+
+    if find_spec("pytest_homeassistant") is not None:
+        from pytest_homeassistant.common import async_fire_time_changed
+    else:
+        from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
     due = replace(make_job().after_failure("provider_unavailable"),
                   next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
