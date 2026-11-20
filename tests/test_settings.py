@@ -293,6 +293,8 @@ def test_email_and_complete_settings_snapshots_hide_secret():
         "conflict_calendar_entities": ["calendar.family"],
         "email": email,
         "notifications": {"enabled": False, "classes": [], "target": None},
+        "retry": {"enabled": False, "initial_delay_minutes": 15,
+                  "max_automatic_retries": 3, "retention_days": 7},
     }
     assert CONF_EMAIL_PASSWORD not in snapshot
 
@@ -948,6 +950,7 @@ def test_register_settings_api_registers_all_commands(monkeypatch):
         (hass, settings_api.websocket_update_email_settings),
         (hass, settings_api.websocket_update_calendar_intelligence),
         (hass, settings_api.websocket_update_notifications),
+        (hass, settings_api.websocket_update_retry),
     ]
 
 
@@ -1736,3 +1739,26 @@ async def test_alias_count_limit_also_applies_to_direct_option_replacements():
     with pytest.raises(SettingsValidationError, match="at most 100"):
         await async_save_option_patch(hass, configured, {"calendar_aliases": aliases})
     assert hass.config_entries.updates == []
+
+
+def test_retry_preferences_patch_validates_and_only_persists_changes():
+    from custom_components.daylight_calendar_import.const import CONF_RETRY_PREFERENCES
+    from custom_components.daylight_calendar_import.settings import (
+        effective_retry_preferences, retry_preferences_patch,
+    )
+    baseline = entry()
+    default = effective_retry_preferences(baseline)
+    assert default.enabled is False
+    assert default.initial_delay_minutes == 15
+    assert retry_preferences_patch(baseline, default.as_dict()) == {}
+    patch = retry_preferences_patch(baseline, {
+        "enabled": True, "initial_delay_minutes": 30,
+        "max_automatic_retries": 2, "retention_days": 14,
+    })
+    assert CONF_RETRY_PREFERENCES in patch
+    baseline.options[CONF_RETRY_PREFERENCES] = patch[CONF_RETRY_PREFERENCES]
+    assert effective_retry_preferences(baseline).enabled
+    assert retry_preferences_patch(baseline, patch[CONF_RETRY_PREFERENCES]) == {}
+    with pytest.raises(SettingsValidationError) as error:
+        retry_preferences_patch(baseline, {"initial_delay_minutes": 1})
+    assert error.value.code == "invalid_retries"

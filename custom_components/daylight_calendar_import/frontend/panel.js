@@ -1,6 +1,6 @@
 import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, repeatedHourOptions, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
 import {changeRetryJob, checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
-import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, settingsErrorMessage} from "./settings.js";
+import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, saveRetrySettings, settingsErrorMessage} from "./settings.js";
 
 import {ManualSubmission} from "./manual_submission.js";
 import {FileSubmission} from "./upload_submission.js";
@@ -617,7 +617,8 @@ function emailDraftMatches(settings, draft) {
 }
 
 function settingsDraftMatches(settings, tab, draft) {
-  return tab === "notifications" ?
+  return tab === "retry" ? JSON.stringify(settings?.retry) === JSON.stringify(draft?.retry) :
+    tab === "notifications" ?
     Boolean(settings?.notifications && draft?.notifications) &&
       settings.notifications.enabled === draft.notifications.enabled &&
       settings.notifications.target === draft.notifications.target &&
@@ -695,9 +696,11 @@ export class DaylightImportPanel extends HTMLElement {
     this._settingsTab = "general";
     this._settingsError = null;
     this._settingsReloadWarning = null;
-    this._settingsDrafts = {general: null, calendars: null, routing: null, email: null, notifications: null};
+    this._settingsDrafts = {general: null, calendars: null, routing: null, email: null, notifications: null, retry: null};
     this._notificationDraftBaseline = null;
     this._notificationConflictNeedsRebase = false;
+    this._retryDraftBaseline = null;
+    this._retryConflictNeedsRebase = false;
     this._routingRawDraft = null;
     this._settingsSaving = false;
     const style = element("style", css);
@@ -1111,7 +1114,7 @@ export class DaylightImportPanel extends HTMLElement {
       const settings = await loadSettings(this._hass);
       if (generation !== this._generation) return;
       this._applySettingsSnapshot(settings);
-      for (const tab of ["general", "calendars", "routing", "email", "notifications"]) {
+      for (const tab of ["general", "calendars", "routing", "email", "notifications", "retry"]) {
         if (this._settingsDrafts[tab] &&
             settingsDraftMatches(settings, tab, this._settingsDrafts[tab])) {
           this._settingsDrafts[tab] = null;
@@ -1152,6 +1155,19 @@ export class DaylightImportPanel extends HTMLElement {
       this._settingsDrafts.notifications = null;
       this._notificationDraftBaseline = null;
       this._notificationConflictNeedsRebase = false;
+    }
+    if (this._retryConflictNeedsRebase) {
+      this._settingsDrafts.retry = null;
+      this._retryDraftBaseline = null;
+      this._retryConflictNeedsRebase = false;
+      this._settingsError =
+        "Retry settings changed elsewhere. Review the current policy and re-enter your changes.";
+    }
+    if (!this._settingsDrafts.retry ||
+        settingsDraftMatches(settings, "retry", this._settingsDrafts.retry)) {
+      this._settingsDrafts.retry = null;
+      this._retryDraftBaseline = null;
+      this._retryConflictNeedsRebase = false;
     }
     this._reconcileRoutingDraft(settings);
   }
@@ -1206,6 +1222,10 @@ export class DaylightImportPanel extends HTMLElement {
         this._notificationDraftBaseline = null;
         this._notificationConflictNeedsRebase = false;
       }
+      if (tab === "retry") {
+        this._retryDraftBaseline = null;
+        this._retryConflictNeedsRebase = false;
+      }
       this._settingsDrafts[tab] = null;
       this._applySettingsSnapshot(saved);
       if (changesPersistedSettings) this._settingsReloadWarning = null;
@@ -1219,6 +1239,7 @@ export class DaylightImportPanel extends HTMLElement {
         if (tab === "routing") this._routingRawDraft = null;
         this._settingsDrafts[tab] = null;
         if (tab === "notifications") this._notificationDraftBaseline = null;
+        if (tab === "retry") this._retryDraftBaseline = null;
         try {
           this._applySettingsSnapshot(await loadSettings(this._hass));
         } catch (refreshError) {
@@ -1246,6 +1267,20 @@ export class DaylightImportPanel extends HTMLElement {
             "Notification settings changed elsewhere, but refresh failed. " +
             "Your unsaved choices are retained; refresh settings before saving.";
         }
+      } else if (tab === "retry" && isSettingsErrorCode(error, "retry_settings_changed")) {
+        // A saved complete policy must not overwrite newer administrator edits.
+        try {
+          const refreshed = await loadSettings(this._hass);
+          this._settingsDrafts.retry = null;
+          this._retryDraftBaseline = null;
+          this._retryConflictNeedsRebase = false;
+          this._applySettingsSnapshot(refreshed);
+          this._settingsError = message;
+        } catch {
+          this._retryConflictNeedsRebase = true;
+          this._settingsError =
+            "Retry settings changed elsewhere, but could not be refreshed. Refresh settings before saving.";
+        }
       } else if (isDefinitiveSettingsError(error)) {
         this._settingsError = message;
       } else {
@@ -1255,6 +1290,7 @@ export class DaylightImportPanel extends HTMLElement {
           if (settingsDraftMatches(reconciled, tab, patch)) {
             this._settingsDrafts[tab] = null;
             if (tab === "notifications") this._notificationDraftBaseline = null;
+            if (tab === "retry") this._retryDraftBaseline = null;
             if (changesPersistedSettings) {
               this._settingsReloadWarning = SETTINGS_RUNTIME_UNCERTAIN_WARNING;
             }
@@ -1286,6 +1322,14 @@ export class DaylightImportPanel extends HTMLElement {
       } else if (matches) {
         this._notificationDraftBaseline = null;
         this._notificationConflictNeedsRebase = false;
+      }
+    }
+    if (tab === "retry") {
+      if (!matches && !this._retryDraftBaseline) {
+        this._retryDraftBaseline = {...this._settings.retry};
+      } else if (matches) {
+        this._retryDraftBaseline = null;
+        this._retryConflictNeedsRebase = false;
       }
     }
     this._settingsDrafts[tab] = matches ? null : patch;
@@ -1362,6 +1406,7 @@ export class DaylightImportPanel extends HTMLElement {
       ["routing", "Routing"],
       ["email", "Email"],
       ["notifications", "Notifications"],
+      ["retry", "Retries"],
     ]) {
       const button = element("button", label);
       button.type = "button";
@@ -1730,6 +1775,79 @@ export class DaylightImportPanel extends HTMLElement {
         this._content.querySelector("[data-settings-reload-warning]") ||
         this._content.querySelector("h2") || this._refreshButton)?.focus();
     }
+  }
+
+  retrySettingsView() {
+    const section = element("section", "", "settings-card");
+    const heading = element("h2", "Retries");
+    heading.tabIndex = -1;
+    section.append(heading, element("p",
+      "Temporary AI failures are saved for manual retry. Background retries are optional and off by default.",
+      "settings-help"));
+    const form = document.createElement("form");
+    const current = this._settings.retry ?? {
+      enabled: false, initial_delay_minutes: 15, max_automatic_retries: 3,
+      retention_days: 7,
+    };
+    const draft = this._settingsDrafts.retry?.retry ?? current;
+    const enabledLabel = element("label", "Automatically retry temporary AI failures");
+    const enabled = document.createElement("input");
+    enabled.type = "checkbox";
+    enabled.name = "retry_enabled";
+    enabled.checked = draft.enabled;
+    enabledLabel.prepend(enabled);
+    form.append(enabledLabel);
+    const choice = (label, name, values, selected) => {
+      const wrapper = element("label", label);
+      const select = document.createElement("select");
+      select.name = name;
+      for (const value of values) {
+        const option = document.createElement("option");
+        option.value = String(value);
+        option.textContent = String(value);
+        select.append(option);
+      }
+      select.value = String(selected);
+      wrapper.append(select);
+      form.append(wrapper);
+      return select;
+    };
+    const delay = choice("Initial delay (minutes)", "initial_delay_minutes", [15, 30, 60],
+      draft.initial_delay_minutes);
+    const attempts = choice("Automatic retries", "max_automatic_retries", [1, 2, 3, 4, 5],
+      draft.max_automatic_retries);
+    const days = choice("Retain saved inputs (days)", "retention_days", [1, 7, 14, 30],
+      draft.retention_days);
+    const policy = () => ({
+      enabled: enabled.checked,
+      initial_delay_minutes: Number(delay.value),
+      max_automatic_retries: Number(attempts.value),
+      retention_days: Number(days.value),
+    });
+    form.addEventListener("change", () => this._setSettingsDraft("retry", {retry: policy()}));
+    const save = element("button", this._settingsSaving ? "Saving…" : "Save retry settings");
+    save.type = "submit";
+    save.disabled = this._settingsSaving;
+    form.append(save);
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      const retry = policy();
+      if (this._retryConflictNeedsRebase) {
+        this._settingsError = "Refresh retry settings before saving your retained changes.";
+        this.render();
+        this._content.querySelector("[data-settings-save-error]")?.focus();
+        return;
+      }
+      this._setSettingsDraft("retry", {retry});
+      void this._saveSettings("retry", {retry},
+        () => saveRetrySettings(this._hass, {
+          entry_id: this._settings.entry_id, retry,
+          expected_retry: this._retryDraftBaseline ?? current,
+        }), "Retry settings saved", "Could not save retry settings.");
+    });
+    setSettingsFormBusy(form, this._settingsSaving);
+    section.append(form);
+    return section;
   }
 
   notificationSettingsView() {
@@ -2826,7 +2944,9 @@ export class DaylightImportPanel extends HTMLElement {
             this._settingsTab === "email" ?
               this.emailSettingsView() :
             this._settingsTab === "notifications" ?
-              this.notificationSettingsView() : this.generalSettingsView(),
+              this.notificationSettingsView() :
+            this._settingsTab === "retry" ?
+              this.retrySettingsView() : this.generalSettingsView(),
         );
       }
       this._viewContent.replaceChildren(content);

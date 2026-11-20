@@ -5,6 +5,7 @@ const SETTINGS_CORE_UPDATE = "daylight_calendar_import/settings/core/update";
 const SETTINGS_EMAIL_UPDATE = "daylight_calendar_import/settings/email/update";
 const SETTINGS_CALENDAR_INTELLIGENCE_UPDATE = "daylight_calendar_import/settings/calendar_intelligence/update";
 const SETTINGS_NOTIFICATIONS_UPDATE = "daylight_calendar_import/settings/notifications/update";
+const SETTINGS_RETRY_UPDATE = "daylight_calendar_import/settings/retry/update";
 
 const NOTIFICATION_CLASSES = new Set([
   "review_ready", "calendar_created", "calendar_create_failed",
@@ -21,13 +22,23 @@ function validNotificationPolicy(policy) {
     new Set(policy.classes).size === policy.classes.length;
 }
 
+function validRetryPolicy(policy) {
+  return policy && typeof policy === "object" && !Array.isArray(policy) &&
+    typeof policy.enabled === "boolean" &&
+    [15, 30, 60].includes(policy.initial_delay_minutes) &&
+    Number.isInteger(policy.max_automatic_retries) &&
+    policy.max_automatic_retries >= 1 && policy.max_automatic_retries <= 5 &&
+    [1, 7, 14, 30].includes(policy.retention_days);
+}
+
 function validateSettings(result) {
   if (!result || typeof result.entry_id !== "string" ||
       typeof result.ai_task_entity !== "string" ||
       typeof result.calendar_entity !== "string" ||
       !Array.isArray(result.calendar_entities) ||
       typeof result.email !== "object" || result.email === null ||
-      !validNotificationPolicy(result.notifications)) {
+      !validNotificationPolicy(result.notifications) ||
+      (result.retry !== undefined && !validRetryPolicy(result.retry))) {
     throw new Error("Daylight settings returned an unexpected response. Try again.");
   }
   return result;
@@ -90,4 +101,13 @@ export async function saveCalendarIntelligenceSettings(hass, settings) {
     if (settings[key] !== undefined) payload[key] = settings[key];
   }
   return validateSettings(await hass.callWS(payload));
+}
+
+export async function saveRetrySettings(hass, settings) {
+  return validateSettings(await hass.callWS({
+    type: SETTINGS_RETRY_UPDATE,
+    entry_id: settings.entry_id,
+    retry: settings.retry,
+    expected_retry: settings.expected_retry,
+  }));
 }

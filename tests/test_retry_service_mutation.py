@@ -55,6 +55,12 @@ def service_setup(monkeypatch):
         "custom_components.daylight_calendar_import.async_track_time_interval",
         Mock(return_value=Mock()),
     )
+    # The service harness does not implement HA event-loop timers; timer
+    # ownership and execution are covered in test_retry_scheduler.py.
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.retry_scheduler.async_track_time_interval",
+        Mock(return_value=Mock()),
+    )
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.ir.async_create_issue", Mock(),
     )
@@ -199,8 +205,8 @@ async def test_owner_delete_returns_exact_identity_and_never_parses(service_setu
 
 
 @pytest.mark.parametrize(("overrides", "message"), [
-    ({"provider_entity_id": "ai_task.changed"}, "The AI Task changed since this import was saved. Verify settings before retrying."),
-    ({"calendar_entity": "calendar.no_longer_allowed"}, "The saved calendar is no longer permitted"),
+    ({"provider_entity_id": "ai_task.changed"}, "The saved AI Task or calendar changed. Verify settings before retrying."),
+    ({"calendar_entity": "calendar.no_longer_allowed"}, "The saved AI Task or calendar changed. Verify settings before retrying."),
     ({"source_kind": "image"}, "Retrying this source type is not supported yet"),
 ])
 async def test_retry_preflight_blocks_stale_or_unsupported_source(
@@ -234,7 +240,7 @@ async def test_retry_claim_and_success_restore_original_source_and_review_contra
         "duplicate_events": 0,
         "warnings": ["AI uncertainty"],
     }
-    s.store.async_claim_retry.assert_awaited_once_with(s.job.id)
+    s.store.async_claim_retry.assert_awaited_once_with(s.job.id, automatic=False)
     parse.assert_awaited_once()
     args, kwargs = parse.await_args
     assert args[0] is s.hass
@@ -269,7 +275,8 @@ async def test_retry_provider_failure_returns_saved_status_and_releases_claim(
         AsyncMock(side_effect=failure),
     )
     stopped = replace(s.claimed, state="waiting", claim=None, last_failure_code="provider_unavailable")
-    s.store.get_retry_job.side_effect = [s.job, stopped]
+    # Authorization, execution and final failure response each read the job.
+    s.store.get_retry_job.side_effect = [s.job, s.job, stopped]
     assert await s.invoke(SERVICE_RETRY_JOB, job_id=s.job.id) == {
         "status": "saved_for_retry",
         "activity_id": s.job.id, "pending": None,
@@ -280,6 +287,7 @@ async def test_retry_provider_failure_returns_saved_status_and_releases_claim(
     s.store.async_record_parse_failure.assert_awaited_once_with(
         s.job.id, provider_error_code="provider_unavailable", retry_claim=s.claimed.claim,
     )
+    assert s.store.get_retry_job.call_count == 3
     s.store.async_add.assert_not_awaited()
     assert s.store.active_submissions == set()
 
@@ -290,7 +298,7 @@ async def test_retry_provider_failure_after_deletion_returns_cancelled(service_s
         "custom_components.daylight_calendar_import._async_parse_source",
         AsyncMock(side_effect=ProviderError("provider_unavailable", "private error")),
     )
-    s.store.get_retry_job.side_effect = [s.job, None]
+    s.store.get_retry_job.side_effect = [s.job, s.job, None]
     assert await s.invoke(SERVICE_RETRY_JOB, job_id=s.job.id) == {
         "status": "cancelled", "job_id": s.job.id,
     }
@@ -332,6 +340,127 @@ async def test_retry_unexpected_parser_failure_records_exact_claim_and_reraises(
     assert s.store.active_submissions == set()
 
 
+
+async def test_manual_retry_cannot_execute_after_job_deleted_between_permission_and_claim(
+    service_setup,
+):
+    """Authorization is not a durable claim: deletion before execution wins."""
+    s = await service_setup()
+    s.store.get_retry_job.side_effect = [s.job, None]
+    with pytest.raises(ServiceValidationError, match="Saved import not found"):
+        await s.invoke(SERVICE_RETRY_JOB, job_id=s.job.id)
+    assert s.store.get_retry_job.call_count == 2
+    s.store.async_claim_retry.assert_not_awaited()
+    s.store.async_add.assert_not_awaited()
+
+
+async def test_cancelled_automatic_parser_releases_exact_claim_before_propagation(
+    service_setup, monkeypatch,
+):
+    import asyncio
+
+    s = await service_setup()
+    s.hass.auth.user.is_active = True
+    started, done = asyncio.Event(), asyncio.Event()
+
+    async def blocked_parser(*args, **kwargs):
+        started.set()
+        await done.wait()
+        raise AssertionError("cancelled parser must never return")
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import._async_parse_source",
+        blocked_parser,
+    )
+    task = asyncio.create_task(s.store.retry_runtime._execute(s.job.id))
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    s.store.async_record_parse_failure.assert_awaited_once_with(
+        s.job.id, provider_error_code="provider_unavailable",
+        retry_claim=s.claimed.claim,
+    )
+    s.store.async_add.assert_not_awaited()
+    assert s.store.active_submissions == set()
+
+
+async def test_automatic_retry_rejects_missing_source_without_claim_or_parse(
+    service_setup, monkeypatch,
+):
+    s = await service_setup()
+    s.store.get_retry_job.return_value = None
+    parser = AsyncMock()
+    monkeypatch.setattr("custom_components.daylight_calendar_import._async_parse_source", parser)
+    s.store.async_pause_retry = AsyncMock()
+    assert await s.store.retry_runtime._execute("missing-job") == {
+        "status": "not_found", "job_id": "missing-job",
+    }
+    s.store.get_retry_job.assert_called_once_with("missing-job")
+    s.store.async_claim_retry.assert_not_awaited()
+    s.store.async_pause_retry.assert_not_awaited()
+    parser.assert_not_awaited()
+
+
+@pytest.mark.parametrize("reason", [
+    "no_owner", "missing_actor", "inactive_actor", "denied_calendar",
+    "unknown_during_acl", "unsupported_kind", "route_change",
+])
+async def test_automatic_retry_preflight_revocation_pauses_without_parsing(
+    service_setup, monkeypatch, reason,
+):
+    """Permissions, routing and supported source kind are rechecked on every tick."""
+    from custom_components.daylight_calendar_import.source_routing import SourceRoutingPlan
+
+    job = saved_job(
+        state="waiting", claim=None,
+        owner_user_id=None if reason == "no_owner" else "owner",
+        source_kind="image" if reason == "unsupported_kind" else "manual_text",
+    )
+    s = await service_setup(job=job)
+    s.store.async_pause_retry = AsyncMock(return_value=replace(job, state="paused"))
+    parser = AsyncMock()
+    monkeypatch.setattr("custom_components.daylight_calendar_import._async_parse_source", parser)
+    s.hass.auth.user.is_active = True
+    if reason == "missing_actor":
+        s.hass.auth.user = None
+    elif reason == "inactive_actor":
+        s.hass.auth.user.is_active = False
+    elif reason == "denied_calendar":
+        s.permissions.allowed = {"ai_task.test": True, "calendar.family": False}
+    elif reason == "unknown_during_acl":
+        # Owner existed at initial lookup but disappeared before entity ACL check.
+        s.hass.auth.async_get_user = AsyncMock(side_effect=[s.hass.auth.user, None])
+    elif reason == "route_change":
+        monkeypatch.setattr(
+            "custom_components.daylight_calendar_import.plan_source_routing",
+            lambda source, **kwargs: SourceRoutingPlan(source, "calendar.other"),
+        )
+    assert await s.store.retry_runtime._execute(job.id) == {
+        "status": "paused", "job_id": job.id,
+    }
+    s.store.async_pause_retry.assert_awaited_once_with(job.id, expected_job=job)
+    s.store.async_claim_retry.assert_not_awaited()
+    parser.assert_not_awaited()
+
+
+async def test_automatic_retry_with_active_owner_rechecks_acl_before_durable_claim(
+    service_setup, monkeypatch,
+):
+    s = await service_setup()
+    s.hass.auth.user.is_active = True
+    parser = AsyncMock(return_value=ParseOutcome([draft()], []))
+    monkeypatch.setattr("custom_components.daylight_calendar_import._async_parse_source", parser)
+    result = await s.store.retry_runtime._execute(s.job.id)
+    assert result["status"] == "pending_review"
+    s.store.async_claim_retry.assert_awaited_once_with(s.job.id, automatic=True)
+    assert s.permissions.calls == [
+        ("ai_task.test", POLICY_CONTROL),
+        ("calendar.family", POLICY_CONTROL),
+    ]
+    parser.assert_awaited_once()
+
+
 async def test_retry_route_change_is_rejected_before_claim(service_setup, monkeypatch):
     """A saved source must not silently target a different calendar on retry."""
     from custom_components.daylight_calendar_import.source_routing import SourceRoutingPlan
@@ -358,7 +487,7 @@ async def test_retry_rejects_competing_claim_and_surfaces_exact_conflict(
     with pytest.raises(ServiceValidationError) as exc:
         await s.invoke(SERVICE_RETRY_JOB, job_id=s.job.id)
     assert str(exc.value) == "Retry is already processing"
-    s.store.async_claim_retry.assert_awaited_once_with(s.job.id)
+    s.store.async_claim_retry.assert_awaited_once_with(s.job.id, automatic=False)
     parser.assert_not_awaited()
 
 

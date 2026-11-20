@@ -32,6 +32,7 @@ class RetryJob:
     owner_user_id: str | None
     state: str = "processing"
     attempts: int = 1
+    automatic_attempts: int = 0
     claim: str | None = None
     last_failure_code: str | None = None
     next_attempt_at: str | None = None
@@ -87,6 +88,9 @@ class RetryJob:
             raise ValueError("retry timestamp must be timezone aware")
         if job.state not in RETRY_STATES or type(job.attempts) is not int or not 1 <= job.attempts <= 1000:
             raise ValueError("invalid retry lifecycle")
+        if (type(job.automatic_attempts) is not int
+                or not 0 <= job.automatic_attempts <= job.attempts):
+            raise ValueError("invalid automatic retry count")
         if job.state == "processing" and not job.claim:
             raise ValueError("processing retry must have a claim")
         if job.claim is not None and (not isinstance(job.claim, str) or len(job.claim) > 128):
@@ -129,7 +133,8 @@ class RetryJob:
         return {
             "id": self.id, "source_kind": self.source_kind, "source_title": self.source_title,
             "received_at": self.received_at, "state": self.state,
-            "attempts": self.attempts, "next_attempt_at": self.next_attempt_at,
+            "attempts": self.attempts, "automatic_attempts": self.automatic_attempts,
+            "next_attempt_at": self.next_attempt_at,
             "last_failure_code": self.last_failure_code,
         }
 

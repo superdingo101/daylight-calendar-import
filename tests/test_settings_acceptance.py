@@ -23,7 +23,7 @@ from custom_components.daylight_calendar_import.const import (
 )
 from custom_components.daylight_calendar_import.settings_api import (
     WS_GET_SETTINGS, WS_UPDATE_CALENDAR_INTELLIGENCE, WS_UPDATE_CORE_SETTINGS,
-    WS_UPDATE_EMAIL_SETTINGS, WS_UPDATE_NOTIFICATIONS,
+    WS_UPDATE_EMAIL_SETTINGS, WS_UPDATE_NOTIFICATIONS, WS_UPDATE_RETRY,
 )
 
 SECRET = "mailbox-password-never-returned"
@@ -100,6 +100,8 @@ async def test_all_settings_tabs_survive_real_entry_reload(hass, hass_ws_client,
                   "username": "imports@example.com", "password_configured": True,
                   "mailbox": "INBOX", "verify_ssl": True, "sender_allowlist": ["school@example.com"]},
         "notifications": POLICY,
+        "retry": {"enabled": False, "initial_delay_minutes": 15,
+                  "max_automatic_retries": 3, "retention_days": 7},
     }
     assert entry.options[CONF_EMAIL_PASSWORD] == SECRET
     settings_runtime.validate.assert_awaited_once()
@@ -117,6 +119,7 @@ async def test_all_settings_tabs_survive_real_entry_reload(hass, hass_ws_client,
     (WS_UPDATE_EMAIL_SETTINGS, {"enabled": False}),
     (WS_UPDATE_CALENDAR_INTELLIGENCE, {"calendar_aliases": {}, "expected_calendar_aliases": {}}),
     (WS_UPDATE_NOTIFICATIONS, {"expected_notifications": {}, "notifications": POLICY}),
+    (WS_UPDATE_RETRY, {"expected_retry": {}, "retry": {"enabled": True}}),
 ])
 async def test_every_settings_endpoint_requires_admin(
     hass, hass_ws_client, settings_runtime, command, fields,
@@ -381,3 +384,37 @@ async def test_panel_survives_unload_but_is_removed_when_entry_deleted(hass, set
     assert frontend.async_panel_exists(hass, PANEL_PATH)
     await hass.config_entries.async_remove(entry.entry_id)
     assert not frontend.async_panel_exists(hass, PANEL_PATH)
+
+
+async def test_retry_settings_opt_in_persists_and_rejects_stale_or_invalid_changes(
+    hass, hass_ws_client, settings_runtime,
+):
+    entry = settings_runtime.entry
+    admin = await hass_ws_client(hass)
+    other = await hass_ws_client(hass)
+    baseline = (await success(admin, WS_GET_SETTINGS))["retry"]
+    assert baseline["enabled"] is False
+    request = {
+        "enabled": True, "initial_delay_minutes": 30,
+        "max_automatic_retries": 2, "retention_days": 14,
+    }
+    updated = await success(admin, WS_UPDATE_RETRY, entry_id=entry.entry_id,
+                            expected_retry=baseline, retry=request)
+    assert updated["retry"] == request
+    assert (await success(other, WS_GET_SETTINGS))["retry"] == request
+    rejected = await call(other, WS_UPDATE_RETRY, entry_id=entry.entry_id,
+                          expected_retry=baseline, retry={"enabled": False})
+    assert rejected["success"] is False
+    assert rejected["error"]["code"] == "retry_settings_changed"
+    bad = await call(admin, WS_UPDATE_RETRY, entry_id=entry.entry_id,
+                     expected_retry=request, retry={"enabled": 1})
+    assert bad["success"] is False
+    assert bad["error"]["code"] == "invalid_retries"
+    bad_expected = await call(admin, WS_UPDATE_RETRY, entry_id=entry.entry_id,
+                              expected_retry={"retention_days": "forever"}, retry=baseline)
+    assert bad_expected["success"] is False
+    assert bad_expected["error"]["code"] == "invalid_retries"
+    assert (await success(admin, WS_GET_SETTINGS))["retry"] == request
+    unchanged = await success(admin, WS_UPDATE_RETRY, entry_id=entry.entry_id,
+                              expected_retry=request, retry=request)
+    assert unchanged["retry"] == request

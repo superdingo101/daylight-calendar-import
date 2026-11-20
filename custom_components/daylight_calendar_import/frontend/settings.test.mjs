@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, settingsErrorMessage} from "./settings.js";
+import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, saveRetrySettings, settingsErrorMessage} from "./settings.js";
 
 const snapshot = {
   entry_id: "entry-1",
@@ -199,4 +199,42 @@ test("notification target length uses Unicode code points as on Home Assistant",
   const invalid = {...valid, notifications: {...valid.notifications, target: target + "𝟘"}};
   await assert.rejects(() => loadSettings({callWS: async () => invalid}),
     /unexpected response/);
+});
+
+test("retry client sends the exact optimistic concurrency policy", async () => {
+  const oldPolicy = {enabled: false, initial_delay_minutes: 15,
+    max_automatic_retries: 3, retention_days: 7};
+  const newPolicy = {...oldPolicy, enabled: true, initial_delay_minutes: 30,
+    max_automatic_retries: 2};
+  const calls = [];
+  const hass = {callWS: async message => {
+    calls.push(message);
+    return {...snapshot, retry: newPolicy};
+  }};
+  assert.deepEqual((await saveRetrySettings(hass, {
+    entry_id: "entry-1", retry: newPolicy, expected_retry: oldPolicy,
+  })).retry, newPolicy);
+  assert.deepEqual(calls, [{
+    type: "daylight_calendar_import/settings/retry/update",
+    entry_id: "entry-1", retry: newPolicy, expected_retry: oldPolicy,
+  }]);
+});
+
+test("retry client rejects malformed policy snapshots at both read and write boundaries", async () => {
+  const valid = {enabled: false, initial_delay_minutes: 15,
+    max_automatic_retries: 3, retention_days: 7};
+  const malformed = [
+    null, [], {...valid, enabled: 1},
+    {...valid, initial_delay_minutes: 5},
+    {...valid, max_automatic_retries: 0},
+    {...valid, max_automatic_retries: 6},
+    {...valid, retention_days: 31},
+  ];
+  for (const retry of malformed) {
+    const hass = {callWS: async () => ({...snapshot, retry})};
+    await assert.rejects(loadSettings(hass), /unexpected response/);
+    await assert.rejects(saveRetrySettings(hass, {
+      entry_id: "entry-1", retry: valid, expected_retry: valid,
+    }), /unexpected response/);
+  }
 });

@@ -17,6 +17,7 @@ from .const import (
     CONF_CALENDAR_ALIASES,
     CONF_CONFLICT_CALENDAR_ENTITIES,
     CONF_NOTIFICATION_PREFERENCES,
+    CONF_RETRY_PREFERENCES,
     CONF_EMAIL_ENABLED,
     CONF_EMAIL_HOST,
     CONF_EMAIL_MAILBOX,
@@ -35,6 +36,7 @@ from .direct_imap import (
     DirectImapSource,
 )
 from .email_safety import normalize_sender_allowlist
+from .retry_settings import RetrySettings, RetrySettingsError, normalize_retry_settings
 from .notification_preferences import (
     NotificationPreferences,
     NotificationPreferencesError,
@@ -296,6 +298,22 @@ def notification_preferences_patch(
     return {CONF_NOTIFICATION_PREFERENCES: normalized}
 
 
+def effective_retry_preferences(entry: ConfigEntry) -> RetrySettings:
+    """Return the validated opt-in retry configuration."""
+    return normalize_retry_settings(entry.options.get(CONF_RETRY_PREFERENCES, {}))
+
+
+def retry_preferences_patch(entry: ConfigEntry, raw: Mapping[str, object]) -> dict[str, object]:
+    """Return only an actual settings change."""
+    try:
+        updated = normalize_retry_settings(raw)
+    except RetrySettingsError as err:
+        raise SettingsValidationError("invalid_retries", str(err)) from err
+    if updated == effective_retry_preferences(entry):
+        return {}
+    return {CONF_RETRY_PREFERENCES: updated.as_dict()}
+
+
 def settings_snapshot(entry: ConfigEntry) -> dict[str, Any]:
     """Return the complete secret-safe settings view for one entry."""
     ai_task_entity, default_calendar, allowed_calendars = effective_core_options(entry)
@@ -309,6 +327,7 @@ def settings_snapshot(entry: ConfigEntry) -> dict[str, Any]:
         "calendar_entities": allowed_calendars,
         "email": email_settings_snapshot(entry.options),
         "notifications": notification_preferences_snapshot(effective_notification_preferences(entry)),
+        "retry": effective_retry_preferences(entry).as_dict(),
     }
 
 

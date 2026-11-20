@@ -70,7 +70,8 @@ from .providers import SourceValidationError, ProviderError
 from .review_panel import async_register_review_panel, async_remove_review_panel
 from .settings import effective_ai_task_entity, effective_calendar_options, effective_calendar_intelligence
 from .settings_api import async_register_settings_api
-from .settings import effective_notification_preferences
+from .settings import effective_notification_preferences, effective_retry_preferences
+from .retry_scheduler import RetryScheduler
 from .notification_delivery import async_deliver_notifications, MAX_ACTIVE_TASKS as _MAX_NOTIFICATION_TASKS
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .source_routing import plan_source_routing
@@ -287,6 +288,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id, None)
     pending_store = PendingImportStore(hass)
     pending_store.notification_preferences = lambda: effective_notification_preferences(entry)
+    pending_store.retry_preferences = lambda: effective_retry_preferences(entry)
     # Retention must see live providers from the previous entry before loading.
     # Keep task ownership across config-entry reloads. Providers that ignore
     # cancellation must not become invisible when the old store unloads.
@@ -294,6 +296,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     pending_store.notification_tasks = registry.setdefault(entry.entry_id, set())
     try:
         await pending_store.async_load()
+        if hasattr(pending_store, "async_rearm_retry_jobs"):
+            await pending_store.async_rearm_retry_jobs()
     except PendingImportStorageError:
         ir.async_create_issue(
             hass, DOMAIN, "storage_recovery", is_fixable=False,
@@ -726,24 +730,54 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         removed = await pending_store.async_delete_retry(job.id)
         return {"job_id": job.id, "deleted": removed}
 
-    async def handle_retry_job(call: ServiceCall) -> ServiceResponse:
-        job = await authorized_retry_job(call)
-        if job.provider_entity_id != ai_task_entity:
-            raise ServiceValidationError(
-                "The AI Task changed since this import was saved. Verify settings before retrying."
-            )
-        if job.calendar_entity not in allowed_calendars:
-            raise ServiceValidationError("The saved calendar is no longer permitted")
+    async def execute_retry_job(job_id: str, *, automatic: bool = False) -> ServiceResponse:
+        """Process one claimed source, preserving original time and review rules."""
+        job = pending_store.get_retry_job(job_id)
+        if job is None:
+            if automatic:
+                return {"status": "not_found", "job_id": job_id}
+            raise ServiceValidationError("Saved import not found")
+        if automatic:
+            # Background work must not outlive the submitting user's permissions.
+            if job.owner_user_id is None:
+                await pending_store.async_pause_retry(job.id, expected_job=job)
+                return {"status": "paused", "job_id": job.id}
+            try:
+                actor = await hass.auth.async_get_user(job.owner_user_id)
+                if actor is None or not actor.is_active:
+                    raise Unauthorized(context=Context(user_id=job.owner_user_id),
+                                       permission=POLICY_CONTROL)
+                for entity in (ai_task_entity, job.calendar_entity):
+                    await _async_check_entity_control_permission(
+                        hass, entity, Context(user_id=job.owner_user_id),
+                    )
+            except (Unauthorized, UnknownUser):
+                await pending_store.async_pause_retry(job.id, expected_job=job)
+                return {"status": "paused", "job_id": job.id}
+        if (job.provider_entity_id != ai_task_entity
+                or job.calendar_entity not in allowed_calendars):
+            if automatic:
+                await pending_store.async_pause_retry(job.id, expected_job=job)
+                return {"status": "paused", "job_id": job.id}
+            raise ServiceValidationError("The saved AI Task or calendar changed. Verify settings before retrying.")
         if job.source_kind != "manual_text":
+            if automatic:
+                await pending_store.async_pause_retry(job.id, expected_job=job)
+                return {"status": "paused", "job_id": job.id}
             raise ServiceValidationError("Retrying this source type is not supported yet")
         source = TextSourceAdapter().create(job.source_text, source_id=job.source_id)
         source = replace(source, received_at=datetime.fromisoformat(job.received_at))
         route = route_review_source(source)
         if route.calendar_entity != job.calendar_entity:
+            if automatic:
+                await pending_store.async_pause_retry(job.id, expected_job=job)
+                return {"status": "paused", "job_id": job.id}
             raise ServiceValidationError("Calendar routing changed. Review the saved import.")
         try:
-            claimed = await pending_store.async_claim_retry(job.id)
+            claimed = await pending_store.async_claim_retry(job.id, automatic=automatic)
         except RetryJobConflict as err:
+            if automatic:
+                return {"status": "not_due", "job_id": job.id}
             raise ServiceValidationError(str(err)) from err
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
@@ -774,14 +808,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return _submission_response(result, [*outcome.warnings, *route.warnings], job.id)
         except RetryJobConflict:
             return {"status": "cancelled", "job_id": job.id}
+        except asyncio.CancelledError:
+            # Scheduler shutdown must not leave a durable processing claim
+            # stranded on the still-loaded entry when platform unload fails.
+            # The storage transaction completes despite cancellation and only
+            # finalizes this exact claim, never a newer manual retry.
+            await pending_store.async_record_parse_failure(
+                job.id,
+                provider_error_code=claimed.last_failure_code or "provider_unavailable",
+                retry_claim=claimed.claim,
+            )
+            raise
         except Exception:
-            # A deterministic failure must not strand a claimed job until restart.
             await pending_store.async_record_parse_failure(
                 job.id, retry_claim=claimed.claim,
             )
             raise
         finally:
             pending_store.active_submissions.discard(task)
+
+    async def handle_retry_job(call: ServiceCall) -> ServiceResponse:
+        job = await authorized_retry_job(call)
+        return await execute_retry_job(job.id)
 
     async def handle_reset_deduplication(call: ServiceCall) -> ServiceResponse:
         """Authorize an explicit reset of one handled source or event identity."""
@@ -1203,6 +1251,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         pending_store.accepting_services = True
         kick_notifications()
+        pending_store.retry_runtime = RetryScheduler(
+            hass, pending_store, pending_store.retry_preferences,
+            lambda job_id: execute_retry_job(job_id, automatic=True),
+        )
+        pending_store.retry_runtime.start()
         runtime = pending_store.email_runtime
         if runtime is not None:
             runtime.on_entry_ready()
@@ -1211,6 +1264,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Even a failed or cancelled partial forward must not leave its sensor
         # entities pointing to a discarded store.
         pending_store.accepting_services = False
+        retry_runtime = getattr(pending_store, "retry_runtime", None)
+        if retry_runtime is not None:
+            await retry_runtime.async_stop()
         pending_store.notification_unsubscribe()
         await _async_cancel_notification_tasks(pending_store)
         _unregister_entry_services(hass)
@@ -1266,6 +1322,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store.accepting_services = False
 
     async def finish_unload() -> bool:
+        retry_runtime = getattr(store, "retry_runtime", None)
+        if retry_runtime is not None:
+            await retry_runtime.async_stop()
         await _async_cancel_notification_tasks(store)
         try:
             platforms_unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
@@ -1273,11 +1332,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             store.accepting_services = not getattr(
                 store, "calendar_settings_reload_guard", False
             )
+            if retry_runtime is not None and store.accepting_services:
+                retry_runtime.start()
             raise
         if not platforms_unloaded:
             store.accepting_services = not getattr(
                 store, "calendar_settings_reload_guard", False
             )
+            if retry_runtime is not None and store.accepting_services:
+                retry_runtime.start()
             return False
 
         getattr(store, "notification_unsubscribe", lambda: None)()

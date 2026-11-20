@@ -33,6 +33,7 @@ from .notification_preferences import (
     normalize_notification_preferences,
     notification_preferences_snapshot,
 )
+from .retry_settings import RetrySettingsError, normalize_retry_settings
 from .settings import (
     SettingsValidationError,
     async_save_option_patch,
@@ -45,6 +46,8 @@ from .settings import (
     effective_calendar_intelligence,
     settings_lock,
     settings_snapshot,
+    retry_preferences_patch,
+    effective_retry_preferences,
 )
 
 WS_GET_SETTINGS = f"{DOMAIN}/settings/get"
@@ -52,6 +55,7 @@ WS_UPDATE_CORE_SETTINGS = f"{DOMAIN}/settings/core/update"
 WS_UPDATE_EMAIL_SETTINGS = f"{DOMAIN}/settings/email/update"
 WS_UPDATE_CALENDAR_INTELLIGENCE = f"{DOMAIN}/settings/calendar_intelligence/update"
 WS_UPDATE_NOTIFICATIONS = f"{DOMAIN}/settings/notifications/update"
+WS_UPDATE_RETRY = f"{DOMAIN}/settings/retry/update"
 EXPECTED_CALENDAR_ALIASES = "expected_calendar_aliases"
 WS_CAPABILITIES = f"{DOMAIN}/capabilities"
 
@@ -312,6 +316,41 @@ async def websocket_update_notifications(
     connection.send_result(msg["id"], settings_snapshot(entry))
 
 
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    "type": WS_UPDATE_RETRY,
+    vol.Required("entry_id"): cv.string,
+    vol.Required("retry"): dict,
+    vol.Required("expected_retry"): dict,
+})
+@websocket_api.async_response
+async def websocket_update_retry(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update opt-in automatic retries with a stale-write guard."""
+    try:
+        entry = _entry_for_message(hass, msg)
+        async with settings_lock(hass, entry.entry_id):
+            try:
+                expected = normalize_retry_settings(msg["expected_retry"]).as_dict()
+            except RetrySettingsError as err:
+                raise SettingsValidationError("invalid_retries", str(err)) from err
+            if expected != effective_retry_preferences(entry).as_dict():
+                raise SettingsValidationError(
+                    "retry_settings_changed",
+                    "Retry settings changed elsewhere. Refresh before saving.",
+                )
+            patch = retry_preferences_patch(entry, msg["retry"])
+            if patch:
+                await async_save_option_patch(hass, entry, patch)
+    except SettingsValidationError as err:
+        _send_validation_error(connection, msg, err)
+        return
+    connection.send_result(msg["id"], settings_snapshot(entry))
+
+
 @callback
 def async_register_settings_api(hass: HomeAssistant) -> None:
     """Register the Daylight settings WebSocket commands once."""
@@ -321,3 +360,4 @@ def async_register_settings_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_update_email_settings)
     websocket_api.async_register_command(hass, websocket_update_calendar_intelligence)
     websocket_api.async_register_command(hass, websocket_update_notifications)
+    websocket_api.async_register_command(hass, websocket_update_retry)
