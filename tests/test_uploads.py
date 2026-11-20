@@ -139,6 +139,12 @@ async def test_late_cleanup_tolerates_already_removed_media(tmp_path):
     (b"RIFF1234NOPE", "unsupported_media"),
     (b"NOPE1234WEBP", "unsupported_media"),
     (PNG + b"x" * uploads.MAX_UPLOAD_BYTES, "source_too_large"),
+], ids=[
+    "empty-source",
+    "unsupported-image",
+    "invalid-riff",
+    "invalid-webp",
+    "oversized-upload",
 ])
 async def test_reject_invalid_upload_and_consume_original(uploaded_file, tmp_path, data, code):
     original, file_id = uploaded_file

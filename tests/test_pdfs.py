@@ -722,6 +722,14 @@ def test_unsupported_filter_is_not_decoded_even_if_bytes_are_valid_zlib():
     (make_pdf(page_count=0), "invalid_pdf", "PDF has no pages"),
     (make_pdf(page_count=worker.MAX_PDF_PAGES + 1), "too_many_pages", "PDF exceeds the page limit"),
     (b"%PDF-" + b"x" * pdfs.MAX_UPLOAD_BYTES, "source_too_large", "Source attachments exceed the size limit"),
+], ids=[
+    "empty-source",
+    "unsupported-media",
+    "malformed-pdf",
+    "encrypted-pdf",
+    "zero-page-pdf",
+    "too-many-pages",
+    "oversized-upload",
 ])
 async def test_invalid_pdf_is_explicit_and_consumed(uploaded_file, data, code, message):
     uploaded_file.write_bytes(data)
