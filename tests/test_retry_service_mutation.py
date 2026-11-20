@@ -55,6 +55,12 @@ def service_setup(monkeypatch):
         "custom_components.daylight_calendar_import.async_track_time_interval",
         Mock(return_value=Mock()),
     )
+    # The service harness does not implement HA event-loop timers; timer
+    # ownership and execution are covered in test_retry_scheduler.py.
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.retry_scheduler.async_track_time_interval",
+        Mock(return_value=Mock()),
+    )
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.ir.async_create_issue", Mock(),
     )
@@ -198,8 +204,8 @@ async def test_owner_delete_returns_exact_identity_and_never_parses(service_setu
 
 
 @pytest.mark.parametrize(("overrides", "message"), [
-    ({"provider_entity_id": "ai_task.changed"}, "The AI Task changed since this import was saved"),
-    ({"calendar_entity": "calendar.no_longer_allowed"}, "The saved calendar is no longer permitted"),
+    ({"provider_entity_id": "ai_task.changed"}, "The saved AI Task or calendar changed"),
+    ({"calendar_entity": "calendar.no_longer_allowed"}, "The saved AI Task or calendar changed"),
     ({"source_kind": "image"}, "Retrying this source type is not supported yet"),
 ])
 async def test_retry_preflight_blocks_stale_or_unsupported_source(
@@ -232,7 +238,7 @@ async def test_retry_claim_and_success_restore_original_source_and_review_contra
         "duplicate_events": 0,
         "warnings": ["AI uncertainty"],
     }
-    s.store.async_claim_retry.assert_awaited_once_with(s.job.id)
+    s.store.async_claim_retry.assert_awaited_once_with(s.job.id, automatic=False)
     parse.assert_awaited_once()
     args, kwargs = parse.await_args
     assert args[0] is s.hass
