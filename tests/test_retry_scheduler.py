@@ -148,6 +148,8 @@ async def test_expired_source_retention_never_drops_processing_work(monkeypatch)
 def scheduler_hass():
     tasks = []
     def create(coro, name, eager_start=False):
+        assert name == "Daylight scheduled AI source retry"
+        assert eager_start is False
         task = asyncio.create_task(coro, name=name)
         tasks.append(task)
         return task
@@ -886,3 +888,82 @@ async def test_interrupted_processing_restart_sets_failure_code_and_durable_back
     assert restored.get_activity(job_id)["status"] == "failed"
     assert [item["last_failure_code"] for item in backend.saved[-1]["retry_jobs"]
             if item["id"] == job_id] == ["provider_unavailable"]
+
+
+async def test_scheduler_due_clock_boundary_is_inclusive(monkeypatch):
+    """At the exact persisted due instant, a waiting job must be scheduled."""
+    when = datetime(2026, 11, 20, 12, tzinfo=UTC)
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when
+    monkeypatch.setattr(retry_scheduler, "datetime", FixedClock)
+    due = replace(make_job().after_failure("provider_unavailable"),
+                  next_attempt_at=when.isoformat())
+    store = SimpleNamespace(accepting_services=True, list_retry_jobs=lambda: (due,))
+    run = AsyncMock(return_value={"status": "pending_review"})
+    hass = scheduler_hass()
+    scheduler = RetryScheduler(hass, store, lambda: RetrySettings(enabled=True), run)
+    scheduler._last_retention = when
+    scheduler.kick()
+    assert len(hass.tasks) == 1
+    await hass.tasks[0]
+    run.assert_awaited_once_with(due.id)
+
+
+async def test_scheduler_does_not_schedule_over_budget_waiting_job():
+    due = replace(make_job().after_failure("provider_unavailable"),
+                  attempts=3, automatic_attempts=2,
+                  next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    store = SimpleNamespace(accepting_services=True, list_retry_jobs=lambda: (due,))
+    hass = scheduler_hass()
+    run = AsyncMock()
+    scheduler = RetryScheduler(hass, store,
+                               lambda: RetrySettings(enabled=True, max_automatic_retries=2), run)
+    scheduler._last_retention = datetime.now(UTC)
+    scheduler.kick()
+    assert hass.tasks == []
+    run.assert_not_awaited()
+
+
+async def test_scheduler_direct_first_retention_run_without_prior_tick():
+    """Fresh instances have no last-run timestamp and must perform cleanup."""
+    store = SimpleNamespace(accepting_services=True, list_retry_jobs=lambda: (),
+                            async_apply_retention=AsyncMock())
+    execute = AsyncMock()
+    scheduler = RetryScheduler(scheduler_hass(), store, lambda: RetrySettings(enabled=False), execute)
+    assert scheduler._last_retention is None
+    await scheduler._async_run_one()
+    store.async_apply_retention.assert_awaited_once_with()
+    execute.assert_not_awaited()
+    assert scheduler._last_retention is not None
+
+
+async def test_scheduler_disables_processing_even_when_a_job_is_due():
+    due = replace(make_job().after_failure("provider_timeout"),
+                  next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    run = AsyncMock()
+    scheduler = RetryScheduler(
+        scheduler_hass(),
+        SimpleNamespace(accepting_services=True, list_retry_jobs=lambda: (due,)),
+        lambda: RetrySettings(enabled=False), run,
+    )
+    scheduler._last_retention = datetime.now(UTC)
+    await scheduler._async_run_one()
+    run.assert_not_awaited()
+
+
+async def test_scheduler_retention_uses_inclusive_hour_boundary_in_run(monkeypatch):
+    when = datetime(2026, 11, 20, 12, tzinfo=UTC)
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when
+    monkeypatch.setattr(retry_scheduler, "datetime", FixedClock)
+    store = SimpleNamespace(accepting_services=True, list_retry_jobs=lambda: (),
+                            async_apply_retention=AsyncMock())
+    scheduler = RetryScheduler(scheduler_hass(), store, lambda: RetrySettings(), AsyncMock())
+    scheduler._last_retention = when - timedelta(hours=1)
+    await scheduler._async_run_one()
+    store.async_apply_retention.assert_awaited_once_with()
+    assert scheduler._last_retention == when
