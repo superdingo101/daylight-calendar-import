@@ -74,7 +74,7 @@ from .settings import effective_notification_preferences, effective_retry_prefer
 from .retry_scheduler import RetryScheduler
 from .retry_spool import (
     RetryAttachmentError, async_spool_upload, async_delete_saved,
-    async_replay_source, async_reconcile_spool,
+    async_replay_source, async_reconcile_spool, async_clear_spool,
 )
 from .notification_delivery import async_deliver_notifications, MAX_ACTIVE_TASKS as _MAX_NOTIFICATION_TASKS
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
@@ -291,6 +291,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise RuntimeError("Previous Daylight sensor rollback is incomplete")
         hass.data[DOMAIN].pop(entry.entry_id, None)
     pending_store = PendingImportStore(hass)
+    # Source admission and retention must see the same committed job set.
+    pending_store.retry_spool_lock = asyncio.Lock()
     pending_store.notification_preferences = lambda: effective_notification_preferences(entry)
     pending_store.retry_preferences = lambda: effective_retry_preferences(entry)
     # Retention must see live providers from the previous entry before loading.
@@ -303,7 +305,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if hasattr(pending_store, "async_rearm_retry_jobs"):
             await pending_store.async_rearm_retry_jobs()
         if hasattr(pending_store, "list_retry_jobs"):
-            await async_reconcile_spool(hass, pending_store.list_retry_jobs())
+            await async_reconcile_spool(
+                hass, pending_store.list_retry_jobs,
+                lock=pending_store.retry_spool_lock,
+            )
     except PendingImportStorageError:
         ir.async_create_issue(
             hass, DOMAIN, "storage_recovery", is_fixable=False,
@@ -552,41 +557,48 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         route = route_review_source(source)
         spool_name: str | None = None
         activity_id: str | None = None
-        if isinstance(source.metadata.get("retry_stage_path"), str):
-            spool_name, digest, size = await async_spool_upload(hass, source)
-        try:
-            kwargs = {}
-            if spool_name is not None:
-                kwargs = {
-                    "retry_source_text": source.text or "",
-                    "retry_source_id": source.upstream_source_id,
-                    "retry_provider": ai_task_entity,
-                    "retry_calendar": route.calendar_entity,
-                    "retry_owner": owner_user_id,
-                    "retry_reimport_duplicates": reimport_duplicates,
-                    "retry_attachment_path": spool_name,
-                    "retry_attachment_sha256": digest,
-                    "retry_attachment_size": size,
-                    "retry_attachment_media_type": (
-                        source.attachments[0].media_type
-                        if source.attachments else "application/pdf"
-                    ),
-                    "retry_attachment_in_ai": bool(source.attachments),
-                    "retry_parser_title": source.title,
-                    "retry_routing_unresolved": route.requires_confirmation,
-                }
-            activity_id = await pending_store.async_begin_submission(
-                source_kind=source.kind.value, source_title=review_title,
-                received_at=source.received_at, **kwargs,
-            )
-            original_claim = (
-                pending_store.get_retry_job(activity_id).claim
-                if spool_name is not None else None
-            )
-        except BaseException:
-            if spool_name is not None:
-                await async_delete_saved(hass, spool_name)
-            raise
+        # Hold this gate from disk creation through the durable job commit.
+        # Retention takes the same gate and reads the jobs only afterward.
+        async with pending_store.retry_spool_lock:
+            try:
+                if isinstance(source.metadata.get("retry_stage_path"), str):
+                    spool_name, digest, size = await async_spool_upload(hass, source)
+                kwargs = {}
+                if spool_name is not None:
+                    kwargs = {
+                        "retry_source_text": source.text or "",
+                        "retry_source_id": source.upstream_source_id,
+                        "retry_provider": ai_task_entity,
+                        "retry_calendar": route.calendar_entity,
+                        "retry_owner": owner_user_id,
+                        "retry_reimport_duplicates": reimport_duplicates,
+                        "retry_attachment_path": spool_name,
+                        "retry_attachment_sha256": digest,
+                        "retry_attachment_size": size,
+                        "retry_attachment_media_type": (
+                            source.attachments[0].media_type
+                            if source.attachments else "application/pdf"
+                        ),
+                        "retry_attachment_in_ai": bool(source.attachments),
+                        "retry_parser_title": source.title,
+                        "retry_routing_unresolved": route.requires_confirmation,
+                    }
+                activity_id = await pending_store.async_begin_submission(
+                    source_kind=source.kind.value, source_title=review_title,
+                    received_at=source.received_at, **kwargs,
+                )
+                # Never adopt a replacement claim after the provider await.
+                original_claim = (
+                    pending_store.get_retry_job(activity_id).claim
+                    if spool_name is not None else None
+                )
+            except BaseException:
+                if spool_name is not None and not any(
+                    job.attachment_path == spool_name
+                    for job in pending_store.list_retry_jobs()
+                ):
+                    await asyncio.shield(async_delete_saved(hass, spool_name))
+                raise
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
         try:
@@ -1344,7 +1356,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass, pending_store, pending_store.retry_preferences,
             lambda job_id: execute_retry_job(job_id, automatic=True),
             cleanup=lambda: async_reconcile_spool(
-                hass, pending_store.list_retry_jobs(),
+                hass, pending_store.list_retry_jobs,
+                lock=pending_store.retry_spool_lock,
             ),
         )
         pending_store.retry_runtime.start()
@@ -1491,6 +1504,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
         evict_when_idle()
 
     await PendingImportStore(hass).async_remove_storage()
+    await async_clear_spool(hass)
 
 
 async def _parse_text_with_ai_task(

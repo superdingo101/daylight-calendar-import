@@ -7,7 +7,7 @@ exist for an AI request only and are always removed on context exit.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
 from hashlib import sha256
@@ -79,7 +79,19 @@ async def async_spool_upload(hass: HomeAssistant, source: SourceDocument) -> tup
     path = source.metadata.get("retry_stage_path")
     if not isinstance(path, str):
         raise RetryAttachmentError("Uploaded file is not available for a durable retry")
-    return await hass.async_add_executor_job(_spool_copy, hass, path)
+    # Executor work is not cancelled with its awaiting coroutine.  Retire
+    # a late file before propagating cancellation to the caller.
+    copying = asyncio.ensure_future(hass.async_add_executor_job(_spool_copy, hass, path))
+    try:
+        return await asyncio.shield(copying)
+    except asyncio.CancelledError:
+        try:
+            name, _, _ = await copying
+        except Exception:
+            pass
+        else:
+            await asyncio.shield(async_delete_saved(hass, name))
+        raise
 
 
 def _saved_path(hass: HomeAssistant, name: str) -> Path:
@@ -143,7 +155,23 @@ async def async_replay_source(
                 ".png" if job.attachment_media_type == "image/png" else
                 ".webp" if job.attachment_media_type == "image/webp" else ".jpg"
             )
-            alias, staged_path = await hass.async_add_executor_job(_stage_for_ai, hass, data, suffix)
+            staging = asyncio.ensure_future(
+                hass.async_add_executor_job(_stage_for_ai, hass, data, suffix)
+            )
+            try:
+                alias, staged_path = await asyncio.shield(staging)
+            except asyncio.CancelledError:
+                # A cancelled await cannot stop an executor thread. Consume
+                # the late path and unlink its media-visible copy.
+                try:
+                    _, late_path = await staging
+                except Exception:
+                    pass
+                else:
+                    await asyncio.shield(
+                        hass.async_add_executor_job(Path(late_path).unlink, True)
+                    )
+                raise
             attachments = (SourceAttachment(
                 id=str(uuid4()), media_type=job.attachment_media_type,
                 size_bytes=len(data), content_ref=(
@@ -176,7 +204,44 @@ def _reconcile(hass: HomeAssistant, referenced: frozenset[str]) -> None:
             path.unlink(missing_ok=True)
 
 
-async def async_reconcile_spool(hass: HomeAssistant, jobs: tuple[RetryJob, ...]) -> None:
-    """Remove unreferenced private bytes after retention/recovery or a crash."""
-    references = frozenset(job.attachment_path for job in jobs if job.attachment_path)
-    await hass.async_add_executor_job(_reconcile, hass, references)
+async def async_reconcile_spool(
+    hass: HomeAssistant,
+    jobs: tuple[RetryJob, ...] | Callable[[], tuple[RetryJob, ...]],
+    *, lock: asyncio.Lock | None = None,
+) -> None:
+    """Reconcile against a live snapshot, serialized with source admission."""
+    async def run() -> None:
+        # No disk operation is required when no attachment spool exists.
+        # This also keeps recovery of text-only installs inexpensive.
+        if not _root(hass).exists():
+            return
+        current = jobs() if callable(jobs) else jobs
+        references = frozenset(
+            job.attachment_path for job in current if job.attachment_path
+        )
+        await hass.async_add_executor_job(_reconcile, hass, references)
+
+    if lock is None:
+        await run()
+    else:
+        async with lock:
+            await run()
+
+
+def _clear_spool(hass: HomeAssistant) -> None:
+    """Erase owned private uploads on integration removal, never follow links."""
+    root = _root(hass)
+    if root.is_symlink():
+        raise RetryAttachmentError("Unsafe private retry directory")
+    if not root.exists():
+        return
+    for path in root.iterdir():
+        if _REFERENCE.fullmatch(path.name) and (path.is_file() or path.is_symlink()):
+            path.unlink(missing_ok=True)
+    if not any(root.iterdir()):
+        root.rmdir()
+
+
+async def async_clear_spool(hass: HomeAssistant) -> None:
+    """Remove retained attachments after all source handlers have retired."""
+    await hass.async_add_executor_job(_clear_spool, hass)

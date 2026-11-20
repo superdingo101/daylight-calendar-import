@@ -5,13 +5,16 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from threading import Event
+
+import custom_components.daylight_calendar_import.retry_spool as spool_module
 from types import SimpleNamespace
 
 import pytest
 
 from custom_components.daylight_calendar_import.retry_jobs import RetryJob
 from custom_components.daylight_calendar_import.retry_spool import (
-    RetryAttachmentError, async_delete_saved, async_reconcile_spool,
+    RetryAttachmentError, async_clear_spool, async_delete_saved, async_reconcile_spool,
     async_replay_source, async_spool_upload,
 )
 from custom_components.daylight_calendar_import.sources import SourceAttachment, SourceDocument, SourceKind
@@ -141,3 +144,103 @@ async def test_non_upload_or_symlink_path_cannot_be_retained(spool_hass, tmp_pat
     link.symlink_to(other)
     with pytest.raises(RetryAttachmentError, match="Temporary"):
         await async_spool_upload(spool_hass, source_for_stage(link))
+
+
+
+async def test_cancelled_spool_copy_does_not_leave_a_late_private_file(
+    spool_hass, tmp_path, monkeypatch,
+):
+    path = tmp_path / "daylight-cancelled.png"
+    path.write_bytes(b"private")
+    entered, release = Event(), Event()
+    real_copy = spool_module._spool_copy
+
+    def delayed_copy(hass, source_path):
+        entered.set()
+        assert release.wait(timeout=5)
+        return real_copy(hass, source_path)
+
+    monkeypatch.setattr(spool_module, "_spool_copy", delayed_copy)
+    task = asyncio.create_task(async_spool_upload(spool_hass, source_for_stage(path)))
+    assert await asyncio.to_thread(entered.wait, 5)
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    root = tmp_path / "daylight_calendar_import_retry"
+    assert list(root.glob("*.bin")) == []
+
+
+async def test_cancelled_replay_does_not_leave_media_visible_copy(
+    spool_hass, tmp_path, monkeypatch,
+):
+    path = tmp_path / "daylight-original.png"
+    path.write_bytes(b"private")
+    source = source_for_stage(path)
+    name, digest, size = await async_spool_upload(spool_hass, source)
+    job = job_for_spool(source, name, digest, size)
+    entered, release = Event(), Event()
+    real_stage = spool_module._stage_for_ai
+
+    def delayed_stage(hass, data, suffix):
+        entered.set()
+        assert release.wait(timeout=5)
+        return real_stage(hass, data, suffix)
+
+    monkeypatch.setattr(spool_module, "_stage_for_ai", delayed_stage)
+
+    async def replay():
+        async with async_replay_source(spool_hass, job):
+            pytest.fail("Cancelled replay must not reach the provider")
+
+    task = asyncio.create_task(replay())
+    assert await asyncio.to_thread(entered.wait, 5)
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert list((tmp_path / "media").glob("daylight-retry-*")) == []
+
+
+async def test_reconcile_waits_for_admission_and_reads_live_job_snapshot(
+    spool_hass, tmp_path,
+):
+    path = tmp_path / "daylight-race.png"
+    path.write_bytes(b"private")
+    source = source_for_stage(path)
+    gate = asyncio.Lock()
+    admitted, finish = asyncio.Event(), asyncio.Event()
+    jobs = []
+
+    async def admit():
+        async with gate:
+            name, digest, size = await async_spool_upload(spool_hass, source)
+            admitted.set()
+            await finish.wait()
+            jobs.append(job_for_spool(source, name, digest, size))
+            return name
+
+    task = asyncio.create_task(admit())
+    await admitted.wait()
+    cleanup = asyncio.create_task(async_reconcile_spool(
+        spool_hass, lambda: tuple(jobs), lock=gate,
+    ))
+    await asyncio.sleep(0)
+    assert not cleanup.done()
+    finish.set()
+    name = await task
+    await cleanup
+    assert (tmp_path / "daylight_calendar_import_retry" / name).read_bytes() == b"private"
+
+
+async def test_remove_private_spool_deletes_retained_uploads(spool_hass, tmp_path):
+    path = tmp_path / "daylight-original.png"
+    path.write_bytes(b"private")
+    name, _, _ = await async_spool_upload(spool_hass, source_for_stage(path))
+    root = tmp_path / "daylight_calendar_import_retry"
+    assert (root / name).exists()
+    await async_clear_spool(spool_hass)
+    assert not root.exists()
+    # A subsequent removal is idempotent and never deletes the upload original.
+    await async_clear_spool(spool_hass)
+    assert path.read_bytes() == b"private"

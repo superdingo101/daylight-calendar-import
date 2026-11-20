@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from datetime import UTC, datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Any, Callable, NamedTuple
 from unittest.mock import AsyncMock, Mock
@@ -179,6 +182,12 @@ class FakeServices:
 
 class FakeHass:
     def __init__(self) -> None:
+        self._tempdir = TemporaryDirectory(prefix="daylight-imap-")
+        self.config = SimpleNamespace(
+            path=lambda name: str(Path(self._tempdir.name) / name),
+            media_dirs={},
+        )
+        self.async_add_executor_job = asyncio.to_thread
         self.services = FakeServices()
         self.data: dict[str, Any] = {}
         self.bus = SimpleNamespace(async_fire=lambda *_args, **_kwargs: None)
