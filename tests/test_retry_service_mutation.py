@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from homeassistant.core import Context, SupportsResponse
+from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.exceptions import ServiceValidationError, Unauthorized
 import pytest
 
@@ -132,8 +133,8 @@ async def test_retry_list_hides_other_users_and_private_source(service_setup, is
     assert "manual-1" not in str(result)
     assert s.store.async_claim_retry.await_count == 0
     assert s.permissions.calls == [
-        ("ai_task.test", "control"),
-        ("calendar.family", "control"),
+        ("ai_task.test", POLICY_CONTROL),
+        ("calendar.family", POLICY_CONTROL),
     ]
 
 
