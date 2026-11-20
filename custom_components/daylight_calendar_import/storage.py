@@ -760,9 +760,8 @@ class PendingImportStore:
         """Pause only the inspected waiting claim, never a newer manual claim."""
         async with self._lock:
             job = self._retry_jobs.get(job_id)
-            if (job is None or job.state == "cancelled"
-                    or (expected_job is not None
-                        and (job != expected_job or job.state != "waiting"))):
+            if (job is None or job.state != "waiting"
+                    or (expected_job is not None and job != expected_job)):
                 return job
             paused = replace(job, state="paused", claim=None, next_attempt_at=None)
             await self._async_save(
