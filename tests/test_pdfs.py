@@ -540,6 +540,12 @@ def test_worker_maps_pdf_parser_error(monkeypatch):
     (b"not zlib", "/FlateDecode", False),
     (zlib.compress(b"Meeting")[:-2], "/FlateDecode", False),
     (b"Meeting", "/ASCII85Decode", False),
+], ids=[
+    "oversized-content",
+    "valid-unfiltered-text",
+    "invalid-flate-content",
+    "truncated-flate-content",
+    "unsupported-filter",
 ])
 def test_page_stream_decoding_is_bounded(raw, filter_name, expected):
     stream = DecodedStreamObject()
