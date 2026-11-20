@@ -1,8 +1,29 @@
 """Shared pytest fixtures."""
 
 from importlib.util import find_spec
+from unittest.mock import Mock
 
 import pytest
+from homeassistant.core import HomeAssistant
+
+import custom_components.daylight_calendar_import.retry_scheduler as retry_scheduler
+
+
+@pytest.fixture(autouse=True)
+def fake_hass_scheduler_timer_boundary(monkeypatch):
+    """Use real HA timers in integration tests, but not in FakeHass stubs.
+
+    The lightweight service-unit harnesses cannot run Home Assistant timer
+    internals. Scheduler-specific tests supply their own observed callbacks.
+    """
+    original_track = retry_scheduler.async_track_time_interval
+
+    def track(hass, action, interval):
+        if isinstance(hass, HomeAssistant):
+            return original_track(hass, action, interval)
+        return Mock()
+
+    monkeypatch.setattr(retry_scheduler, "async_track_time_interval", track)
 
 
 @pytest.fixture(autouse=True)
