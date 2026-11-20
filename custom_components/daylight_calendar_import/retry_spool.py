@@ -83,7 +83,11 @@ async def async_spool_upload(hass: HomeAssistant, source: SourceDocument) -> tup
     # a late file before propagating cancellation to the caller.
     copying = asyncio.ensure_future(hass.async_add_executor_job(_spool_copy, hass, path))
     try:
-        return await asyncio.shield(copying)
+        # asyncio.wait does not cancel the underlying executor future when
+        # the caller is cancelled, and it avoids a second shielded future
+        # whose late exception could go unobserved by Home Assistant.
+        await asyncio.wait((copying,))
+        return copying.result()
     except asyncio.CancelledError:
         try:
             name, _, _ = await copying
@@ -159,7 +163,10 @@ async def async_replay_source(
                 hass.async_add_executor_job(_stage_for_ai, hass, data, suffix)
             )
             try:
-                alias, staged_path = await asyncio.shield(staging)
+                # Keep the executor alive on cancellation without creating a
+                # shield wrapper that may report an unhandled late error.
+                await asyncio.wait((staging,))
+                alias, staged_path = staging.result()
             except asyncio.CancelledError:
                 # A cancelled await cannot stop an executor thread. Consume
                 # the late path and unlink its media-visible copy.
