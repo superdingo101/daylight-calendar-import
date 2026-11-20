@@ -229,3 +229,19 @@ def test_one_time_legacy_vs_split_verdict_parity_is_per_identity(project):
     wrong_env[8]["environment"]["sha256"] = "0" * 64
     with pytest.raises(ValueError, match="environment"):
         split.compare_parity(manifest, original, original_result, wrong_env)
+
+
+def test_shard_diagnostic_export_imports_ci_package_reliably():
+    """Do not run the exporter by path: scripts imports need the repo root."""
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    workflow_file = root / ".github/workflows/mutation-sharded.yml"
+    if not workflow_file.exists() and root.name == "mutants":
+        pytest.skip("CI workflow is not present in the mutmut test sandbox")
+    workflow = yaml.safe_load(workflow_file.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["shards"]["steps"]
+    diagnostic = next(s for s in steps if s.get("name") == "Export shard diagnostics even on failure")
+    assert "python -m scripts.export_mutation_survivors" in diagnostic["run"]
+    assert "python scripts/export_mutation_survivors.py" not in diagnostic["run"]
+    assert diagnostic["if"] == "always()"
