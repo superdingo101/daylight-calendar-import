@@ -950,6 +950,7 @@ def test_register_settings_api_registers_all_commands(monkeypatch):
         (hass, settings_api.websocket_update_email_settings),
         (hass, settings_api.websocket_update_calendar_intelligence),
         (hass, settings_api.websocket_update_notifications),
+        (hass, settings_api.websocket_update_retry),
     ]
 
 
