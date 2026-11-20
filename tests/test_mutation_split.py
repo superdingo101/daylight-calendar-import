@@ -177,9 +177,16 @@ def test_split_record_rejects_incomplete_and_cross_shard_results(project, monkey
 def test_split_run_names_every_selected_mutant_once(project, monkeypatch):
     sha, _, names = project
     manifest = ms.create_manifest(sha, 12)
-    monkeypatch.setattr(split, "verify_generated", lambda m: None)
     commands = []
-    monkeypatch.setattr(split.subprocess, "run", lambda cmd, check: commands.append((cmd, check)))
+    real_run = subprocess.run
+
+    def run_without_executing_mutants(command, **kwargs):
+        if command[:1] == ["mutmut"]:
+            commands.append((command, kwargs.get("check")))
+            return subprocess.CompletedProcess(command, 0)
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(split.subprocess, "run", run_without_executing_mutants)
     split.run(manifest, 8)
     assert commands == [(["mutmut", "run", *manifest["shards"][8]["mutant_names"]], True)]
     split.run(manifest, 0)
