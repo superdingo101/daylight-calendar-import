@@ -679,8 +679,7 @@ async def test_scheduler_logs_only_sanitized_stable_error_message(
     )
     execute = AsyncMock(side_effect=RuntimeError("private provider response"))
     scheduler = RetryScheduler(scheduler_hass(), store, lambda: RetrySettings(enabled=True), execute)
-    if cleanup_fails:
-        scheduler._last_retention = now - timedelta(hours=2)
+    scheduler._last_retention = now - timedelta(hours=2) if cleanup_fails else now
     await scheduler._async_run_one()
     if cleanup_fails:
         assert [call.args for call in warning.call_args_list] == [
