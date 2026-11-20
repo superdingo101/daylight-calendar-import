@@ -539,7 +539,7 @@ def test_retry_backoff_naive_clock_reports_exact_validation_error():
 
 async def test_scheduler_subscription_is_ha_callback_on_event_loop(monkeypatch):
     """Timer callback must be tagged for HA to keep task creation on its loop."""
-    from homeassistant.core import callback as ha_callback
+    from homeassistant.core import is_callback
 
     subscriptions = []
     def subscribe(hass, handler, interval):
@@ -561,8 +561,8 @@ async def test_scheduler_subscription_is_ha_callback_on_event_loop(monkeypatch):
     supplied_hass, handler, interval = subscriptions[0]
     assert supplied_hass is hass
     assert interval == timedelta(minutes=1)
-    assert getattr(handler, "__homeassistant_callback", False) is True
-    assert ha_callback(handler) is handler
+    assert is_callback(handler) is True
+    assert getattr(handler, "_hass_callback", False) is True
     assert hass.tasks == []
 
     # Emit an actual event-loop tick, not a direct synchronous call.
