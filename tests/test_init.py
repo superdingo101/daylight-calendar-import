@@ -4,6 +4,8 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, Mock
 
@@ -125,10 +127,15 @@ class FakeAuth:
 
 class FakeHass:
     def __init__(self, user=None):
+        self._tmp = TemporaryDirectory(prefix="daylight-init-hass-")
+        self.async_add_executor_job = asyncio.to_thread
         self.services = FakeServices()
         self.auth = FakeAuth(user)
         self.data = {ir.DATA_REGISTRY: Mock()}
-        self.config = SimpleNamespace(time_zone="America/Los_Angeles")
+        self.config = SimpleNamespace(
+            time_zone="America/Los_Angeles",
+            path=lambda name: str(Path(self._tmp.name) / name),
+        )
         self.bus = SimpleNamespace(async_fire=Mock())
         self.config_entries = SimpleNamespace(
             async_forward_entry_setups=AsyncMock(),
