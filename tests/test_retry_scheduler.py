@@ -470,3 +470,222 @@ async def test_pause_missing_and_cancelled_retry_is_noop_without_write(monkeypat
     assert await store.async_pause_retry(job_id) == cancelled
     assert store.get_retry_job(job_id) == cancelled
     assert len(backend.saved) == saved_before
+
+
+@pytest.mark.parametrize(("enabled", "delay", "attempts", "days"), [
+    (False, 15, 1, 1), (True, 30, 5, 30),
+    (True, 60, 3, 14), (True, 15, 2, 7),
+])
+def test_retry_policy_all_allowed_boundary_values_round_trip(enabled, delay, attempts, days):
+    """The documented option boundaries are valid, including 1 and 30."""
+    raw = {"enabled": enabled, "initial_delay_minutes": delay,
+           "max_automatic_retries": attempts, "retention_days": days}
+    assert normalize_retry_settings(raw).as_dict() == raw
+
+
+@pytest.mark.parametrize(("invalid", "message"), [
+    ({"unexpected": True}, "Invalid retry settings"),
+    ({"enabled": 12}, "Choose a valid retry setting"),
+    ({"initial_delay_minutes": "30"}, "Choose a valid retry setting"),
+    ({"max_automatic_retries": 0}, "Choose between one and five automatic retries"),
+    ({"max_automatic_retries": 6}, "Choose between one and five automatic retries"),
+    ({"retention_days": 0}, "Choose a supported retention period"),
+    ({"retention_days": 3}, "Choose a supported retention period"),
+])
+def test_retry_policy_validation_errors_are_precise_and_not_user_input(invalid, message):
+    with pytest.raises(RetrySettingsError) as exc:
+        normalize_retry_settings(invalid)
+    assert str(exc.value) == message
+
+
+@pytest.mark.parametrize(("code", "delay", "automatic_attempts"), [
+    ("provider_unavailable", 15, 0),
+    ("provider_timeout", 30, 1),
+    ("provider_rate_limited", 15, 0),
+    ("provider_rate_limited", 60, 0),
+    ("provider_timeout", 60, 5),
+    ("provider_unavailable", 15, 5),
+])
+def test_retry_due_exact_deterministic_backoff_including_jitter_and_cap(
+    code, delay, automatic_attempts,
+):
+    """Independent expected clock catches changes to cap, jitter, hash and units."""
+    from hashlib import sha256
+
+    now = datetime(2026, 11, 19, 9, 30, tzinfo=UTC)
+    failed = replace(make_job().after_failure(code),
+                     attempts=automatic_attempts + 1,
+                     automatic_attempts=automatic_attempts)
+    policy = RetrySettings(enabled=True, initial_delay_minutes=delay,
+                           max_automatic_retries=10)
+    minutes = min(1440, max(delay, 30) * 2**automatic_attempts
+                  if code == "provider_rate_limited" else delay * 2**automatic_attempts)
+    # The two-byte big-endian prefix is deliberately stable between restarts.
+    jitter = int.from_bytes(sha256(failed.id.encode()).digest()[:2], byteorder="big") % (minutes * 3)
+    assert next_retry_at(failed, policy, now) == (
+        now + timedelta(minutes=minutes, seconds=jitter)
+    ).isoformat()
+    assert next_retry_at(failed, policy, now) == next_retry_at(failed, policy, now)
+
+
+def test_retry_backoff_naive_clock_reports_exact_validation_error():
+    failed = make_job().after_failure("provider_timeout")
+    with pytest.raises(ValueError) as exc:
+        next_retry_at(failed, RetrySettings(enabled=True), datetime(2026, 11, 20))
+    assert str(exc.value) == "retry clock must include a timezone"
+
+
+async def test_scheduler_subscription_is_ha_callback_on_event_loop(monkeypatch):
+    """Timer callback must be tagged for HA to keep task creation on its loop."""
+    from homeassistant.core import callback as ha_callback
+
+    subscriptions = []
+    def subscribe(hass, handler, interval):
+        subscriptions.append((hass, handler, interval))
+        return Mock()
+
+    monkeypatch.setattr(retry_scheduler, "async_track_time_interval", subscribe)
+    hass = scheduler_hass()
+    task_name = "Daylight scheduled AI source retry"
+    due = replace(make_job().after_failure("provider_unavailable"),
+                  next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    store = SimpleNamespace(accepting_services=True, list_retry_jobs=Mock(return_value=()))
+    execute = AsyncMock(return_value={"status": "saved_for_retry"})
+    scheduler = RetryScheduler(hass, store, lambda: RetrySettings(enabled=True), execute)
+    assert scheduler._last_retention is None
+    assert scheduler._stopped is False
+    scheduler.start()
+    assert len(subscriptions) == 1
+    supplied_hass, handler, interval = subscriptions[0]
+    assert supplied_hass is hass
+    assert interval == timedelta(minutes=1)
+    assert getattr(handler, "__homeassistant_callback", False) is True
+    assert ha_callback(handler) is handler
+    assert hass.tasks == []
+
+    # Emit an actual event-loop tick, not a direct synchronous call.
+    store.list_retry_jobs.return_value = (due,)
+    asyncio.get_running_loop().call_soon(handler, datetime.now(UTC))
+    await asyncio.sleep(0)
+    assert len(hass.tasks) == 1
+    assert hass.tasks[0].get_name() == task_name
+    await hass.tasks[0]
+    execute.assert_awaited_once_with(due.id)
+    await scheduler.async_stop()
+
+
+async def test_scheduler_defaults_to_closed_when_service_admission_is_unknown():
+    hass = scheduler_hass()
+    execute = AsyncMock()
+    scheduler = RetryScheduler(
+        hass, SimpleNamespace(list_retry_jobs=lambda: ()),
+        lambda: RetrySettings(enabled=True), execute,
+    )
+    scheduler.kick()
+    assert hass.tasks == []
+    execute.assert_not_awaited()
+
+
+async def test_scheduler_exact_retention_tick_and_disabled_policy(monkeypatch):
+    """Exactly one hour is due, even when automatic retries are opted out."""
+    fixed = datetime(2026, 11, 20, 12, tzinfo=UTC)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    monkeypatch.setattr(retry_scheduler, "datetime", Clock)
+    hass = scheduler_hass()
+    store = SimpleNamespace(
+        accepting_services=True, list_retry_jobs=lambda: (),
+        async_apply_retention=AsyncMock(),
+    )
+    scheduler = RetryScheduler(hass, store, lambda: RetrySettings(enabled=False), AsyncMock())
+    scheduler._last_retention = fixed - timedelta(hours=1)
+    scheduler.kick()
+    assert len(hass.tasks) == 1
+    await hass.tasks[0]
+    store.async_apply_retention.assert_awaited_once_with()
+    assert scheduler._last_retention == fixed
+    scheduler.kick()
+    assert len(hass.tasks) == 1
+
+
+@pytest.mark.parametrize("status", ["not_due", "not_found", "paused"])
+async def test_scheduler_skips_every_rejected_claim_status(status):
+    now = datetime.now(UTC) - timedelta(minutes=1)
+    first = replace(make_job().after_failure("provider_unavailable"),
+                    next_attempt_at=now.isoformat())
+    second = replace(first, id="next-after-rejection")
+    store = SimpleNamespace(
+        accepting_services=True, list_retry_jobs=lambda: (first, second),
+    )
+    run = AsyncMock(side_effect=[
+        {"status": status, "job_id": first.id},
+        {"status": "saved_for_retry", "job_id": second.id},
+    ])
+    scheduler = RetryScheduler(scheduler_hass(), store, lambda: RetrySettings(enabled=True), run)
+    await scheduler._async_run_one()
+    assert [call.args[0] for call in run.await_args_list] == [first.id, second.id]
+
+
+async def test_scheduler_stops_after_success_status_even_with_later_due_job():
+    now = datetime.now(UTC) - timedelta(minutes=1)
+    one = replace(make_job().after_failure("provider_unavailable"),
+                  next_attempt_at=now.isoformat())
+    two = replace(one, id="second")
+    store = SimpleNamespace(
+        accepting_services=True, list_retry_jobs=lambda: (one, two),
+    )
+    run = AsyncMock(return_value={"status": "pending_review", "activity_id": one.id})
+    await RetryScheduler(scheduler_hass(), store, lambda: RetrySettings(enabled=True), run)._async_run_one()
+    run.assert_awaited_once_with(one.id)
+
+
+async def test_scheduler_skips_invalid_due_jobs_but_runs_next_eligible():
+    now = datetime.now(UTC)
+    due = replace(make_job().after_failure("provider_unavailable"),
+                  next_attempt_at=(now - timedelta(minutes=1)).isoformat())
+    invalid = (
+        replace(due, id="paused", state="paused"),
+        replace(due, id="no_timestamp", next_attempt_at=None),
+        replace(due, id="spent_budget", attempts=3, automatic_attempts=2),
+        replace(due, id="future", next_attempt_at=(now + timedelta(minutes=10)).isoformat()),
+    )
+    good = replace(due, id="eligible")
+    store = SimpleNamespace(accepting_services=True, list_retry_jobs=lambda: (*invalid, good))
+    run = AsyncMock(return_value={"status": "saved_for_retry"})
+    scheduler = RetryScheduler(scheduler_hass(), store,
+                               lambda: RetrySettings(enabled=True, max_automatic_retries=2), run)
+    await scheduler._async_run_one()
+    run.assert_awaited_once_with(good.id)
+
+
+@pytest.mark.parametrize(("cleanup_fails", "expected"), [
+    (True, "Durable retry retention cleanup could not finish"),
+    (False, "Scheduled Daylight AI source retry could not finish"),
+])
+async def test_scheduler_logs_only_sanitized_stable_error_message(
+    monkeypatch, cleanup_fails, expected,
+):
+    warning = Mock()
+    monkeypatch.setattr(retry_scheduler._LOGGER, "warning", warning)
+    now = datetime.now(UTC)
+    due = replace(make_job().after_failure("provider_unavailable"),
+                  next_attempt_at=(now - timedelta(minutes=1)).isoformat())
+    store = SimpleNamespace(
+        accepting_services=True, list_retry_jobs=lambda: (due,),
+        async_apply_retention=AsyncMock(side_effect=OSError("private source") if cleanup_fails else None),
+    )
+    execute = AsyncMock(side_effect=RuntimeError("private provider response"))
+    scheduler = RetryScheduler(scheduler_hass(), store, lambda: RetrySettings(enabled=True), execute)
+    if cleanup_fails:
+        scheduler._last_retention = now - timedelta(hours=2)
+    await scheduler._async_run_one()
+    if cleanup_fails:
+        assert [call.args for call in warning.call_args_list] == [
+            ("Durable retry retention cleanup could not finish",),
+            ("Scheduled Daylight AI source retry could not finish",),
+        ]
+    else:
+        warning.assert_called_once_with(expected)
