@@ -2231,6 +2231,35 @@ def _fake_lifecycle_store(monkeypatch):
     return store
 
 
+async def test_scheduler_start_failure_stops_installed_runtime_and_rolls_back_setup(monkeypatch):
+    """A partially installed timer cannot survive a failed sensor setup."""
+    hass = FakeHass()
+    config_entry = entry()
+    _fake_lifecycle_store(monkeypatch)
+    scheduler = SimpleNamespace(
+        start=Mock(side_effect=RuntimeError("timer unavailable")),
+        async_stop=AsyncMock(),
+    )
+    construct = Mock(return_value=scheduler)
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.RetryScheduler", construct,
+    )
+
+    with pytest.raises(RuntimeError, match="timer unavailable"):
+        await async_setup_entry(hass, config_entry)
+    construct.assert_called_once()
+    scheduler.start.assert_called_once_with()
+    scheduler.async_stop.assert_awaited_once_with()
+    hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
+        config_entry, ["sensor"],
+    )
+    hass.config_entries.async_unload_platforms.assert_awaited_once_with(
+        config_entry, ["sensor"],
+    )
+    assert hass.services.handlers == {}
+    assert config_entry.entry_id not in hass.data[DOMAIN]
+
+
 async def test_unload_blocks_new_service_calls_and_drains_accepted_before_store_removal(monkeypatch):
     """A handler awaiting its first permission check cannot outlive its store."""
     hass = FakeHass()
