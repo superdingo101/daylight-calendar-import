@@ -992,3 +992,26 @@ async def test_scheduler_pause_waiting_without_snapshot_is_idempotent(monkeypatc
     assert paused.next_attempt_at is None
     assert paused.automatic_attempts == waiting.automatic_attempts
     assert store.get_retry_job(job_id) == paused
+
+
+async def test_home_assistant_real_time_changed_event_executes_due_retry(hass):
+    """Do not merely invoke a captured stub: exercise HA's real timer dispatch."""
+    from pytest_homeassistant_custom_component.common import async_fire_time_changed
+
+    due = replace(make_job().after_failure("provider_unavailable"),
+                  next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    store = SimpleNamespace(
+        accepting_services=True, list_retry_jobs=Mock(return_value=()),
+    )
+    execute = AsyncMock(return_value={"status": "saved_for_retry"})
+    scheduler = RetryScheduler(hass, store, lambda: RetrySettings(enabled=True), execute)
+    scheduler.start()
+    try:
+        store.list_retry_jobs.return_value = (due,)
+        # Advance an HA timer event through the actual subscription, not a
+        # direct callback invocation. This also detects executor-thread errors.
+        async_fire_time_changed(hass, datetime.now(UTC) + timedelta(minutes=2))
+        await hass.async_block_till_done()
+        execute.assert_awaited_once_with(due.id)
+    finally:
+        await scheduler.async_stop()
