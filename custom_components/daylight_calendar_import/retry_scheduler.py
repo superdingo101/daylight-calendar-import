@@ -37,6 +37,8 @@ class RetryScheduler:
     def start(self) -> None:
         if self._unsubscribe is not None:
             return
+        # Failed integration unloads can restart the stopped scheduler.
+        self._stopped = False
         # The store already applied retention during async_load; do not
         # immediately create a cleanup task during integration setup.
         self._last_retention = datetime.now(UTC)
@@ -53,8 +55,10 @@ class RetryScheduler:
         now = datetime.now(UTC)
         cleanup_due = (self._last_retention is None
                        or now - self._last_retention >= timedelta(hours=1))
-        retry_due = self._settings().enabled and any(
+        preferences = self._settings()
+        retry_due = preferences.enabled and any(
             job.state == "waiting" and job.next_attempt_at is not None
+            and job.automatic_attempts < preferences.max_automatic_retries
             and datetime.fromisoformat(job.next_attempt_at) <= now
             for job in self._store.list_retry_jobs()
         )
@@ -83,15 +87,21 @@ class RetryScheduler:
             return
         for job in self._store.list_retry_jobs():
             if (job.state != "waiting" or job.next_attempt_at is None
+                    or job.automatic_attempts >= self._settings().max_automatic_retries
                     or datetime.fromisoformat(job.next_attempt_at) > now):
                 continue
             try:
-                await self._execute(job.id)
+                result = await self._execute(job.id)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 # Never log raw source, provider exception, or credentials.
                 _LOGGER.warning("Scheduled Daylight AI source retry could not finish")
+                return
+            # Rejected claims did not consume the execution slot; progress
+            # past stale entries instead of starving the remaining queue.
+            if isinstance(result, dict) and result.get("status") in ("not_due", "not_found", "paused"):
+                continue
             return
 
     async def async_stop(self) -> None:
