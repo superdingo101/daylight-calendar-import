@@ -32,7 +32,7 @@ from .notification_journal import NotificationRecord, notification_record
 from .notification_preferences import NotificationPreferences, DELIVERABLE_NOTIFICATION_CLASSES
 from .source_routing import LEGACY_UNRESOLVED_WARNINGS
 from .provider_failures import PROVIDER_FAILURE_GUIDANCE
-from .retry_jobs import RetryJob, MAX_RETRY_JOBS, RETRYABLE_PROVIDER_CODES
+from .retry_jobs import RetryJob, RETRYABLE_PROVIDER_CODES
 from .retry_settings import RetrySettings, next_retry_at
 
 _LOGGER = logging.getLogger(__name__)
@@ -1036,8 +1036,8 @@ class PendingImportStore:
                                      retry_routing_unresolved: bool = False) -> str:
         """Save original text and activity atomically before invoking an AI provider."""
         async with self._lock:
-            if retry_source_text is not None and len(self._retry_jobs) >= MAX_RETRY_JOBS:
-                raise PendingEventEditError("Retry queue is full; remove saved submissions first")
+            # A hard cap is unsafe until users can retry/cancel retained jobs.
+            # Introduce bounded admission with that lifecycle in the next PR.
             identifier, activity = self._propose_submission_activity(
                 source_kind=source_kind, source_title=source_title, received_at=received_at,
             )
@@ -1230,11 +1230,13 @@ class PendingImportStore:
 
     async def async_record_parse_failure(
         self, activity_id: str, *, provider_error_code: str | None = None,
+        retry_claim: str | None = None,
     ) -> None:
         """Finalize a failed parse while keeping the original source private."""
         if provider_error_code is None:
             await self.async_record_source_failure(
                 activity_id, PROVIDER_FAILURE_GUIDANCE["provider_error"],
+                retry_claim=retry_claim,
             )
             return
         code = (provider_error_code if isinstance(provider_error_code, str)
@@ -1242,7 +1244,8 @@ class PendingImportStore:
                 else "provider_error")
         _, cancelled = await self._async_complete_transaction(
             self._async_record_source_failure_transaction(
-                activity_id, PROVIDER_FAILURE_GUIDANCE[code], provider_error_code=code,
+                activity_id, PROVIDER_FAILURE_GUIDANCE[code],
+                provider_error_code=code, retry_claim=retry_claim,
             )
         )
         if cancelled:
@@ -1252,12 +1255,15 @@ class PendingImportStore:
         self,
         activity_id: str,
         guidance: str,
+        *,
+        retry_claim: str | None = None,
     ) -> None:
         """Finalize a discovered or processing source as failed."""
         _, cancelled = await self._async_complete_transaction(
             self._async_record_source_failure_transaction(
                 activity_id,
                 guidance,
+                retry_claim=retry_claim,
             )
         )
         if cancelled:
@@ -1268,9 +1274,16 @@ class PendingImportStore:
         activity_id: str,
         guidance: str,
         *, provider_error_code: str | None = None,
+        retry_claim: str | None = None,
     ) -> None:
         """Release one source claim in an uncancelled storage transaction."""
         async with self._lock:
+            if retry_claim is not None:
+                job = self._retry_jobs.get(activity_id)
+                if job is None or job.state != "processing" or job.claim != retry_claim:
+                    # An earlier cancelled/superseded parser cannot fail a newer
+                    # attempt or release its source claim.
+                    return
             activity = self.get_activity(activity_id)
             if (
                 activity is not None
@@ -1691,6 +1704,7 @@ class PendingImportStore:
         source_sender: str | None = None,
         warnings: Iterable[str] = (),
         activity_id: str | None = None,
+        retry_claim: str | None = None,
     ) -> PendingImportAddResult:
         """Persist only events not already pending or handled."""
         source_text = source_text.strip()

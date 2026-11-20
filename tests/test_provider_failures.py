@@ -22,6 +22,86 @@ def http_error(status):
     return ClientResponseError(Mock(), (), status=status, message="private token")
 
 
+# Synthetic Google Gen AI SDK hierarchy: APIError.code holds the HTTP status,
+# while ServerError (5xx) and ClientError (4xx) derive from APIError.
+class APIError(Exception):
+    __module__ = "google.genai.errors"
+
+
+class ServerError(APIError):
+    __module__ = "google.genai.errors"
+
+
+class ClientError(APIError):
+    __module__ = "google.genai.errors"
+
+
+def gemini_error(status):
+    error_class = ServerError if type(status) is int and 500 <= status < 600 else ClientError
+    error = error_class("private Gemini response")
+    error.code = status
+    return error
+
+
+@pytest.mark.parametrize(("status", "expected"), [
+    (503, "provider_unavailable"),
+    (500, "provider_unavailable"),
+    (429, "provider_rate_limited"),
+    (401, "provider_authentication"),
+    (403, "provider_authentication"),
+    (400, "provider_error"),
+    ("503", "provider_error"),
+    (True, "provider_error"),
+    (None, "provider_error"),
+])
+def test_gemini_sdk_numeric_code_classification(status, expected):
+    error = gemini_error(status)
+    assert classify_provider_failure(error) == expected
+    wrapper = HomeAssistantError("private wrapper")
+    wrapper.__cause__ = error
+    assert classify_provider_failure(wrapper) == expected
+
+
+def test_unrelated_numeric_code_does_not_fake_a_gemini_http_status():
+    error = RuntimeError("private error with non-HTTP code")
+    error.code = 503
+    assert classify_provider_failure(error) == "provider_error"
+
+
+@pytest.mark.parametrize("wrapped_by_ha", [False, True])
+async def test_gemini_overload_is_private_and_actionable_at_provider_boundary(
+    monkeypatch, wrapped_by_ha,
+):
+    import traceback
+
+    error = gemini_error(503)
+    if wrapped_by_ha:
+        # HA Core's Gemini integration raises HomeAssistantError from APIError.
+        wrapper = HomeAssistantError("private Google error response")
+        wrapper.__cause__ = error
+        error = wrapper
+    generate = AsyncMock(side_effect=error)
+    monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
+    source_text = "private Christmas dinner details"
+    with pytest.raises(providers.ProviderError) as caught:
+        await providers.AITaskParserProvider(object(), "ai_task.gemini").async_parse(
+            TextSourceAdapter().create(source_text),
+            reference_datetime="2026-11-18T20:35:00-08:00",
+            time_zone="America/Los_Angeles",
+        )
+
+    assert caught.value.code == "provider_unavailable"
+    assert str(caught.value) == "AI provider is temporarily unavailable. Try again later."
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
+    # Traceback includes this test's function name ("private"), so check the
+    # actual sensitive values rather than matching that incidental substring.
+    rendered = "".join(traceback.format_exception(caught.value))
+    for secret in ("private Gemini response", "private Google error response", source_text):
+        assert secret not in rendered
+    generate.assert_awaited_once()
+
+
 @pytest.mark.parametrize(("error", "code"), [
     (TimeoutError("private email"), "provider_timeout"),
     (ConnectionError("private host"), "provider_unavailable"),
@@ -48,7 +128,11 @@ async def test_typed_errors_are_wrapped_without_exposing_messages(monkeypatch, e
             reference_datetime="now", time_zone="UTC",
         )
     assert caught.value.code == code
-    assert str(caught.value) == "AI Task could not parse the source"
+    assert str(caught.value) == (
+        "AI provider is temporarily unavailable. Try again later."
+        if code == "provider_unavailable"
+        else "AI Task could not parse the source"
+    )
     import traceback
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
@@ -229,6 +313,10 @@ async def test_manual_submission_persists_provider_category_and_preserves_except
     parse = AsyncMock(side_effect=error)
     store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()),
                             async_begin_submission=AsyncMock(return_value="activity-id"),
+                            # The source is deleted while the provider is running;
+                            # provider errors must still propagate without the job.
+                            get_retry_job=Mock(side_effect=[SimpleNamespace(claim="test-claim"), None]),
+                            active_submissions=set(),
                             async_record_parse_failure=AsyncMock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
@@ -240,7 +328,7 @@ async def test_manual_submission_persists_provider_category_and_preserves_except
     with pytest.raises(providers.ProviderError) as caught:
         await handler(SimpleNamespace(data={"text": "private details"}, context=Context(user_id=None)))
     assert caught.value is error
-    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code="provider_rate_limited")
+    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code="provider_rate_limited", retry_claim="test-claim")
 
 
 async def test_email_failure_retains_retry_and_acknowledgement_semantics():
@@ -322,6 +410,10 @@ async def test_actual_submission_boundary_sanitizes_malformed_provider_contracts
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()),
                             async_begin_submission=AsyncMock(return_value="activity-id"),
+                            # The source is deleted while the provider is running;
+                            # provider errors must still propagate without the job.
+                            get_retry_job=Mock(side_effect=[SimpleNamespace(claim="test-claim"), None]),
+                            active_submissions=set(),
                             async_record_parse_failure=AsyncMock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_review_panel", AsyncMock())
@@ -335,7 +427,7 @@ async def test_actual_submission_boundary_sanitizes_malformed_provider_contracts
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
     assert "private" not in "".join(traceback.format_exception(caught.value))
-    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected)
+    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected, retry_claim="test-claim")
 
 
 @pytest.mark.parametrize(("error", "expected"), [
@@ -359,6 +451,10 @@ async def test_actual_submission_sanitizes_throwing_entity_availability(monkeypa
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()),
                             async_begin_submission=AsyncMock(return_value="activity-id"),
+                            # The source is deleted while the provider is running;
+                            # provider errors must still propagate without the job.
+                            get_retry_job=Mock(side_effect=[SimpleNamespace(claim="test-claim"), None]),
+                            active_submissions=set(),
                             async_record_parse_failure=AsyncMock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_review_panel", AsyncMock())
@@ -374,7 +470,7 @@ async def test_actual_submission_sanitizes_throwing_entity_availability(monkeypa
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
     assert "private" not in "".join(traceback.format_exception(caught.value))
-    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected)
+    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected, retry_claim="test-claim")
     generate.assert_not_awaited()
 
 
@@ -417,6 +513,10 @@ async def test_actual_submission_has_coherent_untrusted_provider_boundaries(monk
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()),
                             async_begin_submission=AsyncMock(return_value="activity-id"),
+                            # The source is deleted while the provider is running;
+                            # provider errors must still propagate without the job.
+                            get_retry_job=Mock(side_effect=[SimpleNamespace(claim="test-claim"), None]),
+                            active_submissions=set(),
                             async_record_parse_failure=AsyncMock())
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
     monkeypatch.setattr("custom_components.daylight_calendar_import.async_register_review_panel", AsyncMock())
@@ -433,7 +533,7 @@ async def test_actual_submission_has_coherent_untrusted_provider_boundaries(monk
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
     assert "private" not in "".join(traceback.format_exception(caught.value))
-    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected)
+    store.async_record_parse_failure.assert_awaited_once_with("activity-id", provider_error_code=expected, retry_claim="test-claim")
     if phase in ("resolution", "features"):
         generate.assert_not_awaited()
         with pytest.raises(providers.ProviderError) as capabilities_error:
@@ -464,3 +564,30 @@ async def test_provider_boundary_does_not_convert_cancellation(monkeypatch, phas
     monkeypatch.setattr(providers.ai_task, "async_generate_data", generate)
     with pytest.raises(asyncio.CancelledError):
         await provider.async_parse(TextSourceAdapter().create("source"), reference_datetime="now", time_zone="UTC")
+
+
+def test_gemini_code_requires_exact_sdk_module_and_api_error_base():
+    """Arbitrary exception types must not confer trust on their numeric .code."""
+    foreign_api_error = type("APIError", (Exception,), {"__module__": "other.sdk"})
+    unrelated_google_error = type(
+        "UnrelatedError", (Exception,), {"__module__": "google.genai.errors"}
+    )
+    for error_type in (foreign_api_error, unrelated_google_error):
+        error = error_type("private failure")
+        error.code = 503
+        assert classify_provider_failure(error) == "provider_error"
+
+
+def test_provider_failure_cause_walk_honors_sixteen_exception_limit():
+    """A deeply nested cause must not change the result past the safety bound."""
+    timeout = TimeoutError("private timeout")
+    at_limit = timeout
+    for _ in range(15):
+        wrapper = RuntimeError("private wrapper")
+        wrapper.__cause__ = at_limit
+        at_limit = wrapper
+    assert classify_provider_failure(at_limit) == "provider_timeout"
+
+    beyond_limit = RuntimeError("private outer wrapper")
+    beyond_limit.__cause__ = at_limit
+    assert classify_provider_failure(beyond_limit) == "provider_error"

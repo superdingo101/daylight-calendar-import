@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from custom_components.daylight_calendar_import.retry_jobs import RetryJob
-from custom_components.daylight_calendar_import.storage import PendingEventEditError, _decode_storage_data
+from custom_components.daylight_calendar_import.storage import _decode_storage_data
 from tests.test_storage import FakeStoreBackend, draft, make_store
 
 
@@ -153,9 +153,8 @@ def test_retry_snapshot_rejects_wrong_container_and_accepts_valid_file_metadata(
     assert RetryJob.from_dict(valid.as_dict()) == valid
 
 
-async def test_retry_storage_queue_capacity_and_invalid_configuration(monkeypatch):
-    from dataclasses import replace
-    from custom_components.daylight_calendar_import.retry_jobs import MAX_RETRY_JOBS
+async def test_retry_storage_admission_without_drain_and_invalid_configuration(monkeypatch):
+    """Until retry/cancel exists, retained failures must never permanently block new imports."""
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
     with pytest.raises(ValueError, match="Missing retry source configuration"):
@@ -163,14 +162,231 @@ async def test_retry_storage_queue_capacity_and_invalid_configuration(monkeypatc
             source_kind="manual_text", source_title=None, received_at=datetime.now(UTC),
             retry_source_text="private",
         )
-    initial = RetryJob.create(
-        activity_id="first", source_text="private", source_id="source",
-        received_at=datetime.now(UTC), provider_entity_id="ai_task.gemini",
-        calendar_entity="calendar.family", owner_user_id="user",
+
+    for index in range(100):
+        job_id = await store.async_begin_submission(
+            **{**source_kwargs(), "retry_source_id": f"source-{index}"}
+        )
+        await store.async_record_parse_failure(
+            job_id, provider_error_code="provider_unavailable"
+        )
+    assert len(store.list_retry_jobs()) == 100
+
+    admitted = await store.async_begin_submission(**source_kwargs())
+    assert len(store.list_retry_jobs()) == 101
+    assert store.get_retry_job(admitted).source_id == "manual-one"
+    backend.load_result = backend.saved[-1]
+    restored = make_store(monkeypatch, backend)
+    await restored.async_load()
+    assert len(restored.list_retry_jobs()) == 101
+    assert restored.get_retry_job(admitted).state == "waiting"
+
+
+# These contracts are intentionally explicit: they protect public snapshot fields,
+# accepted provider error codes, and inclusive validation limits against mutation.
+def valid_retry_raw():
+    return RetryJob.create(
+        activity_id="activity", source_text="private event", source_id="source",
+        received_at=datetime(2026, 11, 18, 20, 35, tzinfo=UTC),
+        provider_entity_id="ai_task.gemini", calendar_entity="calendar.family",
+        owner_user_id="user-1",
+    ).as_dict()
+
+
+def test_retry_job_create_defaults_and_processing_claim_are_valid():
+    from uuid import UUID
+
+    job = RetryJob.create(
+        activity_id="activity", source_text="private event", source_id="source",
+        received_at=datetime(2026, 11, 18, 20, 35, tzinfo=UTC),
+        provider_entity_id="ai_task.gemini", calendar_entity="calendar.family",
+        owner_user_id="user-1",
     )
-    store._retry_jobs = {
-        str(index): replace(initial, id=str(index)) for index in range(MAX_RETRY_JOBS)
+    assert job.routing_unresolved is False
+    assert job.reimport_duplicates is False
+    assert job.state == "processing"
+    assert job.attempts == 1
+    assert job.claim is not None
+    assert UUID(job.claim).version == 4
+    assert str(UUID(job.claim)) == job.claim
+
+
+def test_retry_job_summary_is_exact_and_excludes_private_details():
+    job = RetryJob.from_dict({
+        **valid_retry_raw(),
+        "source_kind": "image",
+        "source_title": "School flyer",
+        "source_text": "private description",
+        "state": "waiting",
+        "claim": None,
+        "attempts": 4,
+        "last_failure_code": "provider_timeout",
+        "next_attempt_at": "2026-11-19T01:00:00+00:00",
+        "attachment_path": "/private/flyer",
+        "attachment_sha256": "a" * 64,
+        "attachment_media_type": "image/png",
+        "attachment_size": 128,
+    })
+    assert job.summary() == {
+        "id": "activity",
+        "source_kind": "image",
+        "source_title": "School flyer",
+        "received_at": "2026-11-18T20:35:00+00:00",
+        "state": "waiting",
+        "attempts": 4,
+        "next_attempt_at": "2026-11-19T01:00:00+00:00",
+        "last_failure_code": "provider_timeout",
     }
-    assert len(store.list_retry_jobs()) == MAX_RETRY_JOBS
-    with pytest.raises(PendingEventEditError, match="Retry queue is full"):
-        await store.async_begin_submission(**source_kwargs())
+
+
+@pytest.mark.parametrize("code", [
+    "provider_timeout",
+    "provider_rate_limited",
+    "provider_unavailable",
+    "provider_error",
+    "provider_authentication",
+    "provider_invalid_response",
+])
+def test_retry_job_accepts_all_documented_provider_failure_codes(code):
+    job = RetryJob.from_dict({
+        **valid_retry_raw(),
+        "state": "paused",
+        "claim": None,
+        "last_failure_code": code,
+    })
+    assert job.last_failure_code == code
+    assert RetryJob.from_dict(job.as_dict()) == job
+
+
+@pytest.mark.parametrize(("overrides", "error"), [
+    ({"unknown": True}, "invalid retry job fields"),
+    ({"id": ""}, "invalid retry job identity"),
+    ({"source_text": None}, "invalid retry source text"),
+    ({"received_at": "broken"}, "invalid retry timestamp"),
+    ({"received_at": "2026-11-18T20:35:00"}, "retry timestamp must be timezone aware"),
+    ({"state": "approved"}, "invalid retry lifecycle"),
+    ({"claim": None}, "processing retry must have a claim"),
+    ({"claim": 123}, "invalid retry claim"),
+    ({"last_failure_code": "missing"}, "invalid retry failure"),
+    ({"source_kind": "email"}, "unsupported retry source kind"),
+    ({"owner_user_id": 12}, "invalid retry metadata"),
+    ({"routing_unresolved": "yes"}, "invalid retry flags"),
+    ({"attachment_size": 0}, "invalid retry attachment size"),
+    ({"source_text": " "}, "invalid text retry payload"),
+    ({"source_kind": "pdf", "attachment_path": "/private/file"},
+     "invalid attachment retry metadata"),
+])
+def test_retry_snapshot_reports_precise_validation_error(overrides, error):
+    with pytest.raises(ValueError) as exc:
+        RetryJob.from_dict({**valid_retry_raw(), **overrides})
+    assert str(exc.value) == error
+
+
+@pytest.mark.parametrize(("overrides", "expected"), [
+    ({"source_id": "s" * 2048}, "source_id"),
+    ({"source_text": "x" * 1_000_000}, "source_text"),
+    ({"claim": "c" * 128}, "claim"),
+    ({"state": "paused", "claim": None, "attempts": 1000}, "attempts"),
+    ({"owner_user_id": "o" * 2048}, "owner_user_id"),
+    ({"attachment_path": "p" * 2048, "source_kind": "pdf",
+      "attachment_sha256": "a" * 64, "attachment_media_type": "application/pdf",
+      "attachment_size": 1}, "attachment_size"),
+    ({"attachment_path": "/private/file", "source_kind": "pdf",
+      "attachment_sha256": "a" * 64, "attachment_media_type": "application/pdf",
+      "attachment_size": 10 * 1024 * 1024}, "attachment_size"),
+])
+def test_retry_snapshot_accepts_inclusive_limits(overrides, expected):
+    job = RetryJob.from_dict({**valid_retry_raw(), **overrides})
+    assert getattr(job, expected) == overrides[expected]
+
+
+@pytest.mark.parametrize(("code", "state"), [
+    ("provider_unavailable", "waiting"),
+    ("provider_timeout", "waiting"),
+    ("provider_rate_limited", "waiting"),
+    ("provider_error", "paused"),
+    ("provider_authentication", "paused"),
+    ("provider_invalid_response", "paused"),
+    (None, "paused"),
+])
+def test_retry_failure_releases_claim_and_preserves_requested_delay(code, state):
+    original = RetryJob.from_dict(valid_retry_raw())
+    scheduled = "2026-11-19T03:45:00+00:00"
+    failed = original.after_failure(code, next_attempt_at=scheduled)
+    assert failed == RetryJob.from_dict({
+        **original.as_dict(),
+        "state": state,
+        "claim": None,
+        "last_failure_code": code,
+        "next_attempt_at": scheduled,
+    })
+    assert original.state == "processing"
+    assert original.claim is not None
+
+
+@pytest.mark.parametrize("invalid", [
+    {"retry_provider": None},
+    {"retry_calendar": None},
+    {"source_kind": "pdf"},
+])
+async def test_retry_submission_rejects_each_missing_or_unsupported_config(monkeypatch, invalid):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    with pytest.raises(ValueError) as exc:
+        await store.async_begin_submission(**{**source_kwargs(), **invalid})
+    assert str(exc.value) == "Missing retry source configuration"
+    assert store.list_retry_jobs() == ()
+    assert store.list_activity() == ()
+
+
+async def test_retry_submission_preserves_owner_and_reimport_preference(monkeypatch):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    activity = await store.async_begin_submission(**{
+        **source_kwargs(), "retry_reimport_duplicates": True,
+    })
+    job = store.get_retry_job(activity)
+    assert job is not None
+    assert job.owner_user_id == "user-1"
+    assert job.reimport_duplicates is True
+    assert job.routing_unresolved is False
+
+
+async def test_retry_submission_defaults_to_no_duplicate_reimport(monkeypatch):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    activity = await store.async_begin_submission(**source_kwargs())
+    assert store.get_retry_job(activity).reimport_duplicates is False
+
+
+async def test_retry_failure_default_guidance_is_stable(monkeypatch):
+    """Protect the fallback advice when no provider-specific guidance was supplied."""
+    store = make_store(monkeypatch, FakeStoreBackend())
+    activity = await store.async_begin_submission(**source_kwargs())
+    async with store._lock:
+        await store._async_record_parse_failure_locked(activity)
+    record = store.get_activity(activity)
+    assert record is not None
+    assert record["status"] == "failed"
+    assert record["guidance"] == (
+        "Parsing failed. Check the configured AI Task and submit the source again."
+    )
+
+
+async def test_retry_failure_only_tags_its_source_and_clears_its_release(monkeypatch):
+    """A provider failure must not contaminate concurrent source activity."""
+    store = make_store(monkeypatch, FakeStoreBackend())
+    failed_id = await store.async_begin_submission(**source_kwargs())
+    other_id = await store.async_begin_submission(**{
+        **source_kwargs(), "retry_source_id": "manual-two",
+    })
+    store._source_claim_releases.update((failed_id, other_id))
+    await store.async_record_parse_failure(
+        failed_id, provider_error_code="provider_unavailable",
+    )
+    failed = store.get_activity(failed_id)
+    other = store.get_activity(other_id)
+    assert failed is not None and other is not None
+    assert failed["status"] == "failed"
+    assert failed["failure_code"] == "provider_unavailable"
+    assert other["status"] == "processing"
+    assert "failure_code" not in other
+    assert failed_id not in store._source_claim_releases
+    assert other_id in store._source_claim_releases

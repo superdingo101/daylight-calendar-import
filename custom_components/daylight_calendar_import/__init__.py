@@ -411,7 +411,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             aliases=aliases,
         )
 
-    async def parse_submission(source: SourceDocument, activity_id: str) -> Any:
+    async def parse_submission(
+        source: SourceDocument, activity_id: str, *, retry_claim: str | None = None,
+    ) -> Any:
         """Finish a stopped parser without obscuring its original error."""
         try:
             return await _async_parse_source(hass, source, ai_task_entity)
@@ -420,9 +422,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if isinstance(error, ProviderError):
                     await pending_store.async_record_parse_failure(
                         activity_id, provider_error_code=error.code,
+                        retry_claim=retry_claim,
                     )
                 else:
-                    await pending_store.async_record_parse_failure(activity_id)
+                    await pending_store.async_record_parse_failure(
+                        activity_id, retry_claim=retry_claim,
+                    )
             except Exception:
                 pass
             raise
@@ -499,19 +504,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             retry_owner=call.context.user_id if call.context else None,
             retry_reimport_duplicates=call.data.get("reimport_duplicates", False),
         )
+        # The original claim must remain fixed across provider awaits. Reading
+        # it after parsing could accidentally adopt a newer attempt's claim,
+        # or lose the claim entirely after cancellation/deletion.
+        # async_begin_submission always creates a claimed job for text sources.
+        # There is no await between that durable commit and this lookup.
+        original_claim = pending_store.get_retry_job(activity_id).claim
         task = asyncio.current_task()
         pending_store.active_submissions.add(task)
         try:
             try:
-                outcome = await parse_submission(route.parser_source, activity_id)
+                outcome = await parse_submission(
+                    route.parser_source, activity_id, retry_claim=original_claim,
+                )
             except ProviderError:
-                job = (pending_store.get_retry_job(activity_id)
-                       if hasattr(pending_store, "get_retry_job") else None)
+                job = pending_store.get_retry_job(activity_id)
                 if job is None:
                     raise
                 return _saved_retry_response(job)
-            job = (pending_store.get_retry_job(activity_id)
-                   if hasattr(pending_store, "get_retry_job") else None)
             result = await pending_store.async_add(
                 source_text=source.text,
                 events=outcome.events,
@@ -524,7 +534,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 warnings=[*outcome.warnings, *route.warnings],
                 routing_unresolved=route.requires_confirmation,
                 activity_id=activity_id,
-                **({"retry_claim": job.claim} if job is not None else {}),
+                retry_claim=original_claim,
             )
         finally:
             pending_store.active_submissions.discard(task)
@@ -569,6 +579,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 source_kind=source.kind.value, source_title=review_title,
                 received_at=source.received_at, **kwargs,
             )
+            original_claim = (
+                pending_store.get_retry_job(activity_id).claim
+                if spool_name is not None else None
+            )
         except BaseException:
             if spool_name is not None:
                 await async_delete_saved(hass, spool_name)
@@ -577,7 +591,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pending_store.active_submissions.add(task)
         try:
             try:
-                outcome = await parse_submission(route.parser_source, activity_id)
+                outcome = await parse_submission(
+                    route.parser_source, activity_id, retry_claim=original_claim,
+                )
             except ProviderError:
                 job = (pending_store.get_retry_job(activity_id)
                        if hasattr(pending_store, "get_retry_job") else None)
@@ -606,7 +622,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 warnings=[*outcome.warnings, *route.warnings],
                 routing_unresolved=route.requires_confirmation,
                 activity_id=activity_id,
-                **({"retry_claim": job.claim} if job is not None else {}),
+                retry_claim=original_claim,
             )
         finally:
             pending_store.active_submissions.discard(task)
@@ -849,6 +865,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     except ProviderError as err:
                         await pending_store.async_record_parse_failure(
                             job.id, provider_error_code=err.code,
+                            retry_claim=claimed.claim,
                         )
                         latest = pending_store.get_retry_job(job.id)
                         return (_saved_retry_response(latest) if latest is not None
@@ -885,7 +902,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 except RetryJobConflict:
                     return {"status": "cancelled", "job_id": job.id}
                 except Exception:
-                    await pending_store.async_record_parse_failure(job.id)
+                    await pending_store.async_record_parse_failure(
+                        job.id, retry_claim=claimed.claim,
+                    )
                     raise
                 finally:
                     pending_store.active_submissions.discard(task)

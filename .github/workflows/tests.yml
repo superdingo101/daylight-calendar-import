@@ -7,6 +7,12 @@ on:
   # Release-prep PRs created by GITHUB_TOKEN do not fire pull_request CI.
   workflow_dispatch:
 
+# Keep only the latest PR test run. This avoids stale runs competing for
+# hosted runners after a new patch is pushed; release/main runs are separate.
+concurrency:
+  group: daylight-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   frontend:
     name: Review frontend
@@ -45,6 +51,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
         with:
@@ -63,11 +70,12 @@ jobs:
       # The installer uses Git release tags and the unmodified repository tree.
       # Run it explicitly outside mutation discovery in mutmut's isolated tree.
       - run: pytest tests/hacs_install_upgrade.py
-      - run: pytest --cov --cov-branch --cov-fail-under=100
+      - run: timeout 180s pytest -vv -x --cov --cov-branch --cov-fail-under=100
 
   test-ha-2026-7:
     name: Test Home Assistant 2026.7.4
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
         with:
@@ -101,11 +109,12 @@ jobs:
       # The installer uses Git release tags and the unmodified repository tree.
       # Run it explicitly outside mutation discovery in mutmut's isolated tree.
       - run: pytest tests/hacs_install_upgrade.py
-      - run: pytest --cov --cov-branch --cov-fail-under=100
+      - run: timeout 180s pytest -vv -x --cov --cov-branch --cov-fail-under=100
 
   test-ha-2026-11:
     name: Test Home Assistant 2026.11.0
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Propagate the plugin exclusion into nested pytest subprocesses as well.
     env:
       PYTEST_ADDOPTS: "-p no:respx"
@@ -146,4 +155,4 @@ jobs:
       # separate respx plugin so Home Assistant can install its httpx alias.
       # The installer uses Git release tags and the unmodified repository tree.
       - run: pytest -p no:respx tests/hacs_install_upgrade.py
-      - run: pytest -p no:respx --cov --cov-branch --cov-fail-under=100
+      - run: timeout 180s pytest -vv -x -p no:respx --cov --cov-branch --cov-fail-under=100
