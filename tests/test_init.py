@@ -2156,6 +2156,48 @@ async def test_unload_keeps_store_if_platform_unload_fails():
     assert hass.data[DOMAIN][config_entry.entry_id] is store
 
 
+@pytest.mark.parametrize("platform_error", [False, "raise"])
+async def test_unload_rollback_resumes_retry_scheduler(platform_error):
+    """Neither a failed result nor an exception may strand the live timer."""
+    hass = FakeHass()
+    config_entry = entry()
+    scheduler = SimpleNamespace(async_stop=AsyncMock(), start=Mock())
+    store = SimpleNamespace(
+        active_submissions=set(), active_service_handlers=set(),
+        email_runtime=None, retry_runtime=scheduler, accepting_services=True,
+    )
+    hass.data[DOMAIN] = {config_entry.entry_id: store}
+    if platform_error == "raise":
+        hass.config_entries.async_unload_platforms.side_effect = RuntimeError("platform unavailable")
+        with pytest.raises(RuntimeError, match="platform unavailable"):
+            await async_unload_entry(hass, config_entry)
+    else:
+        hass.config_entries.async_unload_platforms.return_value = False
+        assert await async_unload_entry(hass, config_entry) is False
+    scheduler.async_stop.assert_awaited_once_with()
+    scheduler.start.assert_called_once_with()
+    assert store.accepting_services is True
+    assert hass.data[DOMAIN][config_entry.entry_id] is store
+
+
+async def test_unload_reload_guard_does_not_restart_retry_scheduler():
+    """Guarded failed unload leaves the entry stopped for settings reconciliation."""
+    hass = FakeHass()
+    config_entry = entry()
+    scheduler = SimpleNamespace(async_stop=AsyncMock(), start=Mock())
+    store = SimpleNamespace(
+        active_submissions=set(), active_service_handlers=set(),
+        email_runtime=None, retry_runtime=scheduler, accepting_services=True,
+        calendar_settings_reload_guard=True,
+    )
+    hass.data[DOMAIN] = {config_entry.entry_id: store}
+    hass.config_entries.async_unload_platforms.return_value = False
+    assert await async_unload_entry(hass, config_entry) is False
+    assert store.accepting_services is False
+    scheduler.async_stop.assert_awaited_once_with()
+    scheduler.start.assert_not_called()
+
+
 async def test_failed_sensor_forwarding_rolls_back_without_service_leaks(monkeypatch):
     hass = FakeHass()
     config_entry = entry()
