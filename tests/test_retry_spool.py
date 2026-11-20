@@ -244,3 +244,250 @@ async def test_remove_private_spool_deletes_retained_uploads(spool_hass, tmp_pat
     # A subsequent removal is idempotent and never deletes the upload original.
     await async_clear_spool(spool_hass)
     assert path.read_bytes() == b"private"
+
+
+@pytest.mark.parametrize("scenario", ["private_root_symlink", "source_not_regular", "saved_not_regular"])
+async def test_spool_rejects_untrusted_disk_shapes(
+    scenario, spool_hass, tmp_path, monkeypatch,
+):
+    path = tmp_path / "daylight-upload.png"
+    path.write_bytes(b"source")
+    root = tmp_path / "daylight_calendar_import_retry"
+    if scenario == "private_root_symlink":
+        target = tmp_path / "outside"
+        target.mkdir()
+        root.symlink_to(target, target_is_directory=True)
+        with pytest.raises(RetryAttachmentError, match="Unsafe private retry directory"):
+            await async_spool_upload(spool_hass, source_for_stage(path))
+        assert list(target.iterdir()) == []
+        return
+
+    if scenario == "source_not_regular":
+        with monkeypatch.context() as patch:
+            patch.setattr(spool_module.stat, "S_ISREG", lambda _mode: False)
+            with pytest.raises(RetryAttachmentError, match="Temporary upload is unavailable"):
+                spool_module._spool_copy(spool_hass, str(path))
+        assert not root.exists()
+        return
+
+    source = source_for_stage(path)
+    name, digest, size = await async_spool_upload(spool_hass, source)
+    job = job_for_spool(source, name, digest, size)
+    with monkeypatch.context() as patch:
+        patch.setattr(spool_module.stat, "S_ISREG", lambda _mode: False)
+        with pytest.raises(RetryAttachmentError, match="Saved attachment is missing"):
+            spool_module._read_saved(spool_hass, job)
+    assert (root / name).read_bytes() == b"source"
+
+
+async def test_failed_spool_fsync_removes_partially_written_private_bytes(
+    spool_hass, tmp_path, monkeypatch,
+):
+    path = tmp_path / "daylight-source.png"
+    path.write_bytes(b"source bytes")
+    with monkeypatch.context() as patch:
+        patch.setattr(spool_module.os, "fsync", lambda _fd: (_ for _ in ()).throw(OSError("disk failure")))
+        with pytest.raises(OSError, match="disk failure"):
+            await async_spool_upload(spool_hass, source_for_stage(path))
+    root = tmp_path / "daylight_calendar_import_retry"
+    assert root.is_dir()
+    assert list(root.iterdir()) == []
+    assert path.read_bytes() == b"source bytes"
+
+
+async def test_spool_requires_a_private_staging_path(spool_hass, tmp_path):
+    path = tmp_path / "daylight-source.png"
+    path.write_bytes(b"source bytes")
+    source = replace(source_for_stage(path), metadata={})
+    with pytest.raises(RetryAttachmentError, match="not available for a durable retry"):
+        await async_spool_upload(spool_hass, source)
+    assert not (tmp_path / "daylight_calendar_import_retry").exists()
+
+
+async def test_cancelled_spool_executor_that_fails_does_not_escape_or_store_bytes(
+    spool_hass, tmp_path, monkeypatch,
+):
+    path = tmp_path / "daylight-source.png"
+    path.write_bytes(b"source bytes")
+    entered, release = Event(), Event()
+
+    def fail_late(_hass, _source_path):
+        entered.set()
+        assert release.wait(5)
+        raise RetryAttachmentError("source vanished")
+
+    monkeypatch.setattr(spool_module, "_spool_copy", fail_late)
+    task = asyncio.create_task(async_spool_upload(spool_hass, source_for_stage(path)))
+    assert await asyncio.to_thread(entered.wait, 5)
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not (tmp_path / "daylight_calendar_import_retry").exists()
+
+
+async def test_replay_requires_configured_media_for_visual_bytes(
+    spool_hass, tmp_path,
+):
+    path = tmp_path / "daylight-source.png"
+    path.write_bytes(b"private bytes")
+    source = source_for_stage(path)
+    name, digest, size = await async_spool_upload(spool_hass, source)
+    spool_hass.config.media_dirs = {}
+    with pytest.raises(RetryAttachmentError, match="No local media directory"):
+        async with async_replay_source(spool_hass, job_for_spool(source, name, digest, size)):
+            pytest.fail("AI must not receive a local source without configured media")
+    assert (tmp_path / "daylight_calendar_import_retry" / name).exists()
+
+
+def test_failed_media_write_cleans_the_temporary_ai_file(
+    spool_hass, tmp_path, monkeypatch,
+):
+    original = spool_module.tempfile.NamedTemporaryFile
+    names = []
+
+    class FailedWrite:
+        def __init__(self, *args, **kwargs):
+            self._handle = original(*args, **kwargs)
+            self.name = self._handle.name
+            names.append(Path(self.name))
+
+        def __enter__(self):
+            self._handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._handle.__exit__(*args)
+
+        def write(self, _data):
+            raise OSError("media write failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(spool_module.tempfile, "NamedTemporaryFile", FailedWrite)
+        with pytest.raises(OSError, match="media write failed"):
+            spool_module._stage_for_ai(spool_hass, b"private", ".png")
+    assert len(names) == 1
+    assert not names[0].exists()
+
+
+async def test_cancelled_media_stager_failure_is_consumed(
+    spool_hass, tmp_path, monkeypatch,
+):
+    path = tmp_path / "daylight-source.png"
+    path.write_bytes(b"private")
+    source = source_for_stage(path)
+    name, digest, size = await async_spool_upload(spool_hass, source)
+    entered, release = Event(), Event()
+
+    def fail_late(_hass, _data, _suffix):
+        entered.set()
+        assert release.wait(5)
+        raise RetryAttachmentError("cannot stage")
+
+    monkeypatch.setattr(spool_module, "_stage_for_ai", fail_late)
+
+    async def replay():
+        async with async_replay_source(spool_hass, job_for_spool(source, name, digest, size)):
+            pytest.fail("the cancelled stage must not reach the provider")
+
+    task = asyncio.create_task(replay())
+    assert await asyncio.to_thread(entered.wait, 5)
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert list((tmp_path / "media").glob("daylight-retry-*")) == []
+
+
+@pytest.mark.parametrize(("kind", "media_type", "suffix"), [
+    (SourceKind.IMAGE, "image/png", ".png"),
+    (SourceKind.IMAGE, "image/webp", ".webp"),
+    (SourceKind.IMAGE, "image/jpeg", ".jpg"),
+    (SourceKind.PDF, "application/pdf", ".pdf"),
+])
+async def test_replay_media_suffix_is_derived_only_from_authenticated_type(
+    spool_hass, tmp_path, kind, media_type, suffix,
+):
+    path = tmp_path / "daylight-bytes.bin"
+    path.write_bytes(b"private document bytes")
+    source = source_for_stage(path, kind=kind)
+    name, digest, size = await async_spool_upload(spool_hass, source)
+    job = replace(job_for_spool(source, name, digest, size), attachment_media_type=media_type)
+    async with async_replay_source(spool_hass, job) as replayed:
+        assert replayed.attachments[0].content_ref.endswith(suffix)
+        staged = list((tmp_path / "media").iterdir())
+        assert len(staged) == 1
+        assert staged[0].suffix == suffix
+        assert staged[0].read_bytes() == b"private document bytes"
+    assert list((tmp_path / "media").iterdir()) == []
+
+
+def test_reconcile_missing_and_symlinked_private_roots(spool_hass, tmp_path):
+    root = tmp_path / "daylight_calendar_import_retry"
+    spool_module._reconcile(spool_hass, frozenset())
+    assert not root.exists()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(RetryAttachmentError, match="Unsafe private retry directory"):
+        spool_module._reconcile(spool_hass, frozenset())
+    assert list(outside.iterdir()) == []
+
+
+async def test_reconcile_skips_unowned_names_and_unlinks_only_spool_symlinks(
+    spool_hass, tmp_path,
+):
+    root = tmp_path / "daylight_calendar_import_retry"
+    root.mkdir()
+    target = tmp_path / "outside-source.txt"
+    target.write_bytes(b"outside untouched")
+    link = root / ("b" * 32 + ".bin")
+    link.symlink_to(target)
+    unrelated = root / "user-notes.txt"
+    unrelated.write_bytes(b"unrelated")
+    await async_reconcile_spool(spool_hass, ())
+    assert not link.exists() and not link.is_symlink()
+    assert target.read_bytes() == b"outside untouched"
+    assert unrelated.read_bytes() == b"unrelated"
+
+
+@pytest.mark.parametrize("scenario", ["root_symlink", "unrelated_file", "valid_name_directory"])
+async def test_clear_private_spool_never_traverses_other_content(
+    spool_hass, tmp_path, scenario,
+):
+    root = tmp_path / "daylight_calendar_import_retry"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_bytes(b"preserve")
+    if scenario == "root_symlink":
+        root.symlink_to(outside, target_is_directory=True)
+        with pytest.raises(RetryAttachmentError, match="Unsafe private retry directory"):
+            await async_clear_spool(spool_hass)
+        assert root.is_symlink()
+    else:
+        root.mkdir()
+        child = root / ("b" * 32 + ".bin" if scenario == "valid_name_directory" else "notes.txt")
+        if scenario == "valid_name_directory":
+            child.mkdir()
+        else:
+            child.write_bytes(b"not an opaque spool entry")
+        await async_clear_spool(spool_hass)
+        assert root.exists()
+        assert child.exists()
+    assert sentinel.read_bytes() == b"preserve"
+
+
+@pytest.mark.parametrize("bytes_written", [b"", b"bad", b"x" * (10 * 1024 * 1024 + 1)])
+async def test_replay_detects_empty_wrong_size_or_oversized_private_data(
+    spool_hass, tmp_path, bytes_written,
+):
+    path = tmp_path / "daylight-source.png"
+    path.write_bytes(b"original bytes")
+    source = source_for_stage(path)
+    name, digest, size = await async_spool_upload(spool_hass, source)
+    stored = tmp_path / "daylight_calendar_import_retry" / name
+    stored.write_bytes(bytes_written)
+    with pytest.raises(RetryAttachmentError, match="integrity"):
+        async with async_replay_source(spool_hass, job_for_spool(source, name, digest, size)):
+            pytest.fail("corrupt bytes must not reach the provider")
