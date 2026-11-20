@@ -6690,3 +6690,90 @@ test("eight assumptions retain event-level timezone safety disclosures outside c
   }
   assert.equal(cards[0].querySelectorAll(".event-note").length, 9); // Heading plus all eight disclosures.
 });
+
+test("retry draft preserves its original concurrency baseline across unrelated settings refresh", async () => {
+  const panel = new DaylightImportPanel();
+  const original = {enabled: false, initial_delay_minutes: 15,
+    max_automatic_retries: 3, retention_days: 7};
+  const draft = {...original, enabled: true, max_automatic_retries: 5};
+  const concurrent = {...original, enabled: true, max_automatic_retries: 2};
+  const requests = [];
+  panel._settings = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.test",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    email: {}, notifications: {enabled: false, target: null, classes: []}, retry: original,
+  };
+  panel._hass = {user: {is_admin: true}, states: {}, callWS: async payload => {
+    requests.push(payload);
+    return panel._settings;
+  }};
+  panel._setSettingsDraft("retry", {retry: draft});
+  panel._applySettingsSnapshot({...panel._settings, retry: concurrent});
+  assert.deepEqual(panel._retryDraftBaseline, original);
+  assert.deepEqual(panel._settingsDrafts.retry.retry, draft);
+  panel._saveSettings = async (_tab, _patch, save) => save();
+  const form = find(panel.retrySettingsView(), "form");
+  form.elements.namedItem("retry_enabled").checked = true;
+  form.elements.namedItem("max_automatic_retries").value = "5";
+  form.submit({preventDefault() {}});
+  await flush();
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0].retry, draft);
+  assert.deepEqual(requests[0].expected_retry, original);
+  assert.notDeepEqual(requests[0].expected_retry, concurrent);
+});
+
+
+test("retry policy conflict blocks resubmission until a successful refresh", async () => {
+  const panel = new DaylightImportPanel();
+  const original = {enabled: false, initial_delay_minutes: 15,
+    max_automatic_retries: 3, retention_days: 7};
+  const draft = {...original, enabled: true};
+  const remote = {...original, max_automatic_retries: 1};
+  panel._hass = {user: {is_admin: true}, states: {},
+    callWS: async () => { throw new Error("offline"); }};
+  panel._settings = {
+    entry_id: "entry-1", ai_task_entity: "ai_task.test",
+    calendar_entity: "calendar.family", calendar_entities: ["calendar.family"],
+    email: {}, notifications: {enabled: false, target: null, classes: []},
+    retry: original,
+  };
+  panel._view = "settings";
+  panel._status = "ready";
+  panel._settingsTab = "retry";
+  panel._setSettingsDraft("retry", {retry: draft});
+  await panel._saveSettings(
+    "retry", {retry: draft},
+    async () => { throw {code: "retry_settings_changed", message: "Concurrent edit"}; },
+    "Saved", "Could not save retry settings",
+  );
+  assert.deepEqual(panel._settingsDrafts.retry.retry, draft);
+  assert.deepEqual(panel._retryDraftBaseline, original);
+  assert.equal(panel._retryConflictNeedsRebase, true);
+  const form = find(panel.retrySettingsView(), "form");
+  form.submit({preventDefault() {}});
+  assert.match(panel._settingsError, /Refresh retry settings/);
+  panel._applySettingsSnapshot({...panel._settings, retry: remote});
+  assert.equal(panel._retryConflictNeedsRebase, false);
+  assert.equal(panel._retryDraftBaseline, null);
+  assert.equal(panel._settingsDrafts.retry, null);
+  assert.deepEqual(panel._settings.retry, remote);
+  panel._setSettingsDraft("retry", {retry: draft});
+  assert.deepEqual(panel._retryDraftBaseline, remote);
+});
+
+
+test("confirmed retry policy refresh clears the stale draft baseline", () => {
+  const panel = new DaylightImportPanel();
+  const original = {enabled: false, initial_delay_minutes: 15,
+    max_automatic_retries: 3, retention_days: 7};
+  const changed = {...original, enabled: true};
+  panel._settings = {retry: original};
+  panel._setSettingsDraft("retry", {retry: changed});
+  assert.deepEqual(panel._retryDraftBaseline, original);
+  panel._applySettingsSnapshot({retry: changed});
+  assert.equal(panel._retryDraftBaseline, null);
+  assert.equal(panel._settingsDrafts.retry, null);
+  panel._setSettingsDraft("retry", {retry: original});
+  assert.deepEqual(panel._retryDraftBaseline, changed);
+});
