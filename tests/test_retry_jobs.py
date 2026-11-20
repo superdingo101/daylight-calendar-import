@@ -139,6 +139,17 @@ def test_retry_snapshot_rejects_corrupt_individual_fields(overrides, message):
         RetryJob.from_dict(raw)
 
 
+@pytest.mark.parametrize("invalid_attempts", [-1, True, "1", 2, 1001])
+def test_retry_snapshot_rejects_invalid_automatic_attempt_counters(invalid_attempts):
+    """Automatic attempts must be an integer within the committed attempt total."""
+    raw = valid_retry_raw()
+    raw["automatic_attempts"] = invalid_attempts
+    with pytest.raises(ValueError, match="invalid automatic retry count"):
+        RetryJob.from_dict(raw)
+    raw["automatic_attempts"] = raw["attempts"]
+    assert RetryJob.from_dict(raw).automatic_attempts == 1
+
+
 def test_retry_snapshot_rejects_wrong_container_and_accepts_valid_file_metadata():
     with pytest.raises(ValueError, match="fields"):
         RetryJob.from_dict("not a dict")
