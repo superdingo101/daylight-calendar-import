@@ -275,7 +275,8 @@ async def test_retry_provider_failure_returns_saved_status_and_releases_claim(
         AsyncMock(side_effect=failure),
     )
     stopped = replace(s.claimed, state="waiting", claim=None, last_failure_code="provider_unavailable")
-    s.store.get_retry_job.side_effect = [s.job, stopped]
+    # Authorization, execution and final failure response each read the job.
+    s.store.get_retry_job.side_effect = [s.job, s.job, stopped]
     assert await s.invoke(SERVICE_RETRY_JOB, job_id=s.job.id) == {
         "status": "saved_for_retry",
         "activity_id": s.job.id, "pending": None,
@@ -286,6 +287,7 @@ async def test_retry_provider_failure_returns_saved_status_and_releases_claim(
     s.store.async_record_parse_failure.assert_awaited_once_with(
         s.job.id, provider_error_code="provider_unavailable", retry_claim=s.claimed.claim,
     )
+    assert s.store.get_retry_job.call_count == 3
     s.store.async_add.assert_not_awaited()
     assert s.store.active_submissions == set()
 
@@ -296,7 +298,7 @@ async def test_retry_provider_failure_after_deletion_returns_cancelled(service_s
         "custom_components.daylight_calendar_import._async_parse_source",
         AsyncMock(side_effect=ProviderError("provider_unavailable", "private error")),
     )
-    s.store.get_retry_job.side_effect = [s.job, None]
+    s.store.get_retry_job.side_effect = [s.job, s.job, None]
     assert await s.invoke(SERVICE_RETRY_JOB, job_id=s.job.id) == {
         "status": "cancelled", "job_id": s.job.id,
     }
