@@ -393,3 +393,32 @@ async def test_scheduler_restarts_its_subscription_after_explicit_stop(monkeypat
     assert execute.await_count == 2
     await scheduler.async_stop()
     assert unsubscribers[1].call_count == 1
+
+
+async def test_retention_without_cleanup_hook_handles_empty_queue_and_stopped_runtime(monkeypatch):
+    """Cleanup and stopped-task branches are safe even without a user callback."""
+    unsubscribe = Mock()
+    monkeypatch.setattr(
+        retry_scheduler, "async_track_time_interval", lambda *_args: unsubscribe,
+    )
+    hass = scheduler_hass()
+    store = SimpleNamespace(
+        accepting_services=True, list_retry_jobs=Mock(return_value=()),
+        async_apply_retention=AsyncMock(),
+    )
+    execute = AsyncMock()
+    scheduler = RetryScheduler(hass, store, lambda: RetrySettings(enabled=True), execute)
+    scheduler.start()
+    assert hass.tasks == []
+    scheduler._last_retention = datetime.now(UTC) - timedelta(hours=2)
+    scheduler.kick()
+    assert len(hass.tasks) == 1
+    await hass.tasks[0]
+    store.async_apply_retention.assert_awaited_once_with()
+    execute.assert_not_awaited()
+    assert datetime.now(UTC) - scheduler._last_retention < timedelta(seconds=30)
+    await scheduler.async_stop()
+    unsubscribe.assert_called_once_with()
+    await scheduler._async_run_one()
+    store.async_apply_retention.assert_awaited_once_with()
+    execute.assert_not_awaited()
