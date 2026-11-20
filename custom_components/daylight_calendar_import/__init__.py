@@ -1424,11 +1424,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             store.accepting_services = not getattr(
                 store, "calendar_settings_reload_guard", False
             )
+            if retry_runtime is not None and store.accepting_services:
+                retry_runtime.start()
             raise
         if not platforms_unloaded:
             store.accepting_services = not getattr(
                 store, "calendar_settings_reload_guard", False
             )
+            if retry_runtime is not None and store.accepting_services:
+                retry_runtime.start()
             return False
 
         getattr(store, "notification_unsubscribe", lambda: None)()

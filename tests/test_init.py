@@ -75,6 +75,19 @@ from custom_components.daylight_calendar_import.storage import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_scheduler_timer_for_service_harnesses(monkeypatch):
+    """The FakeHass service harness has no HA event loop/timer integration.
+
+    RetryScheduler has dedicated timer, cleanup, and dispatch tests; here the
+    service setup and authorization behavior should run without real timers.
+    """
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.retry_scheduler.async_track_time_interval",
+        Mock(return_value=Mock()),
+    )
+
+
 class FakeServices:
     def __init__(self):
         self.handlers = {}
@@ -2143,6 +2156,48 @@ async def test_unload_keeps_store_if_platform_unload_fails():
     assert hass.data[DOMAIN][config_entry.entry_id] is store
 
 
+@pytest.mark.parametrize("platform_error", [False, "raise"])
+async def test_unload_rollback_resumes_retry_scheduler(platform_error):
+    """Neither a failed result nor an exception may strand the live timer."""
+    hass = FakeHass()
+    config_entry = entry()
+    scheduler = SimpleNamespace(async_stop=AsyncMock(), start=Mock())
+    store = SimpleNamespace(
+        active_submissions=set(), active_service_handlers=set(),
+        email_runtime=None, retry_runtime=scheduler, accepting_services=True,
+    )
+    hass.data[DOMAIN] = {config_entry.entry_id: store}
+    if platform_error == "raise":
+        hass.config_entries.async_unload_platforms.side_effect = RuntimeError("platform unavailable")
+        with pytest.raises(RuntimeError, match="platform unavailable"):
+            await async_unload_entry(hass, config_entry)
+    else:
+        hass.config_entries.async_unload_platforms.return_value = False
+        assert await async_unload_entry(hass, config_entry) is False
+    scheduler.async_stop.assert_awaited_once_with()
+    scheduler.start.assert_called_once_with()
+    assert store.accepting_services is True
+    assert hass.data[DOMAIN][config_entry.entry_id] is store
+
+
+async def test_unload_reload_guard_does_not_restart_retry_scheduler():
+    """Guarded failed unload leaves the entry stopped for settings reconciliation."""
+    hass = FakeHass()
+    config_entry = entry()
+    scheduler = SimpleNamespace(async_stop=AsyncMock(), start=Mock())
+    store = SimpleNamespace(
+        active_submissions=set(), active_service_handlers=set(),
+        email_runtime=None, retry_runtime=scheduler, accepting_services=True,
+        calendar_settings_reload_guard=True,
+    )
+    hass.data[DOMAIN] = {config_entry.entry_id: store}
+    hass.config_entries.async_unload_platforms.return_value = False
+    assert await async_unload_entry(hass, config_entry) is False
+    assert store.accepting_services is False
+    scheduler.async_stop.assert_awaited_once_with()
+    scheduler.start.assert_not_called()
+
+
 async def test_failed_sensor_forwarding_rolls_back_without_service_leaks(monkeypatch):
     hass = FakeHass()
     config_entry = entry()
@@ -2174,6 +2229,35 @@ def _fake_lifecycle_store(monkeypatch):
         "custom_components.daylight_calendar_import.PendingImportStore", factory,
     )
     return store
+
+
+async def test_scheduler_start_failure_stops_installed_runtime_and_rolls_back_setup(monkeypatch):
+    """A partially installed timer cannot survive a failed sensor setup."""
+    hass = FakeHass()
+    config_entry = entry()
+    _fake_lifecycle_store(monkeypatch)
+    scheduler = SimpleNamespace(
+        start=Mock(side_effect=RuntimeError("timer unavailable")),
+        async_stop=AsyncMock(),
+    )
+    construct = Mock(return_value=scheduler)
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.RetryScheduler", construct,
+    )
+
+    with pytest.raises(RuntimeError, match="timer unavailable"):
+        await async_setup_entry(hass, config_entry)
+    construct.assert_called_once()
+    scheduler.start.assert_called_once_with()
+    scheduler.async_stop.assert_awaited_once_with()
+    hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
+        config_entry, ["sensor"],
+    )
+    hass.config_entries.async_unload_platforms.assert_awaited_once_with(
+        config_entry, ["sensor"],
+    )
+    assert hass.services.handlers == {}
+    assert config_entry.entry_id not in hass.data[DOMAIN]
 
 
 async def test_unload_blocks_new_service_calls_and_drains_accepted_before_store_removal(monkeypatch):

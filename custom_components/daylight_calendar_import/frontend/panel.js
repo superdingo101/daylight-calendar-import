@@ -699,6 +699,8 @@ export class DaylightImportPanel extends HTMLElement {
     this._settingsDrafts = {general: null, calendars: null, routing: null, email: null, notifications: null, retry: null};
     this._notificationDraftBaseline = null;
     this._notificationConflictNeedsRebase = false;
+    this._retryDraftBaseline = null;
+    this._retryConflictNeedsRebase = false;
     this._routingRawDraft = null;
     this._settingsSaving = false;
     const style = element("style", css);
@@ -1154,6 +1156,19 @@ export class DaylightImportPanel extends HTMLElement {
       this._notificationDraftBaseline = null;
       this._notificationConflictNeedsRebase = false;
     }
+    if (this._retryConflictNeedsRebase) {
+      this._settingsDrafts.retry = null;
+      this._retryDraftBaseline = null;
+      this._retryConflictNeedsRebase = false;
+      this._settingsError =
+        "Retry settings changed elsewhere. Review the current policy and re-enter your changes.";
+    }
+    if (!this._settingsDrafts.retry ||
+        settingsDraftMatches(settings, "retry", this._settingsDrafts.retry)) {
+      this._settingsDrafts.retry = null;
+      this._retryDraftBaseline = null;
+      this._retryConflictNeedsRebase = false;
+    }
     this._reconcileRoutingDraft(settings);
   }
 
@@ -1207,6 +1222,10 @@ export class DaylightImportPanel extends HTMLElement {
         this._notificationDraftBaseline = null;
         this._notificationConflictNeedsRebase = false;
       }
+      if (tab === "retry") {
+        this._retryDraftBaseline = null;
+        this._retryConflictNeedsRebase = false;
+      }
       this._settingsDrafts[tab] = null;
       this._applySettingsSnapshot(saved);
       if (changesPersistedSettings) this._settingsReloadWarning = null;
@@ -1220,6 +1239,7 @@ export class DaylightImportPanel extends HTMLElement {
         if (tab === "routing") this._routingRawDraft = null;
         this._settingsDrafts[tab] = null;
         if (tab === "notifications") this._notificationDraftBaseline = null;
+        if (tab === "retry") this._retryDraftBaseline = null;
         try {
           this._applySettingsSnapshot(await loadSettings(this._hass));
         } catch (refreshError) {
@@ -1252,9 +1272,12 @@ export class DaylightImportPanel extends HTMLElement {
         try {
           const refreshed = await loadSettings(this._hass);
           this._settingsDrafts.retry = null;
+          this._retryDraftBaseline = null;
+          this._retryConflictNeedsRebase = false;
           this._applySettingsSnapshot(refreshed);
           this._settingsError = message;
         } catch {
+          this._retryConflictNeedsRebase = true;
           this._settingsError =
             "Retry settings changed elsewhere, but could not be refreshed. Refresh settings before saving.";
         }
@@ -1267,6 +1290,7 @@ export class DaylightImportPanel extends HTMLElement {
           if (settingsDraftMatches(reconciled, tab, patch)) {
             this._settingsDrafts[tab] = null;
             if (tab === "notifications") this._notificationDraftBaseline = null;
+            if (tab === "retry") this._retryDraftBaseline = null;
             if (changesPersistedSettings) {
               this._settingsReloadWarning = SETTINGS_RUNTIME_UNCERTAIN_WARNING;
             }
@@ -1298,6 +1322,14 @@ export class DaylightImportPanel extends HTMLElement {
       } else if (matches) {
         this._notificationDraftBaseline = null;
         this._notificationConflictNeedsRebase = false;
+      }
+    }
+    if (tab === "retry") {
+      if (!matches && !this._retryDraftBaseline) {
+        this._retryDraftBaseline = {...this._settings.retry};
+      } else if (matches) {
+        this._retryDraftBaseline = null;
+        this._retryConflictNeedsRebase = false;
       }
     }
     this._settingsDrafts[tab] = matches ? null : patch;
@@ -1800,10 +1832,17 @@ export class DaylightImportPanel extends HTMLElement {
     form.addEventListener("submit", event => {
       event.preventDefault();
       const retry = policy();
+      if (this._retryConflictNeedsRebase) {
+        this._settingsError = "Refresh retry settings before saving your retained changes.";
+        this.render();
+        this._content.querySelector("[data-settings-save-error]")?.focus();
+        return;
+      }
+      this._setSettingsDraft("retry", {retry});
       void this._saveSettings("retry", {retry},
         () => saveRetrySettings(this._hass, {
           entry_id: this._settings.entry_id, retry,
-          expected_retry: this._settings.retry ?? current,
+          expected_retry: this._retryDraftBaseline ?? current,
         }), "Retry settings saved", "Could not save retry settings.");
     });
     setSettingsFormBusy(form, this._settingsSaving);

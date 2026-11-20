@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from aiohttp import FormData
@@ -427,7 +428,20 @@ async def test_background_retry_uses_original_reference_date_and_queues_review(
     assert saved["status"] == "saved_for_retry"
     job_id = saved["retry_job"]["id"]
     original = runtime.store.get_retry_job(job_id)
+    # Make the original reference distinctly older than the retry. Otherwise
+    # a regression using the retry clock could pass by coincidence.
+    original = replace(
+        original,
+        received_at=(datetime.now(UTC) - timedelta(days=2, hours=3))
+        .replace(microsecond=0).isoformat(),
+    )
     original_reference = original.received_at
+    # The saved job and activity originate from the same submission. Simulate
+    # their shared historical timestamp so the pending review must preserve it.
+    runtime.store._activity = tuple(
+        {**record, "created_at": original_reference} if record["id"] == job_id else record
+        for record in runtime.store._activity
+    )
     policy = RetrySettings(enabled=True, initial_delay_minutes=15, max_automatic_retries=2)
     runtime.store.retry_preferences = lambda: policy
     due = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
@@ -439,8 +453,10 @@ async def test_background_retry_uses_original_reference_date_and_queues_review(
     assert runtime.store.get(job_id).created_at == original_reference
     assert runtime.generate.await_count == 2
     instructions = runtime.generate.await_args.kwargs["instructions"]
-    assert "Reference datetime: " in instructions
-    assert original_reference[:10] in instructions
+    expected_local = datetime.fromisoformat(original_reference).astimezone(
+        ZoneInfo(hass.config.time_zone)
+    ).isoformat()
+    assert f"Reference datetime: {expected_local}" in instructions
     runtime.writes.assert_not_awaited()
 
 

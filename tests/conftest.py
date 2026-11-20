@@ -1,8 +1,41 @@
 """Shared pytest fixtures."""
 
+from hashlib import sha256
 from importlib.util import find_spec
+from unittest.mock import Mock
 
 import pytest
+from homeassistant.core import HomeAssistant
+
+import custom_components.daylight_calendar_import.retry_scheduler as retry_scheduler
+
+
+@pytest.fixture(autouse=True)
+def fake_hass_scheduler_timer_boundary(monkeypatch):
+    """Use real HA timers in integration tests, but not in FakeHass stubs.
+
+    The lightweight service-unit harnesses cannot run Home Assistant timer
+    internals. Scheduler-specific tests supply their own observed callbacks.
+    """
+    original_track = retry_scheduler.async_track_time_interval
+
+    def track(hass, action, interval):
+        if isinstance(hass, HomeAssistant):
+            return original_track(hass, action, interval)
+        return Mock()
+
+    monkeypatch.setattr(retry_scheduler, "async_track_time_interval", track)
+
+
+# Pytest's default parameter IDs include raw bytes and long strings verbatim.
+# Size-boundary fixtures can contain megabytes of payload, and printing those
+# IDs under -vv can stall GitHub Actions log handling before the test executes.
+def pytest_make_parametrize_id(config, val, argname):
+    """Give large literal parameters deterministic, bounded collection IDs."""
+    if not isinstance(val, (bytes, str)) or len(val) <= 128:
+        return None
+    raw = val if isinstance(val, bytes) else val.encode("utf-8", "surrogatepass")
+    return f"{argname}-{type(val).__name__}-{len(val)}-{sha256(raw).hexdigest()[:12]}"
 
 
 @pytest.fixture(autouse=True)

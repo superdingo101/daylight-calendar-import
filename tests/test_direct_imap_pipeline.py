@@ -12,6 +12,7 @@ import pytest
 
 import custom_components.daylight_calendar_import as integration_module
 import custom_components.daylight_calendar_import.storage as storage_module
+import custom_components.daylight_calendar_import.retry_scheduler as retry_scheduler_module
 from custom_components.daylight_calendar_import.const import (
     CONF_AI_TASK_ENTITY,
     CONF_CALENDAR_ENTITY,
@@ -226,6 +227,9 @@ class PipelineEnvironment:
         monkeypatch.setattr(integration_module.ir, "async_create_issue", Mock())
         monkeypatch.setattr(integration_module.ir, "async_delete_issue", Mock())
         monkeypatch.setattr(integration_module, "async_track_time_interval", Mock(return_value=Mock()))
+        # Keep the IMAP-only FakeHass focused on ingestion, not HA timer internals.
+        # Dedicated scheduler acceptance tests exercise the actual timer lifecycle.
+        monkeypatch.setattr(retry_scheduler_module, "async_track_time_interval", Mock(return_value=Mock()))
         monkeypatch.setattr(
             integration_module,
             "async_setup_email_runtime",

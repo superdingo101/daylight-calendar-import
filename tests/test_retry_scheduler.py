@@ -300,3 +300,173 @@ async def test_retry_delay_saturates_at_one_day():
     now = datetime(2026, 11, 18, tzinfo=UTC)
     due = datetime.fromisoformat(next_retry_at(failed, policy, now))
     assert timedelta(hours=24) <= due - now < timedelta(hours=29)
+
+
+async def test_lowered_retry_budget_retires_an_already_due_job_atomically(monkeypatch):
+    """A stale waiting job cannot monopolize the queue after policy changes."""
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    policy = [RetrySettings(enabled=True, max_automatic_retries=3)]
+    store.retry_preferences = lambda: policy[0]
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_timeout")
+    first = store.get_retry_job(job_id)
+    store._retry_jobs[job_id] = replace(
+        first, next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+    )
+    claimed = await store.async_claim_retry(job_id, automatic=True)
+    assert claimed.automatic_attempts == 1
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_timeout")
+    assert store.get_retry_job(job_id).state == "waiting"
+    assert store.get_retry_job(job_id).next_attempt_at is not None
+
+    policy[0] = RetrySettings(enabled=True, max_automatic_retries=1)
+    await store.async_rearm_retry_jobs()
+    exhausted = store.get_retry_job(job_id)
+    assert exhausted.state == "exhausted"
+    assert exhausted.automatic_attempts == 1
+    assert exhausted.next_attempt_at is None
+    assert [record["state"] for record in backend.saved[-1]["retry_jobs"] if record["id"] == job_id] == ["exhausted"]
+    with pytest.raises(RetryJobConflict, match="Automatic retry"):
+        await store.async_claim_retry(job_id, automatic=True)
+    # A reload/rearm must never revive a retired job just because the budget
+    # changes again. Users can still explicitly request a manual retry.
+    policy[0] = RetrySettings(enabled=True, max_automatic_retries=5)
+    await store.async_rearm_retry_jobs()
+    assert store.get_retry_job(job_id).state == "exhausted"
+
+
+async def test_scheduler_skips_stale_budget_and_non_claimed_sources(monkeypatch):
+    unsub = Mock()
+    monkeypatch.setattr(retry_scheduler, "async_track_time_interval",
+                        lambda *_args: unsub)
+    now = datetime.now(UTC) - timedelta(minutes=1)
+    failed = replace(make_job().after_failure("provider_unavailable"),
+                     next_attempt_at=now.isoformat())
+    stale = replace(failed, id="stale", attempts=3, automatic_attempts=2)
+    first = replace(failed, id="rejected")
+    second = replace(failed, id="accepted")
+    store = SimpleNamespace(
+        accepting_services=True, list_retry_jobs=lambda: (stale, first, second),
+    )
+    execute = AsyncMock(side_effect=[
+        {"status": "not_due", "job_id": first.id},
+        {"status": "saved_for_retry", "job_id": second.id},
+    ])
+    hass = scheduler_hass()
+    scheduler = RetryScheduler(
+        hass, store, lambda: RetrySettings(enabled=True, max_automatic_retries=2),
+        execute,
+    )
+    scheduler.start()
+    await hass.tasks[-1]
+    assert [call.args[0] for call in execute.await_args_list] == [
+        first.id, second.id,
+    ]
+    await scheduler.async_stop()
+    unsub.assert_called_once()
+
+
+async def test_scheduler_restarts_its_subscription_after_explicit_stop(monkeypatch):
+    unsubscribers = []
+    monkeypatch.setattr(
+        retry_scheduler, "async_track_time_interval",
+        lambda *_args: unsubscribers.append(Mock()) or unsubscribers[-1],
+    )
+    due = replace(make_job().after_failure("provider_unavailable"),
+                  next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    store = SimpleNamespace(accepting_services=True, list_retry_jobs=lambda: (due,))
+    execute = AsyncMock(return_value={"status": "saved_for_retry"})
+    hass = scheduler_hass()
+    scheduler = RetryScheduler(hass, store, lambda: RetrySettings(enabled=True), execute)
+    scheduler.start()
+    await hass.tasks[-1]
+    await scheduler.async_stop()
+    assert scheduler._stopped is True
+    assert unsubscribers[0].call_count == 1
+    scheduler.kick()
+    assert len(hass.tasks) == 1
+    scheduler.start()
+    assert scheduler._stopped is False
+    assert len(unsubscribers) == 2
+    await hass.tasks[-1]
+    assert execute.await_count == 2
+    await scheduler.async_stop()
+    assert unsubscribers[1].call_count == 1
+
+
+async def test_retention_without_cleanup_hook_handles_empty_queue_and_stopped_runtime(monkeypatch):
+    """Cleanup and stopped-task branches are safe even without a user callback."""
+    unsubscribe = Mock()
+    monkeypatch.setattr(
+        retry_scheduler, "async_track_time_interval", lambda *_args: unsubscribe,
+    )
+    hass = scheduler_hass()
+    store = SimpleNamespace(
+        accepting_services=True, list_retry_jobs=Mock(return_value=()),
+        async_apply_retention=AsyncMock(),
+    )
+    execute = AsyncMock()
+    scheduler = RetryScheduler(hass, store, lambda: RetrySettings(enabled=True), execute)
+    scheduler.start()
+    assert hass.tasks == []
+    scheduler._last_retention = datetime.now(UTC) - timedelta(hours=2)
+    scheduler.kick()
+    assert len(hass.tasks) == 1
+    await hass.tasks[0]
+    store.async_apply_retention.assert_awaited_once_with()
+    execute.assert_not_awaited()
+    assert datetime.now(UTC) - scheduler._last_retention < timedelta(seconds=30)
+    await scheduler.async_stop()
+    unsubscribe.assert_called_once_with()
+    await scheduler._async_run_one()
+    store.async_apply_retention.assert_awaited_once_with()
+    execute.assert_not_awaited()
+
+
+async def test_rearm_does_not_schedule_a_nonretryable_legacy_waiting_failure(monkeypatch):
+    """Opt-in must never promote an authentication failure into automatic parsing."""
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_authentication")
+    stopped = store.get_retry_job(job_id)
+    assert stopped.state == "paused"
+    legacy_waiting = replace(stopped, state="waiting", next_attempt_at=None)
+    store._retry_jobs[job_id] = legacy_waiting
+    store.retry_preferences = lambda: RetrySettings(enabled=True)
+    saved_before = len(backend.saved)
+    await store.async_rearm_retry_jobs()
+    assert store.get_retry_job(job_id) == legacy_waiting
+    assert store.get_retry_job(job_id).next_attempt_at is None
+    assert len(backend.saved) == saved_before
+
+
+async def test_retry_attempt_ceiling_rejects_before_claim_and_preserves_storage(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    original = store.get_retry_job(job_id)
+    ceiling = replace(original, state="waiting", claim=None, attempts=1000)
+    store._retry_jobs[job_id] = ceiling
+    saved_before = len(backend.saved)
+    with pytest.raises(RetryJobConflict, match="Retry attempt limit reached"):
+        await store.async_claim_retry(job_id)
+    assert store.get_retry_job(job_id) == ceiling
+    assert len(backend.saved) == saved_before
+
+
+async def test_pause_missing_and_cancelled_retry_is_noop_without_write(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    saved_before = len(backend.saved)
+    assert await store.async_pause_retry("missing-retry") is None
+    assert len(backend.saved) == saved_before
+
+    job_id = await store.async_begin_submission(**source_kwargs())
+    cancelled = await store.async_cancel_retry(job_id)
+    assert cancelled.state == "cancelled"
+    saved_before = len(backend.saved)
+    assert await store.async_pause_retry(job_id) == cancelled
+    assert store.get_retry_job(job_id) == cancelled
+    assert len(backend.saved) == saved_before
