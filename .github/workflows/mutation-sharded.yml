@@ -144,7 +144,7 @@ jobs:
           MUTATION_SHARD_INDEX: ${{ matrix.index }}
         run: |
           python -m scripts.mutation_split diagnostics --index "$SHARD_INDEX"
-          python scripts/export_mutation_survivors.py
+          python -m scripts.export_mutation_survivors
       - uses: actions/upload-artifact@v4
         if: always()
         with:
