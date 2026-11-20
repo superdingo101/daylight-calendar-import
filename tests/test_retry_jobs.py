@@ -234,6 +234,7 @@ def test_retry_job_summary_is_exact_and_excludes_private_details():
         "received_at": "2026-11-18T20:35:00+00:00",
         "state": "waiting",
         "attempts": 4,
+        "automatic_attempts": 0,
         "next_attempt_at": "2026-11-19T01:00:00+00:00",
         "last_failure_code": "provider_timeout",
     }
