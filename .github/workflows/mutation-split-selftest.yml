@@ -1,0 +1,65 @@
+name: Mutation split CI self-test
+
+on:
+  pull_request:
+    paths:
+      - "scripts/mutation_shards.py"
+      - "scripts/mutation_split.py"
+      - "scripts/export_mutation_survivors.py"
+      - "tests/test_mutation_split.py"
+      - ".github/workflows/mutation-sharded.yml"
+      - ".github/workflows/mutation-split-selftest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-split-selftest-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify exact splitter and original population
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: python:3.14.8-bookworm@sha256:7ee7e4d4fb42c3ad45b8fdc473b64ec69c3cf6e80ae5d52f6fa55f77fac29027
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Trust source inside pinned container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install pinned mutation generator and focused test tools
+        run: |
+          python -m pip install mutmut==3.8.0 pytest PyYAML
+      - name: Check regression tests and standard mutation-shard contracts
+        run: python -m pytest -q tests/test_mutation_split.py tests/test_mutation_shards.py tests/test_export_mutation_survivors.py
+      - name: Prove the split preserves every original mutant identity
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          python -m scripts.mutation_shards plan --sha "$sha" --count 12
+          python - <<'PY'
+          import json
+          from scripts import mutation_shards as ms
+          from scripts import mutation_split as split
+          manifest = json.loads(ms.MANIFEST.read_text())
+          ms.verify_manifest(manifest)
+          split.verify_generated(manifest)
+          original = ms.create_manifest(manifest["target_sha"], 8)
+          assert all(manifest["shards"][i] == original["shards"][i]
+                     for i in range(8) if i != 1)
+          keys = [name for i in split.SPLIT_INDICES
+                  for name in manifest["shards"][i]["mutant_names"]]
+          assert sorted(keys) == manifest["split_population"]
+          assert len(keys) == len(set(keys))
+          print(f"Exact original-to-split population verified: {len(keys)} mutants")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mutation-split-population-proof
+          path: mutation-shards/manifest.json
+          if-no-files-found: error
+          retention-days: 14
