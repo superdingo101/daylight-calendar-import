@@ -11,10 +11,6 @@ on:
         required: false
         default: false
         type: boolean
-      verify_legacy_split:
-        required: false
-        default: false
-        type: boolean
   workflow_dispatch:
     inputs:
       target_sha:
@@ -23,11 +19,6 @@ on:
         type: string
       compare_unsharded:
         description: "Also run a cold unsharded engine and enforce exact-SHA/environment equivalence"
-        required: false
-        default: false
-        type: boolean
-      verify_legacy_split:
-        description: "One-time check: run original complete shard 1 and compare every mutant verdict with the five smaller shards"
         required: false
         default: false
         type: boolean
@@ -305,98 +296,3 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
           overwrite: true
-
-
-  # Manual, one-time A/B proof. Keep this separate from the required mutation
-  # score: identical outcomes can still legitimately fail the score floor.
-  original-one:
-    if: ${{ inputs.verify_legacy_split == true }}
-    needs: plan
-    name: One-time original unsplit shard 1
-    runs-on: ubuntu-latest
-    container:
-      image: ${{ needs.plan.outputs.execution_image }}
-    env:
-      MUTATION_EXECUTION_IMAGE: ${{ needs.plan.outputs.execution_image }}
-      TARGET_SHA: ${{ needs.plan.outputs.target_sha }}
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.plan.outputs.target_sha }}
-      - name: Trust the checkout
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24.22.0"
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements_test.txt
-      - name: Run the original shard 1 without mutant filtering
-        run: |
-          set -euo pipefail
-          python -m scripts.mutation_shards plan --sha "$TARGET_SHA" --count 8 --out mutation-shards/original-manifest.json
-          trap 'python scripts/pr_mutation.py restore' EXIT
-          rm -rf mutants
-          python -m scripts.mutation_shards prepare --manifest mutation-shards/original-manifest.json --index 1
-          started=$SECONDS
-          mutmut run
-          mutmut export-cicd-stats
-          python scripts/pr_mutation.py restore
-          python -m scripts.mutation_shards record --manifest mutation-shards/original-manifest.json \
-            --index 1 --seconds "$((SECONDS-started))" --out mutation-shards/original.json
-          trap - EXIT
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: mutation-original-one-evidence
-          path: |
-            mutation-shards/original-manifest.json
-            mutation-shards/original.json
-          if-no-files-found: warn
-          retention-days: 14
-
-  parity:
-    if: ${{ always() && inputs.verify_legacy_split == true }}
-    needs: [plan, shards, original-one]
-    name: One-time exact mutant outcome parity
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Require complete old and split runs
-        env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          SPLIT_RESULT: ${{ needs.shards.result }}
-          ORIGINAL_RESULT: ${{ needs.original-one.result }}
-        run: |
-          test "$PLAN_RESULT" = success
-          test "$SPLIT_RESULT" = success
-          test "$ORIGINAL_RESULT" = success
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.plan.outputs.target_sha }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: mutation-shard-manifest
-          path: mutation-shards
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: mutation-shard-result-*
-          path: mutation-shards/results
-          merge-multiple: true
-      - uses: actions/download-artifact@v4
-        with:
-          name: mutation-original-one-evidence
-          path: mutation-shards
-      - name: Require every original mutant and its scored outcome to be identical
-        run: |
-          python3 -m scripts.mutation_split compare \
-            --original-result mutation-shards/original.json \
-            --original-manifest mutation-shards/original-manifest.json \
-            --out mutation-shards/parity.json
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: mutation-original-vs-split-parity
-          path: mutation-shards/parity.json
-          if-no-files-found: warn
-          retention-days: 30
