@@ -967,3 +967,28 @@ async def test_scheduler_retention_uses_inclusive_hour_boundary_in_run(monkeypat
     await scheduler._async_run_one()
     store.async_apply_retention.assert_awaited_once_with()
     assert scheduler._last_retention == when
+
+
+async def test_pause_only_waiting_even_without_snapshot_cannot_clear_processing_claim(monkeypatch):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    job_id = await store.async_begin_submission(**source_kwargs())
+    processing = store.get_retry_job(job_id)
+    assert processing.state == "processing"
+    assert processing.claim is not None
+    unchanged = await store.async_pause_retry(job_id)
+    assert unchanged == processing
+    assert store.get_retry_job(job_id).claim == processing.claim
+
+
+async def test_scheduler_pause_waiting_without_snapshot_is_idempotent(monkeypatch):
+    store = make_store(monkeypatch, FakeStoreBackend())
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_timeout")
+    waiting = store.get_retry_job(job_id)
+    assert waiting.state == "waiting"
+    paused = await store.async_pause_retry(job_id)
+    assert paused.state == "paused"
+    assert paused.claim is None
+    assert paused.next_attempt_at is None
+    assert paused.automatic_attempts == waiting.automatic_attempts
+    assert store.get_retry_job(job_id) == paused
