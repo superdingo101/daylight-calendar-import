@@ -1287,8 +1287,18 @@ async def test_calendar_event_payloads():
     assert "location" not in hass.services.calls[-1][2]
 
 
-async def test_remove_entry_deletes_pending_storage(monkeypatch):
+async def test_remove_entry_deletes_pending_storage(monkeypatch, tmp_path):
     hass = FakeHass()
+    hass.config.path = lambda name: str(tmp_path / name)
+    hass.async_add_executor_job = asyncio.to_thread
+    # An uninstall must erase actual saved private image bytes, not only
+    # the durable JSON record. Keep the original, unrelated file untouched.
+    spool = tmp_path / "daylight_calendar_import_retry"
+    spool.mkdir()
+    retained = spool / ("a" * 32 + ".bin")
+    retained.write_bytes(b"private school flyer")
+    unrelated = tmp_path / "unrelated.bin"
+    unrelated.write_bytes(b"outside the private spool")
     pending_store = SimpleNamespace(async_remove_storage=AsyncMock())
     monkeypatch.setattr(
         "custom_components.daylight_calendar_import.PendingImportStore",
@@ -1298,6 +1308,9 @@ async def test_remove_entry_deletes_pending_storage(monkeypatch):
     await async_remove_entry(hass, entry())
 
     pending_store.async_remove_storage.assert_awaited_once_with()
+    assert not retained.exists()
+    assert not spool.exists()
+    assert unrelated.read_bytes() == b"outside the private spool"
 
 async def test_calendar_event_payload_contract_is_exact():
     context = Context(user_id="calendar-user")
