@@ -630,7 +630,12 @@ class PendingImportStore:
         async with self._lock:
             updated = dict(self._retry_jobs)
             for job in self._retry_jobs.values():
-                if job.state == "waiting" and job.next_attempt_at is None:
+                if job.state != "waiting":
+                    continue
+                if job.automatic_attempts >= preferences.max_automatic_retries:
+                    # Retire scheduled claims invalidated by a lowered budget.
+                    updated[job.id] = replace(job, state="exhausted", next_attempt_at=None)
+                elif job.next_attempt_at is None:
                     next_at = next_retry_at(job, preferences)
                     if next_at is not None:
                         updated[job.id] = replace(job, next_attempt_at=next_at)
