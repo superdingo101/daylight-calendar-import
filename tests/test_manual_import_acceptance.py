@@ -710,6 +710,74 @@ async def test_original_provider_response_cannot_use_restarted_retry_claim(
     runtime.writes.assert_not_awaited()
 
 
+async def test_image_initial_claim_cannot_commit_after_cancel_and_relaunch(
+    hass, hass_ws_client, manual_runtime, tmp_path,
+):
+    """Replaying an image must never assign a newer claim to old AI output."""
+    runtime = manual_runtime
+    original_client = await hass_ws_client(hass)
+    control_client = await hass_ws_client(hass)
+    retry_client = await hass_ws_client(hass)
+    file_id = "e" * 32
+    (tmp_path / file_id).mkdir()
+    (tmp_path / file_id / "flyer.png").write_bytes(PNG)
+    hass.data["file_upload"] = FileUploadData(tmp_path, {file_id: "flyer.png"})
+    hass.config.media_dirs = {"local": str(tmp_path / "media")}
+
+    original_started = asyncio.Event()
+    retry_started = asyncio.Event()
+    release_original = asyncio.Event()
+    release_retry = asyncio.Event()
+    count = 0
+
+    async def held_response(*_args, **_kwargs):
+        nonlocal count
+        count += 1
+        if count == 1:
+            original_started.set()
+            await release_original.wait()
+        else:
+            retry_started.set()
+            await release_retry.wait()
+        return SimpleNamespace(data={"unsupported_recurrence": False, "events": [DRAFT]})
+
+    runtime.generate.side_effect = held_response
+    request = await _request(
+        "image", file_id=file_id, data=PNG, source_id="held-image",
+        text="Flyer for school concert",
+    )
+    original_task = asyncio.create_task(_call(original_client, request))
+    await asyncio.wait_for(original_started.wait(), 5)
+    job = runtime.store.list_retry_jobs()[0]
+    assert job.source_kind == "image"
+    assert job.attachment_path is not None
+    first_claim = job.claim
+    cancelled = await _call(control_client, {
+        "type": "call_service", "domain": DOMAIN, "service": "cancel_retry_job",
+        "service_data": {"job_id": job.id}, "return_response": True,
+    })
+    assert cancelled["success"], cancelled
+    retry_task = asyncio.create_task(_call(retry_client, {
+        "type": "call_service", "domain": DOMAIN, "service": "retry_job",
+        "service_data": {"job_id": job.id}, "return_response": True,
+    }))
+    await asyncio.wait_for(retry_started.wait(), 5)
+    assert runtime.store.get_retry_job(job.id).claim != first_claim
+    release_original.set()
+    stale = await original_task
+    assert not stale["success"], stale
+    assert runtime.store.get(job.id) is None
+    assert runtime.store.get_retry_job(job.id).state == "processing"
+
+    release_retry.set()
+    resumed = await retry_task
+    assert resumed["success"], resumed
+    assert resumed["result"]["response"]["status"] == "pending_review"
+    assert runtime.store.get(job.id) is not None
+    assert runtime.store.get_retry_job(job.id) is None
+    runtime.writes.assert_not_awaited()
+
+
 @pytest.mark.parametrize("action", ["cancel_retry_job", "delete_retry_job"])
 async def test_late_provider_error_does_not_revive_cancelled_or_deleted_source(
     hass, hass_ws_client, manual_runtime, action,
