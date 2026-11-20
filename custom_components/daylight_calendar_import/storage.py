@@ -754,11 +754,14 @@ class PendingImportStore:
             await self._async_save(self._items, retry_jobs=jobs)
             return cancelled
 
-    async def async_pause_retry(self, job_id: str) -> RetryJob | None:
-        """Stop scheduling a job after changes to permissions or configuration."""
+    async def async_pause_retry(
+        self, job_id: str, *, expected_job: RetryJob | None = None,
+    ) -> RetryJob | None:
+        """Pause only the inspected waiting claim, never a newer manual claim."""
         async with self._lock:
             job = self._retry_jobs.get(job_id)
-            if job is None or job.state == "cancelled":
+            if (job is None or job.state != "waiting"
+                    or (expected_job is not None and job != expected_job)):
                 return job
             paused = replace(job, state="paused", claim=None, next_attempt_at=None)
             await self._async_save(

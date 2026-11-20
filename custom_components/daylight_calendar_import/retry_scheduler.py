@@ -7,6 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
+from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_time_interval
 
 from .retry_settings import RetrySettings
@@ -42,8 +43,14 @@ class RetryScheduler:
         # The store already applied retention during async_load; do not
         # immediately create a cleanup task during integration setup.
         self._last_retention = datetime.now(UTC)
+        @callback
+        def on_interval(_now: datetime) -> None:
+            # HA calls @callback functions in its event loop, where task
+            # creation is permitted; an undecorated lambda runs in an executor.
+            self.kick()
+
         self._unsubscribe = async_track_time_interval(
-            self._hass, lambda _now: self.kick(), timedelta(minutes=1),
+            self._hass, on_interval, timedelta(minutes=1),
         )
         self.kick()
 

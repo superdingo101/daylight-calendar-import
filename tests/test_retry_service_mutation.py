@@ -354,6 +354,37 @@ async def test_manual_retry_cannot_execute_after_job_deleted_between_permission_
     s.store.async_add.assert_not_awaited()
 
 
+async def test_cancelled_automatic_parser_releases_exact_claim_before_propagation(
+    service_setup, monkeypatch,
+):
+    import asyncio
+
+    s = await service_setup()
+    s.hass.auth.user.is_active = True
+    started, done = asyncio.Event(), asyncio.Event()
+
+    async def blocked_parser(*args, **kwargs):
+        started.set()
+        await done.wait()
+        raise AssertionError("cancelled parser must never return")
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import._async_parse_source",
+        blocked_parser,
+    )
+    task = asyncio.create_task(s.store.retry_runtime._execute(s.job.id))
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    s.store.async_record_parse_failure.assert_awaited_once_with(
+        s.job.id, provider_error_code="provider_unavailable",
+        retry_claim=s.claimed.claim,
+    )
+    s.store.async_add.assert_not_awaited()
+    assert s.store.active_submissions == set()
+
+
 async def test_automatic_retry_rejects_missing_source_without_claim_or_parse(
     service_setup, monkeypatch,
 ):
@@ -408,7 +439,7 @@ async def test_automatic_retry_preflight_revocation_pauses_without_parsing(
     assert await s.store.retry_runtime._execute(job.id) == {
         "status": "paused", "job_id": job.id,
     }
-    s.store.async_pause_retry.assert_awaited_once_with(job.id)
+    s.store.async_pause_retry.assert_awaited_once_with(job.id, expected_job=job)
     s.store.async_claim_retry.assert_not_awaited()
     parser.assert_not_awaited()
 
