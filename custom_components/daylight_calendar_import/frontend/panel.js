@@ -1,5 +1,5 @@
 import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, repeatedHourOptions, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
-import {checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {changeRetryJob, checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, settingsErrorMessage} from "./settings.js";
 
 import {ManualSubmission} from "./manual_submission.js";
@@ -2848,6 +2848,41 @@ export class DaylightImportPanel extends HTMLElement {
         content.append(heading, element("p", `Current status: ${activityLabel(item.status)}`),
           element("p", `Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
         if (item.guidance) content.append(element("p", item.guidance));
+        if (item.retry_job) {
+          const retry = item.retry_job;
+          const info = element("section", "", "retry-controls");
+          info.append(element("h3", "Saved import"),
+            element("p", `Retry status: ${retry.state} · Attempts: ${retry.attempts}`));
+          if (retry.next_attempt_at) info.append(
+            element("p", `Next retry: ${activityTime(retry.next_attempt_at, this._hass)}`));
+          const controls = element("div", "", "event-controls");
+          const add = (action, label) => {
+            const button = element("button", label);
+            button.type = "button";
+            button.addEventListener("click", async () => {
+              button.disabled = true;
+              try {
+                const response = await changeRetryJob(this._hass, retry.id, action);
+                if (action === "retry" && response?.pending) {
+                  await this.showReview();
+                } else {
+                  await this.showActivity(retry.id);
+                }
+              } catch (error) {
+                this._status = error?.message || "Could not update saved import.";
+                this.render();
+              } finally {
+                button.disabled = false;
+              }
+            });
+            controls.append(button);
+          };
+          if (retry.state !== "processing") add("retry", "Retry now");
+          if (retry.state !== "cancelled") add("cancel", "Cancel retries");
+          add("delete", "Delete saved input");
+          info.append(controls);
+          content.append(info);
+        }
         if (item.notification_delivery_failed) {
           content.append(element("p", activityLabel("notification_delivery_failed"), "warning"));
         }
@@ -2871,6 +2906,8 @@ export class DaylightImportPanel extends HTMLElement {
           open.dataset.activityId = item.id;
           open.addEventListener("click", () => void this.showActivity(item.id));
           row.append(open, element("p", `${activityTime(item.created_at, this._hass)} · ${activityLabel(item.status)} · Calendar created: ${item.created_count ?? 0} · Rejected: ${item.rejected_count ?? 0}`));
+          if (item.retry_job) row.append(
+            element("p", `Saved import: ${item.retry_job.state} · ${item.retry_job.attempts} attempts`));
           if (item.notification_delivery_failed) {
             row.append(element("p", activityLabel("notification_delivery_failed"), "warning"));
           }

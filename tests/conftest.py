@@ -1,8 +1,20 @@
 """Shared pytest fixtures."""
 
+from hashlib import sha256
 from importlib.util import find_spec
 
 import pytest
+
+
+# Pytest's default parameter IDs include raw bytes and long strings verbatim.
+# Size-boundary fixtures can contain megabytes of payload, and printing those
+# IDs under -vv can stall GitHub Actions log handling before the test executes.
+def pytest_make_parametrize_id(config, val, argname):
+    """Give large literal parameters deterministic, bounded collection IDs."""
+    if not isinstance(val, (bytes, str)) or len(val) <= 128:
+        return None
+    raw = val if isinstance(val, bytes) else val.encode("utf-8", "surrogatepass")
+    return f"{argname}-{type(val).__name__}-{len(val)}-{sha256(raw).hexdigest()[:12]}"
 
 
 @pytest.fixture(autouse=True)

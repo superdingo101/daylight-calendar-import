@@ -24,6 +24,9 @@ export class SubmissionAttempt {
 }
 
 export function submissionMessage(response) {
+  if (response.status === "saved_for_retry") {
+    return "The AI provider could not process this source. Your original input is saved. Open Recent Activity to retry or cancel it.";
+  }
   if (response.pending) {
     const count = response.pending.events.length;
     let message = `${count} ${count === 1 ? "event is" : "events are"} ready for review. Approve them in the review inbox to add them to your calendar.`;
@@ -187,6 +190,7 @@ export class SubmissionFeedback {
     this.status.textContent = submissionMessage(response);
     if (response.warnings.length) this.status.textContent += ` ${response.warnings.join(" ")}`;
     if (response.pending && this.onReview) this.action("Review events", () => this.onReview(response.pending.id));
+    if (response.retry_job && this.onActivity) this.action("Manage saved import", () => this.onActivity(response.activity_id));
     if (!response.pending && response.duplicate && this.onReimport) {
       this.action("Re-import for review", this.onReimport);
     }

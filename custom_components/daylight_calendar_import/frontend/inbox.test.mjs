@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {changeRetryJob, checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 
 test("uncertain recovery sends a scoped explicit resolution and validates the response", async () => {
   const requests = [];
@@ -209,4 +209,24 @@ test("calendar checks send the loaded snapshot and reject malformed responses", 
     observed_calendars: null}})}, "import-1", event), /unexpected response/);
   await assert.rejects(checkEvent({callWS: async () => {throw new Error("Calendar unavailable");}},
     "import-1", event), /Calendar unavailable/);
+});
+
+test("saved import actions invoke authenticated services and validate results", async () => {
+  const sent = [];
+  const hass = {callWS: async request => {
+    sent.push(request);
+    if (request.service === "retry_job") return {response: {activity_id: "job"}};
+    if (request.service === "cancel_retry_job") return {response: {job: {id: "job", state: "cancelled"}}};
+    return {response: {job_id: "job", deleted: true}};
+  }};
+  for (const action of ["retry", "cancel", "delete"]) await changeRetryJob(hass, "job", action);
+  assert.deepEqual(sent.map(value => value.service), ["retry_job", "cancel_retry_job", "delete_retry_job"]);
+  assert.ok(sent.every(value => value.service_data.job_id === "job" && value.return_response));
+  await assert.rejects(changeRetryJob(hass, "job", "unknown"), /Invalid retry action/);
+  for (const action of ["retry", "cancel", "delete"]) {
+    await assert.rejects(changeRetryJob({callWS: async () => ({response: {}})}, "job", action),
+      /unexpected response|could not be confirmed/);
+  }
+  assert.deepEqual(await changeRetryJob({callWS: async () => ({response: {job_id: "job", status: "cancelled"}})},
+    "job", "retry"), {job_id: "job", status: "cancelled"});
 });

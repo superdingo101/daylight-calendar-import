@@ -192,6 +192,8 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
     pending_store = SimpleNamespace(
         async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"),
         is_source_duplicate=is_source_duplicate,
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(),
         async_add=AsyncMock(
             return_value=PendingImportAddResult(
                 pending=submitted,
@@ -257,6 +259,7 @@ async def test_setup_review_workflow_and_unload(monkeypatch):
         warnings=[],
         routing_unresolved=False,
         activity_id="activity-id",
+        retry_claim="test-claim",
     )
 
     approve_handler, approve_kwargs = hass.services.handlers[
@@ -784,6 +787,8 @@ async def test_submit_text_without_events_records_source_handling(monkeypatch):
     pending_store = SimpleNamespace(
         async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"),
         is_source_duplicate=Mock(return_value=False),
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(),
         async_add=AsyncMock(
             return_value=PendingImportAddResult(
                 pending=None,
@@ -826,6 +831,7 @@ async def test_submit_text_without_events_records_source_handling(monkeypatch):
         warnings=[],
         routing_unresolved=False,
         activity_id="activity-id",
+        retry_claim="test-claim",
     )
 
 
@@ -833,7 +839,9 @@ async def test_submit_text_parse_failure_records_activity_and_reraises(monkeypat
     hass = FakeHass()
     parse = AsyncMock(side_effect=ServiceValidationError("parser unavailable"))
     pending_store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"),
-                                    async_record_parse_failure=AsyncMock(return_value="failed-id"))
+                                    async_record_parse_failure=AsyncMock(return_value="failed-id"),
+                                    get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+                                    active_submissions=set())
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore",
                         lambda _hass: pending_store)
@@ -841,7 +849,9 @@ async def test_submit_text_parse_failure_records_activity_and_reraises(monkeypat
     submit = hass.services.handlers[(DOMAIN, SERVICE_SUBMIT_TEXT)][0]
     with pytest.raises(ServiceValidationError, match="parser unavailable"):
         await submit(SimpleNamespace(data={ATTR_TEXT: "private details"}, context=Context(user_id=None)))
-    pending_store.async_record_parse_failure.assert_awaited_once_with("activity-id")
+    pending_store.async_record_parse_failure.assert_awaited_once_with(
+        "activity-id", retry_claim="test-claim",
+    )
     assert pending_store.async_begin_submission.await_args.kwargs["source_kind"] == "manual_text"
     pending_store.async_record_parse_failure.side_effect = RuntimeError("disk full")
     with pytest.raises(ServiceValidationError, match="parser unavailable"):
@@ -857,6 +867,8 @@ async def test_canceled_submission_finalizes_activity(monkeypatch):
         await asyncio.Future()
 
     store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"),
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(),
                             async_record_parse_failure=AsyncMock(), is_source_duplicate=Mock(return_value=False))
     monkeypatch.setattr("custom_components.daylight_calendar_import._async_parse_source", parse)
     monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store)
@@ -867,7 +879,9 @@ async def test_canceled_submission_finalizes_activity(monkeypatch):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    store.async_record_parse_failure.assert_awaited_once_with("activity-id")
+    store.async_record_parse_failure.assert_awaited_once_with(
+        "activity-id", retry_claim="test-claim",
+    )
     assert store.active_submissions == set()
 
 
@@ -882,6 +896,8 @@ async def test_entry_unload_waits_for_live_submission(monkeypatch):
         return ParseOutcome([draft()], [])
 
     store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"),
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(),
                             async_add=AsyncMock(return_value=PendingImportAddResult(pending=pending(),
                                 duplicate_source=False, duplicate_events=0)),
                             is_source_duplicate=Mock(return_value=False))
@@ -921,7 +937,9 @@ async def test_submit_attachment_parse_failure_records_activity(monkeypatch):
     with pytest.raises(ServiceValidationError, match="parser unavailable"):
         await submit(SimpleNamespace(data={ATTR_FILE_ID: "a" * 32, ATTR_TEXT: "private details"},
                                      context=Context(user_id=None)))
-    store.async_record_parse_failure.assert_awaited_once_with("activity-id")
+    store.async_record_parse_failure.assert_awaited_once_with(
+        "activity-id", retry_claim=None,
+    )
     assert store.async_begin_submission.await_args.kwargs == {
         "source_kind": "image", "source_title": "flyer.png", "received_at": source.received_at,
     }
@@ -1030,6 +1048,8 @@ async def test_submit_text_reports_deduplication_races(
     parse = AsyncMock(return_value=ParseOutcome([draft()], []))
     pending_store = SimpleNamespace(
         async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"),
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(),
         is_source_duplicate=Mock(return_value=False),
         async_add=AsyncMock(return_value=add_result),
     )
@@ -1367,6 +1387,8 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
     create_calendar_event = AsyncMock()
     pending_store = SimpleNamespace(
         async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"),
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(),
         is_source_duplicate=Mock(return_value=False),
         async_add=AsyncMock(
             return_value=PendingImportAddResult(
@@ -1437,6 +1459,7 @@ async def test_parse_import_and_submit_preserve_handler_arguments(monkeypatch):
         warnings=[],
         routing_unresolved=False,
         activity_id="activity-id",
+        retry_claim="test-claim",
     )
 
 
@@ -1698,6 +1721,8 @@ async def test_partial_parser_warnings_reach_parse_import_and_submit(monkeypatch
     parse = AsyncMock(return_value=ParseOutcome([draft()], [warning]))
     store = SimpleNamespace(
         async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"),
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(),
         async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)),
     )
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
@@ -1733,7 +1758,9 @@ async def test_all_invalid_events_do_not_write_calendar(monkeypatch):
     parse = AsyncMock(return_value=ParseOutcome([], ["event 0 must be an object"]))
     monkeypatch.setattr("custom_components.daylight_calendar_import.parse_source_with_provider", parse)
     hass = FakeHass()
-    store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"), is_source_duplicate=Mock(return_value=False),
+    store = SimpleNamespace(async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"),
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(), is_source_duplicate=Mock(return_value=False),
                             async_add=AsyncMock(
         return_value=PendingImportAddResult(None, False, 0)
     ))
@@ -1762,6 +1789,8 @@ async def test_text_services_normalize_before_parser_and_storage(monkeypatch):
     parse = AsyncMock(return_value=ParseOutcome([draft()], []))
     store = SimpleNamespace(
         async_load=AsyncMock(), list_notifications=Mock(return_value=()), async_begin_submission=AsyncMock(return_value="activity-id"),
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(),
         is_source_duplicate=Mock(return_value=False),
         async_add=AsyncMock(return_value=PendingImportAddResult(pending(), False, 0)),
     )
@@ -2456,6 +2485,8 @@ async def test_routing_review_ingestion_uses_allowed_aliases_for_text_and_email(
     store = SimpleNamespace(
         async_load=AsyncMock(), list_notifications=Mock(return_value=()),
         async_begin_submission=AsyncMock(return_value="activity-id"),
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(),
         is_source_duplicate=Mock(return_value=False),
         async_add=AsyncMock(return_value=PendingImportAddResult(
             pending=pending_item, duplicate_source=False, duplicate_events=0)),
@@ -2559,6 +2590,8 @@ async def test_unresolved_manual_hint_is_review_warning_not_writable_override(mo
     store = SimpleNamespace(
         async_load=AsyncMock(), list_notifications=Mock(return_value=()),
         async_begin_submission=AsyncMock(return_value="activity-id"),
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(),
         is_source_duplicate=Mock(return_value=False),
         async_add=AsyncMock(return_value=PendingImportAddResult(
             pending=pending(draft()), duplicate_source=False, duplicate_events=0)),
@@ -3077,6 +3110,8 @@ async def test_manual_submission_serializes_source_id_after_authorization(
     store = SimpleNamespace(
         async_load=AsyncMock(), list_notifications=Mock(return_value=()),
         async_begin_submission=AsyncMock(return_value="activity-id"),
+        get_retry_job=Mock(return_value=SimpleNamespace(claim="test-claim")),
+        active_submissions=set(),
         async_record_parse_failure=AsyncMock(),
         is_source_duplicate=Mock(return_value=False),
         async_add=AsyncMock(return_value=PendingImportAddResult(None, False, 0)),
@@ -3152,7 +3187,9 @@ async def test_manual_submission_serializes_source_id_after_authorization(
         assert store.active_service_handlers == set()
         assert store.active_submissions == set()
         if completion != "success":
-            store.async_record_parse_failure.assert_awaited_once_with("activity-id")
+            store.async_record_parse_failure.assert_awaited_once_with(
+                "activity-id", retry_claim=("test-claim" if service == SERVICE_SUBMIT_TEXT else None),
+            )
 
         # A failed or cancelled request releases its ephemeral claim. Successful
         # requests also release it; the existing durable duplicate check applies.

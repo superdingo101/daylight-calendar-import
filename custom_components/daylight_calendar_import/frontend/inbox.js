@@ -319,3 +319,26 @@ export function summarizeImport(item, locale, timeZone) {
     uncertain: Boolean(item.approval_in_flight),
   };
 }
+
+/** Manipulate a saved source by stable ID; no raw source leaves the UI. */
+export async function changeRetryJob(hass, jobId, action) {
+  if (!["retry", "cancel", "delete"].includes(action)) throw new Error("Invalid retry action");
+  const service = {retry: "retry_job", cancel: "cancel_retry_job", delete: "delete_retry_job"}[action];
+  const result = await hass.callWS({
+    type: "call_service", domain: "daylight_calendar_import", service,
+    service_data: {job_id: jobId}, return_response: true,
+  });
+  const response = result?.response;
+  if (action === "retry") {
+    if (response?.activity_id !== jobId && response?.job_id !== jobId) {
+      throw new Error("The retry returned an unexpected response. Check recent activity.");
+    }
+  } else if (action === "cancel") {
+    if (response?.job?.id !== jobId || response.job.state !== "cancelled") {
+      throw new Error("Cancellation could not be confirmed. Refresh recent activity.");
+    }
+  } else if (response?.job_id !== jobId || response?.deleted !== true) {
+    throw new Error("Deletion could not be confirmed. Refresh recent activity.");
+  }
+  return response;
+}

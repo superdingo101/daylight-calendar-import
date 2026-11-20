@@ -322,3 +322,16 @@ test("uncertain errors retain re-import mode but completed service failures clea
   }
   assert.equal(submissionOutcomeUncertain(new Error("upload failed"), false), false);
 });
+
+test("saved retry results show a management action without raw source", async () => {
+  const status = new FakeNode("p");
+  const calls = [];
+  const feedback = new SubmissionFeedback(status, {onActivity: id => calls.push(id)});
+  feedback.result({...empty, status: "saved_for_retry", activity_id: "job",
+    retry_job: {id: "job", state: "waiting"}, warnings: []});
+  assert.match(status.textContent, /original input is saved/);
+  assert.deepEqual(feedback.actions.children.map(button => button.textContent),
+    ["Manage saved import", "View recent activity"]);
+  await feedback.actions.children[0].click();
+  assert.deepEqual(calls, ["job"]);
+});

@@ -71,6 +71,10 @@ class PendingEventResolutionError(ValueError):
     """Raised when resolving an event without an uncertain write."""
 
 
+class RetryJobConflict(ValueError):
+    """A retry job was cancelled, superseded, or is already running."""
+
+
 @dataclass(frozen=True, slots=True)
 class PendingEvent:
     """A reviewable event with a stable identity."""
@@ -678,6 +682,46 @@ class PendingImportStore:
         """Return retry sources; callers must enforce authorization."""
         return tuple(self._retry_jobs.values())
 
+    async def async_claim_retry(self, job_id: str) -> RetryJob:
+        """Atomically admit at most one manual or scheduled parser attempt."""
+        async with self._lock:
+            job = self._retry_jobs.get(job_id)
+            if job is None or job.state not in ("waiting", "paused", "exhausted", "cancelled"):
+                raise RetryJobConflict("Retry is unavailable or already processing")
+            if job_id in self._items:
+                raise RetryJobConflict("Events are already awaiting review")
+            claimed = replace(job, state="processing", claim=str(uuid4()),
+                              next_attempt_at=None, attempts=job.attempts + 1)
+            jobs = {**self._retry_jobs, job_id: claimed}
+            # Restart the activity lifecycle in the same commit as the claim,
+            # so a second provider failure is not discarded as already terminal.
+            activity = self._finish_submission(job_id, "processing")
+            await self._async_save(self._items, retry_jobs=jobs, activity=activity)
+            return claimed
+
+    async def async_cancel_retry(self, job_id: str) -> RetryJob:
+        """Invalidate a running claim without depending on provider cancellation."""
+        async with self._lock:
+            job = self._retry_jobs.get(job_id)
+            if job is None:
+                raise RetryJobConflict("Saved import not found")
+            if job.state == "cancelled":
+                return job
+            cancelled = replace(job, state="cancelled", claim=None, next_attempt_at=None)
+            jobs = {**self._retry_jobs, job_id: cancelled}
+            await self._async_save(self._items, retry_jobs=jobs)
+            return cancelled
+
+    async def async_delete_retry(self, job_id: str) -> bool:
+        """Delete the private payload; invalidate any late provider response."""
+        async with self._lock:
+            if job_id not in self._retry_jobs:
+                return False
+            jobs = {key: job for key, job in self._retry_jobs.items() if key != job_id}
+            await self._async_save(self._items, retry_jobs=jobs)
+            return True
+
+
     def list_notifications(self) -> tuple[NotificationRecord, ...]:
         """Return immutable requests, unaffected by pending/activity pruning."""
         return self._notifications
@@ -1120,11 +1164,13 @@ class PendingImportStore:
 
     async def async_record_parse_failure(
         self, activity_id: str, *, provider_error_code: str | None = None,
+        retry_claim: str | None = None,
     ) -> None:
         """Finalize a failed parse while keeping the original source private."""
         if provider_error_code is None:
             await self.async_record_source_failure(
                 activity_id, PROVIDER_FAILURE_GUIDANCE["provider_error"],
+                retry_claim=retry_claim,
             )
             return
         code = (provider_error_code if isinstance(provider_error_code, str)
@@ -1132,7 +1178,8 @@ class PendingImportStore:
                 else "provider_error")
         _, cancelled = await self._async_complete_transaction(
             self._async_record_source_failure_transaction(
-                activity_id, PROVIDER_FAILURE_GUIDANCE[code], provider_error_code=code,
+                activity_id, PROVIDER_FAILURE_GUIDANCE[code],
+                provider_error_code=code, retry_claim=retry_claim,
             )
         )
         if cancelled:
@@ -1142,12 +1189,15 @@ class PendingImportStore:
         self,
         activity_id: str,
         guidance: str,
+        *,
+        retry_claim: str | None = None,
     ) -> None:
         """Finalize a discovered or processing source as failed."""
         _, cancelled = await self._async_complete_transaction(
             self._async_record_source_failure_transaction(
                 activity_id,
                 guidance,
+                retry_claim=retry_claim,
             )
         )
         if cancelled:
@@ -1158,9 +1208,16 @@ class PendingImportStore:
         activity_id: str,
         guidance: str,
         *, provider_error_code: str | None = None,
+        retry_claim: str | None = None,
     ) -> None:
         """Release one source claim in an uncancelled storage transaction."""
         async with self._lock:
+            if retry_claim is not None:
+                job = self._retry_jobs.get(activity_id)
+                if job is None or job.state != "processing" or job.claim != retry_claim:
+                    # An earlier cancelled/superseded parser cannot fail a newer
+                    # attempt or release its source claim.
+                    return
             activity = self.get_activity(activity_id)
             if (
                 activity is not None
@@ -1267,7 +1324,7 @@ class PendingImportStore:
         source_claims.pop(activity_id, None)
         jobs = dict(self._retry_jobs)
         job = jobs.get(activity_id)
-        if job is not None:
+        if job is not None and job.state == "processing":
             jobs[activity_id] = job.after_failure(provider_error_code)
         await self._async_save(
             self._items,
@@ -1536,6 +1593,7 @@ class PendingImportStore:
         source_sender: str | None = None,
         warnings: Iterable[str] = (),
         activity_id: str | None = None,
+        retry_claim: str | None = None,
     ) -> PendingImportAddResult:
         """Persist events, letting the storage transaction finish before cancellation."""
         result, cancelled = await self._async_complete_transaction(
@@ -1552,6 +1610,7 @@ class PendingImportStore:
                 source_sender=source_sender,
                 warnings=warnings,
                 activity_id=activity_id,
+                retry_claim=retry_claim,
             )
         )
         if cancelled:
@@ -1573,6 +1632,7 @@ class PendingImportStore:
         source_sender: str | None = None,
         warnings: Iterable[str] = (),
         activity_id: str | None = None,
+        retry_claim: str | None = None,
     ) -> PendingImportAddResult:
         """Persist only events not already pending or handled."""
         source_text = source_text.strip()
@@ -1591,6 +1651,12 @@ class PendingImportStore:
         )
 
         async with self._lock:
+            # A late response from a cancelled, deleted or superseded attempt
+            # must never create review events or mark the source handled.
+            if retry_claim is not None:
+                job = self._retry_jobs.get(activity_id)
+                if job is None or job.state != "processing" or job.claim != retry_claim:
+                    raise RetryJobConflict("Retry was cancelled or superseded")
             source_claims = self._source_claims
             source_was_claimed = (
                 activity_id is not None and activity_id in source_claims
