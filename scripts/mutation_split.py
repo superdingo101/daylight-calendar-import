@@ -118,7 +118,7 @@ def verify_manifest(manifest: dict) -> None:
         raise ValueError("Split manifest checksum mismatch")
 
 
-def verify_generated(manifest: dict) -> None:
+def verify_scoped_source(manifest: dict) -> None:
     # During mutation execution the prepare step legitimately adds only_mutate
     # to pyproject.toml. Verify its byte-for-byte backup and the immutable
     # source, rather than confusing that temporary config with source drift.
@@ -146,6 +146,11 @@ def verify_generated(manifest: dict) -> None:
             raise ValueError("Mutation source or saved configuration differs")
     else:
         verify_manifest(manifest)
+
+
+def verify_generated(manifest: dict) -> None:
+    """Full generator proof, used by the planner's one-time population test."""
+    verify_scoped_source(manifest)
     if generate_population() != manifest["split_population"]:
         raise ValueError("Mutmut's actual population differs from the manifest")
 
@@ -156,7 +161,7 @@ def is_split_entry(entry: dict) -> bool:
 
 def selected_verdicts(manifest: dict, entry: dict) -> tuple[dict, dict]:
     """Read only owned mutant verdicts; reject omissions and cross-shard work."""
-    verify_generated(manifest)
+    verify_scoped_source(manifest)
     meta = Path("mutants") / (MODULE + ".meta")
     raw = json.loads(meta.read_text(encoding="utf-8"))
     codes = raw.get("exit_code_by_key")
@@ -200,7 +205,9 @@ def record(manifest: dict, entry: dict, index: int, out: Path, duration: int) ->
 def run(manifest: dict, index: int) -> None:
     entry = ms.shard_entry(manifest, index)
     if is_split_entry(entry):
-        verify_generated(manifest)
+        verify_scoped_source(manifest)
+        # mutmut creates the complete original mutant population itself.
+        # selected_verdicts compares its exact metadata to this manifest.
         command = ["mutmut", "run", *entry["mutant_names"]]
     else:
         # The prepare step already validated the manifest before creating the
