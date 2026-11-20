@@ -422,3 +422,51 @@ async def test_retention_without_cleanup_hook_handles_empty_queue_and_stopped_ru
     await scheduler._async_run_one()
     store.async_apply_retention.assert_awaited_once_with()
     execute.assert_not_awaited()
+
+
+async def test_rearm_does_not_schedule_a_nonretryable_legacy_waiting_failure(monkeypatch):
+    """Opt-in must never promote an authentication failure into automatic parsing."""
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_authentication")
+    stopped = store.get_retry_job(job_id)
+    assert stopped.state == "paused"
+    legacy_waiting = replace(stopped, state="waiting", next_attempt_at=None)
+    store._retry_jobs[job_id] = legacy_waiting
+    store.retry_preferences = lambda: RetrySettings(enabled=True)
+    saved_before = len(backend.saved)
+    await store.async_rearm_retry_jobs()
+    assert store.get_retry_job(job_id) == legacy_waiting
+    assert store.get_retry_job(job_id).next_attempt_at is None
+    assert len(backend.saved) == saved_before
+
+
+async def test_retry_attempt_ceiling_rejects_before_claim_and_preserves_storage(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    original = store.get_retry_job(job_id)
+    ceiling = replace(original, state="waiting", claim=None, attempts=1000)
+    store._retry_jobs[job_id] = ceiling
+    saved_before = len(backend.saved)
+    with pytest.raises(RetryJobConflict, match="Retry attempt limit reached"):
+        await store.async_claim_retry(job_id)
+    assert store.get_retry_job(job_id) == ceiling
+    assert len(backend.saved) == saved_before
+
+
+async def test_pause_missing_and_cancelled_retry_is_noop_without_write(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    saved_before = len(backend.saved)
+    assert await store.async_pause_retry("missing-retry") is None
+    assert len(backend.saved) == saved_before
+
+    job_id = await store.async_begin_submission(**source_kwargs())
+    cancelled = await store.async_cancel_retry(job_id)
+    assert cancelled.state == "cancelled"
+    saved_before = len(backend.saved)
+    assert await store.async_pause_retry(job_id) == cancelled
+    assert store.get_retry_job(job_id) == cancelled
+    assert len(backend.saved) == saved_before
