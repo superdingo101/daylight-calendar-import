@@ -97,15 +97,14 @@ def verify_manifest(manifest: dict) -> None:
     assigned = []
     for part, index in enumerate(SPLIT_INDICES):
         entry = entries[index]
+        expected_weight = (
+            original["shards"][ORIGINAL_INDEX]["estimated_weight"]
+            if index == ORIGINAL_INDEX else 0
+        )
         if (entry.get("index") != index or entry.get("modules") != [MODULE]
                 or entry.get("mutant_names") != population[part::SPLIT_COUNT]
-                or entry.get("estimated_weight") != 0 if index != ORIGINAL_INDEX else False):
-            # The original entry retains its original weight.
-            if index != ORIGINAL_INDEX:
-                raise ValueError("Mutant slice does not match deterministic assignment")
-        if index == ORIGINAL_INDEX:
-            if entry.get("mutant_names") != population[0::SPLIT_COUNT]:
-                raise ValueError("Original shard 1 mutant slice mismatch")
+                or entry.get("estimated_weight") != expected_weight):
+            raise ValueError("Mutant slice does not match deterministic assignment")
         assigned.extend(entry["mutant_names"])
     if sorted(assigned) != population or len(assigned) != len(set(assigned)):
         raise ValueError("Mutant population is missing or duplicated")
@@ -120,7 +119,33 @@ def verify_manifest(manifest: dict) -> None:
 
 
 def verify_generated(manifest: dict) -> None:
-    verify_manifest(manifest)
+    # During mutation execution the prepare step legitimately adds only_mutate
+    # to pyproject.toml. Verify its byte-for-byte backup and the immutable
+    # source, rather than confusing that temporary config with source drift.
+    backup = Path(".pr-mutation-pyproject-original")
+    if backup.exists():
+        if ms.git("rev-parse", "HEAD") != manifest["target_sha"]:
+            raise ValueError("Mutation checkout differs from the planned SHA")
+        paths = ms.source_paths()
+        source_sha = ms.sha256(ms.canonical({
+            path: ms.sha256(Path(path).read_bytes()) for path in paths
+        }))
+        config_sha = ms.sha256(ms.canonical({
+            path: ms.sha256(backup.read_bytes() if path == "pyproject.toml"
+                           else Path(path).read_bytes())
+            for path in ("pyproject.toml", "requirements_test.txt",
+                         "mutation-baseline.json")
+        }))
+        expected_checksum = ms.sha256(ms.canonical({
+            key: value for key, value in manifest.items()
+            if key != "manifest_sha256"
+        }))
+        if (source_sha != manifest["source_sha256"]
+                or config_sha != manifest["config_sha256"]
+                or expected_checksum != manifest["manifest_sha256"]):
+            raise ValueError("Mutation source or saved configuration differs")
+    else:
+        verify_manifest(manifest)
     if generate_population() != manifest["split_population"]:
         raise ValueError("Mutmut's actual population differs from the manifest")
 
@@ -173,12 +198,13 @@ def record(manifest: dict, entry: dict, index: int, out: Path, duration: int) ->
 
 
 def run(manifest: dict, index: int) -> None:
-    ms.verify_manifest(manifest)
     entry = ms.shard_entry(manifest, index)
     if is_split_entry(entry):
         verify_generated(manifest)
         command = ["mutmut", "run", *entry["mutant_names"]]
     else:
+        # The prepare step already validated the manifest before creating the
+        # temporary only_mutate config. The record step revalidates afterward.
         command = ["mutmut", "run"]
     subprocess.run(command, check=True)
 
