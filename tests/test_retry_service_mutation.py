@@ -360,7 +360,7 @@ async def test_automatic_retry_rejects_missing_source_without_claim_or_parse(
 
 @pytest.mark.parametrize("reason", [
     "no_owner", "missing_actor", "inactive_actor", "denied_calendar",
-    "unsupported_kind", "route_change",
+    "unknown_during_acl", "unsupported_kind", "route_change",
 ])
 async def test_automatic_retry_preflight_revocation_pauses_without_parsing(
     service_setup, monkeypatch, reason,
@@ -384,6 +384,9 @@ async def test_automatic_retry_preflight_revocation_pauses_without_parsing(
         s.hass.auth.user.is_active = False
     elif reason == "denied_calendar":
         s.permissions.allowed = {"ai_task.test": True, "calendar.family": False}
+    elif reason == "unknown_during_acl":
+        # Owner existed at initial lookup but disappeared before entity ACL check.
+        s.hass.auth.async_get_user = AsyncMock(side_effect=[s.hass.auth.user, None])
     elif reason == "route_change":
         monkeypatch.setattr(
             "custom_components.daylight_calendar_import.plan_source_routing",
