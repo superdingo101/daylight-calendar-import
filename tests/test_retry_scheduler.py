@@ -688,3 +688,81 @@ async def test_scheduler_logs_only_sanitized_stable_error_message(
         ]
     else:
         warning.assert_called_once_with(expected)
+
+
+async def test_stale_scheduler_pause_cannot_invalidate_newer_manual_claim(monkeypatch):
+    """A permission check delayed on the lock must not cancel a new parser."""
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_unavailable")
+    waiting = store.get_retry_job(job_id)
+    assert waiting.state == "waiting"
+    manual = await store.async_claim_retry(job_id)
+    assert manual.state == "processing"
+    assert manual.claim != waiting.claim
+    saves = len(backend.saved)
+    assert await store.async_pause_retry(job_id, expected_job=waiting) == manual
+    assert store.get_retry_job(job_id) == manual
+    assert len(backend.saved) == saves
+    result = await store.async_add(
+        source_text=manual.source_text, source_id=manual.source_id,
+        calendar_entity=manual.calendar_entity,
+        events=(), activity_id=manual.id, retry_claim=manual.claim,
+    )
+    assert result.pending is None
+    assert store.get_retry_job(job_id) is None
+
+
+async def test_matching_scheduler_pause_is_persisted_and_idempotent(monkeypatch):
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_unavailable")
+    waiting = store.get_retry_job(job_id)
+    paused = await store.async_pause_retry(job_id, expected_job=waiting)
+    assert paused.state == "paused"
+    assert paused.claim is None
+    assert paused.next_attempt_at is None
+    assert store.get_retry_job(job_id) == paused
+    assert [item["state"] for item in backend.saved[-1]["retry_jobs"]
+            if item["id"] == job_id] == ["paused"]
+    # The stale waiting snapshot must not overwrite the updated policy state.
+    saved = len(backend.saved)
+    assert await store.async_pause_retry(job_id, expected_job=waiting) == paused
+    assert len(backend.saved) == saved
+
+
+async def test_storage_cancellation_finalizes_only_owned_claim_and_survives_restart(monkeypatch):
+    """The cancellation path uses the same durable claim-checked failure commit."""
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    store.retry_preferences = lambda: RetrySettings(enabled=True)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_record_parse_failure(job_id, provider_error_code="provider_timeout")
+    waiting = store.get_retry_job(job_id)
+    store._retry_jobs[job_id] = replace(waiting,
+        next_attempt_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    active = await store.async_claim_retry(job_id, automatic=True)
+    assert store.get_activity(job_id)["status"] == "processing"
+
+    await store.async_record_parse_failure(
+        job_id, provider_error_code=active.last_failure_code,
+        retry_claim=active.claim,
+    )
+    released = store.get_retry_job(job_id)
+    assert released.state == "waiting"
+    assert released.claim is None
+    assert released.automatic_attempts == active.automatic_attempts
+    assert datetime.fromisoformat(released.next_attempt_at) > datetime.now(UTC)
+    assert store.get_activity(job_id)["status"] == "failed"
+    backend.load_result = backend.saved[-1]
+    restored = make_store(monkeypatch, backend)
+    await restored.async_load()
+    assert restored.get_retry_job(job_id) == released
+    # A late attempt after a manual claim or deletion cannot release it.
+    claimed = await store.async_claim_retry(job_id)
+    await store.async_record_parse_failure(
+        job_id, provider_error_code="provider_timeout", retry_claim=active.claim,
+    )
+    assert store.get_retry_job(job_id) == claimed
