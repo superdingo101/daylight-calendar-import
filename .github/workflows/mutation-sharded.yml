@@ -11,6 +11,10 @@ on:
         required: false
         default: false
         type: boolean
+      verify_legacy_split:
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       target_sha:
@@ -19,6 +23,11 @@ on:
         type: string
       compare_unsharded:
         description: "Also run a cold unsharded engine and enforce exact-SHA/environment equivalence"
+        required: false
+        default: false
+        type: boolean
+      verify_legacy_split:
+        description: "One-time check: run original complete shard 1 and compare every mutant verdict with the five smaller shards"
         required: false
         default: false
         type: boolean
@@ -38,7 +47,9 @@ jobs:
   plan:
     name: Full mutation partition
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    container:
+      image: python:3.14.8-bookworm@sha256:7ee7e4d4fb42c3ad45b8fdc473b64ec69c3cf6e80ae5d52f6fa55f77fac29027
+    timeout-minutes: 15
     outputs:
       target_sha: ${{ steps.target.outputs.sha }}
       compare_unsharded: ${{ steps.target.outputs.compare }}
@@ -61,10 +72,14 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ steps.target.outputs.sha }}
+      - name: Trust checked-out source in pinned container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install pinned mutation generator for exact identity planning
+        run: python -m pip install mutmut==3.8.0
       - name: Generate deterministic manifest for exact commit
         env:
           TARGET_SHA: ${{ steps.target.outputs.sha }}
-        run: python3 -m scripts.mutation_shards plan --sha "$TARGET_SHA" --count 8
+        run: python3 -m scripts.mutation_shards plan --sha "$TARGET_SHA" --count 12
       - uses: actions/upload-artifact@v4
         with:
           name: mutation-shard-manifest
@@ -84,7 +99,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        index: [0, 1, 2, 3, 4, 5, 6, 7]
+        index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -114,8 +129,8 @@ jobs:
           set -euo pipefail
           trap 'python scripts/pr_mutation.py restore' EXIT
           started=$SECONDS
-          mutmut run
-          mutmut export-cicd-stats
+          python -m scripts.mutation_split run --index "$SHARD_INDEX"
+          python -m scripts.mutation_split diagnostics --index "$SHARD_INDEX"
           python scripts/pr_mutation.py restore
           python -m scripts.mutation_shards record \
             --index "$SHARD_INDEX" \
@@ -124,8 +139,11 @@ jobs:
           trap - EXIT
       - name: Export shard diagnostics even on failure
         if: always()
+        env:
+          SHARD_INDEX: ${{ matrix.index }}
+          MUTATION_SHARD_INDEX: ${{ matrix.index }}
         run: |
-          mutmut export-cicd-stats
+          python -m scripts.mutation_split diagnostics --index "$SHARD_INDEX"
           python scripts/export_mutation_survivors.py
       - uses: actions/upload-artifact@v4
         if: always()
