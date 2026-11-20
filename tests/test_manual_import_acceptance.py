@@ -931,3 +931,205 @@ async def test_text_layer_pdf_is_retained_but_replayed_without_ai_attachment(
     assert not (Path(hass.config.path("daylight_calendar_import_retry")) / job.attachment_path).exists()
     assert not list(media_dir.glob("**/*"))
 
+
+
+
+def _prepare_retry_test_image(hass, tmp_path, file_id):
+    """Install a genuine file-upload handle for private retry acceptance."""
+    upload_dir = tmp_path / file_id
+    upload_dir.mkdir()
+    (upload_dir / "flyer.png").write_bytes(PNG)
+    hass.data["file_upload"] = FileUploadData(tmp_path, {file_id: "flyer.png"})
+    hass.config.media_dirs = {"local": str(tmp_path / "media")}
+    return Path(hass.config.path("daylight_calendar_import_retry"))
+
+
+@pytest.mark.parametrize("committed", [False, True])
+async def test_attachment_admission_error_cleans_only_uncommitted_spool(
+    hass, hass_ws_client, manual_runtime, tmp_path, monkeypatch, committed,
+):
+    """An uncertain durable write must never lose a referenced private upload."""
+    store = manual_runtime.store
+    file_id = "6" * 32
+    root = _prepare_retry_test_image(hass, tmp_path, file_id)
+    real_begin = store.async_begin_submission
+
+    async def failed_admission(**kwargs):
+        if committed:
+            await real_begin(**kwargs)
+        raise OSError("durable storage acknowledgment lost")
+
+    monkeypatch.setattr(store, "async_begin_submission", failed_admission)
+    client = await hass_ws_client(hass)
+    result = await _call(client, await _request(
+        "image", file_id=file_id, data=PNG, source_id="commit-uncertain-image",
+    ))
+    assert result["success"] is False
+    entries = tuple(root.glob("*.bin"))
+    jobs = store.list_retry_jobs()
+    if committed:
+        assert len(jobs) == 1
+        assert len(entries) == 1
+        assert entries[0].name == jobs[0].attachment_path
+        assert entries[0].read_bytes() == PNG
+    else:
+        assert jobs == ()
+        assert entries == ()
+    manual_runtime.generate.assert_not_awaited()
+    manual_runtime.writes.assert_not_awaited()
+
+
+async def test_deleted_image_provider_failure_cannot_resurrect_the_retry_job(
+    hass, hass_ws_client, manual_runtime, tmp_path,
+):
+    """The original visual-provider request cannot recreate a deleted job."""
+    file_id = "7" * 32
+    _prepare_retry_test_image(hass, tmp_path, file_id)
+    client = await hass_ws_client(hass)
+    control = await hass_ws_client(hass)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed_failure(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        raise TimeoutError("private provider unavailable")
+
+    manual_runtime.generate.side_effect = delayed_failure
+    task = asyncio.create_task(_call(client, await _request(
+        "image", file_id=file_id, data=PNG, source_id="late-image-failure",
+    )))
+    await asyncio.wait_for(started.wait(), 5)
+    job = manual_runtime.store.list_retry_jobs()[0]
+    deleted = await _call(control, {
+        "type": "call_service", "domain": DOMAIN, "service": "delete_retry_job",
+        "service_data": {"job_id": job.id}, "return_response": True,
+    })
+    assert deleted["success"], deleted
+    assert deleted["result"]["response"]["deleted"] is True
+    release.set()
+    late = await task
+    assert not late["success"], late
+    assert manual_runtime.store.get_retry_job(job.id) is None
+    assert manual_runtime.store.get(job.id) is None
+    manual_runtime.writes.assert_not_awaited()
+
+
+async def test_image_success_is_not_rolled_back_when_spool_unlink_fails(
+    hass, hass_ws_client, manual_runtime, tmp_path, monkeypatch, caplog,
+):
+    file_id = "8" * 32
+    root = _prepare_retry_test_image(hass, tmp_path, file_id)
+    deletion = AsyncMock(side_effect=OSError("filesystem temporarily read-only"))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_delete_saved", deletion)
+    client = await hass_ws_client(hass)
+    answer = await _response(client, await _request(
+        "image", file_id=file_id, data=PNG, source_id="accepted-image-cleanup",
+    ))
+    assert answer["status"] == "pending_review"
+    assert manual_runtime.store.get(answer["activity_id"]) is not None
+    assert manual_runtime.store.get_retry_job(answer["activity_id"]) is None
+    deletion.assert_awaited_once()
+    assert len(tuple(root.glob("*.bin"))) == 1
+    assert "Retained source cleanup deferred until reconciliation" in caplog.text
+    manual_runtime.writes.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("removed", "unlink_error"), [
+    (False, False), (True, True),
+])
+async def test_delete_retry_job_preserves_failed_or_uncommitted_unlink(
+    hass, hass_ws_client, manual_runtime, tmp_path, monkeypatch, caplog,
+    removed, unlink_error,
+):
+    file_id = "9" * 32
+    root = _prepare_retry_test_image(hass, tmp_path, file_id)
+    runtime = manual_runtime
+    runtime.generate.side_effect = TimeoutError("retryable visual provider failure")
+    client = await hass_ws_client(hass)
+    saved = await _response(client, await _request(
+        "image", file_id=file_id, data=PNG, source_id="delete-spool-uncertainty",
+    ))
+    assert saved["status"] == "saved_for_retry"
+    job = runtime.store.get_retry_job(saved["activity_id"])
+    private = root / job.attachment_path
+    assert private.read_bytes() == PNG
+    deletion = AsyncMock(side_effect=OSError("unlink failed") if unlink_error else None)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_delete_saved", deletion)
+    if not removed:
+        monkeypatch.setattr(runtime.store, "async_delete_retry", AsyncMock(return_value=False))
+    deleted = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "delete_retry_job",
+        "service_data": {"job_id": job.id}, "return_response": True,
+    })
+    assert deleted["success"], deleted
+    assert deleted["result"]["response"] == {"job_id": job.id, "deleted": removed}
+    assert private.read_bytes() == PNG
+    if removed:
+        assert runtime.store.get_retry_job(job.id) is None
+        deletion.assert_awaited_once_with(hass, job.attachment_path)
+        assert "Retained source deletion deferred until reconciliation" in caplog.text
+    else:
+        assert runtime.store.get_retry_job(job.id) == job
+        deletion.assert_not_awaited()
+    runtime.writes.assert_not_awaited()
+
+
+async def test_retried_image_success_survives_late_unlink_error(
+    hass, hass_ws_client, manual_runtime, tmp_path, monkeypatch, caplog,
+):
+    file_id = "c" * 32
+    root = _prepare_retry_test_image(hass, tmp_path, file_id)
+    runtime = manual_runtime
+    runtime.generate.side_effect = TimeoutError("retryable image provider failure")
+    client = await hass_ws_client(hass)
+    saved = await _response(client, await _request(
+        "image", file_id=file_id, data=PNG, source_id="retry-cleanup-failure",
+    ))
+    job = runtime.store.get_retry_job(saved["activity_id"])
+    runtime.generate.side_effect = None
+    deletion = AsyncMock(side_effect=OSError("cannot unlink yet"))
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_delete_saved", deletion)
+    retried = await _call(client, {
+        "type": "call_service", "domain": DOMAIN, "service": "retry_job",
+        "service_data": {"job_id": job.id}, "return_response": True,
+    })
+    assert retried["success"], retried
+    assert retried["result"]["response"]["status"] == "pending_review"
+    assert runtime.store.get(job.id) is not None
+    assert runtime.store.get_retry_job(job.id) is None
+    deletion.assert_awaited_once_with(hass, job.attachment_path)
+    assert (root / job.attachment_path).read_bytes() == PNG
+    assert "Retried source cleanup deferred until reconciliation" in caplog.text
+    runtime.writes.assert_not_awaited()
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+async def test_corrupt_retained_image_pauses_retry_before_provider_or_calendar(
+    hass, hass_ws_client, manual_runtime, tmp_path, automatic,
+):
+    file_id = "d" * 32
+    root = _prepare_retry_test_image(hass, tmp_path, file_id)
+    runtime = manual_runtime
+    runtime.generate.side_effect = TimeoutError("source parse initially unavailable")
+    client = await hass_ws_client(hass)
+    saved = await _response(client, await _request(
+        "image", file_id=file_id, data=PNG, source_id="corrupt-resume-image",
+    ))
+    job = runtime.store.get_retry_job(saved["activity_id"])
+    assert job.state == "waiting"
+    (root / job.attachment_path).write_bytes(b"corrupted")
+    runtime.generate.side_effect = None
+    previous_calls = runtime.generate.await_count
+    if automatic:
+        outcome = await runtime.store.retry_runtime._execute(job.id)
+        assert outcome == {"status": "paused", "job_id": job.id}
+    else:
+        rejected = await _call(client, {
+            "type": "call_service", "domain": DOMAIN, "service": "retry_job",
+            "service_data": {"job_id": job.id}, "return_response": True,
+        })
+        assert not rejected["success"], rejected
+    assert runtime.store.get_retry_job(job.id).state == "paused"
+    assert runtime.generate.await_count == previous_calls
+    assert runtime.store.get(job.id) is None
+    runtime.writes.assert_not_awaited()
