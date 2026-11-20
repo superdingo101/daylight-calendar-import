@@ -293,6 +293,8 @@ def test_email_and_complete_settings_snapshots_hide_secret():
         "conflict_calendar_entities": ["calendar.family"],
         "email": email,
         "notifications": {"enabled": False, "classes": [], "target": None},
+        "retry": {"enabled": False, "initial_delay_minutes": 15,
+                  "max_automatic_retries": 3, "retention_days": 7},
     }
     assert CONF_EMAIL_PASSWORD not in snapshot
 
