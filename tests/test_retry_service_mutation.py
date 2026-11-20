@@ -417,7 +417,7 @@ async def test_automatic_retry_preflight_revocation_pauses_without_parsing(
     job = saved_job(
         state="waiting", claim=None,
         owner_user_id=None if reason == "no_owner" else "owner",
-        source_kind="image" if reason == "unsupported_kind" else "manual_text",
+        source_kind="unsupported" if reason == "unsupported_kind" else "manual_text",
     )
     s = await service_setup(job=job)
     s.store.async_pause_retry = AsyncMock(return_value=replace(job, state="paused"))
