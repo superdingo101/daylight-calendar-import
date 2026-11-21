@@ -2375,13 +2375,18 @@ export class DaylightImportPanel extends HTMLElement {
       this._calendarCheck = null;
       this._approvalObservation = null;
       this._openEventMenuId = null;
+      // Rerender only after the busy state is cleared so navigation controls
+      // are usable immediately, including after the last source event.
+      this._saving = false;
+      this._routeBusy = false;
       this.render();
       this._announcement.replaceChildren(element("span",
         `Event ${action === "approve" ? "approved" : "rejected"}`));
       const next = this._detail?.events.find(item => item.status === "pending");
-      (next && Array.from(this._content.querySelectorAll("button"))
-        .find(button => button.dataset.eventId === next.id &&
-          button.dataset.action === "approve" && !button.disabled) ||
+      const buttons = Array.from(this._content.querySelectorAll("button"));
+      (next && buttons.find(button => button.dataset.eventId === next.id &&
+        button.dataset.action === "approve" && !button.disabled) ||
+        buttons.find(button => button.dataset.pendingId && !button.disabled) ||
         this._content.querySelector("h2") || this._refreshButton).focus();
     } catch (error) {
       if (generation !== this._generation) return;
@@ -2405,6 +2410,8 @@ export class DaylightImportPanel extends HTMLElement {
       this._decision = null;
       this._calendarCheck = null;
       this._approvalObservation = null;
+      this._saving = false;
+      this._routeBusy = false;
       this.render();
       const alert = this._content.querySelector(".error");
       if (alert) { alert.tabIndex = -1; alert.focus(); }
