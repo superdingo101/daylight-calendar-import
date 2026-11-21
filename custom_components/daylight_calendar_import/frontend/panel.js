@@ -2357,7 +2357,7 @@ export class DaylightImportPanel extends HTMLElement {
         // Never offer an already-confirmed event for a second submission if
         // the refreshed detail has not caught up with the service response.
         if (detail.events.some(item => item.id === event.id && item.status === "pending")) {
-          throw new Error("The completed event is still awaiting review. Refresh before continuing.");
+          throw new Error("The completed event is still awaiting review.");
         }
         this._detail = detail;
         const next = detail.events.find(item => item.status === "pending");
