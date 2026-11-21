@@ -1070,6 +1070,90 @@ test("rejected decision keeps the import visible with the backend error", async 
   assert.equal(panel._decisionError, null);
 });
 
+for (const action of ["approve", "reject"]) {
+  test(`single ${action} confirmation matches the primary Approve theme and leaves Cancel neutral`, async () => {
+    const panel = new DaylightImportPanel();
+    const event = {id: "event", title: "Picnic", start: "2026-10-01",
+      end: "2026-10-02", all_day: true, status: "pending", confidence: 0};
+    const calls = [];
+    panel.hass = {callWS: async request => {
+      calls.push(request.service);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") {
+        return {response: {pending: {id: "one", events: [event]}}};
+      }
+      if (request.service === "check_pending_event") {
+        return {response: {pending_id: "one", event_id: "event",
+          matches: [], observed_calendars: []}};
+      }
+      throw new Error("Confirmation styling must not submit a review action");
+    }};
+    await flush();
+    await panel.showImport("one");
+
+    const originalApprove = panel._content.querySelectorAll("button")
+      .find(button => button.dataset.action === "approve");
+    assert.equal(originalApprove.className, "event-primary");
+    panel._content.querySelectorAll("button")
+      .find(button => button.dataset.action === action).click();
+    await flush();
+
+    const buttons = panel._content.querySelectorAll("button");
+    const confirm = buttons.find(button => button.textContent === `Confirm ${action}: Picnic`);
+    const cancel = buttons.find(button => button.textContent === "Cancel");
+    assert.ok(confirm, `${action} confirmation should be visible`);
+    assert.equal(confirm.className, originalApprove.className);
+    assert.ok(cancel);
+    assert.notEqual(cancel.className, originalApprove.className);
+    assert.ok(!calls.includes("approve_pending_event") && !calls.includes("reject_pending_event"));
+
+    // A class alone is insufficient: confirmation actions live outside .event-controls.
+    const styles = find(panel.shadowRoot, "style").textContent;
+    const primaryRule = styles.match(
+      /\.event-controls \.event-primary,\s*\.event-group \.actions \.event-primary \{[^}]*\}/)?.[0];
+    assert.ok(primaryRule, "the original and confirmation buttons must share a CSS rule");
+    assert.match(primaryRule, /background: var\(--primary-color\)/);
+    assert.match(primaryRule, /border-color: var\(--primary-color\)/);
+    assert.match(primaryRule, /color: var\(--text-primary-color, #fff\)/);
+  });
+}
+
+for (const action of ["approve", "reject"]) {
+  test(`bulk ${action} confirmation uses the primary theme without coloring Cancel`, async () => {
+    const panel = new DaylightImportPanel();
+    const first = {id: "first", title: "Picnic", start: "2026-10-01",
+      end: "2026-10-02", all_day: true, status: "pending"};
+    const events = [first, {...first, id: "second"}];
+    const calls = [];
+    panel.hass = {callWS: async request => {
+      calls.push(request.service);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") {
+        return {response: {pending: {id: "one", events}}};
+      }
+      if (request.service === "check_pending_event") {
+        return {response: {pending_id: "one", event_id: request.service_data.event_id,
+          matches: [], observed_calendars: []}};
+      }
+      throw new Error("Confirmation styling must not submit a bulk review");
+    }};
+    await flush();
+    await panel.showImport("one");
+
+    panel._content.querySelectorAll("button")
+      .find(button => button.dataset.batchAction === action).click();
+    await flush();
+    const buttons = panel._content.querySelectorAll("button");
+    const confirm = buttons.find(button => button.textContent === `Confirm ${action} all`);
+    const cancel = buttons.find(button => button.textContent === "Cancel bulk review");
+    assert.ok(confirm);
+    assert.equal(confirm.className, "event-primary");
+    assert.ok(cancel);
+    assert.notEqual(cancel.className, "event-primary");
+    assert.ok(!calls.includes("approve_pending_event") && !calls.includes("reject_pending_event"));
+  });
+}
+
 test("bulk approval reports each result and leaves failed events in review", async () => {
   const panel = new DaylightImportPanel();
   const first = {id: "first", title: "Practice", start: "2026-10-01",
