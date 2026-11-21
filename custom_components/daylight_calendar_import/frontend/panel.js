@@ -2335,7 +2335,8 @@ export class DaylightImportPanel extends HTMLElement {
     if (this._saving || this._decision?.id !== event.id || this._decision.action !== action ||
         (action === "approve" && this._approvalObservation?.loading)) return;
     const pendingId = this._selectedId;
-    let confirmed = false;
+    let completed = false;
+    let decided = false;
     this._routeBusy = true;
     const generation = this._generation;
     this._saving = true;
@@ -2343,30 +2344,67 @@ export class DaylightImportPanel extends HTMLElement {
     for (const button of this._content.querySelectorAll("button")) button.disabled = true;
     try {
       await decideEvent(this._hass, pendingId, event, action);
+      decided = true;
       if (generation !== this._generation) return;
-      this._saving = false;
-      this._decision = null;
-      this._selectedId = null;
-      this._detail = null;
-      this._syncRoute("/review");
-      await this.refresh();
-      if (this._status === "ready") {
-        this._announcement.replaceChildren(element("span", `Event ${action === "approve" ? "approved" : "rejected"}`));
-        confirmed = true;
+      // The source's persisted pending state, not the global inbox count or
+      // the original event snapshot, determines whether review is complete.
+      const items = await loadInbox(this._hass);
+      if (generation !== this._generation) return;
+      this._items = items;
+      if (items.some(item => item.id === pendingId)) {
+        const detail = await loadImport(this._hass, pendingId);
+        if (generation !== this._generation) return;
+        // Never offer an already-confirmed event for a second submission if
+        // the refreshed detail has not caught up with the service response.
+        if (detail.events.some(item => item.id === event.id && item.status === "pending")) {
+          throw new Error("The completed event is still awaiting review. Refresh before continuing.");
+        }
+        this._detail = detail;
+        const next = detail.events.find(item => item.status === "pending");
+        if (next) this._expandedEventIds.add(next.id);
+      } else {
+        this._selectedId = null;
+        this._detail = null;
+        this._expandedEventIds.clear();
+        this._syncRoute("/review");
+        completed = true;
       }
-      (Array.from(this._content.querySelectorAll("button")).find(button => button.dataset.pendingId) || this._refreshButton).focus();
+      this._status = "ready";
+      this._decision = null;
+      this._decisionError = null;
+      this._calendarCheck = null;
+      this._approvalObservation = null;
+      this._openEventMenuId = null;
+      this.render();
+      this._announcement.replaceChildren(element("span",
+        `Event ${action === "approve" ? "approved" : "rejected"}`));
+      const next = this._detail?.events.find(item => item.status === "pending");
+      (next && Array.from(this._content.querySelectorAll("button"))
+        .find(button => button.dataset.eventId === next.id &&
+          button.dataset.action === "approve" && !button.disabled) ||
+        this._content.querySelector("h2") || this._refreshButton).focus();
     } catch (error) {
       if (generation !== this._generation) return;
-      this._decisionError = typeof error?.message === "string" ? error.message : "Could not complete review action.";
-      try {
-        this._detail = await loadImport(this._hass, pendingId);
-      } catch {
+      const reason = typeof error?.message === "string" ? error.message : "Could not complete review action.";
+      if (decided) {
+        // The action was confirmed, but the refreshed state was not. Hide
+        // stale event cards and offer a safe refresh rather than a retry.
         this._detail = null;
-        this._status = `Could not reload import after review action: ${this._decisionError}`;
+        this._status = `Event ${action === "approve" ? "approved" : "rejected"}, but the import could not be refreshed: ${reason} Refresh to continue.`;
+        this._decisionError = null;
+      } else {
+        this._decisionError = reason;
+        try {
+          this._detail = await loadImport(this._hass, pendingId);
+        } catch {
+          this._detail = null;
+          this._status = `Could not reload import after review action: ${this._decisionError}`;
+        }
+        if (generation !== this._generation) return;
       }
-      if (generation !== this._generation) return;
-      this._saving = false;
       this._decision = null;
+      this._calendarCheck = null;
+      this._approvalObservation = null;
       this.render();
       const alert = this._content.querySelector(".error");
       if (alert) { alert.tabIndex = -1; alert.focus(); }
@@ -2376,7 +2414,7 @@ export class DaylightImportPanel extends HTMLElement {
       this._routeBusy = false;
       this._refreshButton.disabled = Boolean(this._editingId || this._decision);
       this._syncNewImportButton();
-      if (confirmed) this._reviewCompleted(pendingId);
+      if (completed) this._reviewCompleted(pendingId);
     }
   }
 
