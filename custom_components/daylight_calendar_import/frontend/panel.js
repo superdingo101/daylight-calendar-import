@@ -118,7 +118,8 @@ const css = `
   .event-diagnostics p { margin: 6px 0; }
   .event-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 10px; border-top: 1px solid var(--divider-color); }
   .event-controls button { min-height: 44px; }
-  .event-controls .event-primary { margin-left: auto; background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 600; }
+  .event-controls .event-primary, .event-group .actions .event-primary { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 600; }
+  .event-controls .event-primary { margin-left: auto; }
   .event-more { position: relative; flex: 0 0 44px; }
   .event-more[open] { z-index: 10; }
   .event-more summary {
@@ -3178,7 +3179,7 @@ export class DaylightImportPanel extends HTMLElement {
         const bulk = element("div", "", "actions");
         if (this._batchAction) {
           bulk.append(element("p", `${this._batchAction === "approve" ? "Approve" : "Reject"} all ${ready.length} pending events? Each result will be shown separately.`));
-          const confirm = element("button", `Confirm ${this._batchAction} all`);
+          const confirm = element("button", `Confirm ${this._batchAction} all`, "event-primary");
           confirm.type = "button";
           confirm.disabled = this._batchAction === "approve" && this._approvalObservation?.loading === true;
           confirm.addEventListener("click", () => void this.runBatch(this._batchAction));
@@ -3398,7 +3399,7 @@ export class DaylightImportPanel extends HTMLElement {
         } else if (this._decision?.id === event.id) {
           const action = this._decision.action;
           const actions = element("div", "", "actions");
-          const confirm = element("button", `Confirm ${action}: ${event.title}`);
+          const confirm = element("button", `Confirm ${action}: ${event.title}`, "event-primary");
           confirm.type = "button";
           confirm.disabled = action === "approve" && this._approvalObservation?.loading === true;
           confirm.addEventListener("click", () => void this.runDecision(event, action));
