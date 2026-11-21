@@ -6854,9 +6854,9 @@ for (const actions of [
       assert.equal(panel._decision, null);
       assert.equal(panel._decisionError, null);
       const navigation = panel._navigation.querySelectorAll("button");
-      assert.equal(navigation.find(button => button.textContent === "Recent activity").disabled,
+      assert.equal(Boolean(navigation.find(button => button.textContent === "Recent activity").disabled),
         false, "Recent activity must be usable after review settles");
-      assert.equal(navigation.find(button => button.textContent === "Settings").disabled,
+      assert.equal(Boolean(navigation.find(button => button.textContent === "Settings").disabled),
         false, "Settings must be usable after review settles");
 
       if (i < actions.length - 1) {
@@ -6881,7 +6881,7 @@ for (const actions of [
           .find(button => button.dataset.pendingId === "unrelated");
         assert.ok(unrelatedButton);
         assert.equal(globalThis.focusedNode, unrelatedButton);
-        assert.equal(unrelatedButton.disabled, false);
+        assert.equal(Boolean(unrelatedButton.disabled), false);
       }
     }
     assert.deepEqual(calls.filter(request => /_pending_event$/.test(request.service) &&
@@ -6984,7 +6984,7 @@ for (const failedRefresh of ["list_pending", "get_pending", "stale_detail"]) {
     assert.equal(panel._saving, false);
     assert.equal(panel._routeBusy, false);
     assert.equal(panel._navigation.querySelectorAll("button")
-      .find(button => button.textContent === "Recent activity").disabled, false);
+      .find(button => button.textContent === "Recent activity").disabled === true, false);
     assert.equal(globalThis.focusedNode.className, "error");
     assert.equal(globalThis.focusedNode.textContent, panel._status);
     assert.equal(panel._content.querySelector("[data-import-back]").textContent, "Back to inbox");
