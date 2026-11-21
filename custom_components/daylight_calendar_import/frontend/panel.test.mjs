@@ -6798,7 +6798,7 @@ for (const actions of [
     panel.narrow = true; // Mobile and desktop use the same state transitions.
     let remaining = actions.map((_, i) => reviewNavigationEvent(String(i + 1)));
     const calls = [];
-    panel.hass = {callWS: async request => {
+    panel.hass = {user: {is_admin: true}, callWS: async request => {
       calls.push(request);
       if (request.service === "list_pending") {
         return {response: {imports: [
@@ -6853,6 +6853,11 @@ for (const actions of [
         "Event " + (action === "approve" ? "approved" : "rejected"));
       assert.equal(panel._decision, null);
       assert.equal(panel._decisionError, null);
+      const navigation = panel._navigation.querySelectorAll("button");
+      assert.equal(navigation.find(button => button.textContent === "Recent activity").disabled,
+        false, "Recent activity must be usable after review settles");
+      assert.equal(navigation.find(button => button.textContent === "Settings").disabled,
+        false, "Settings must be usable after review settles");
 
       if (i < actions.length - 1) {
         assert.equal(panel._selectedId, "source");
@@ -6872,8 +6877,11 @@ for (const actions of [
         assert.equal(panel._items.length, 1);
         assert.equal(panel._items[0].id, "unrelated");
         assert.equal(panel._content.querySelectorAll(".detail-event").length, 0);
-        assert.equal(panel._content.querySelectorAll("button")
-          .some(button => button.dataset.pendingId === "unrelated"), true);
+        const unrelatedButton = panel._content.querySelectorAll("button")
+          .find(button => button.dataset.pendingId === "unrelated");
+        assert.ok(unrelatedButton);
+        assert.equal(globalThis.focusedNode, unrelatedButton);
+        assert.equal(unrelatedButton.disabled, false);
       }
     }
     assert.deepEqual(calls.filter(request => /_pending_event$/.test(request.service) &&
@@ -6975,6 +6983,8 @@ for (const failedRefresh of ["list_pending", "get_pending", "stale_detail"]) {
       button.dataset.action === "reject" && button.dataset.eventId === "first"), false);
     assert.equal(panel._saving, false);
     assert.equal(panel._routeBusy, false);
+    assert.equal(panel._navigation.querySelectorAll("button")
+      .find(button => button.textContent === "Recent activity").disabled, false);
     assert.equal(globalThis.focusedNode.className, "error");
     assert.equal(globalThis.focusedNode.textContent, panel._status);
     assert.equal(panel._content.querySelector("[data-import-back]").textContent, "Back to inbox");
