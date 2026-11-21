@@ -6975,7 +6975,9 @@ for (const failedRefresh of ["list_pending", "get_pending", "stale_detail"]) {
       button.dataset.action === "reject" && button.dataset.eventId === "first"), false);
     assert.equal(panel._saving, false);
     assert.equal(panel._routeBusy, false);
-    assert.equal(globalThis.focusedNode.textContent, "Back to inbox");
+    assert.equal(globalThis.focusedNode.className, "error");
+    assert.equal(globalThis.focusedNode.textContent, panel._status);
+    assert.equal(panel._content.querySelector("[data-import-back]").textContent, "Back to inbox");
     // A later successful refresh restores only the genuinely pending sibling.
     decided = false;
     await panel.showImport("source");
