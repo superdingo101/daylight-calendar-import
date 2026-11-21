@@ -6777,3 +6777,251 @@ test("confirmed retry policy refresh clears the stale draft baseline", () => {
   panel._setSettingsDraft("retry", {retry: original});
   assert.deepEqual(panel._retryDraftBaseline, changed);
 });
+
+
+// Issue daylight-cloud#96: review navigation uses the current source's persisted
+// state, not the total number of imports still waiting in the inbox.
+const reviewNavigationEvent = id => ({
+  id, title: "Event " + id, start: "2026-12-09", end: "2026-12-10",
+  all_day: true, status: "pending", confidence: 0.8,
+});
+
+for (const actions of [
+  ["approve", "reject", "approve"],
+  ["approve", "approve", "approve"],
+  ["reject", "reject", "reject"],
+  ["approve"],
+  ["reject"],
+]) {
+  test("review stays on source until last decision: " + actions.join("/"), async () => {
+    const panel = new DaylightImportPanel();
+    panel.narrow = true; // Mobile and desktop use the same state transitions.
+    let remaining = actions.map((_, i) => reviewNavigationEvent(String(i + 1)));
+    const calls = [];
+    panel.hass = {callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") {
+        return {response: {imports: [
+          ...(remaining.length ? [{id: "source", event_count: remaining.length}] : []),
+          // A separate pending source must never keep the first source selected.
+          {id: "unrelated", event_count: 1},
+        ]}};
+      }
+      if (request.service === "get_pending") {
+        assert.equal(request.service_data.pending_id, "source");
+        return {response: {pending: {id: "source", source_title: "Newsletter",
+          events: [...remaining]}}};
+      }
+      if (request.service === "check_pending_event") {
+        return {response: {pending_id: "source",
+          event_id: request.service_data.event_id,
+          matches: [], observed_calendars: []}};
+      }
+      if (request.service === "approve_pending_event" ||
+          request.service === "reject_pending_event") {
+        const action = request.service === "approve_pending_event" ? "approve" : "reject";
+        const first = remaining[0];
+        assert.equal(action, actions[calls.filter(call =>
+          ["approve_pending_event", "reject_pending_event"].includes(call.service)).length - 1]);
+        assert.deepEqual(request.service_data, {pending_id: "source",
+          event_id: first.id, expected_event: first});
+        remaining = remaining.slice(1);
+        return {response: {pending_id: "source", event_id: first.id,
+          [action === "approve" ? "approved" : "rejected"]: true}};
+      }
+      throw new Error("Unexpected service " + request.service);
+    }};
+    await flush();
+    await panel.showImport("source");
+
+    for (let i = 0; i < actions.length; i++) {
+      const action = actions[i];
+      const event = remaining[0];
+      const decisionButton = panel._content.querySelectorAll("button").find(button =>
+        button.dataset.eventId === event.id && button.dataset.action === action);
+      assert.ok(decisionButton, "Expected the " + action + " control for " + event.id);
+      decisionButton.click();
+      await flush(); // Approval advisory checks are asynchronous.
+      assert.deepEqual(panel._decision, {id: event.id, action});
+      assert.ok(panel._content.querySelectorAll("button").some(button =>
+        button.textContent === "Confirm " + action + ": " + event.title));
+      await panel.runDecision(event, action);
+      assert.equal(panel._saving, false);
+      assert.equal(panel._routeBusy, false);
+      assert.equal(panel._status, "ready");
+      assert.equal(find(panel._announcement, "span").textContent,
+        "Event " + (action === "approve" ? "approved" : "rejected"));
+      assert.equal(panel._decision, null);
+      assert.equal(panel._decisionError, null);
+
+      if (i < actions.length - 1) {
+        assert.equal(panel._selectedId, "source");
+        assert.deepEqual(panel._detail.events.map(item => item.id),
+          remaining.map(item => item.id));
+        assert.equal(panel._content.querySelectorAll(".detail-event").length,
+          actions.length - i - 1);
+        const next = remaining[0];
+        assert.equal(globalThis.focusedNode.dataset.eventId, next.id);
+        assert.equal(globalThis.focusedNode.dataset.action, "approve");
+        assert.equal(panel._expandedEventIds.has(next.id), true);
+        assert.equal(panel._content.querySelector("[data-import-back]").textContent,
+          "Back to inbox");
+      } else {
+        assert.equal(panel._selectedId, null);
+        assert.equal(panel._detail, null);
+        assert.equal(panel._items.length, 1);
+        assert.equal(panel._items[0].id, "unrelated");
+        assert.equal(panel._content.querySelectorAll(".detail-event").length, 0);
+        assert.equal(panel._content.querySelectorAll("button")
+          .some(button => button.dataset.pendingId === "unrelated"), true);
+      }
+    }
+    assert.deepEqual(calls.filter(request => /_pending_event$/.test(request.service) &&
+      /^(approve|reject)_/.test(request.service)).map(request => request.service),
+    actions.map(action => action + "_pending_event"));
+  });
+}
+
+test("single-event source without unrelated pending imports returns to empty inbox", async () => {
+  const panel = new DaylightImportPanel();
+  const event = reviewNavigationEvent("only");
+  let remaining = [event];
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") return {response: {
+      imports: remaining.length ? [{id: "source"}] : []}};
+    if (request.service === "get_pending") return {response: {
+      pending: {id: "source", events: remaining}}};
+    if (request.service === "reject_pending_event") {
+      remaining = [];
+      return {response: {pending_id: "source", event_id: "only", rejected: true}};
+    }
+    throw new Error("Unexpected service " + request.service);
+  }};
+  await flush();
+  await panel.showImport("source");
+  panel._content.querySelectorAll("button").find(button =>
+    button.dataset.action === "reject" && button.dataset.eventId === "only").click();
+  await panel.runDecision(event, "reject");
+  assert.equal(panel._selectedId, null);
+  assert.deepEqual(panel._items, []);
+  assert.equal(find(panel._content, "p").textContent, "No imports awaiting review.");
+  assert.equal(globalThis.focusedNode, panel._refreshButton);
+});
+
+test("unconfirmed review response remains on source with recoverable error", async () => {
+  const panel = new DaylightImportPanel();
+  const event = reviewNavigationEvent("one");
+  const services = [];
+  panel.hass = {callWS: async request => {
+    services.push(request.service);
+    if (request.service === "list_pending") return {response: {imports: [{id: "source"}]}};
+    if (request.service === "get_pending") return {response: {
+      pending: {id: "source", events: [event]}}};
+    if (request.service === "reject_pending_event") return {response: {
+      pending_id: "source", event_id: "one", rejected: false}};
+    throw new Error("Unexpected service " + request.service);
+  }};
+  await flush();
+  await panel.showImport("source");
+  panel._content.querySelectorAll("button").find(button =>
+    button.dataset.eventId === "one" && button.dataset.action === "reject").click();
+  await panel.runDecision(event, "reject");
+  assert.equal(panel._selectedId, "source");
+  assert.deepEqual(panel._detail.events, [event]);
+  assert.match(panel._decisionError, /unexpected response/i);
+  assert.equal(globalThis.focusedNode.attributes.role, "alert");
+  assert.equal(services.filter(service => service === "reject_pending_event").length, 1);
+  assert.equal(services.filter(service => service === "get_pending").length, 2);
+});
+
+for (const failedRefresh of ["list_pending", "get_pending", "stale_detail"]) {
+  test("confirmed decision with " + failedRefresh + " reload error never offers a duplicate", async () => {
+    const panel = new DaylightImportPanel();
+    const first = reviewNavigationEvent("first");
+    const second = reviewNavigationEvent("second");
+    let remaining = [first, second];
+    let decided = false;
+    let decisions = 0;
+    panel.hass = {callWS: async request => {
+      if (request.service === "list_pending") {
+        if (decided && failedRefresh === "list_pending") throw new Error("Inbox offline");
+        return {response: {imports: [{id: "source"}]}};
+      }
+      if (request.service === "get_pending") {
+        if (decided && failedRefresh === "get_pending") throw new Error("Detail offline");
+        return {response: {pending: {id: "source", events:
+          decided && failedRefresh === "stale_detail" ? [first, second] : remaining}}};
+      }
+      if (request.service === "reject_pending_event") {
+        decisions++;
+        decided = true;
+        remaining = [second];
+        return {response: {pending_id: "source", event_id: "first", rejected: true}};
+      }
+      throw new Error("Unexpected service " + request.service);
+    }};
+    await flush();
+    await panel.showImport("source");
+    panel._content.querySelectorAll("button").find(button =>
+      button.dataset.eventId === "first" && button.dataset.action === "reject").click();
+    await panel.runDecision(first, "reject");
+    assert.equal(decisions, 1);
+    assert.equal(panel._selectedId, "source");
+    assert.equal(panel._detail, null);
+    assert.match(panel._status, /Event rejected, but the import could not be refreshed/);
+    assert.match(panel._status, /Refresh to continue/);
+    assert.equal(panel._content.querySelectorAll(".detail-event").length, 0);
+    assert.equal(panel._content.querySelectorAll("button").some(button =>
+      button.dataset.action === "reject" && button.dataset.eventId === "first"), false);
+    assert.equal(panel._saving, false);
+    assert.equal(panel._routeBusy, false);
+    assert.equal(globalThis.focusedNode.textContent, "Back to inbox");
+    // A later successful refresh restores only the genuinely pending sibling.
+    decided = false;
+    await panel.showImport("source");
+    assert.deepEqual(panel._detail.events, [second]);
+    assert.equal(decisions, 1);
+  });
+}
+
+test("double confirmation during persisted reload sends only one review service request", async () => {
+  const panel = new DaylightImportPanel();
+  const first = reviewNavigationEvent("first");
+  const second = reviewNavigationEvent("second");
+  let remaining = [first, second];
+  let releaseInbox;
+  let decided = false;
+  let requests = 0;
+  const pendingInbox = new Promise(resolve => { releaseInbox = resolve; });
+  panel.hass = {callWS: async request => {
+    if (request.service === "list_pending") {
+      return decided ? pendingInbox : {response: {imports: [{id: "source"}]}};
+    }
+    if (request.service === "get_pending") return {response: {
+      pending: {id: "source", events: remaining}}};
+    if (request.service === "reject_pending_event") {
+      requests++;
+      decided = true;
+      remaining = [second];
+      return {response: {pending_id: "source", event_id: "first", rejected: true}};
+    }
+    throw new Error("Unexpected service " + request.service);
+  }};
+  await flush();
+  await panel.showImport("source");
+  panel._content.querySelectorAll("button").find(button =>
+    button.dataset.eventId === "first" && button.dataset.action === "reject").click();
+  const firstDecision = panel.runDecision(first, "reject");
+  await flush();
+  assert.equal(panel._saving, true);
+  assert.equal(panel._selectedId, "source");
+  assert.equal(panel._refreshButton.disabled, true);
+  await panel.runDecision(first, "reject");
+  assert.equal(requests, 1);
+  releaseInbox({response: {imports: [{id: "source"}]}});
+  await firstDecision;
+  assert.equal(panel._saving, false);
+  assert.equal(panel._selectedId, "source");
+  assert.deepEqual(panel._detail.events, [second]);
+  assert.equal(requests, 1);
+});
