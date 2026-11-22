@@ -48,6 +48,7 @@ from .const import (
     SERVICE_REJECT_PENDING,
     SERVICE_REJECT_PENDING_EVENT,
     SERVICE_RESOLVE_PENDING_EVENT,
+    SERVICE_CONFIRM_PENDING_TIMEZONE,
     SERVICE_SUBMIT_TEXT,
     SERVICE_SUBMIT_IMAGE,
     SERVICE_SUBMIT_PDF,
@@ -120,6 +121,7 @@ _ENTRY_SERVICES = (
     SERVICE_REJECT_PENDING_EVENT,
     SERVICE_APPROVE_PENDING_EVENT,
     SERVICE_RESOLVE_PENDING_EVENT,
+    SERVICE_CONFIRM_PENDING_TIMEZONE,
 )
 
 
@@ -215,6 +217,14 @@ EDIT_EVENT_SCHEMA = vol.Schema(
         vol.Required("event"): dict,
         vol.Optional(CONF_CALENDAR_ENTITY): cv.entity_id,
         vol.Optional("expected_event"): dict,
+    }
+)
+CONFIRM_TIMEZONE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required("time_zone"): vol.All(cv.string, vol.Length(min=1, max=128)),
+        vol.Required("expected_event"): dict,
     }
 )
 RESOLVE_EVENT_SCHEMA = vol.Schema(
@@ -1152,6 +1162,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         return {"pending_id": pending_id, "event": edited.as_service_dict()}
 
+    async def handle_confirm_pending_timezone(call: ServiceCall) -> ServiceResponse:
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+        try:
+            expected = _expected_event(call.data["expected_event"], event_id)
+            if expected is None:
+                raise PendingEventEditError("A fresh event snapshot is required")
+            confirmed = await pending_store.async_confirm_timezone(
+                pending_id, event_id, call.data["time_zone"], expected_event=expected,
+            )
+        except (DraftValidationError, PendingEventEditError) as err:
+            raise ServiceValidationError(str(err)) from err
+        if confirmed is None:
+            raise ServiceValidationError(f"Pending event not found: {pending_id}/{event_id}")
+        return {"pending_id": pending_id, "event": confirmed.as_service_dict()}
+
     async def handle_reject_pending_event(call: ServiceCall) -> ServiceResponse:
         await check_read_permission(call)
         pending_id = call.data[ATTR_PENDING_ID]
@@ -1338,6 +1365,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.services.async_register(
             DOMAIN, SERVICE_EDIT_PENDING_EVENT, tracked(handle_edit_pending_event),
             schema=EDIT_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_CONFIRM_PENDING_TIMEZONE, tracked(handle_confirm_pending_timezone),
+            schema=CONFIRM_TIMEZONE_SCHEMA, supports_response=SupportsResponse.ONLY,
         )
         hass.services.async_register(
             DOMAIN, SERVICE_REJECT_PENDING_EVENT, tracked(handle_reject_pending_event),
