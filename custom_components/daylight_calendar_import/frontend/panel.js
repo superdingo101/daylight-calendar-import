@@ -3352,6 +3352,7 @@ export class DaylightImportPanel extends HTMLElement {
               const label = element("label", labelText);
               const input = document.createElement("input");
               input.type = "text";
+              input.value = "";
               input.placeholder = placeholder;
               input.setAttribute("list", zoneListId);
               label.append(input);
