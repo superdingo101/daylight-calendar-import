@@ -744,6 +744,9 @@ def test_mutation_ambiguous_named_zone_validates_both_endpoints(caplog):
         "reconstructed Christmas 2027 Gemini offset mismatch",
         {
             "title": "Christmas dinner",
+            # This is the location-free Christmas dinner regression, not the
+            # unrelated Encinitas invitation inherited from BASE.
+            "location": "",
             "start": "2027-12-25T18:00:00-05:00",
             "end": "2027-12-25T20:00:00-05:00",
             "start_local": "2027-12-25T18:00:00",
