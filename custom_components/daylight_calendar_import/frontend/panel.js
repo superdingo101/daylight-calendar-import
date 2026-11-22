@@ -3372,8 +3372,8 @@ export class DaylightImportPanel extends HTMLElement {
             const distinctEndLocation = Boolean(temporal.end_location_value?.trim()) &&
               temporal.end_location_value.trim().toLocaleLowerCase() !==
                 (temporal.start_location_value || "").trim().toLocaleLowerCase();
-            const needsEndZone = distinctEndLocation ||
-              temporal.end_zone !== temporal.start_zone;
+            const needsEndZone = temporal.travel_incomplete === true ||
+              distinctEndLocation || temporal.end_zone !== temporal.start_zone;
             const endZone = needsEndZone ?
               zoneInput("Confirm arrival timezone (IANA identifier)", temporal.end_zone) : null;
             surface.append(zoneList);
