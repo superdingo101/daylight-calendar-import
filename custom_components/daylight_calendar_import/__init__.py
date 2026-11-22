@@ -224,6 +224,9 @@ CONFIRM_TIMEZONE_SCHEMA = vol.Schema(
         vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
         vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
         vol.Required("time_zone"): vol.All(cv.string, vol.Length(min=1, max=128)),
+        vol.Optional("end_time_zone"): vol.All(cv.string, vol.Length(min=1, max=128)),
+        vol.Optional("start_occurrence"): vol.In(("first", "second")),
+        vol.Optional("end_occurrence"): vol.In(("first", "second")),
         vol.Required("expected_event"): dict,
     }
 )
@@ -1172,6 +1175,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 raise PendingEventEditError("A fresh event snapshot is required")
             confirmed = await pending_store.async_confirm_timezone(
                 pending_id, event_id, call.data["time_zone"], expected_event=expected,
+                end_zone_name=call.data.get("end_time_zone"),
+                start_occurrence=call.data.get("start_occurrence"),
+                end_occurrence=call.data.get("end_occurrence"),
             )
         except (DraftValidationError, PendingEventEditError) as err:
             raise ServiceValidationError(str(err)) from err
