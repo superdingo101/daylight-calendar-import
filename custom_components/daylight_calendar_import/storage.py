@@ -1646,6 +1646,10 @@ class PendingImportStore:
                                        status="confirmation_required",
                                        reason="Edited times need timezone reconfirmation")
                 else:
+                    if metadata.status != "resolved":
+                        raise PendingEventEditError(
+                            "Confirm the timezone before changing an unresolved event to all-day"
+                        )
                     metadata = None
             edited = replace(event, draft=replace(draft, temporal=metadata),
                              calendar_entity=target, routing_unresolved=unresolved,
