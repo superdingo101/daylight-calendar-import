@@ -385,14 +385,15 @@ function activityLabel(type) {
     mixed: "Mixed event outcomes"})[type] || type.replaceAll("_", " ");
 }
 
-function syncTimedDuration(start, end, event, timeZone, onChanged = () => {}) {
-  const model = classifyEventTimeModel(event.start, event.end, timeZone);
+function syncTimedDuration(start, end, event, timeZone, onChanged = () => {}, endTimeZone = timeZone) {
+  const model = classifyEventTimeModel(event.start, event.start, timeZone);
+  const endModel = classifyEventTimeModel(event.end, event.end, endTimeZone);
   const readDuration = () => {
     const startIso = editDateTimeIso(
       start.value, event.start, timeZone, start._daylightInstantHint || null, model
     );
     const endIso = editDateTimeIso(
-      end.value, event.end, timeZone, end._daylightInstantHint || null, model
+      end.value, event.end, endTimeZone, end._daylightInstantHint || null, endModel
     );
     if (!startIso || !endIso) return null;
     const startValue = new Date(startIso);
@@ -411,9 +412,9 @@ function syncTimedDuration(start, end, event, timeZone, onChanged = () => {}) {
       const nextStart = new Date(startIso);
       if (!Number.isNaN(nextStart.getTime())) {
         const nextEnd = new Date(nextStart.getTime() + duration);
-        end.value = instantEditDateTimeValue(nextEnd, event.end, timeZone, model);
+        end.value = instantEditDateTimeValue(nextEnd, event.end, endTimeZone, endModel);
         end._daylightInstantHint = instantEditDateTimeIso(
-          nextEnd, event.end, timeZone, model
+          nextEnd, event.end, endTimeZone, endModel
         );
       }
     }
@@ -2549,12 +2550,16 @@ export class DaylightImportPanel extends HTMLElement {
       const input = fields.namedItem(name);
       const chooser = fields.namedItem(name + "_occurrence");
       return !allDay && chooser && !chooser.hidden &&
-        repeatedHourOptions(input.value, this._hass?.config?.time_zone)
+        repeatedHourOptions(input.value, (name === "start" ?
+          event.temporal?.start_zone : event.temporal?.end_zone) ||
+          this._hass?.config?.time_zone)
           .some(option => option.value === chooser.value) ?
         chooser.value : input._daylightInstantHint || null;
     };
     const temporal = normalizeEventTemporalEdit({
       allDay,
+      startTimeZone: event.temporal?.start_zone || this._hass?.config?.time_zone,
+      endTimeZone: event.temporal?.end_zone || this._hass?.config?.time_zone,
       startDate: fields.namedItem("start_date").value,
       endDate: fields.namedItem("end_date").value,
       startDateTime: fields.namedItem("start").value,
@@ -2657,7 +2662,8 @@ export class DaylightImportPanel extends HTMLElement {
     allDay.type = "checkbox";
     allDay.checked = event.all_day;
 
-    const timeZone = this._hass?.config?.time_zone;
+    const timeZone = event.temporal?.start_zone || this._hass?.config?.time_zone;
+    const endTimeZone = event.temporal?.end_zone || timeZone;
     const timedFields = document.createElement("div");
     timedFields.className = "timed-event-fields";
     const timedField = (name, title, value) => {
@@ -2679,12 +2685,12 @@ export class DaylightImportPanel extends HTMLElement {
     const end = timedField(
       "end",
       "End",
-      event.all_day ? event.end + "T00:00" : editDateTimeValue(event.end, timeZone),
+      event.all_day ? event.end + "T00:00" : editDateTimeValue(event.end, endTimeZone),
     );
     let refreshFolds = () => {};
-    const timedSync = syncTimedDuration(start, end, event, timeZone, () => refreshFolds());
-    const timeModel = classifyEventTimeModel(event.start, event.end, timeZone);
-    const foldControl = (input, original, title) => {
+    const timedSync = syncTimedDuration(start, end, event, timeZone, () => refreshFolds(), endTimeZone);
+    const foldControl = (input, original, title, endpointZone) => {
+      const timeModel = classifyEventTimeModel(original, original, endpointZone);
       const label = document.createElement("label");
       const caption = element("span", title + " occurrence (DST fall-back)");
       const select = document.createElement("select");
@@ -2693,7 +2699,7 @@ export class DaylightImportPanel extends HTMLElement {
       const refresh = () => {
         const previous = select.value;
         const choices = !allDay.checked && timeModel.kind === "named" ?
-          repeatedHourOptions(input.value, timeZone) : [];
+          repeatedHourOptions(input.value, endpointZone) : [];
         label.hidden = choices.length !== 2;
         select.hidden = label.hidden;
         // Don't put an unused selector into the form or its keyboard navigation.
@@ -2716,8 +2722,8 @@ export class DaylightImportPanel extends HTMLElement {
       input.addEventListener("input", refresh);
       return {select, refresh};
     };
-    const startFold = foldControl(start, event.start, "Start");
-    const endFold = foldControl(end, event.end, "End");
+    const startFold = foldControl(start, event.start, "Start", timeZone);
+    const endFold = foldControl(end, event.end, "End", endTimeZone);
     // Preserve duration syncing and refresh fold choices after either field changes.
     refreshFolds = () => { startFold.refresh(); endFold.refresh(); };
 
@@ -2741,7 +2747,7 @@ export class DaylightImportPanel extends HTMLElement {
     const endDate = dateField(
       "end_date",
       "End date",
-      event.all_day ? visibleAllDayEnd(event.end) : dateOnlyFromTimed(event.end, timeZone),
+      event.all_day ? visibleAllDayEnd(event.end) : dateOnlyFromTimed(event.end, endTimeZone),
     );
     const dateSync = syncDateDuration(startDate, endDate);
     form.append(timedFields, allDayFields);
@@ -2758,6 +2764,8 @@ export class DaylightImportPanel extends HTMLElement {
           originalStart: event.start,
           originalEnd: event.end,
           timeZone,
+          startTimeZone: timeZone,
+          endTimeZone,
           startInstantHint: !startFold.select.hidden ?
             startFold.select.value : start._daylightInstantHint || null,
           endInstantHint: !endFold.select.hidden ?
