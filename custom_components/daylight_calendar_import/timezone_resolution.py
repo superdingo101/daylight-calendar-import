@@ -229,11 +229,13 @@ def _city_parts_zone(parts: list[str]) -> str | None:
     """Resolve a city with either a country, subdivision, or both."""
     if len(parts) == 2:
         city, qualifier = parts
-        postal = _POSTAL.fullmatch(qualifier)
+        postal = _POSTAL.search(qualifier)
         if postal:
-            # US ZIP is usable only if the city agrees with its timezone.
+            # A US ZIP must agree with the locality, and any printed state,
+            # before it can be used as geographic evidence.
+            suffix = qualifier.replace(postal.group(), "").strip()
             by_postal = _postal_zone(postal.group(1))
-            by_city = _city_zone(city, country="US")
+            by_city = _city_zone(city, region=suffix, country="US")
             return by_postal if by_postal is not None and by_postal == by_city else None
         country = _country_code(qualifier)
         zones = set()
@@ -267,16 +269,6 @@ def _place_zone(kind: str, value: str) -> str | None:
             return airport_zone
     parts = [part.strip() for part in value.split(",")]
     if kind == "city":
-        if len(parts) == 3:
-            # The existing city field sometimes includes a US ZIP alongside
-            # its state abbreviation (e.g. "Encinitas, CA 92024").
-            postal = _POSTAL.search(parts[2])
-            if postal:
-                return None  # Country-suffixed cities must not borrow US ZIPs.
-        if len(parts) == 2:
-            postal = _POSTAL.search(parts[1])
-            if postal and parts[1] != postal.group():
-                parts[1] = parts[1].replace(postal.group(), "").strip()
         return _city_parts_zone(parts)
 
     # A bare venue/street name is not independently geocodable. Search only
