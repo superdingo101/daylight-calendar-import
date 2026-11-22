@@ -16,49 +16,6 @@ _BOUNDED = 256
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)*\Z")
 _POSTAL = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 _FIXED = re.compile(r"(?i:(UTC|GMT))\s*([+-])(\d{1,2})(?::?(\d{2}))?\Z")
-_US_STATES = {
-    "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR",
-    "California": "CA", "Colorado": "CO", "Connecticut": "CT",
-    "Delaware": "DE", "District of Columbia": "DC", "Florida": "FL",
-    "Georgia": "GA", "Hawaii": "HI", "Idaho": "ID", "Illinois": "IL",
-    "Indiana": "IN", "Iowa": "IA", "Kansas": "KS", "Kentucky": "KY",
-    "Louisiana": "LA", "Maine": "ME", "Maryland": "MD", "Massachusetts": "MA",
-    "Michigan": "MI", "Minnesota": "MN", "Mississippi": "MS",
-    "Missouri": "MO", "Montana": "MT", "Nebraska": "NE", "Nevada": "NV",
-    "New Hampshire": "NH", "New Jersey": "NJ", "New Mexico": "NM",
-    "New York": "NY", "North Carolina": "NC", "North Dakota": "ND",
-    "Ohio": "OH", "Oklahoma": "OK", "Oregon": "OR", "Pennsylvania": "PA",
-    "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD",
-    "Tennessee": "TN", "Texas": "TX", "Utah": "UT", "Vermont": "VT",
-    "Virginia": "VA", "Washington": "WA", "West Virginia": "WV",
-    "Wisconsin": "WI", "Wyoming": "WY",
-}
-_STATES = {name.casefold(): abbreviation for name, abbreviation in _US_STATES.items()}
-_STATES.update({abbreviation.casefold(): abbreviation for abbreviation in _US_STATES.values()})
-_COUNTRIES = {
-    "usa": "US", "united states": "US", "us": "US",
-    "uk": "GB", "united kingdom": "GB", "gb": "GB",
-    "australia": "AU", "au": "AU", "canada": "CA", "ca": "CA",
-    "france": "FR", "fr": "FR", "germany": "DE", "de": "DE",
-    "japan": "JP", "jp": "JP", "spain": "ES", "es": "ES",
-    "italy": "IT", "it": "IT", "india": "IN", "in": "IN",
-    "new zealand": "NZ", "nz": "NZ", "mexico": "MX", "mx": "MX",
-    "singapore": "SG", "sg": "SG", "brazil": "BR", "br": "BR",
-}
-# GeoNames admin1code uses numeric identifiers for Australia's subdivisions,
-# whereas invitations usually print the ISO state abbreviation or full name.
-_AU_REGIONS = {
-    "australian capital territory": "01", "act": "01",
-    "new south wales": "02", "nsw": "02",
-    "northern territory": "03", "nt": "03",
-    "queensland": "04", "qld": "04",
-    "south australia": "05", "sa": "05",
-    "tasmania": "06", "tas": "06",
-    "victoria": "07", "vic": "07",
-    "western australia": "08", "wa": "08",
-}
-
-
 @dataclass(frozen=True, slots=True)
 class TemporalEvidence:
     """Original wall times and authoritative review state for one draft."""
@@ -194,13 +151,6 @@ def _labeled_flight_airports(source_text: str) -> tuple[str, str] | None:
 
 
 @lru_cache(maxsize=1)
-def _cities() -> tuple[dict, ...]:
-    import geonamescache
-    cache = geonamescache.GeonamesCache(min_city_population=1000)
-    return tuple(cache.get_cities().values())
-
-
-@lru_cache(maxsize=1)
 def _finder():
     from timezonefinder import TimezoneFinder
     return TimezoneFinder(in_memory=False)
@@ -216,21 +166,44 @@ def _coordinates_zone(lat: object, lon: object) -> str | None:
     return _finder().timezone_at(lat=latitude, lng=longitude)
 
 
+def _country_code(value: str) -> str | None:
+    """Resolve ISO identifiers and exact aliases without assuming a country."""
+    import localis
+
+    name = value.strip()
+    if not name:
+        return None
+    match = localis.countries.lookup(name) if len(name) in (2, 3) else None
+    if match is not None:
+        return match.alpha2
+    matches = localis.countries.filter(name=name)
+    codes = {item.alpha2 for item in matches}
+    return next(iter(codes)) if len(codes) == 1 else None
+
+
 def _city_zone(city: str, region: str = "", country: str = "") -> str | None:
-    candidates = [
-        item for item in _cities()
-        if item.get("name", "").casefold() == city.casefold()
-        and (not region or item.get("admin1code", "").casefold() == region.casefold())
-        and (not country or item.get("countrycode", "").casefold() == country.casefold())
-    ]
-    # Do not infer which Springfield the author meant. Same-zone duplicates
-    # are fine only if their *actual* geographic zones agree.
-    zones = {_coordinates_zone(item.get("latitude"), item.get("longitude"))
-             for item in candidates}
-    zones.discard(None)
-    return next(iter(zones)) if len(zones) == 1 and len(zones) == len({
-        _coordinates_zone(item.get("latitude"), item.get("longitude")) for item in candidates
-    }) else None
+    """Only exact, unambiguous geographic candidates may supply a timezone.
+
+    localis resolves country and subdivision names, ISO codes and aliases
+    worldwide. Never take the most populous or highest-ranked fuzzy result.
+    """
+    import localis
+
+    if not city.strip():
+        return None
+    query = {"name": city.strip()}
+    if country:
+        code = _country_code(country)
+        if code is None:
+            return None
+        query["country"] = code
+    if region:
+        query["subdivision"] = region.strip()
+    matches = localis.cities.filter(**query)
+    if not matches:
+        return None
+    zones = {_coordinates_zone(item.lat, item.lng) for item in matches}
+    return next(iter(zones)) if len(zones) == 1 and None not in zones else None
 
 
 def _postal_zone(value: str) -> str | None:
@@ -252,6 +225,34 @@ def _postal_zone(value: str) -> str | None:
     return next(iter(zones)) if len(zones) == 1 else None
 
 
+def _city_parts_zone(parts: list[str]) -> str | None:
+    """Resolve a city with either a country, subdivision, or both."""
+    if len(parts) == 2:
+        city, qualifier = parts
+        postal = _POSTAL.fullmatch(qualifier)
+        if postal:
+            # US ZIP is usable only if the city agrees with its timezone.
+            by_postal = _postal_zone(postal.group(1))
+            by_city = _city_zone(city, country="US")
+            return by_postal if by_postal is not None and by_postal == by_city else None
+        country = _country_code(qualifier)
+        zones = set()
+        if country is not None:
+            country_zone = _city_zone(city, country=country)
+            if country_zone is not None:
+                zones.add(country_zone)
+        region_zone = _city_zone(city, region=qualifier)
+        if region_zone is not None:
+            zones.add(region_zone)
+        return next(iter(zones)) if len(zones) == 1 else None
+    if len(parts) == 3:
+        city, region, country = parts
+        if _country_code(country) is None:
+            return None
+        return _city_zone(city, region=region, country=country)
+    return None
+
+
 def _place_zone(kind: str, value: str) -> str | None:
     if kind == "airport":
         return _airport_zone(value)
@@ -259,46 +260,37 @@ def _place_zone(kind: str, value: str) -> str | None:
         return _postal_zone(value)
     if kind not in ("city", "address", "venue"):
         return None
-    # A code actually printed with an airport name is evidence even when an
-    # AI provider incorrectly calls the airport a venue or street address.
+    # A printed airport code overrides an unreliable AI venue classification.
     if re.search(r"\([A-Za-z]{3,4}\)", value):
         airport_zone = _airport_zone(value)
         if airport_zone is not None:
             return airport_zone
     parts = [part.strip() for part in value.split(",")]
-    if kind == "venue":
-        # A model may label "Sydney, NSW, Australia" as a venue. Try the
-        # whole geographic location before treating the first component as a
-        # venue name. No bare venue name is geocoded.
-        if len(parts) < 2:
-            return None
-        direct = _place_zone("city", value)
-        if direct is not None:
-            return direct
-        return _place_zone("city", ", ".join(parts[-2:])) if len(parts) >= 3 else None
-    if kind == "address" and len(parts) >= 3:
-        parts = parts[-3:]
-        parts = parts[1:] if re.search(r"\d", parts[0]) else parts
+    if kind == "city":
+        if len(parts) == 3:
+            # The existing city field sometimes includes a US ZIP alongside
+            # its state abbreviation (e.g. "Encinitas, CA 92024").
+            postal = _POSTAL.search(parts[2])
+            if postal:
+                return None  # Country-suffixed cities must not borrow US ZIPs.
+        if len(parts) == 2:
+            postal = _POSTAL.search(parts[1])
+            if postal and parts[1] != postal.group():
+                parts[1] = parts[1].replace(postal.group(), "").strip()
+        return _city_parts_zone(parts)
+
+    # A bare venue/street name is not independently geocodable. Search only
+    # context explicitly printed after it, and reject conflicting candidates.
     if len(parts) < 2:
         return None
-    city = parts[0] if len(parts) == 2 else parts[-3]
-    region = parts[-2] if len(parts) >= 3 else parts[-1]
-    country = parts[-1] if len(parts) >= 3 else "US"
-    postal = _POSTAL.search(region)
-    if postal:
-        region = region.replace(postal.group(), "").strip()
-    if len(parts) == 2 and region.casefold() not in _STATES:
-        recognised_country = _COUNTRIES.get(region.casefold())
-        if recognised_country:
-            country, region = recognised_country, ""
-    country = _COUNTRIES.get(country.casefold(), country if len(country) == 2 else "")
-    if country == "AU":
-        region = _AU_REGIONS.get(region.casefold(), region)
-    else:
-        region = _STATES.get(region.casefold(), region)
-    if postal and not region:
-        return _postal_zone(postal.group(1))
-    return _city_zone(city, region, country)
+    options = [parts[-2:]]
+    if len(parts) >= 3:
+        options.insert(0, parts[-3:])
+    if kind == "venue":
+        options.insert(0, parts)
+    zones = {_city_parts_zone(parts_candidate) for parts_candidate in options}
+    zones.discard(None)
+    return next(iter(zones)) if len(zones) == 1 else None
 
 
 def _range_for_wall(start: datetime, end: datetime, start_name: str,
