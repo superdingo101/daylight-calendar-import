@@ -283,8 +283,11 @@ def normalize_structured_event(raw: dict, ha_zone: str) -> tuple[dict, TemporalE
         try:
             _zone(explicit)
         except ValueError:
-            # "DST", "CST", and other unqualified abbreviations are source
-            # evidence, but not independently resolvable geographic zones.
+            # Human-readable abbreviations/labels are reviewable evidence, but
+            # malformed paths and arbitrary identifiers cannot masquerade as
+            # ambiguous timezone declarations.
+            if not re.fullmatch(r"[A-Za-z][A-Za-z .-]{1,63}", explicit):
+                raise ValueError("invalid timezone name") from None
             explicit_unknown = True
 
     def endpoint(prefix: str, inherited: tuple[str, str] | None = None) -> tuple[str, str, bool]:
