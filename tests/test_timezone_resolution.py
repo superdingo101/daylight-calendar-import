@@ -391,6 +391,83 @@ def test_real_provider_location_label_recovers_missing_typed_geography():
     )
 
 
+
+@pytest.mark.parametrize("prefix", [
+    "Location:", "Location:\\n", "Venue:", "Where:",
+])
+def test_source_verified_untyped_place_works_with_common_labels(prefix):
+    source = (
+        "Meeting June 15, 2029 at 2 PM.\\n" + prefix +
+        ("" if prefix.endswith("\\n") else " ") +
+        "Montréal, Québec, Canada\\n"
+    )
+    raw = structured(
+        start_local="2029-06-15T14:00:00", end_local="2029-06-15T17:00:00",
+        location="Montréal, Québec, Canada",
+    )
+    event, = parser.parse_ai_data({"events": [raw]}, source_text=source,
+        time_zone="America/Los_Angeles").events
+    assert (event.temporal.start_zone, event.temporal.start_location_type,
+            event.temporal.start_location_value, event.temporal.status) == (
+        "America/Toronto", "venue", "Montréal, Québec, Canada", "resolved",
+    )
+    assert (event.start, event.end) == (
+        "2029-06-15T14:00:00-04:00", "2029-06-15T17:00:00-04:00",
+    )
+
+
+def test_conflicting_display_and_source_place_requires_confirmation():
+    raw = structured(location="Montréal, Québec, Canada")
+    source = "Location: Toronto, Ontario, Canada"
+    event, = parser.parse_ai_data({"events": [raw]}, source_text=source,
+        time_zone="America/Los_Angeles").events
+    assert (event.temporal.source, event.temporal.status,
+            event.temporal.start_location_type, event.temporal.start_location_value) == (
+        "ha_fallback", "confirmation_required",
+        "unknown", "Montréal, Québec, Canada",
+    )
+    assert event.temporal.reason == "Confirm the source location's timezone."
+    assert event.location == "Montréal, Québec, Canada"
+
+
+def test_printed_but_unsupported_venue_still_blocks_approval():
+    raw = structured(location="Community Hall")
+    event, = parser.parse_ai_data({"events": [raw]},
+        source_text="Location:\\nCommunity Hall", time_zone="America/Los_Angeles").events
+    assert (event.temporal.status, event.temporal.start_location_type,
+            event.temporal.start_location_value) == (
+        "confirmation_required", "venue", "Community Hall",
+    )
+
+
+def test_long_unverified_location_remains_reviewable_and_bounded():
+    original = "Unknown Festival, " + "X" * 300
+    raw = structured(location=original)
+    result = parser.parse_ai_data({"events": [raw]},
+        source_text="We meet here next week", time_zone="America/Los_Angeles")
+    assert result.warnings
+    event, = result.events
+    assert (event.temporal.status, event.temporal.start_location_type,
+            len(event.temporal.start_location_value)) == (
+        "confirmation_required", "unknown", 256,
+    )
+    assert event.location == original
+
+
+def test_typed_source_location_remains_authoritative_over_untrusted_display():
+    raw = structured(
+        start_location_type="city", start_location_value="Encinitas, California",
+        location="Montréal, Québec, Canada",
+    )
+    event, = parser.parse_ai_data({"events": [raw]},
+        source_text="Location: Montréal, Québec, Canada",
+        time_zone="America/Los_Angeles").events
+    assert (event.temporal.start_zone, event.temporal.status,
+            event.temporal.start_location_type, event.temporal.start_location_value) == (
+        "America/Los_Angeles", "resolved", "city", "Encinitas, California",
+    )
+
+
 def test_real_provider_unverified_display_location_must_not_approve_ha_guess():
     raw = structured(
         title="Location not confirmed", location="Montréal, Québec, Canada",
