@@ -412,7 +412,7 @@ for (const [label, startLocal, endLocal, startInstant, endInstant, expectsFold] 
     const foldEnd = page.locator("label").filter({hasText: "End occurrence (DST fall-back)"});
     await expect(foldStart).toBeHidden();
     await expect(foldEnd).toBeHidden();
-    await page.getByRole("textbox", {name: "Confirm event timezone (IANA identifier)"})
+    await page.locator('input[list^="daylight-iana-zones-"]').first()
       .fill("America/Los_Angeles");
     if (expectsFold) {
       await expect(foldStart).toBeVisible();
