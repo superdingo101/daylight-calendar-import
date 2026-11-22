@@ -16,10 +16,18 @@ _BOUNDED = 256
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)*\Z")
 _POSTAL = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 _FIXED = re.compile(r"(?i:(UTC|GMT))\s*([+-])(\d{1,2})(?::?(\d{2}))?\Z")
-_STATES = {"California": "CA", "Arizona": "AZ", "New York": "NY", "Colorado": "CO"}
-_COUNTRIES = {"USA": "US", "United States": "US", "US": "US",
-              "UK": "GB", "United Kingdom": "GB", "GB": "GB",
-              "Australia": "AU", "AU": "AU", "Canada": "CA", "CA": "CA"}
+_STATES = {"california": "CA", "arizona": "AZ", "new york": "NY",
+           "colorado": "CO", "ca": "CA", "az": "AZ", "ny": "NY", "co": "CO"}
+_COUNTRIES = {
+    "usa": "US", "united states": "US", "us": "US",
+    "uk": "GB", "united kingdom": "GB", "gb": "GB",
+    "australia": "AU", "au": "AU", "canada": "CA", "ca": "CA",
+    "france": "FR", "fr": "FR", "germany": "DE", "de": "DE",
+    "japan": "JP", "jp": "JP", "spain": "ES", "es": "ES",
+    "italy": "IT", "it": "IT", "india": "IN", "in": "IN",
+    "new zealand": "NZ", "nz": "NZ", "mexico": "MX", "mx": "MX",
+    "singapore": "SG", "sg": "SG", "brazil": "BR", "br": "BR",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,14 +213,14 @@ def _place_zone(kind: str, value: str) -> str | None:
     postal = _POSTAL.search(region)
     if postal:
         region = region.replace(postal.group(), "").strip()
-    if len(parts) == 2:
-        postal = _POSTAL.search(region)
-        if postal:
-            region = region.replace(postal.group(), "").strip()
-    region = _STATES.get(region, region)
-    country = _COUNTRIES.get(country, country if len(country) == 2 else "")
-    if len(parts) == 2 and not region:
-        return _postal_zone(postal.group(1)) if postal else None
+    if len(parts) == 2 and region.casefold() not in _STATES:
+        recognised_country = _COUNTRIES.get(region.casefold())
+        if recognised_country:
+            country, region = recognised_country, ""
+    region = _STATES.get(region.casefold(), region)
+    country = _COUNTRIES.get(country.casefold(), country if len(country) == 2 else "")
+    if postal and not region:
+        return _postal_zone(postal.group(1))
     return _city_zone(city, region, country)
 
 
