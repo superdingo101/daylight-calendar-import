@@ -1891,6 +1891,9 @@ class PendingImportStore:
     async def async_confirm_timezone(
         self, pending_id: str, event_id: str, zone_name: str,
         expected_event: PendingEvent | None = None,
+        end_zone_name: str | None = None,
+        start_occurrence: str | None = None,
+        end_occurrence: str | None = None,
     ) -> PendingEvent | None:
         """Confirm a named timezone under the same lock as calendar approval."""
         async with self._lock:
@@ -1908,7 +1911,10 @@ class PendingImportStore:
             if metadata is None:
                 raise PendingEventEditError("Event has no structured timezone evidence")
             try:
-                start, end, resolved = confirm_zone(metadata, zone_name)
+                start, end, resolved = confirm_zone(
+                    metadata, zone_name, end_zone_name,
+                    start_occurrence, end_occurrence,
+                )
                 draft = replace(event.draft, start=start, end=end, temporal=resolved)
                 fingerprint = event_fingerprint(draft)
             except ValueError as err:
