@@ -1,5 +1,5 @@
 import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, repeatedHourOptions, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
-import {changeRetryJob, checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {changeRetryJob, checkEvent, confirmEventTimezone, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, saveRetrySettings, settingsErrorMessage} from "./settings.js";
 
 import {ManualSubmission} from "./manual_submission.js";
@@ -2426,6 +2426,41 @@ export class DaylightImportPanel extends HTMLElement {
     }
   }
 
+  async confirmTimezone(event, timeZone) {
+    if (this._saving || !event.temporal || !timeZone) return;
+    const pendingId = this._selectedId;
+    const generation = this._generation;
+    this._saving = true;
+    this._refreshButton.disabled = true;
+    for (const button of this._content.querySelectorAll("button")) button.disabled = true;
+    try {
+      await confirmEventTimezone(this._hass, pendingId, event, timeZone);
+      if (generation !== this._generation) return;
+      this._detail = await loadImport(this._hass, pendingId);
+      if (generation !== this._generation) return;
+      this._decisionError = null;
+      this.render();
+      this._announcement.replaceChildren(element("span", "Event timezone confirmed"));
+      this.focusEvent(event.id);
+    } catch (error) {
+      if (generation !== this._generation) return;
+      this._decisionError = typeof error?.message === "string" ?
+        error.message : "Timezone confirmation failed. Refresh review.";
+      try {
+        this._detail = await loadImport(this._hass, pendingId);
+      } catch {
+        this._detail = null;
+        this._status = "Could not refresh the event after timezone confirmation.";
+      }
+      if (generation !== this._generation) return;
+      this.render();
+      this._announcement.replaceChildren(element("span", this._decisionError));
+    } finally {
+      this._saving = false;
+      this._refreshButton.disabled = Boolean(this._editingId);
+    }
+  }
+
   async runResolution(event, resolution) {
     if (this._saving || this._resolution?.id !== event.id || this._resolution.choice !== resolution) return;
     const pendingId = this._selectedId;
@@ -3199,9 +3234,10 @@ export class DaylightImportPanel extends HTMLElement {
             const button = element("button", `${action === "approve" ? "Approve" : "Reject"} all ${ready.length}`);
             button.type = "button";
             button.dataset.batchAction = action;
-            if (action === "approve" && ready.some(item => item.routing_unresolved)) {
+            if (action === "approve" && ready.some(item => item.routing_unresolved ||
+                (item.temporal && item.temporal.status !== "resolved"))) {
               button.disabled = true;
-              button.title = "Confirm every unresolved destination before bulk approval";
+              button.title = "Confirm every unresolved destination and timezone before bulk approval";
             }
             button.addEventListener("click", () => {
               if (this._saving) return;
@@ -3242,10 +3278,13 @@ export class DaylightImportPanel extends HTMLElement {
             element("p", "Calendar · " +
               reviewCalendarName(event, this._hass, detail.default_calendar), "event-calendar"));
           if (event.routing_unresolved || event.date_time_assumptions?.length ||
+              (event.temporal && event.temporal.status !== "resolved") ||
               event.status === "write_uncertain") {
             summaryText.append(element("span",
               event.status === "write_uncertain" ? "Needs calendar confirmation" :
                 event.routing_unresolved ? "Destination needs attention" :
+                event.temporal?.status === "correction_required" ? "Invalid local time — correct before approval" :
+                event.temporal?.status === "confirmation_required" ? "Timezone needs confirmation" :
                   "Review date interpretation", "event-fold-alert"));
           }
           summary.append(summaryText, element("span", reviewStatus(event.status), "event-status"));
@@ -3279,6 +3318,41 @@ export class DaylightImportPanel extends HTMLElement {
         if (event.location) surface.append(element("p", "Location · " + event.location, "event-location"));
         if (event.routing_unresolved) {
           surface.append(element("p", "Choose a destination calendar before approving this event.", "error"));
+        }
+        if (event.temporal) {
+          const temporal = event.temporal;
+          const zones = temporal.start_zone === temporal.end_zone ?
+            temporal.start_zone : temporal.start_zone + " → " + temporal.end_zone;
+          surface.append(element("p", "Event timezone · " + zones +
+            " (" + temporal.source.replaceAll("_", " ") + ")", "event-note"));
+          if (temporal.status !== "resolved") {
+            const warning = element("p", temporal.reason ||
+              "Confirm the event timezone before approving.", "error");
+            warning.setAttribute("role", "alert");
+            surface.append(warning);
+            const zoneLabel = element("label", "Confirm event IANA timezone");
+            const input = document.createElement("input");
+            input.type = "text";
+            input.placeholder = temporal.start_zone;
+            input.setAttribute("list", "daylight-iana-zones-" + event.id);
+            input.setAttribute("aria-label", "IANA timezone for " + event.title);
+            const datalist = document.createElement("datalist");
+            datalist.id = "daylight-iana-zones-" + event.id;
+            for (const zone of (Intl.supportedValuesOf?.("timeZone") || [])) {
+              const option = document.createElement("option");
+              option.value = zone;
+              datalist.append(option);
+            }
+            zoneLabel.append(input, datalist);
+            const confirm = element("button", "Confirm timezone", "event-primary");
+            confirm.type = "button";
+            confirm.disabled = true;
+            input.addEventListener("input", () => {
+              confirm.disabled = !input.value.trim() || this._saving;
+            });
+            confirm.addEventListener("click", () => void this.confirmTimezone(event, input.value.trim()));
+            surface.append(zoneLabel, confirm);
+          }
         }
         if (event.date_time_assumptions?.length) {
           const yearInferred = event.date_time_assumptions.some(note => /year/i.test(note));
@@ -3381,7 +3455,8 @@ export class DaylightImportPanel extends HTMLElement {
             button.type = "button";
             button.dataset.action = action;
             button.dataset.eventId = event.id;
-            if (action === "approve" && event.routing_unresolved) button.disabled = true;
+            if (action === "approve" && (event.routing_unresolved ||
+                (event.temporal && event.temporal.status !== "resolved"))) button.disabled = true;
             button.addEventListener("click", () => {
               if (this._saving || this._editingId || this._decision) return;
               this._calendarCheck = null;
