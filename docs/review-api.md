@@ -56,11 +56,21 @@ message. Existing action callers may omit the snapshot for compatibility.
 For structured AI extraction, Daylight receives **source-local start and end clocks**
 and event-location evidence (airport IATA/ICAO identifier, city/region/country,
 street address, US postal code, venue, virtual or unknown). The AI's returned
-offset is **not authoritative**. Python resolves geographic identifiers using
-offline data, falls back to the HA configured timezone only when source geography
-is absent, and calculates event-date offsets using zoneinfo. Independent
-departure and arrival locations can have different named timezones. No location
-or source text is transmitted to an external geocoder.
+offset is **not authoritative**. Python resolves airports using the bundled airportsdata reference and
+city/administrative-division/country evidence using pinned `localis==3.0.0`,
+whose offline ISO 3166, GeoNames and CLDR reference data replaces Daylight's
+hand-maintained country, state and city-name maps. Country names/codes and city
+subdivision aliases are checked with **exact filters**, not a ranked or fuzzy
+search result. All matching city coordinates must imply one valid IANA zone;
+when the city, country or subdivision is ambiguous, Daylight retains a
+provisional HA timezone **and requires confirmation before approval**. Only
+truly location-free events use the HA configured timezone without review.
+TimezoneFinder converts matched coordinates to IANA zones, and `zoneinfo`
+calculates event-date offsets. Independent departure and arrival locations
+can have different named timezones. US ZIP lookup remains separate and is
+cross-checked against any printed city/subdivision. Unsupported foreign postal
+codes are not treated as US ZIP codes. No location or source text is
+transmitted to an external geocoder.
 
 A structured get_pending event can include **temporal**, containing its source
 wall clocks, resolved start_zone and end_zone, provenance, original location
@@ -84,8 +94,15 @@ Editing an unresolved event cannot bypass the confirmation requirement;
 changing its time invalidates any previous timezone confirmation. A reviewer
 may reject the draft instead. Unsupported/ambiguous geographic evidence is
 disclosed on the event card and requires explicit correction or confirmation.
-Geography is inferred conservatively: a venue name alone, an ambiguous city,
-or an unsupported international postal code is not silently assigned a zone.
+Geography is inferred conservatively: a venue name alone, a city with
+inconsistent regional evidence, an ambiguous city, or an unsupported
+international postal code is not silently assigned a zone. `localis` carries
+attributed ISO (LGPL-2.1-or-later), GeoNames (CC BY 4.0), Unicode CLDR
+(Unicode License v3), and Wikidata (CC0) data; its published `NOTICE` and
+license texts are retained in the installed distribution. The 24.7 MB
+`localis==3.0.0` pure-Python wheel is an explicit trade-off for offline
+global coverage; memory and initialization cost should be measured on
+resource-constrained Home Assistant hosts.
 
 ### Explicit calendar routing confirmation
 
