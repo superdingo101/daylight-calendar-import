@@ -3289,7 +3289,10 @@ export class DaylightImportPanel extends HTMLElement {
             element("p", reviewRange(event, this._hass), "event-date"),
             element("p", "Calendar · " +
               reviewCalendarName(event, this._hass, detail.default_calendar), "event-calendar"));
-          if (event.routing_unresolved || event.date_time_assumptions?.length ||
+          const hasReviewAssumptions = event.date_time_assumptions?.length &&
+            (!event.temporal || event.date_time_assumptions.some(note =>
+              /\b(?:inferred (?:the )?year|year (?:was )?inferred)\b/i.test(note)));
+          if (event.routing_unresolved || hasReviewAssumptions ||
               (event.temporal && event.temporal.status !== "resolved") ||
               event.status === "write_uncertain") {
             summaryText.append(element("span",
