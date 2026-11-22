@@ -11,12 +11,13 @@ import pytest
 from custom_components.daylight_calendar_import import timezone_resolution as zones
 
 
-def _localis(monkeypatch, *, countries=None, cities=None):
+def _localis(monkeypatch, *, countries=None, cities=None, subdivisions=None):
     """Install a deterministic registry stand-in at the import boundary."""
     country_calls = []
     city_calls = []
     countries = countries or {}
     cities = cities if cities is not None else []
+    subdivisions = subdivisions if subdivisions is not None else []
 
     def lookup(code):
         country_calls.append(("lookup", code))
@@ -33,6 +34,7 @@ def _localis(monkeypatch, *, countries=None, cities=None):
     fake = SimpleNamespace(
         countries=SimpleNamespace(lookup=lookup, filter=country_filter),
         cities=SimpleNamespace(filter=city_filter),
+        subdivisions=SimpleNamespace(filter=lambda **fields: subdivisions),
     )
     monkeypatch.setitem(sys.modules, "localis", fake)
     return country_calls, city_calls
@@ -71,7 +73,7 @@ def test_country_registry_uses_exact_iso_and_aliases_and_rejects_ambiguous_names
 def test_exact_city_filter_never_selects_one_ambiguous_candidate(
     monkeypatch, records, points, expected,
 ):
-    candidates = [SimpleNamespace(lat=float(n), lng=float(n)) for n in records]
+    candidates = [SimpleNamespace(key=n, lat=float(n), lng=float(n)) for n in records]
     _, calls = _localis(monkeypatch, cities=candidates)
     monkeypatch.setattr(zones, "_coordinates_zone", lambda lat, lng: points.get(int(lat)))
     monkeypatch.setattr(zones, "_country_code", lambda code: "US" if code == "USA" else None)
@@ -178,3 +180,83 @@ def test_two_component_venue_or_address_preserves_geographic_safety(kind):
     # as a venue or an address. A name plus state without a matching city is not.
     assert zones._place_zone(kind, "Encinitas, California") == "America/Los_Angeles"
     assert zones._place_zone(kind, "Fictional Venue, California") is None
+
+
+def test_subdivision_alias_can_be_resolved_only_through_canonical_city_region(monkeypatch):
+    calls = []
+    def city_filter(**fields):
+        calls.append(fields)
+        if fields.get("subdivision") == "DE-BY":
+            return [SimpleNamespace(key=2867714, lat=48.13, lng=11.58)]
+        return []
+    mock = SimpleNamespace(
+        cities=SimpleNamespace(filter=city_filter),
+        subdivisions=SimpleNamespace(filter=lambda **fields:
+            [SimpleNamespace(key="DE-BY")] if fields == {
+                "name": "Bavaria", "country": "DE",
+            } else []),
+    )
+    monkeypatch.setitem(sys.modules, "localis", mock)
+    monkeypatch.setattr(zones, "_country_code", lambda name: "DE")
+    monkeypatch.setattr(zones, "_coordinates_zone", lambda lat, lng: "Europe/Berlin")
+    assert zones._city_zone("Munich", "Bavaria", "Germany") == "Europe/Berlin"
+    assert calls == [
+        {"name": "Munich", "country": "DE", "subdivision": "Bavaria"},
+        {"name": "Munich", "country": "DE", "subdivision": "DE-BY"},
+    ]
+
+
+def test_region_alias_disagreement_does_not_approve_a_city_guess(monkeypatch):
+    def city_filter(**fields):
+        if fields.get("subdivision") == "DE-BY":
+            return [SimpleNamespace(key=1, lat=48.1, lng=11.5)]
+        if fields.get("subdivision") == "DE-BE":
+            return [SimpleNamespace(key=2, lat=52.5, lng=13.4)]
+        return []
+    mock = SimpleNamespace(
+        cities=SimpleNamespace(filter=city_filter),
+        subdivisions=SimpleNamespace(filter=lambda **fields: [
+            SimpleNamespace(key="DE-BY"), SimpleNamespace(key="DE-BE"),
+        ]),
+    )
+    monkeypatch.setitem(sys.modules, "localis", mock)
+    monkeypatch.setattr(zones, "_country_code", lambda name: "DE")
+    monkeypatch.setattr(zones, "_coordinates_zone",
+                        lambda lat, lng: "Europe/Berlin" if lat < 50
+                        else "Europe/Paris")
+    assert zones._city_zone("Example", "Regional Alias", "Germany") is None
+
+
+def test_exact_and_alias_filters_deduplicate_same_city(monkeypatch):
+    same = SimpleNamespace(key=2867714, lat=48.13, lng=11.58)
+    def city_filter(**fields):
+        if fields.get("subdivision") in ("Bavaria", "DE-BY"):
+            return [same]
+        return []
+    mock = SimpleNamespace(
+        cities=SimpleNamespace(filter=city_filter),
+        subdivisions=SimpleNamespace(filter=lambda **fields: [
+            SimpleNamespace(key="DE-BY"),
+        ]),
+    )
+    monkeypatch.setitem(sys.modules, "localis", mock)
+    monkeypatch.setattr(zones, "_country_code", lambda name: "DE")
+    seen = []
+    def coordinate_zone(lat, lng):
+        seen.append((lat, lng))
+        return "Europe/Berlin"
+    monkeypatch.setattr(zones, "_coordinates_zone", coordinate_zone)
+    assert zones._city_zone("Munich", "Bavaria", "Germany") == "Europe/Berlin"
+    assert seen == [(48.13, 11.58)]
+
+
+def test_unmatched_country_or_region_never_uses_other_subdivisions(monkeypatch):
+    mock = SimpleNamespace(
+        cities=SimpleNamespace(filter=lambda **fields: []),
+        subdivisions=SimpleNamespace(filter=lambda **fields: []),
+    )
+    monkeypatch.setitem(sys.modules, "localis", mock)
+    monkeypatch.setattr(zones, "_country_code",
+                        lambda name: "DE" if name == "Germany" else None)
+    assert zones._city_zone("Munich", "Nevada", "Germany") is None
+    assert zones._city_zone("Munich", "Bavaria", "Atlantis") is None
