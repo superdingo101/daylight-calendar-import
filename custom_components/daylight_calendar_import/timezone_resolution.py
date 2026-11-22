@@ -201,8 +201,20 @@ def _city_zone(city: str, region: str = "", country: str = "") -> str | None:
             return None
         query["country"] = code
     if region:
-        query["subdivision"] = region.strip()
-    matches = localis.cities.filter(**query)
+        # The city's subdivision filter indexes canonical names and codes,
+        # but a country subdivision's alternate names (e.g. Bavaria for
+        # Bayern) may only be indexed by localis.subdivisions. Resolve those
+        # exact aliases through the canonical registry, never via fuzziness.
+        records = localis.cities.filter(**query, subdivision=region.strip())
+        region_query = {"name": region.strip()}
+        if country:
+            region_query["country"] = query["country"]
+        divisions = localis.subdivisions.filter(**region_query)
+        for division in divisions:
+            records.extend(localis.cities.filter(**query, subdivision=division.key))
+        matches = {record.key: record for record in records}.values()
+    else:
+        matches = localis.cities.filter(**query)
     if not matches:
         return None
     zones = {_coordinates_zone(item.lat, item.lng) for item in matches}
