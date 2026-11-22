@@ -90,6 +90,18 @@ nonexistent clocks, impossible intervals, stale snapshots, and duplicates,
 and durably saves the selected zone(s) and final instants atomically before
 approval becomes available.
 
+On calendar creation, timed drafts preserve their original local clocks and
+start/end IANA zones in the review record, but Daylight submits **both instants
+in UTC** to Home Assistant's `calendar.create_event` service. This is required
+for flights or DST transitions: Home Assistant rejects a start/end pair with
+different offsets even when both instants are correct ("Expected all values
+to have the same timezone"). UTC normalization occurs only at the service
+boundary, preserving the reviewed draft, deduplication identity, and absolute
+duration. All-day calendar dates are not converted. A pre-fix event saved as
+`write_uncertain` still needs explicit confirmation against the destination
+calendar before resolving its outcome; installing the fixed code does not
+automatically retry potentially duplicated writes.
+
 Editing an unresolved event cannot bypass the confirmation requirement;
 changing its time invalidates any previous timezone confirmation. A reviewer
 may reject the draft instead. Unsupported/ambiguous geographic evidence is
