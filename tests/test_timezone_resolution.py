@@ -96,7 +96,7 @@ def test_encinitas_offline_geography_has_pacific_zone(kind, value):
     assert event.temporal.status == "resolved"
 
 
-@pytest.mark.parametrize("value", ["LOL", "0000", "L0X", "ABCDE"])
+@pytest.mark.parametrize("value", ["L0L", "0000", "L0X", "ABCDE"])
 def test_invalid_airports_stay_unresolved_instead_of_becoming_ha_fallback(value):
     result = parse_one(start_location_type="airport", start_location_value=value)
     event, = result.events
