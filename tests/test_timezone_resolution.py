@@ -812,6 +812,7 @@ def test_structured_extraction_preserves_source_geo_and_blocks_arrival_only_loca
     assert event.temporal.start_zone == "America/Los_Angeles"
     assert event.temporal.end_zone == "America/New_York"
     assert event.temporal.status == "confirmation_required"
+    assert event.temporal.travel_incomplete is True
     assert event.temporal.reason == "Travel itinerary has an unverified endpoint; confirm both timezones."
     assert event.location == "JFK"
 
@@ -1014,6 +1015,7 @@ def test_partial_travel_itineraries_require_both_endpoint_locations(
     event, = outcome.events
     assert (event.temporal.start_zone, event.temporal.end_zone) == (start_zone, end_zone)
     assert event.temporal.status == expected_status
+    assert event.temporal.travel_incomplete is (expected_status == "confirmation_required")
     if expected_status == "confirmation_required":
         assert event.temporal.reason == (
             "Travel itinerary has an unverified endpoint; confirm both timezones."
@@ -1130,3 +1132,50 @@ def test_multi_event_provider_results_keep_valid_drafts_and_block_conflicts():
     assert len(result.warnings) == 2
     assert "needs confirmation" in result.warnings[0]
     assert "invalid local date/time" in result.warnings[1]
+
+
+
+def test_travel_confirmation_flag_roundtrips_and_rejects_nonboolean_metadata():
+    event, = parse_one(title="Flight AA1234",
+                       start_location_type="airport", start_location_value="LAX").events
+    assert event.temporal.travel_incomplete is True
+    restored = EventDraft.from_mapping(event.as_dict())
+    assert restored.temporal.travel_incomplete is True
+    state = event.temporal.as_dict()
+    del state["travel_incomplete"]
+    assert zones.TemporalEvidence.from_dict(state).travel_incomplete is False
+    for invalid in (None, "true", 1, [], {}):
+        with pytest.raises(ValueError, match="invalid temporal review fields"):
+            zones.TemporalEvidence.from_dict({
+                **event.temporal.as_dict(), "travel_incomplete": invalid,
+            })
+
+
+async def test_incomplete_trip_requires_explicit_end_zone_even_for_direct_service(monkeypatch):
+    event, = parse_one(
+        title="Flight AA1234", end_local="2027-12-25T23:30:00",
+        start_location_type="airport", start_location_value="LAX",
+    ).events
+    with pytest.raises(ValueError, match="Confirm departure and arrival timezones independently"):
+        zones.confirm_zone(event.temporal, "America/Los_Angeles")
+    backend = _Backend()
+    store = _store(monkeypatch, backend)
+    await store.async_load()
+    pending = (await store.async_add(source_text="source", events=[event])).pending
+    original = pending.events[0]
+    with pytest.raises(PendingEventEditError, match="Confirm departure and arrival timezones independently"):
+        await store.async_confirm_timezone(
+            pending.id, original.id, "America/Los_Angeles",
+            expected_event=original,
+        )
+    assert store.get_event(pending.id, original.id) == original
+    confirmed = await store.async_confirm_timezone(
+        pending.id, original.id, "America/Los_Angeles",
+        end_zone_name="America/New_York", expected_event=original,
+    )
+    assert confirmed.draft.start == "2027-12-25T18:00:00-08:00"
+    assert confirmed.draft.end == "2027-12-25T23:30:00-05:00"
+    assert confirmed.draft.temporal.travel_incomplete is True
+    assert confirmed.draft.temporal.status == "resolved"
+    reloaded = PendingImport.from_dict(store.get(pending.id).as_dict())
+    assert reloaded.events[0].draft == confirmed.draft
