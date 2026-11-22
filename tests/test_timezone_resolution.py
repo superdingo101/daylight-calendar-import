@@ -330,6 +330,83 @@ def test_printed_explicit_zone_remains_authoritative_and_conflict_is_blocked():
 
 
 
+
+@pytest.mark.parametrize(("city", "subdivision", "country", "expected"), [
+    ("Munich", "Bavaria", "Germany", "Europe/Berlin"),
+    ("München", "Bayern", "Germany", "Europe/Berlin"),
+    ("Montréal", "Québec", "Canada", "America/Toronto"),
+])
+def test_real_provider_municipality_exonyms_and_subdivisions(
+    city, subdivision, country, expected,
+):
+    import localis
+
+    # Diagnostic arrays identify which exact index loses the legitimate name
+    # without introducing approximate or popularity-based automatic matching.
+    resolved = zones._city_zone(city, region=subdivision, country=country)
+    assert resolved == expected, {
+        "city": city, "subdivision": subdivision, "country": country,
+        "country_codes": [x.alpha2 for x in localis.countries.filter(name=country)],
+        "direct_matches": len(localis.cities.filter(
+            name=city, country=country, subdivision=subdivision,
+        )),
+        "country_matches": len(localis.cities.filter(name=city, country=country)),
+        "subdivision_matches": len(localis.subdivisions.filter(
+            name=subdivision, country=country,
+        )),
+    }
+
+
+def test_real_provider_location_label_recovers_missing_typed_geography():
+    source = ("Montréal Community Festival - Geo Test\n"
+              "June 15, 2029\n2:00 PM - 5:00 PM\n\n"
+              "Location:\nMontréal, Québec, Canada")
+    raw = structured(
+        title="Montréal Community Festival - Geo Test",
+        start_local="2029-06-15T14:00:00",
+        end_local="2029-06-15T17:00:00",
+        start_location_type="unknown", start_location_value="",
+        location="Montréal, Québec, Canada",
+    )
+    outcome = parser.parse_ai_data(
+        {"events": [raw]}, source_text=source,
+        time_zone="America/Los_Angeles",
+    )
+    assert outcome.warnings == []
+    event, = outcome.events
+    assert (event.temporal.start_zone, event.temporal.end_zone,
+            event.temporal.source, event.temporal.status) == (
+        "America/Toronto", "America/Toronto", "geographic", "resolved",
+    )
+    assert (event.start, event.end) == (
+        "2029-06-15T14:00:00-04:00", "2029-06-15T17:00:00-04:00",
+    )
+
+
+def test_real_provider_unverified_display_location_must_not_approve_ha_guess():
+    raw = structured(
+        title="Location not confirmed", location="Montréal, Québec, Canada",
+        start_location_type="unknown", start_location_value="",
+    )
+    outcome = parser.parse_ai_data({"events": [raw]},
+        source_text="Not a matching place name",
+        time_zone="America/Los_Angeles")
+    event, = outcome.events
+    assert (event.temporal.source, event.temporal.status) == (
+        "ha_fallback", "confirmation_required",
+    )
+    assert event.temporal.reason == "Confirm the source location's timezone."
+
+
+def test_real_provider_location_free_source_still_uses_ha_zone_without_blocking():
+    event, = parser.parse_ai_data({"events": [structured(
+        location="", start_location_type="unknown", start_location_value="",
+    )]}, source_text="Dinner December 25, 2027 at 6 PM",
+        time_zone="America/Los_Angeles").events
+    assert (event.temporal.start_zone, event.temporal.status) == (
+        "America/Los_Angeles", "resolved",
+    )
+
 def test_unrecognized_airport_names_and_venue_names_are_not_guessed():
     assert zones._airport_zone("ZZZ") is None
     assert zones._airport_zone("Invalid Airport (ZZZ)") is None
