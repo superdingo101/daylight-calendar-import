@@ -407,7 +407,9 @@ for (const [label, startLocal, endLocal, startInstant, endInstant, expectsFold] 
     await textForm(page).getByRole("textbox").fill(source);
     await textForm(page).getByRole("button", {name: "Import events", exact: true}).click();
     await expect(page.getByText("Confirm the source location's timezone.")).toBeVisible();
-    await expect(page.getByRole("button", {name: "Approve School picnic"})).toBeDisabled();
+    const approve = page.getByRole("button", {name: "Approve School picnic"});
+    await expect(approve).toBeDisabled();
+    await expect(approve).toHaveCSS("opacity", "0.5");
     const foldStart = page.locator("label").filter({hasText: "Start occurrence (DST fall-back)"});
     const foldEnd = page.locator("label").filter({hasText: "End occurrence (DST fall-back)"});
     await expect(foldStart).toBeHidden();
