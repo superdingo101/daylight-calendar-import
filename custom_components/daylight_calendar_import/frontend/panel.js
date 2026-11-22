@@ -3369,8 +3369,10 @@ export class DaylightImportPanel extends HTMLElement {
             };
             const startZone = zoneInput("Confirm event timezone (IANA identifier)",
               temporal.start_zone);
-            const needsEndZone = temporal.end_location_type !== "unknown" ||
-              Boolean(temporal.end_location_value) ||
+            const distinctEndLocation = Boolean(temporal.end_location_value?.trim()) &&
+              temporal.end_location_value.trim().toLocaleLowerCase() !==
+                (temporal.start_location_value || "").trim().toLocaleLowerCase();
+            const needsEndZone = distinctEndLocation ||
               temporal.end_zone !== temporal.start_zone;
             const endZone = needsEndZone ?
               zoneInput("Confirm arrival timezone (IANA identifier)", temporal.end_zone) : null;
