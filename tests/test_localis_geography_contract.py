@@ -169,4 +169,4 @@ def test_unsupported_location_kinds_and_unverified_airports_do_not_guess(monkeyp
     monkeypatch.setattr(zones, "_city_parts_zone", lambda parts: "Europe/London")
     assert zones._place_zone("airport", "INVALID") is None
     assert zones._place_zone("virtual", "London, England") is None
-    assert zones._place_zone("address", "Unknown Airport (ZZZ)") is None or True
+    assert zones._place_zone("address", "Unknown Airport (ZZZ)") is None
