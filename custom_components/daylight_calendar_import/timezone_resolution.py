@@ -321,6 +321,13 @@ def normalize_structured_event(raw: dict, ha_zone: str) -> tuple[dict, TemporalE
               "confirmation_required" if unresolved or ambiguous else "resolved")
     reason = ("The local time does not exist in this timezone." if gap else
               "Confirm the event timezone or DST occurrence." if status != "resolved" else "")
+    display_location = raw.get("location")
+    if not isinstance(display_location, str) or not display_location.strip():
+        start_label = raw.get("start_location_value") or ""
+        end_label = raw.get("end_location_value") or ""
+        display_location = (start_label + " → " + end_label if
+                            start_label and end_label and start_label != end_label
+                            else start_label or end_label)
     metadata = TemporalEvidence(
         start.isoformat(), end.isoformat(), start_zone, end_zone, source, status,
         reason,
@@ -330,7 +337,7 @@ def normalize_structured_event(raw: dict, ha_zone: str) -> tuple[dict, TemporalE
         raw.get("end_location_value") or "",
         explicit,
     )
-    return {**raw, "start": a, "end": b}, metadata
+    return {**raw, "start": a, "end": b, "location": display_location}, metadata
 
 
 def confirm_zone(evidence: TemporalEvidence, zone_name: str,
