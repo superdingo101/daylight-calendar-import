@@ -3291,7 +3291,7 @@ export class DaylightImportPanel extends HTMLElement {
               reviewCalendarName(event, this._hass, detail.default_calendar), "event-calendar"));
           const hasReviewAssumptions = event.date_time_assumptions?.length &&
             (!event.temporal || event.date_time_assumptions.some(note =>
-              /\b(?:inferred (?:the )?year|year (?:was )?inferred)\b/i.test(note)));
+              /\b(?:(?:inferred|assumed) (?:the )?year|year (?:was )?(?:inferred|assumed))\b/i.test(note)));
           if (event.routing_unresolved || hasReviewAssumptions ||
               (event.temporal && event.temporal.status !== "resolved") ||
               event.status === "write_uncertain") {
@@ -3436,7 +3436,7 @@ export class DaylightImportPanel extends HTMLElement {
         }
         const assumptions = event.date_time_assumptions || [];
         const yearInferred = assumptions.some(note =>
-          /\b(?:inferred (?:the )?year|year (?:was )?inferred)\b/i.test(note));
+          /\b(?:(?:inferred|assumed) (?:the )?year|year (?:was )?(?:inferred|assumed))\b/i.test(note));
         if (yearInferred || (!event.temporal && assumptions.length)) {
           surface.append(element("p", yearInferred ?
             "Year inferred — verify the date" : "Date interpretation needs review", "event-note"));
