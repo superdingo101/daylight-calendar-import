@@ -1278,7 +1278,8 @@ async def test_calendar_event_payloads():
     hass = FakeHass()
     await _async_create_calendar_event(hass, "calendar.family", draft())
     timed_data = hass.services.calls[-1][2]
-    assert timed_data["start_date_time"].endswith("-07:00")
+    assert timed_data["start_date_time"] == "2026-10-09T00:30:00+00:00"
+    assert timed_data["end_date_time"] == "2026-10-09T01:30:00+00:00"
     assert timed_data["description"] == ""
 
     await _async_create_calendar_event(hass, "calendar.family", draft(True))
@@ -1295,6 +1296,66 @@ async def test_calendar_event_payloads():
     )
     await _async_create_calendar_event(hass, "calendar.family", no_location)
     assert "location" not in hass.services.calls[-1][2]
+
+
+@pytest.mark.parametrize(("start", "end", "start_utc", "end_utc"), [
+    # LAX to JFK: Home Assistant rejects the original -07/-04 pair.
+    ("2028-07-15T08:00:00-07:00", "2028-07-15T16:30:00-04:00",
+     "2028-07-15T15:00:00+00:00", "2028-07-15T20:30:00+00:00"),
+    # Winter flight uses different UTC offsets but still has a valid duration.
+    ("2028-01-15T08:00:00-08:00", "2028-01-15T16:30:00-05:00",
+     "2028-01-15T16:00:00+00:00", "2028-01-15T21:30:00+00:00"),
+    # One region crossing its fall-back transition (-07 -> -08).
+    ("2028-11-05T01:15:00-07:00", "2028-11-05T01:45:00-08:00",
+     "2028-11-05T08:15:00+00:00", "2028-11-05T09:45:00+00:00"),
+    # International Date Line: arrival's local date can equal departure's.
+    ("2028-07-15T17:00:00+09:00", "2028-07-15T11:00:00-07:00",
+     "2028-07-15T08:00:00+00:00", "2028-07-15T18:00:00+00:00"),
+    # Both endpoints have the same offset: also use the canonical UTC payload.
+    ("2028-07-15T10:00:00+05:45", "2028-07-15T11:30:00+05:45",
+     "2028-07-15T04:15:00+00:00", "2028-07-15T05:45:00+00:00"),
+])
+async def test_calendar_create_event_uses_one_utc_zone_without_changing_source_draft(
+    start, end, start_utc, end_utc,
+):
+    """All timed service writes use one zone, preserving each original instant."""
+    hass = FakeHass()
+    original = EventDraft(
+        title="Cross-zone flight", start=start, end=end, all_day=False,
+        description="Flight AA1234", location="LAX to JFK", confidence=1.0,
+    )
+    context = Context(user_id="calendar-test")
+    await _async_create_calendar_event(hass, "calendar.family", original, context=context)
+    assert hass.services.calls == [(
+        "calendar", "create_event",
+        {
+            "entity_id": "calendar.family",
+            "summary": "Cross-zone flight",
+            "description": "Flight AA1234",
+            "location": "LAX to JFK",
+            "start_date_time": start_utc,
+            "end_date_time": end_utc,
+        },
+        True, context,
+    )]
+    assert datetime.fromisoformat(start_utc) == datetime.fromisoformat(start)
+    assert datetime.fromisoformat(end_utc) == datetime.fromisoformat(end)
+    assert datetime.fromisoformat(end_utc) > datetime.fromisoformat(start_utc)
+    assert (original.start, original.end) == (start, end)
+    assert original.all_day is False
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("2028-07-15T08:00:00", "2028-07-15T16:30:00-04:00"),
+    ("2028-07-15T08:00:00-07:00", "2028-07-15T16:30:00"),
+])
+async def test_calendar_create_event_refuses_naive_timed_endpoints_before_write(start, end):
+    """Direct draft construction must not silently use the host's local timezone."""
+    hass = FakeHass()
+    original = EventDraft(title="Incomplete flight", start=start, end=end, all_day=False)
+    with pytest.raises(DraftValidationError, match="timed events must include timezone offsets"):
+        await _async_create_calendar_event(hass, "calendar.family", original)
+    assert hass.services.calls == []
 
 
 async def test_remove_entry_deletes_pending_storage(monkeypatch, tmp_path):
@@ -1337,8 +1398,8 @@ async def test_calendar_event_payload_contract_is_exact():
             "summary": "Practice",
             "description": "",
             "location": "Park",
-            "start_date_time": "2026-10-08T17:30:00-07:00",
-            "end_date_time": "2026-10-08T18:30:00-07:00",
+            "start_date_time": "2026-10-09T00:30:00+00:00",
+            "end_date_time": "2026-10-09T01:30:00+00:00",
         },
         True,
         context,
