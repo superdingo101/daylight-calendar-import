@@ -42,16 +42,20 @@ class TemporalEvidence:
     end_location_type: str = "unknown"
     end_location_value: str = ""
     explicit_timezone: str = ""
+    travel_incomplete: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict) -> TemporalEvidence:
         required = {"start_local", "end_local", "start_zone", "end_zone",
                     "source", "status", "reason"}
         allowed = required | {"start_location_type", "start_location_value",
-                              "end_location_type", "end_location_value", "explicit_timezone"}
+                              "end_location_type", "end_location_value", "explicit_timezone",
+                              "travel_incomplete"}
         if not isinstance(raw, dict) or not required.issubset(raw) or set(raw) - allowed:
             raise ValueError("invalid temporal review data")
-        if any(not isinstance(v, str) or len(v) > _BOUNDED for v in raw.values()):
+        if (any(not isinstance(value, str) or len(value) > _BOUNDED
+                for key, value in raw.items() if key != "travel_incomplete")
+                or type(raw.get("travel_incomplete", False)) is not bool):
             raise ValueError("invalid temporal review fields")
         for name in ("start_local", "end_local"):
             _local(raw[name])
@@ -522,7 +526,7 @@ def normalize_structured_event(
         raw.get("start_location_value") or "",
         raw.get("end_location_type", "unknown"),
         raw.get("end_location_value") or "",
-        explicit,
+        explicit, travel_incomplete,
     )
     return {**raw, "start": a, "end": b, "location": display_location}, metadata
 
@@ -532,6 +536,8 @@ def confirm_zone(evidence: TemporalEvidence, zone_name: str,
                  start_occurrence: str | None = None,
                  end_occurrence: str | None = None) -> tuple[str, str, TemporalEvidence]:
     """Recalculate both source-local endpoints with reviewer-confirmed zones."""
+    if evidence.travel_incomplete and not end_zone_name:
+        raise ValueError("Confirm departure and arrival timezones independently")
     _zone(zone_name)
     end_zone_name = end_zone_name or zone_name
     _zone(end_zone_name)
