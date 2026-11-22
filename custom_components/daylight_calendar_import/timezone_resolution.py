@@ -275,10 +275,6 @@ def _place_zone(kind: str, value: str) -> str | None:
         direct = _place_zone("city", value)
         if direct is not None:
             return direct
-        if len(parts) >= 4:
-            suffix = _place_zone("city", ", ".join(parts[-3:]))
-            if suffix is not None:
-                return suffix
         return _place_zone("city", ", ".join(parts[-2:])) if len(parts) >= 3 else None
     if kind == "address" and len(parts) >= 3:
         parts = parts[-3:]
