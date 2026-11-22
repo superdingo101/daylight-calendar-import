@@ -6,7 +6,7 @@ data is bundled with the integration's installed Python dependencies.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, tzinfo
 from functools import lru_cache
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -15,6 +15,7 @@ KINDS = frozenset({"airport", "address", "city", "postal_code", "venue", "unknow
 _BOUNDED = 256
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)*\Z")
 _POSTAL = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
+_FIXED = re.compile(r"(?i:(UTC|GMT))\s*([+-])(\d{1,2})(?::?(\d{2}))?\Z")
 _STATES = {"California": "CA", "Arizona": "AZ", "New York": "NY", "Colorado": "CO"}
 _COUNTRIES = {"USA": "US", "United States": "US", "US": "US",
               "UK": "GB", "United Kingdom": "GB", "GB": "GB",
@@ -69,20 +70,33 @@ def _local(value: str) -> datetime:
     return dt
 
 
-def _zone(value: str) -> ZoneInfo:
-    if not value or len(value) > 128 or not _NAME.fullmatch(value):
+def _fixed_zone(value: str) -> str | None:
+    """Keep explicit UTC offsets distinct from geographic timezone identity."""
+    if value in ("UTC", "GMT", "Z"):
+        return "UTC"
+    match = _FIXED.fullmatch(value)
+    if match is None:
+        return None
+    hour = int(match[3])
+    minute = int(match[4] or "0")
+    if hour > 23 or minute > 59 or hour * 60 + minute > 1439:
+        return None
+    return f"UTC{match[2]}{hour:02d}:{minute:02d}"
+
+
+def _zone(value: str) -> tzinfo:
+    fixed = _fixed_zone(value) if isinstance(value, str) else None
+    if fixed is not None:
+        if fixed == "UTC":
+            return timezone.utc
+        sign = 1 if fixed[3] == "+" else -1
+        return timezone(sign * timedelta(hours=int(fixed[4:6]), minutes=int(fixed[7:9])))
+    if not isinstance(value, str) or not value or len(value) > 128 or not _NAME.fullmatch(value):
         raise ValueError("invalid timezone name")
     try:
         return ZoneInfo(value)
     except (ZoneInfoNotFoundError, ValueError) as err:
         raise ValueError("unknown timezone name") from err
-
-
-def _fixed_zone(value: str) -> str | None:
-    """Fixed offsets are not regions; caller must retain explicit offset."""
-    if value in ("UTC", "GMT", "Z"):
-        return "UTC"
-    return None
 
 
 @lru_cache(maxsize=1)
@@ -236,8 +250,14 @@ def normalize_structured_event(raw: dict, ha_zone: str) -> tuple[dict, TemporalE
     if not isinstance(explicit, str) or len(explicit) > 128:
         raise ValueError("invalid explicit timezone evidence")
     explicit = explicit.strip()
+    explicit_unknown = False
     if explicit and not _fixed_zone(explicit):
-        _zone(explicit)
+        try:
+            _zone(explicit)
+        except ValueError:
+            # "DST", "CST", and other unqualified abbreviations are source
+            # evidence, but not independently resolvable geographic zones.
+            explicit_unknown = True
 
     def endpoint(prefix: str, inherited: tuple[str, str] | None = None) -> tuple[str, str, bool]:
         kind = raw.get(prefix + "_location_type", "unknown")
@@ -263,11 +283,12 @@ def normalize_structured_event(raw: dict, ha_zone: str) -> tuple[dict, TemporalE
     start_zone, source, unresolved = first
     end_zone, end_source, end_unresolved = second
     if explicit:
-        start_zone = end_zone = "UTC" if _fixed_zone(explicit) else explicit
+        if not explicit_unknown:
+            start_zone = end_zone = _fixed_zone(explicit) or explicit
         source = "explicit"
-        # Geographic evidence conflicts with a source-specified timezone:
-        # retain the explicit source evidence but require confirmation.
-        unresolved = unresolved or end_unresolved or any(
+        # Unknown abbreviations and contradictory geographic signals always
+        # need deliberate review. Never invent an offset for an abbreviation.
+        unresolved = explicit_unknown or unresolved or end_unresolved or any(
             item[1] not in ("ha_fallback", "explicit") and item[0] != start_zone
             for item in (first, second)
         )
