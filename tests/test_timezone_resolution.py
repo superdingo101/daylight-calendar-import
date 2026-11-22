@@ -192,6 +192,20 @@ def test_untrusted_structured_metadata_cannot_bypass_validation(bad, message):
     assert message in outcome.warnings[0]
 
 
+def test_dedup_identity_for_unresolved_source_is_independent_of_ai_offset():
+    from custom_components.daylight_calendar_import.dedup import event_fingerprint
+    event, = parse_one(start_location_type="venue",
+                       start_location_value="Community Hall").events
+    different_provisional_offset = replace(
+        event, start="2027-12-25T18:00:00-05:00",
+        end="2027-12-25T20:00:00-05:00",
+    )
+    assert event.temporal.status == "confirmation_required"
+    assert event_fingerprint(event) == event_fingerprint(different_provisional_offset)
+    resolved = replace(event, temporal=replace(event.temporal, status="resolved"))
+    assert event_fingerprint(resolved) != event_fingerprint(event)
+
+
 def test_temporal_roundtrip_does_not_change_old_imports_or_dedup_shape():
     event, = parse_one().events
     item = PendingImport.create(source_text="Private dinner invitation", events=[event])
