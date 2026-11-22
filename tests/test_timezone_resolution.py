@@ -152,18 +152,47 @@ def test_sydney_region_evidence_does_not_fall_back_to_los_angeles(kind, value):
     )
 
 
-@pytest.mark.parametrize(("region", "geonames_code"), [
-    ("ACT", "01"), ("Australian Capital Territory", "01"),
-    ("NSW", "02"), ("New South Wales", "02"),
-    ("NT", "03"), ("Northern Territory", "03"),
-    ("QLD", "04"), ("Queensland", "04"),
-    ("SA", "05"), ("South Australia", "05"),
-    ("TAS", "06"), ("Tasmania", "06"),
-    ("VIC", "07"), ("Victoria", "07"),
-    ("WA", "08"), ("Western Australia", "08"),
+@pytest.mark.parametrize(("city", "region", "country", "zone", "offset"), [
+    ("Sydney", "NSW", "Australia", "Australia/Sydney", "+11:00"),
+    ("Sydney", "New South Wales", "AU", "Australia/Sydney", "+11:00"),
+    ("Brisbane", "Queensland", "Australia", "Australia/Brisbane", "+10:00"),
+    ("Perth", "WA", "Australia", "Australia/Perth", "+08:00"),
+    ("Adelaide", "SA", "Australia", "Australia/Adelaide", "+10:30"),
+    ("Mumbai", "Maharashtra", "India", "Asia/Kolkata", "+05:30"),
+    ("Toronto", "Ontario", "Canada", "America/Toronto", "-05:00"),
+    ("Montréal", "Québec", "Canada", "America/Toronto", "-05:00"),
+    ("Berlin", "Berlin", "Germany", "Europe/Berlin", "+01:00"),
 ])
-def test_au_iso_region_codes_match_offline_geonames_codes(region, geonames_code):
-    assert zones._AU_REGIONS[region.casefold()] == geonames_code
+def test_global_iso_and_geonames_subdivisions(city, region, country, zone, offset):
+    value = f"{city}, {region}, {country}"
+    event, = parser.parse_ai_data({"events": [structured(
+        start_location_type="city", start_location_value=value,
+    )]}, time_zone="America/Los_Angeles").events
+    assert (event.temporal.start_zone, event.temporal.end_zone) == (zone, zone)
+    assert (event.temporal.source, event.temporal.status) == ("geographic", "resolved")
+    assert (event.start, event.end) == (
+        f"2027-12-25T18:00:00{offset}", f"2027-12-25T20:00:00{offset}",
+    )
+
+
+def test_names_and_subdivision_tables_are_not_hardcoded_into_daylight():
+    for attribute in ("_US_STATES", "_STATES", "_AU_REGIONS", "_COUNTRIES", "_cities"):
+        assert not hasattr(zones, attribute)
+
+
+@pytest.mark.parametrize(("country", "code"), [
+    ("US", "US"), ("United States", "US"),
+    ("UK", "GB"), ("United Kingdom", "GB"),
+    ("Canada", "CA"), ("Australia", "AU"),
+    ("Germany", "DE"), ("India", "IN"),
+])
+def test_localis_exact_country_identifiers_and_names(country, code):
+    assert zones._country_code(country) == code
+
+
+@pytest.mark.parametrize("value", ["", "Atlantis", "ZZ", "Not A Country"])
+def test_unknown_countries_are_not_guessed(value):
+    assert zones._country_code(value) is None
 
 
 def test_unknown_australian_subdivision_remains_unresolved():
@@ -174,6 +203,39 @@ def test_unknown_australian_subdivision_remains_unresolved():
         "ha_fallback", "confirmation_required",
     )
     assert event.temporal.reason == "Confirm the source location's timezone."
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ("Encinitas, CA", "America/Los_Angeles"),
+    ("Encinitas, California", "America/Los_Angeles"),
+    ("Toronto, ON", "America/Toronto"),
+    ("Sydney, NSW", "Australia/Sydney"),
+    ("Sydney, New South Wales", "Australia/Sydney"),
+    ("Montréal, Quebec", "America/Toronto"),
+    ("London, United Kingdom", "Europe/London"),
+])
+def test_two_part_country_or_subdivision_uses_exact_offline_evidence(value, expected):
+    assert zones._place_zone("city", value) == expected
+
+
+@pytest.mark.parametrize("value", [
+    "Springfield, USA", "Imaginary City, Australia",
+    "Encinitas, Canada", "Paris, Atlantis",
+    "Springfield", "Encinitas, NY 92024",
+    "Madeup Town, 92024",
+])
+def test_invalid_or_ambiguous_places_never_autoresolve(value):
+    assert zones._place_zone("city", value) is None
+
+
+@pytest.mark.parametrize("value", [
+    "123 Main Street, Encinitas, CA 92024",
+    "123 Main Street, Encinitas, California",
+    "Encinitas, CA 92024",
+])
+def test_us_address_and_zip_are_consistent_with_city(value):
+    kind = "city" if value.startswith("Encinitas,") else "address"
+    assert zones._place_zone(kind, value) == "America/Los_Angeles"
 
 
 @pytest.mark.parametrize("value", ["L0L", "0000", "L0X", "ABCDE"])
