@@ -379,3 +379,50 @@ test("timezone safety disclosures stay visible with full event assumptions and c
   }
   await expect(page.getByText("Date/time assumption: Other context 5", {exact: true})).toBeVisible();
 });
+
+
+for (const [label, startLocal, endLocal, startInstant, endInstant, expectsFold] of [
+  ["summer non-DST", "2027-07-17T15:00:00", "2027-07-17T18:00:00",
+    "2027-07-17T15:00:00-07:00", "2027-07-17T18:00:00-07:00", false],
+  ["fall repeated hour", "2027-11-07T01:15:00", "2027-11-07T01:45:00",
+    "2027-11-07T01:15:00-07:00", "2027-11-07T01:45:00-07:00", true],
+]) {
+  test(`timezone confirmation shows visually correct DST controls for ${label}`, async ({page}) => {
+    await page.evaluate(({startLocal, endLocal, startInstant, endInstant}) => {
+      const event = window.fixture.pending.events[0];
+      Object.assign(event, {
+        start: startInstant, end: endInstant, all_day: false,
+        temporal: {
+          start_local: startLocal, end_local: endLocal,
+          start_zone: "America/Los_Angeles", end_zone: "America/Los_Angeles",
+          source: "ha_fallback", status: "confirmation_required",
+          reason: "Confirm the source location's timezone.",
+          start_location_type: "venue", start_location_value: "Community Hall",
+          end_location_type: "unknown", end_location_value: "",
+          explicit_timezone: "",
+        },
+      });
+    }, {startLocal, endLocal, startInstant, endInstant});
+    await openImport(page, "text");
+    await textForm(page).getByRole("textbox").fill(source);
+    await textForm(page).getByRole("button", {name: "Import events", exact: true}).click();
+    await expect(page.getByText("Confirm the source location's timezone.")).toBeVisible();
+    await expect(page.getByRole("button", {name: "Approve School picnic"})).toBeDisabled();
+    const foldStart = page.locator("label").filter({hasText: "Start occurrence (DST fall-back)"});
+    const foldEnd = page.locator("label").filter({hasText: "End occurrence (DST fall-back)"});
+    await expect(foldStart).toBeHidden();
+    await expect(foldEnd).toBeHidden();
+    await page.getByRole("textbox", {name: "Confirm event timezone (IANA identifier)"})
+      .fill("America/Los_Angeles");
+    if (expectsFold) {
+      await expect(foldStart).toBeVisible();
+      await expect(foldEnd).toBeVisible();
+      await expect(foldStart.locator("option")).toHaveCount(3);
+      await expect(foldEnd.locator("option")).toHaveCount(3);
+    } else {
+      await expect(foldStart).toBeHidden();
+      await expect(foldEnd).toBeHidden();
+      await expect(page.getByRole("button", {name: "Confirm timezone"})).toBeEnabled();
+    }
+  });
+}
