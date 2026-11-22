@@ -96,6 +96,22 @@ def test_encinitas_offline_geography_has_pacific_zone(kind, value):
     assert event.temporal.status == "resolved"
 
 
+@pytest.mark.parametrize(("location", "zone"), [
+    ("London, UK", "Europe/London"),
+    ("Paris, France", "Europe/Paris"),
+    ("Sydney, Australia", "Australia/Sydney"),
+])
+def test_international_city_names_do_not_default_to_us_timezone(location, zone):
+    event, = parse_one(start_location_type="city", start_location_value=location).events
+    assert event.temporal.start_zone == zone
+    assert event.temporal.source == "geographic"
+    assert event.temporal.status == "resolved"
+    # December offsets must be calculated under the event's actual regional zone.
+    assert datetime.fromisoformat(event.start).utcoffset() != (
+        datetime.fromisoformat("2027-12-25T18:00:00-08:00").utcoffset()
+    )
+
+
 @pytest.mark.parametrize("value", ["L0L", "0000", "L0X", "ABCDE"])
 def test_invalid_airports_stay_unresolved_instead_of_becoming_ha_fallback(value):
     result = parse_one(start_location_type="airport", start_location_value=value)
