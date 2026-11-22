@@ -90,7 +90,7 @@ export async function saveEvent(hass, pendingId, original, draft, calendarEntity
 }
 
 /** Persist a deliberate source-wall-clock interpretation in a named zone. */
-export async function confirmEventTimezone(hass, pendingId, event, timeZone) {
+export async function confirmEventTimezone(hass, pendingId, event, timeZone, options = {}) {
   if (!event?.temporal || !timeZone) throw new Error("Select a valid timezone");
   const result = await hass.callWS({
     type: "call_service", domain: "daylight_calendar_import",
@@ -98,6 +98,9 @@ export async function confirmEventTimezone(hass, pendingId, event, timeZone) {
     service_data: {
       pending_id: pendingId, event_id: event.id,
       time_zone: timeZone, expected_event: event,
+      ...(options.endTimeZone ? {end_time_zone: options.endTimeZone} : {}),
+      ...(options.startOccurrence ? {start_occurrence: options.startOccurrence} : {}),
+      ...(options.endOccurrence ? {end_occurrence: options.endOccurrence} : {}),
     },
     return_response: true,
   });
