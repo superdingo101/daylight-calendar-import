@@ -174,6 +174,8 @@ const css = `
   }
   form { display: grid; gap: 12px; }
   label { display: grid; gap: 4px; }
+  /* An author display rule otherwise overrides the user-agent [hidden] rule. */
+  label[hidden] { display: none; }
   input, textarea, select { box-sizing: border-box; width: 100%; padding: 8px; font: inherit; color: inherit; background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; }
   input[type=checkbox] { width: auto; }
   textarea { min-height: 10rem; resize: vertical; }
@@ -3429,23 +3431,33 @@ export class DaylightImportPanel extends HTMLElement {
             surface.append(confirm);
           }
         }
-        if (event.date_time_assumptions?.length) {
-          const yearInferred = event.date_time_assumptions.some(note => /year/i.test(note));
+        const assumptions = event.date_time_assumptions || [];
+        const yearInferred = assumptions.some(note =>
+          /\b(?:inferred (?:the )?year|year (?:was )?inferred)\b/i.test(note));
+        if (yearInferred || (!event.temporal && assumptions.length)) {
           surface.append(element("p", yearInferred ?
             "Year inferred — verify the date" : "Date interpretation needs review", "event-note"));
         }
-        // Temporal safety disclosures belong to the event, outside collapsed
-        // extraction diagnostics, so reviewers see them before approval.
-        for (const assumption of event.date_time_assumptions || []) {
-          surface.append(element("p", "Date/time assumption: " + assumption, "event-note"));
+        // Only authoritative backend warnings should interrupt review for
+        // structured, resolved events. AI-authored explanations are advisory.
+        if (!event.temporal || event.temporal.status !== "resolved") {
+          for (const assumption of assumptions) {
+            surface.append(element("p", "Date/time assumption: " + assumption, "event-note"));
+          }
         }
-        if (typeof event.confidence === "number" || event.calendar_entity) {
+        if (typeof event.confidence === "number" || event.calendar_entity ||
+            (event.temporal?.status === "resolved" && assumptions.length)) {
           const diagnostics = element("details", "", "event-diagnostics");
           diagnostics.append(element("summary", "Extraction details"));
           if (event.calendar_entity) diagnostics.append(element("p", "Calendar ID: " + event.calendar_entity));
           if (typeof event.confidence === "number") {
             diagnostics.append(element("p", "AI confidence: " +
               Math.round(event.confidence * 100) + "% (estimate)"));
+          }
+          if (event.temporal?.status === "resolved") {
+            for (const note of assumptions) {
+              diagnostics.append(element("p", "AI extraction note: " + note));
+            }
           }
           surface.append(diagnostics);
         }
