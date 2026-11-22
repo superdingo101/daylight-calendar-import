@@ -131,7 +131,7 @@ def test_invalid_airports_stay_unresolved_instead_of_becoming_ha_fallback(value)
     event, = result.events
     assert event.temporal.status == "confirmation_required"
     assert event.temporal.source == "ha_fallback"
-    assert "timezone or DST occurrence" in event.temporal.reason
+    assert event.temporal.reason == "Confirm the source location's timezone."
 
 
 
@@ -214,6 +214,15 @@ def test_printed_explicit_zone_remains_authoritative_and_conflict_is_blocked():
     }, "America/Los_Angeles", source)
     assert conflicting.status == "confirmation_required"
     assert conflicting.reason == "Confirm the source location's timezone."
+
+
+
+def test_unrecognized_airport_names_and_venue_names_are_not_guessed():
+    assert zones._airport_zone("ZZZ") is None
+    assert zones._airport_zone("Invalid Airport (ZZZ)") is None
+    assert zones._airport_zone("Airport without printed code") is None
+    assert zones._place_zone("venue", "Some School, Springfield, USA") is None
+    assert zones._place_zone("address", "Unknown Airport (ZZZ)") is None
 
 
 def test_labeled_airports_must_be_unique_and_real():
