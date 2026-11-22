@@ -454,7 +454,7 @@ def test_long_unverified_location_remains_reviewable_and_bounded():
     assert event.location == original
 
 
-def test_typed_source_location_remains_authoritative_over_untrusted_display():
+def test_typed_location_disagreement_with_display_requires_confirmation():
     raw = structured(
         start_location_type="city", start_location_value="Encinitas, California",
         location="Montréal, Québec, Canada",
@@ -464,8 +464,9 @@ def test_typed_source_location_remains_authoritative_over_untrusted_display():
         time_zone="America/Los_Angeles").events
     assert (event.temporal.start_zone, event.temporal.status,
             event.temporal.start_location_type, event.temporal.start_location_value) == (
-        "America/Los_Angeles", "resolved", "city", "Encinitas, California",
+        "America/Los_Angeles", "confirmation_required", "city", "Encinitas, California",
     )
+    assert event.temporal.reason == "Location evidence conflicts; confirm the event timezone."
 
 
 def test_real_provider_unverified_display_location_must_not_approve_ha_guess():
@@ -918,3 +919,208 @@ async def test_store_invalid_edit_clock_still_retains_original_pending_state(mon
     with pytest.raises(PendingEventEditError, match="Invalid edited local clocks"):
         await store.async_edit_event(pending.id, ev.id, draft, expected_event=ev)
     assert store.get_event(pending.id, ev.id) == ev
+
+
+
+@pytest.mark.parametrize(("changes", "source_text", "expected_status"), [
+    (
+        {"start_location_type": "city", "start_location_value": "Encinitas, CA",
+         "location": "Montréal, Québec, Canada"},
+        "Location: Montréal, Québec, Canada", "confirmation_required",
+    ),
+    (
+        {"start_location_type": "city", "start_location_value": "Encinitas, CA",
+         "location": ""},
+        "Location: Montréal, Québec, Canada", "confirmation_required",
+    ),
+    (
+        {"start_location_type": "city", "start_location_value": "Encinitas, CA",
+         "location": "John F. Kennedy International Airport (JFK)"},
+        "", "confirmation_required",
+    ),
+    (
+        {"start_location_type": "city", "start_location_value": "Encinitas, CA",
+         "location": "Encinitas, California"},
+        "Location: Encinitas, CA", "resolved",
+    ),
+    (
+        {"start_location_type": "city", "start_location_value": "Encinitas, CA",
+         "location": ""},
+        "", "resolved",
+    ),
+])
+def test_independent_location_evidence_never_silently_overrides_typed_geography(
+    changes, source_text, expected_status,
+):
+    result = parser.parse_ai_data(
+        {"events": [structured(**changes)]},
+        source_text=source_text, time_zone="America/Los_Angeles",
+    )
+    event, = result.events
+    assert event.temporal.start_zone == "America/Los_Angeles"
+    assert event.temporal.status == expected_status
+    assert event.start == "2027-12-25T18:00:00-08:00"
+    assert event.end == "2027-12-25T20:00:00-08:00"
+    if expected_status == "confirmation_required":
+        assert event.temporal.reason == "Location evidence conflicts; confirm the event timezone."
+        assert "needs confirmation" in result.warnings[0]
+    else:
+        assert result.warnings == []
+
+
+@pytest.mark.parametrize(("changes", "expected_status", "start_zone", "end_zone"), [
+    (
+        {"title": "Flight AA1234",
+         "start_location_type": "airport", "start_location_value": "LAX"},
+        "confirmation_required", "America/Los_Angeles", "America/Los_Angeles",
+    ),
+    (
+        {"title": "Flight AA1234",
+         "end_location_type": "airport", "end_location_value": "JFK"},
+        "confirmation_required", "America/Los_Angeles", "America/New_York",
+    ),
+    (
+        {"title": "Flight AA1234"},
+        "confirmation_required", "America/Los_Angeles", "America/Los_Angeles",
+    ),
+    (
+        {"title": "AA1234", "location": "LAX → JFK",
+         "start_location_type": "airport", "start_location_value": "LAX"},
+        "confirmation_required", "America/Los_Angeles", "America/Los_Angeles",
+    ),
+    (
+        {"title": "Flight AA1234",
+         "start_location_type": "airport", "start_location_value": "LAX",
+         "end_location_type": "airport", "end_location_value": "JFK"},
+        "resolved", "America/Los_Angeles", "America/New_York",
+    ),
+    (
+        {"title": "Airport birthday",
+         "start_location_type": "airport", "start_location_value": "LAX"},
+        "resolved", "America/Los_Angeles", "America/Los_Angeles",
+    ),
+])
+def test_partial_travel_itineraries_require_both_endpoint_locations(
+    changes, expected_status, start_zone, end_zone,
+):
+    changes = {**changes, "end_local": "2027-12-25T23:30:00"}
+    outcome = parse_one(**changes)
+    event, = outcome.events
+    assert (event.temporal.start_zone, event.temporal.end_zone) == (start_zone, end_zone)
+    assert event.temporal.status == expected_status
+    if expected_status == "confirmation_required":
+        assert event.temporal.reason == (
+            "Travel itinerary has an unverified endpoint; confirm both timezones."
+        )
+        assert "needs confirmation" in outcome.warnings[0]
+    else:
+        assert event.temporal.reason == ""
+        assert not outcome.warnings
+
+
+@pytest.mark.parametrize(("legacy", "expected_status"), [
+    ({}, "resolved"),
+    ({"start": None, "end": ""}, "resolved"),
+    ({"start": "2027-12-25T18:00:00-05:00",
+      "end": "2027-12-25T20:00:00-05:00"}, "resolved"),
+    ({"start": "2027-12-25T17:00:00-08:00"}, "confirmation_required"),
+    ({"end": "2027-12-25T21:00:00-08:00"}, "confirmation_required"),
+    ({"start": "not-a-datetime"}, "confirmation_required"),
+    ({"end": 42}, "confirmation_required"),
+])
+def test_optional_legacy_clocks_cannot_silently_disagree_with_structured_source(
+    legacy, expected_status,
+):
+    event, = parse_one(**legacy).events
+    assert event.temporal.status == expected_status
+    assert (event.start, event.end) == (
+        "2027-12-25T18:00:00-08:00", "2027-12-25T20:00:00-08:00",
+    )
+    if expected_status == "confirmation_required":
+        assert event.temporal.reason == (
+            "Structured and legacy clocks disagree; confirm the event time."
+        )
+    else:
+        assert event.temporal.reason == ""
+
+
+def test_partial_structured_field_omissions_do_not_break_location_free_fallback():
+    raw = structured()
+    for name in ("start_location_type", "start_location_value",
+                 "end_location_type", "end_location_value",
+                 "start_time_zone", "end_time_zone",
+                 "uses_reference_time_zone", "time_zone_basis", "location",
+                 "assumptions", "confidence"):
+        raw.pop(name, None)
+    outcome = parser.parse_ai_data(
+        {"events": [raw]}, time_zone="America/Los_Angeles",
+    )
+    event, = outcome.events
+    assert outcome.warnings == []
+    assert event.temporal.status == "resolved"
+    assert event.temporal.source == "ha_fallback"
+    assert (event.start, event.end) == (
+        "2027-12-25T18:00:00-08:00", "2027-12-25T20:00:00-08:00",
+    )
+
+
+@pytest.mark.parametrize("missing_field", ["start_local", "end_local"])
+def test_required_structured_clocks_cannot_be_half_present(missing_field):
+    raw = structured()
+    del raw[missing_field]
+    outcome = parser.parse_ai_data(
+        {"events": [raw]}, time_zone="America/Los_Angeles",
+    )
+    assert outcome.events == []
+    assert "invalid local date/time" in outcome.warnings[0]
+
+
+async def test_conflicting_location_or_partial_flight_is_blocked_at_calendar_write(monkeypatch):
+    from unittest.mock import AsyncMock
+    for event in (
+        parse_one(
+            start_location_type="city", start_location_value="Encinitas, CA",
+            location="Montréal, Québec, Canada",
+        ).events[0],
+        parse_one(
+            title="Flight AA1234",
+            start_location_type="airport", start_location_value="LAX",
+        ).events[0],
+        parse_one(
+            start="2027-12-25T19:00:00-08:00",
+        ).events[0],
+    ):
+        backend = _Backend()
+        store = _store(monkeypatch, backend)
+        await store.async_load()
+        pending = (await store.async_add(source_text="source", events=[event])).pending
+        assert pending is not None
+        writer = AsyncMock()
+        with pytest.raises(PendingEventEditError, match="Confirm the event timezone"):
+            await store.async_approve_event(
+                pending.id, pending.events[0].id, writer,
+                expected_event=pending.events[0],
+            )
+        writer.assert_not_awaited()
+
+
+def test_multi_event_provider_results_keep_valid_drafts_and_block_conflicts():
+    safe = structured(title="Local dinner", location="")
+    conflict = structured(
+        title="Festival", start_location_type="city",
+        start_location_value="Encinitas, CA",
+        location="Montréal, Québec, Canada",
+    )
+    malformed = {**structured(title="Incomplete flight"), "end_local": None}
+    result = parser.parse_ai_data(
+        {"events": [safe, conflict, malformed]},
+        source_text="Three unrelated events", time_zone="America/Los_Angeles",
+    )
+    assert len(result.events) == 2
+    assert [event.title for event in result.events] == ["Local dinner", "Festival"]
+    assert [event.temporal.status for event in result.events] == [
+        "resolved", "confirmation_required",
+    ]
+    assert len(result.warnings) == 2
+    assert "needs confirmation" in result.warnings[0]
+    assert "invalid local date/time" in result.warnings[1]
