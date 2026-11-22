@@ -801,7 +801,7 @@ def test_dst_fold_rejects_invalid_occurrences_and_reversed_instant_range():
                            start_occurrence="first")
 
 
-def test_structured_extraction_preserves_source_geo_when_end_only_location():
+def test_structured_extraction_preserves_source_geo_and_blocks_arrival_only_location():
     result = parse_one(
         start_location_type="unknown", start_location_value=None,
         end_location_type="airport", end_location_value="JFK",
@@ -811,7 +811,8 @@ def test_structured_extraction_preserves_source_geo_when_end_only_location():
     assert event.temporal.source == "airport"
     assert event.temporal.start_zone == "America/Los_Angeles"
     assert event.temporal.end_zone == "America/New_York"
-    assert event.temporal.status == "resolved"
+    assert event.temporal.status == "confirmation_required"
+    assert event.temporal.reason == "Travel itinerary has an unverified endpoint; confirm both timezones."
     assert event.location == "JFK"
 
 
@@ -976,6 +977,11 @@ def test_independent_location_evidence_never_silently_overrides_typed_geography(
     ),
     (
         {"title": "Flight AA1234",
+         "end_location_type": "airport", "end_location_value": "JFK"},
+        "confirmation_required", "America/Los_Angeles", "America/New_York",
+    ),
+    (
+        {"title": "Inbound event",
          "end_location_type": "airport", "end_location_value": "JFK"},
         "confirmation_required", "America/Los_Angeles", "America/New_York",
     ),
