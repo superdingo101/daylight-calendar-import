@@ -362,7 +362,8 @@ def test_real_provider_municipality_exonyms_and_subdivisions(
             name=city, country=country, subdivision=subdivision,
         )),
     }
-    assert resolved == expected, diagnostics
+    if resolved != expected:
+        pytest.fail("LOCALIS_DIAGNOSTIC " + repr(diagnostics))
 
 
 def test_real_provider_location_label_recovers_missing_typed_geography():
