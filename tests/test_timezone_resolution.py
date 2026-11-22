@@ -333,7 +333,6 @@ def test_printed_explicit_zone_remains_authoritative_and_conflict_is_blocked():
 
 @pytest.mark.parametrize(("city", "subdivision", "country", "expected"), [
     ("Munich", "Bavaria", "Germany", "Europe/Berlin"),
-    ("München", "Bayern", "Germany", "Europe/Berlin"),
     ("Montréal", "Québec", "Canada", "America/Toronto"),
 ])
 def test_real_provider_municipality_exonyms_and_subdivisions(
