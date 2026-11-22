@@ -125,6 +125,57 @@ def test_international_city_names_do_not_default_to_us_timezone(location, zone):
     )
 
 
+
+@pytest.mark.parametrize("kind,value", [
+    ("city", "Sydney, NSW, Australia"),
+    ("city", "Sydney, New South Wales, Australia"),
+    ("address", "Sydney, NSW, Australia"),
+    ("venue", "Sydney, NSW, Australia"),
+    ("venue", "Convention Centre, Sydney, NSW, Australia"),
+])
+def test_sydney_region_evidence_does_not_fall_back_to_los_angeles(kind, value):
+    result = parser.parse_ai_data({"events": [structured(
+        title="Sydney Conference",
+        start_local="2027-12-15T10:00:00",
+        end_local="2027-12-15T12:00:00",
+        start_location_type=kind, start_location_value=value,
+        end_location_type=kind, end_location_value=value,
+    )]}, time_zone="America/Los_Angeles")
+    assert result.warnings == []
+    event, = result.events
+    assert (event.start, event.end) == (
+        "2027-12-15T10:00:00+11:00", "2027-12-15T12:00:00+11:00",
+    )
+    assert (event.temporal.start_zone, event.temporal.end_zone,
+            event.temporal.source, event.temporal.status) == (
+        "Australia/Sydney", "Australia/Sydney", "geographic", "resolved",
+    )
+
+
+@pytest.mark.parametrize(("region", "geonames_code"), [
+    ("ACT", "01"), ("Australian Capital Territory", "01"),
+    ("NSW", "02"), ("New South Wales", "02"),
+    ("NT", "03"), ("Northern Territory", "03"),
+    ("QLD", "04"), ("Queensland", "04"),
+    ("SA", "05"), ("South Australia", "05"),
+    ("TAS", "06"), ("Tasmania", "06"),
+    ("VIC", "07"), ("Victoria", "07"),
+    ("WA", "08"), ("Western Australia", "08"),
+])
+def test_au_iso_region_codes_match_offline_geonames_codes(region, geonames_code):
+    assert zones._AU_REGIONS[region.casefold()] == geonames_code
+
+
+def test_unknown_australian_subdivision_remains_unresolved():
+    event, = parse_one(
+        start_location_type="city", start_location_value="Sydney, ZZ, Australia",
+    ).events
+    assert (event.temporal.source, event.temporal.status) == (
+        "ha_fallback", "confirmation_required",
+    )
+    assert event.temporal.reason == "Confirm the source location's timezone."
+
+
 @pytest.mark.parametrize("value", ["L0L", "0000", "L0X", "ABCDE"])
 def test_invalid_airports_stay_unresolved_instead_of_becoming_ha_fallback(value):
     result = parse_one(start_location_type="airport", start_location_value=value)
