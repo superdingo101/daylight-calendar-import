@@ -170,3 +170,11 @@ def test_unsupported_location_kinds_and_unverified_airports_do_not_guess(monkeyp
     assert zones._place_zone("airport", "INVALID") is None
     assert zones._place_zone("virtual", "London, England") is None
     assert zones._place_zone("address", "Unknown Airport (ZZZ)") is None
+
+
+@pytest.mark.parametrize("kind", ["venue", "address"])
+def test_two_component_venue_or_address_preserves_geographic_safety(kind):
+    # A full city/state pair is trustworthy, even when the provider labels it
+    # as a venue or an address. A name plus state without a matching city is not.
+    assert zones._place_zone(kind, "Encinitas, California") == "America/Los_Angeles"
+    assert zones._place_zone(kind, "Fictional Venue, California") is None
