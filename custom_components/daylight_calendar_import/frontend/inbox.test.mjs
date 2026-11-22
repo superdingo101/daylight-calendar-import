@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {changeRetryJob, checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {changeRetryJob, checkEvent, confirmEventTimezone, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 
 test("uncertain recovery sends a scoped explicit resolution and validates the response", async () => {
   const requests = [];
@@ -229,4 +229,27 @@ test("saved import actions invoke authenticated services and validate results", 
   }
   assert.deepEqual(await changeRetryJob({callWS: async () => ({response: {job_id: "job", status: "cancelled"}})},
     "job", "retry"), {job_id: "job", status: "cancelled"});
+});
+
+test("timezone confirmation carries exact event snapshot and validates persistence", async () => {
+  const event = {id: "event", status: "pending", temporal: {status: "confirmation_required"}};
+  let call;
+  const hass = {callWS: async request => {
+    call = request;
+    return {response: {pending_id: "one", event: {...event,
+      temporal: {status: "resolved", start_zone: "America/Los_Angeles"}}}};
+  }};
+  const saved = await confirmEventTimezone(hass, "one", event, "America/Los_Angeles");
+  assert.equal(saved.temporal.start_zone, "America/Los_Angeles");
+  assert.deepEqual(call, {
+    type: "call_service", domain: "daylight_calendar_import",
+    service: "confirm_pending_timezone", return_response: true,
+    service_data: {pending_id: "one", event_id: "event",
+      time_zone: "America/Los_Angeles", expected_event: event},
+  });
+  await assert.rejects(confirmEventTimezone(hass, "one", {...event, temporal: null},
+    "America/Los_Angeles"), /Select a valid timezone/);
+  await assert.rejects(confirmEventTimezone(hass, "one", event, ""), /Select a valid timezone/);
+  await assert.rejects(confirmEventTimezone({callWS: async () => ({response: {pending_id: "one"}})},
+    "one", event, "America/Los_Angeles"), /could not be verified/);
 });
