@@ -120,6 +120,9 @@ const css = `
   .event-controls button { min-height: 44px; }
   .event-controls .event-primary, .event-group .actions .event-primary { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 600; }
   .event-controls .event-primary { margin-left: auto; }
+  .event-controls .event-primary:disabled, .event-group .actions .event-primary:disabled {
+    opacity: .5; cursor: not-allowed;
+  }
   .event-more { position: relative; flex: 0 0 44px; }
   .event-more[open] { z-index: 10; }
   .event-more summary {
