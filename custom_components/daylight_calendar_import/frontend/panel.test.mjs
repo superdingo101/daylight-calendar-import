@@ -7208,3 +7208,88 @@ test("timezone confirmation submits the exact loaded event and reloads backend s
     time_zone: "America/Los_Angeles", expected_event: event});
   assert.equal(panel._detail.events[0].temporal.status, "resolved");
 });
+
+
+test("resolved geographic note never labels an explicitly printed year inferred", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "summer";
+  const temporal = {status: "resolved", source: "geographic",
+    start_local: "2027-07-17T15:00:00", end_local: "2027-07-17T18:00:00",
+    start_zone: "America/Los_Angeles", end_zone: "America/Los_Angeles"};
+  panel._detail = {id: "summer", source_kind: "manual_text", events: [{
+    id: "event", title: "Summer Beach BBQ", status: "pending",
+    start: "2027-07-17T15:00:00-07:00", end: "2027-07-17T18:00:00-07:00",
+    all_day: false, calendar_entity: "calendar.test", temporal,
+    date_time_assumptions: [
+      "Year 2027 is explicitly stated in the source.",
+      "Inferred America/Los_Angeles from the venue location in Encinitas, California.",
+    ],
+  }]};
+  panel.render();
+  const cards = panel._content.querySelectorAll(".detail-event");
+  assert.equal(cards.length, 1);
+  const notes = cards[0].querySelectorAll(".event-note").map(n => n.textContent).join(" ");
+  assert.match(notes, /Event timezone · America\/Los_Angeles \(geographic\)/);
+  assert.doesNotMatch(notes, /Year inferred|Date interpretation needs review|Date\/time assumption/);
+  const diagnostic = cards[0].querySelector(".event-diagnostics");
+  assert.ok(diagnostic.querySelectorAll("p").some(n =>
+    n.textContent === "AI extraction note: Year 2027 is explicitly stated in the source."));
+  assert.equal(cards[0].querySelectorAll("button").find(n => n.dataset.action === "approve").disabled,
+    undefined);
+});
+
+test("timezone confirmation shows DST folds only for a genuinely repeated local hour", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "summer";
+  const temporal = {status: "confirmation_required", source: "ha_fallback",
+    reason: "Confirm source location", start_location_type: "venue",
+    start_location_value: "Moonlight Beach", end_location_type: "unknown",
+    end_location_value: "",
+    start_local: "2027-07-17T15:00:00", end_local: "2027-07-17T18:00:00",
+    start_zone: "America/Los_Angeles", end_zone: "America/Los_Angeles"};
+  const event = {id: "event", title: "Summer Beach BBQ", status: "pending",
+    start: "2027-07-17T15:00:00-07:00", end: "2027-07-17T18:00:00-07:00",
+    all_day: false, temporal, calendar_entity: "calendar.test"};
+  panel._detail = {id: "summer", source_kind: "manual_text", events: [event]};
+  panel.render();
+  const css = panel.shadowRoot.querySelector("style").textContent;
+  assert.match(css, /label\[hidden\]\s*\{\s*display:\s*none;/);
+
+  const labels = panel._content.querySelectorAll("label");
+  const startFold = labels.find(n => n.textContent === "Start occurrence (DST fall-back)");
+  const endFold = labels.find(n => n.textContent === "End occurrence (DST fall-back)");
+  assert.ok(startFold && endFold);
+  assert.equal(startFold.hidden, true);
+  assert.equal(endFold.hidden, true);
+  const input = panel._content.querySelectorAll("input").find(n =>
+    n.placeholder === "America/Los_Angeles");
+  assert.ok(input);
+  input.value = "America/Los_Angeles";
+  input.input();
+  assert.equal(startFold.hidden, true);
+  assert.equal(endFold.hidden, true);
+
+  const fall = {...temporal, start_local: "2027-11-07T01:15:00",
+    end_local: "2027-11-07T01:45:00"};
+  panel._detail = {id: "summer", source_kind: "manual_text", events: [{
+    ...event, temporal: fall,
+    start: "2027-11-07T01:15:00-07:00", end: "2027-11-07T01:45:00-07:00",
+  }]};
+  panel.render();
+  const fallStart = panel._content.querySelectorAll("label").find(n =>
+    n.textContent === "Start occurrence (DST fall-back)");
+  const fallEnd = panel._content.querySelectorAll("label").find(n =>
+    n.textContent === "End occurrence (DST fall-back)");
+  const fallInput = panel._content.querySelectorAll("input").find(n =>
+    n.placeholder === "America/Los_Angeles");
+  fallInput.value = "America/Los_Angeles";
+  fallInput.input();
+  assert.equal(fallStart.hidden, false);
+  assert.equal(fallEnd.hidden, false);
+  assert.equal(fallStart.querySelector("select").children.length, 3);
+  assert.equal(fallEnd.querySelector("select").children.length, 3);
+});
