@@ -15,6 +15,9 @@ KINDS = frozenset({"airport", "address", "city", "postal_code", "venue", "unknow
 _BOUNDED = 256
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)*\Z")
 _POSTAL = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
+_SOURCE_VENUE = re.compile(
+    r"(?im)^[ \\t]*(?:location|venue|where)[ \\t]*:[ \\t]*(?:\\r?\\n[ \\t]*)?([^\\r\\n]+)"
+)
 _FIXED = re.compile(r"(?i:(UTC|GMT))\s*([+-])(\d{1,2})(?::?(\d{2}))?\Z")
 @dataclass(frozen=True, slots=True)
 class TemporalEvidence:
@@ -343,6 +346,24 @@ def normalize_structured_event(
     if labeled:
         raw.update(start_location_type="airport", start_location_value=labeled[0],
                    end_location_type="airport", end_location_value=labeled[1])
+    # An AI provider can fill the event's display location yet omit the
+    # separate typed start-location fields. Treat this as actual geographic
+    # evidence, NOT as permission to silently use the HA timezone.
+    if (raw.get("start_location_type", "unknown") == "unknown"
+            and not raw.get("start_location_value")):
+        display_place = raw.get("location")
+        if isinstance(display_place, str) and display_place.strip():
+            place = display_place.strip()
+            printed = {match.strip() for match in _SOURCE_VENUE.findall(source_text)
+                       if match.strip()}
+            if len(printed) == 1 and place.casefold() == next(iter(printed)).casefold():
+                # Only a source-verified location can resolve automatically.
+                raw.update(start_location_type="venue",
+                           start_location_value=place[:_BOUNDED])
+            elif "," in place or printed:
+                # Unverified or contradictory geography requires confirmation,
+                # even if the model claimed this was an HA timezone fallback.
+                raw["start_location_value"] = place[:_BOUNDED]
     explicit = raw.get("explicit_timezone", "")
     if explicit is None:
         explicit = ""
