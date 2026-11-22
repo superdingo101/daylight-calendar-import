@@ -89,8 +89,8 @@ The backend validates both source-local endpoints, rejects spring-forward
 nonexistent clocks, impossible intervals, stale snapshots, and duplicates,
 and durably saves the selected zone(s) and final instants atomically before
 approval becomes available. A partial travel itinerary persists
-\`temporal.travel_incomplete=true\` and requires both a departure time zone and
-an explicitly selected \`end_time_zone\` in confirmation, even if the two zones
+`temporal.travel_incomplete=true` and requires both a departure time zone and
+an explicitly selected `end_time_zone` in confirmation, even if the two zones
 turn out to be equal. The review UI exposes separate fields in that case.
 Legacy persisted records without the optional flag default to false.
 
