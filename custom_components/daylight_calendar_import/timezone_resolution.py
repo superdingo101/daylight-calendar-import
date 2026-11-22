@@ -455,11 +455,16 @@ def normalize_structured_event(
     # case inheriting the departure zone (or guessing HA for departure) would
     # produce a plausible but possibly incorrect arrival instant.
     travel_context = f"{raw.get('title') or ''} {source_text}"
-    travel_incomplete = bool(
-        _TRAVEL.search(travel_context)
-        or (_AIRPORT_ROUTE.search(raw["location"])
-            if isinstance(raw.get("location"), str) else False)
-    ) and not (raw.get("start_location_value") and raw.get("end_location_value"))
+    has_start_location = (raw.get("start_location_type") not in ("unknown", "virtual")
+                          and bool(raw.get("start_location_value")))
+    has_end_location = (raw.get("end_location_type") not in ("unknown", "virtual")
+                        and bool(raw.get("end_location_value")))
+    travel_incomplete = (
+        bool(_TRAVEL.search(travel_context)
+             or (_AIRPORT_ROUTE.search(raw["location"])
+                 if isinstance(raw.get("location"), str) else False))
+        or (has_end_location and not has_start_location)
+    ) and not (has_start_location and has_end_location)
 
     # Legacy start/end are optional when structured clocks exist. If supplied,
     # an inconsistent wall clock is a reason to request confirmation, not to
