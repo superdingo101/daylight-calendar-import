@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, time, timedelta, timezone
 import logging
 import re
@@ -21,6 +21,7 @@ from .models import (
     normalize_date_time_assumptions,
 )
 from .sources import SourceDocument, TextSourceAdapter
+from .timezone_resolution import normalize_structured_event
 
 TASK_NAME = "Extract calendar event drafts"
 _LOGGER = logging.getLogger(__name__)
@@ -34,6 +35,10 @@ Trust boundary:
 
 Rules:
 - Do not invent dates, times, locations, titles, or durations.
+- For timed events, prefer the structured start_local and end_local fields, representing the clock times actually written in the source (without offsets), and structured location evidence. Do NOT calculate offsets or invent IANA timezone names for these structured fields. Daylight will resolve them deterministically.
+- Emit start_location_type and start_location_value from the source: airport, address, city, postal_code, venue, virtual, or unknown; end_location_type and end_location_value are optional overrides for travel arrival. Use unknown with an empty value if no relevant location appears. Do not mistake an organizer's mailing address for an event venue.
+- Put any explicit clock-zone statement verbatim in explicit_timezone (empty string when absent). An abbreviation like PST, PDT, BST, or DST belongs there, never in a location field. Do not classify it as an airport.
+- Preserve start/end as a legacy compatibility fallback for old consumers; on structured timed events these are optional, not a reason to invent an offset.
 - If an event lacks enough information to produce both start and end, omit it.
 - For timed events, return ISO 8601 datetimes with explicit UTC offsets calculated for the event date, not the reference date; daylight saving time may differ.
 - Set time_zone_basis to explicit when a zone or UTC offset is actually stated in the image, document or supporting text; geographic when an IANA zone is inferred from unambiguous venue geography; ha_fallback only when neither explicit evidence nor reliable geography resolves the zone; unspecified for all-day dates. These are provenance claims, not independently verified source evidence.
@@ -76,15 +81,22 @@ EVENTS_STRUCTURE = vol.Schema(
                         "selector": {"text": {}},
                     },
                     "start": {
-                        "required": True,
-                        "label": "ISO date or timezone-aware ISO datetime",
+                        "required": False,
+                        "label": "Legacy ISO date or timezone-aware ISO datetime; optional for structured local times",
                         "selector": {"text": {}},
                     },
                     "end": {
-                        "required": True,
-                        "label": "Exclusive ISO end date or timezone-aware ISO datetime",
+                        "required": False,
+                        "label": "Legacy exclusive ISO end; optional for structured local times",
                         "selector": {"text": {}},
                     },
+                    "start_local": {"required": False, "label": "Source's local start clock without timezone, ISO YYYY-MM-DDTHH:MM", "selector": {"text": {}}},
+                    "end_local": {"required": False, "label": "Source's local end clock without timezone, ISO YYYY-MM-DDTHH:MM", "selector": {"text": {}}},
+                    "start_location_type": {"required": False, "label": "Source start venue location type", "selector": {"select": {"options": ["airport", "address", "city", "postal_code", "venue", "unknown", "virtual"]}}},
+                    "start_location_value": {"required": False, "label": "Source start venue text; empty if unknown", "selector": {"text": {}}},
+                    "end_location_type": {"required": False, "label": "Source end venue location type, for travel", "selector": {"select": {"options": ["airport", "address", "city", "postal_code", "venue", "unknown", "virtual"]}}},
+                    "end_location_value": {"required": False, "label": "Source end venue text, for travel", "selector": {"text": {}}},
+                    "explicit_timezone": {"required": False, "label": "Explicitly stated time zone or abbreviation only; empty if absent", "selector": {"text": {}}},
                     "all_day": {
                         "required": True,
                         "label": "True only for an all-day event",
@@ -480,6 +492,25 @@ def parse_ai_data(
             review_notes: list[str] = []
             corrected_raw = raw
             ambiguous = False
+            if "start_local" in raw or "end_local" in raw:
+                if raw.get("all_day") is not False:
+                    raise DraftValidationError("structured local clocks require a timed event")
+                if time_zone is None:
+                    raise DraftValidationError("Home Assistant time zone is unavailable")
+                try:
+                    normalized, temporal = normalize_structured_event(raw, time_zone)
+                except ValueError as err:
+                    raise DraftValidationError(str(err)) from err
+                draft = replace(EventDraft.from_mapping(normalized), temporal=temporal)
+                if temporal.status != "resolved":
+                    note = ("Event's local time requires correction." if
+                            temporal.status == "correction_required" else
+                            "Event timezone or DST occurrence needs confirmation.")
+                    assumptions = (note, *assumptions)[:8]
+                    warnings.append(f"event {index}: {note}")
+                drafts.append(draft)
+                event_assumptions.append(assumptions)
+                continue
             if raw.get("all_day") is False:
                 zones = _explicit_zones(raw)
                 source_range = source_record
