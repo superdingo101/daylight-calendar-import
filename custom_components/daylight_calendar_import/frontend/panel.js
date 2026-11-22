@@ -2429,7 +2429,7 @@ export class DaylightImportPanel extends HTMLElement {
     }
   }
 
-  async confirmTimezone(event, timeZone) {
+  async confirmTimezone(event, timeZone, options = {}) {
     if (this._saving || !event.temporal || !timeZone) return;
     const pendingId = this._selectedId;
     const generation = this._generation;
@@ -2437,7 +2437,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._refreshButton.disabled = true;
     for (const button of this._content.querySelectorAll("button")) button.disabled = true;
     try {
-      await confirmEventTimezone(this._hass, pendingId, event, timeZone);
+      await confirmEventTimezone(this._hass, pendingId, event, timeZone, options);
       if (generation !== this._generation) return;
       this._detail = await loadImport(this._hass, pendingId);
       if (generation !== this._generation) return;
@@ -3340,28 +3340,92 @@ export class DaylightImportPanel extends HTMLElement {
               "Confirm the event timezone before approving.", "error");
             warning.setAttribute("role", "alert");
             surface.append(warning);
-            const zoneLabel = element("label", "Confirm event IANA timezone");
-            const input = document.createElement("input");
-            input.type = "text";
-            input.placeholder = temporal.start_zone;
-            input.setAttribute("list", "daylight-iana-zones-" + event.id);
-            input.setAttribute("aria-label", "IANA timezone for " + event.title);
-            const datalist = document.createElement("datalist");
-            datalist.id = "daylight-iana-zones-" + event.id;
+            const zoneListId = "daylight-iana-zones-" + event.id;
+            const zoneList = document.createElement("datalist");
+            zoneList.id = zoneListId;
             for (const zone of (Intl.supportedValuesOf?.("timeZone") || [])) {
               const option = document.createElement("option");
               option.value = zone;
-              datalist.append(option);
+              zoneList.append(option);
             }
-            zoneLabel.append(input, datalist);
+            const zoneInput = (labelText, placeholder) => {
+              const label = element("label", labelText);
+              const input = document.createElement("input");
+              input.type = "text";
+              input.placeholder = placeholder;
+              input.setAttribute("list", zoneListId);
+              label.append(input);
+              surface.append(label);
+              return input;
+            };
+            const startZone = zoneInput("Confirm event timezone (IANA identifier)",
+              temporal.start_zone);
+            const needsEndZone = temporal.end_location_type !== "unknown" ||
+              Boolean(temporal.end_location_value) ||
+              temporal.end_zone !== temporal.start_zone;
+            const endZone = needsEndZone ?
+              zoneInput("Confirm arrival timezone (IANA identifier)", temporal.end_zone) : null;
+            surface.append(zoneList);
+
+            const occurrence = (which, clock, zoneInput) => {
+              const label = element("label", which + " occurrence (DST fall-back)");
+              const select = document.createElement("select");
+              const refresh = () => {
+                const options = repeatedHourOptions(clock.slice(0, 16), zoneInput.value.trim());
+                label.hidden = options.length !== 2;
+                select.replaceChildren();
+                const placeholder = document.createElement("option");
+                placeholder.value = "";
+                placeholder.textContent = "Choose first or second occurrence";
+                select.append(placeholder);
+                for (const choice of options) {
+                  const option = document.createElement("option");
+                  option.value = choice.label.startsWith("First") ? "first" : "second";
+                  option.textContent = choice.label;
+                  select.append(option);
+                }
+                select.value = "";
+              };
+              label.append(select);
+              surface.append(label);
+              return {select, label, refresh};
+            };
+            const startFold = occurrence("Start", temporal.start_local, startZone);
+            const endFold = occurrence("End", temporal.end_local, endZone || startZone);
             const confirm = element("button", "Confirm timezone", "event-primary");
             confirm.type = "button";
-            confirm.disabled = true;
-            input.addEventListener("input", () => {
-              confirm.disabled = !input.value.trim() || this._saving;
+            const refresh = () => {
+              startFold.refresh();
+              endFold.refresh();
+              confirm.disabled = !startZone.value.trim() ||
+                (endZone && !endZone.value.trim()) ||
+                (!startFold.label.hidden && !startFold.select.value) ||
+                (!endFold.label.hidden && !endFold.select.value) || this._saving;
+            };
+            // Changes to a named zone invalidate previous DST selections.
+            startZone.addEventListener("input", refresh);
+            endZone?.addEventListener("input", refresh);
+            startFold.select.addEventListener("change", () => {
+              confirm.disabled = !startZone.value.trim() ||
+                (endZone && !endZone.value.trim()) ||
+                (!startFold.label.hidden && !startFold.select.value) ||
+                (!endFold.label.hidden && !endFold.select.value);
             });
-            confirm.addEventListener("click", () => void this.confirmTimezone(event, input.value.trim()));
-            surface.append(zoneLabel, confirm);
+            endFold.select.addEventListener("change", () => {
+              confirm.disabled = !startZone.value.trim() ||
+                (endZone && !endZone.value.trim()) ||
+                (!startFold.label.hidden && !startFold.select.value) ||
+                (!endFold.label.hidden && !endFold.select.value);
+            });
+            refresh();
+            confirm.addEventListener("click", () => void this.confirmTimezone(
+              event, startZone.value.trim(), {
+                ...(endZone ? {endTimeZone: endZone.value.trim()} : {}),
+                ...(!startFold.label.hidden ? {startOccurrence: startFold.select.value} : {}),
+                ...(!endFold.label.hidden ? {endOccurrence: endFold.select.value} : {}),
+              },
+            ));
+            surface.append(confirm);
           }
         }
         if (event.date_time_assumptions?.length) {
