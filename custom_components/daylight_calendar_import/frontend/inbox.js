@@ -222,6 +222,18 @@ function eventDisplayZones(start, end, event, timeZone) {
   const startOffset = isoOffsetMinutes(event.start);
   const endOffset = isoOffsetMinutes(event.end);
   if (startOffset === null || endOffset === null) return null;
+  if (event.temporal && typeof event.temporal === "object") {
+    const named = (instant, offset, candidate) => (
+      typeof candidate === "string" &&
+      namedZoneOffsetMinutes(instant, candidate) === offset ?
+        {timeZone: candidate, fixedOffset: null, label: null} :
+        fixedOffsetZone(offset)
+    );
+    return {
+      start: named(start, startOffset, event.temporal.start_zone),
+      end: named(end, endOffset, event.temporal.end_zone),
+    };
+  }
   if (timeZone &&
       namedZoneOffsetMinutes(start, timeZone) === startOffset &&
       namedZoneOffsetMinutes(end, timeZone) === endOffset) {
