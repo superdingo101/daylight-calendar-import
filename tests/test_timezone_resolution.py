@@ -393,13 +393,13 @@ def test_real_provider_location_label_recovers_missing_typed_geography():
 
 
 @pytest.mark.parametrize("prefix", [
-    "Location:", "Location:\\n", "Venue:", "Where:",
+    "Location:", "Location:\n", "Venue:", "Where:",
 ])
 def test_source_verified_untyped_place_works_with_common_labels(prefix):
     source = (
-        "Meeting June 15, 2029 at 2 PM.\\n" + prefix +
-        ("" if prefix.endswith("\\n") else " ") +
-        "Montréal, Québec, Canada\\n"
+        "Meeting June 15, 2029 at 2 PM.\n" + prefix +
+        ("" if prefix.endswith("\n") else " ") +
+        "Montréal, Québec, Canada\n"
     )
     raw = structured(
         start_local="2029-06-15T14:00:00", end_local="2029-06-15T17:00:00",
@@ -433,7 +433,7 @@ def test_conflicting_display_and_source_place_requires_confirmation():
 def test_printed_but_unsupported_venue_still_blocks_approval():
     raw = structured(location="Community Hall")
     event, = parser.parse_ai_data({"events": [raw]},
-        source_text="Location:\\nCommunity Hall", time_zone="America/Los_Angeles").events
+        source_text="Location:\nCommunity Hall", time_zone="America/Los_Angeles").events
     assert (event.temporal.status, event.temporal.start_location_type,
             event.temporal.start_location_value) == (
         "confirmation_required", "venue", "Community Hall",
