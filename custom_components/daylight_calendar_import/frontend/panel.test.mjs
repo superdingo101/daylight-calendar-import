@@ -7325,4 +7325,37 @@ test("timezone confirmation does not invent an arrival field for one Sydney venu
   panel.render();
   labels = panel._content.querySelectorAll("label").map(label => label.textContent);
   assert.ok(labels.includes("Confirm arrival timezone (IANA identifier)"));
+
+  // A partial itinerary still needs two deliberately selected IANA zones,
+  // even when the source offers no destination and provisional offsets match.
+  panel._detail = {id: "sydney", source_kind: "manual_text", events: [{
+    ...event, title: "Flight AA1234", temporal: {
+      ...temporal, travel_incomplete: true,
+      reason: "Travel itinerary has an unverified endpoint; confirm both timezones.",
+      start_location_type: "airport", start_location_value: "LAX",
+      end_location_type: "unknown", end_location_value: "",
+    },
+  }]};
+  const captured = [];
+  panel.confirmTimezone = (item, zone, options) => {
+    captured.push({id: item.id, zone, options});
+  };
+  panel.render();
+  labels = panel._content.querySelectorAll("label").map(label => label.textContent);
+  assert.ok(labels.includes("Confirm arrival timezone (IANA identifier)"));
+  const inputs = panel._content.querySelectorAll("input").filter(
+    input => input.placeholder === "America/Los_Angeles");
+  assert.equal(inputs.length, 2);
+  const confirm = panel._content.querySelectorAll("button").find(
+    button => button.textContent === "Confirm timezone");
+  assert.equal(confirm.disabled, true);
+  inputs[0].value = "America/Los_Angeles";
+  inputs[0].input();
+  assert.equal(confirm.disabled, true);
+  inputs[1].value = "America/New_York";
+  inputs[1].input();
+  assert.equal(confirm.disabled, false);
+  confirm.click();
+  assert.deepEqual(captured, [{id: "event", zone: "America/Los_Angeles",
+    options: {endTimeZone: "America/New_York"}}]);
 });
