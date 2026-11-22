@@ -30,6 +30,15 @@ def event_fingerprint(event: EventDraft) -> str:
         "location": _normalize_text(event.location or ""),
         "description": _normalize_text(event.description or ""),
     }
+    if event.temporal is not None and event.temporal.status != "resolved":
+        # Unresolved calendar instants are provisional and must not define an
+        # event's identity. Derive a separate identity from unaltered source
+        # wall clocks and event-specific geographic evidence until confirmation.
+        payload["start"] = {"unresolved_wall": event.temporal.start_local,
+                            "location": _normalize_text(event.temporal.start_location_value)}
+        payload["end"] = {"unresolved_wall": event.temporal.end_local,
+                          "location": _normalize_text(event.temporal.end_location_value)}
+        payload["temporal_pending"] = True
     serialized = json.dumps(
         payload,
         ensure_ascii=False,
