@@ -344,16 +344,25 @@ def test_real_provider_municipality_exonyms_and_subdivisions(
     # Diagnostic arrays identify which exact index loses the legitimate name
     # without introducing approximate or popularity-based automatic matching.
     resolved = zones._city_zone(city, region=subdivision, country=country)
-    assert resolved == expected, (
-        f"country={country!r} city={city!r} region={subdivision!r} "
-        f"cities={[ (x.name, [(a.name, a.key, a.iso_code, a.geonames_code) "
-        f"for a in x.subdivisions]) for x in "
-        f"localis.cities.filter(name=city, country=country)]!r}; "
-        f"subdivision_matches={[ (x.name, x.key, x.aliases) for x in "
-        f"localis.subdivisions.filter(name=subdivision, country=country)]!r}; "
-        f"direct_matches={len(localis.cities.filter(name=city, country=country, "
-        f"subdivision=subdivision))}"
-    )
+    candidates = localis.cities.filter(name=city, country=country)
+    subdivisions = localis.subdivisions.filter(name=subdivision, country=country)
+    diagnostics = {
+        "city": city, "subdivision": subdivision, "country": country,
+        "city_records": [
+            (candidate.name,
+             [(region.name, region.key, region.iso_code, region.geonames_code)
+              for region in candidate.subdivisions])
+            for candidate in candidates
+        ],
+        "subdivision_records": [
+            (region.name, region.key, region.iso_code, region.aliases)
+            for region in subdivisions
+        ],
+        "direct_matches": len(localis.cities.filter(
+            name=city, country=country, subdivision=subdivision,
+        )),
+    }
+    assert resolved == expected, diagnostics
 
 
 def test_real_provider_location_label_recovers_missing_typed_geography():
