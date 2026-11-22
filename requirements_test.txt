@@ -17,6 +17,6 @@ jsonschema[format]>=4.23,<5
 referencing>=0.35,<1
 
 airportsdata==20261030
-geonamescache==3.0.1
+localis==3.0.0
 timezonefinder==9.2.0
 zipcodes==1.3.0
