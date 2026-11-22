@@ -7293,3 +7293,36 @@ test("timezone confirmation shows DST folds only for a genuinely repeated local 
   assert.equal(fallStart.querySelector("select").children.length, 3);
   assert.equal(fallEnd.querySelector("select").children.length, 3);
 });
+
+
+test("timezone confirmation does not invent an arrival field for one Sydney venue", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "sydney";
+  const temporal = {
+    status: "confirmation_required", source: "ha_fallback",
+    reason: "Confirm the source location's timezone.",
+    start_local: "2027-12-15T10:00:00", end_local: "2027-12-15T12:00:00",
+    start_zone: "America/Los_Angeles", end_zone: "America/Los_Angeles",
+    start_location_type: "venue", start_location_value: "Sydney, NSW, Australia",
+    end_location_type: "venue", end_location_value: "Sydney, NSW, Australia",
+  };
+  const event = {id: "event", title: "Sydney Conference", status: "pending",
+    start: "2027-12-15T10:00:00-08:00", end: "2027-12-15T12:00:00-08:00",
+    all_day: false, temporal, calendar_entity: "calendar.test"};
+  panel._detail = {id: "sydney", source_kind: "manual_text", events: [event]};
+  panel.render();
+  let labels = panel._content.querySelectorAll("label").map(label => label.textContent);
+  assert.ok(labels.includes("Confirm event timezone (IANA identifier)"));
+  assert.ok(!labels.includes("Confirm arrival timezone (IANA identifier)"));
+
+  // A flight with genuinely different endpoints must retain both fields,
+  // even if a model gave them the same provisional HA timezone.
+  panel._detail = {id: "sydney", source_kind: "manual_text", events: [{
+    ...event, temporal: {...temporal, end_location_value: "New York, NY"},
+  }]};
+  panel.render();
+  labels = panel._content.querySelectorAll("label").map(label => label.textContent);
+  assert.ok(labels.includes("Confirm arrival timezone (IANA identifier)"));
+});
