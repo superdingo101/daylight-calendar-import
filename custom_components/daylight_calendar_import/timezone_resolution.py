@@ -140,12 +140,45 @@ def _airports(kind: str) -> dict:
 
 
 def _airport_zone(value: str) -> str | None:
-    code = value.strip().upper()
-    if not re.fullmatch(r"[A-Z]{3,4}", code):
+    """Resolve an IATA/ICAO code, including a full airport name with '(LAX)'."""
+    value = value.strip()
+    if re.fullmatch(r"[A-Za-z]{3,4}", value):
+        codes = [value.upper()]
+    else:
+        # Do not guess from arbitrary words in a place or a multi-airport
+        # itinerary. Parenthesized source codes are explicit identifiers.
+        codes = re.findall(r"\(([A-Za-z]{3,4})\)", value)
+    if not codes:
         return None
-    record = _airports("IATA" if len(code) == 3 else "ICAO").get(code)
-    zone = record.get("tz") if isinstance(record, dict) else None
-    return zone if isinstance(zone, str) else None
+    zones = set()
+    for candidate in codes:
+        code = candidate.upper()
+        record = _airports("IATA" if len(code) == 3 else "ICAO").get(code)
+        zone = record.get("tz") if isinstance(record, dict) else None
+        if not isinstance(zone, str):
+            return None
+        zones.add(zone)
+    return next(iter(zones)) if len(zones) == 1 else None
+
+
+def _labeled_flight_airports(source_text: str) -> tuple[str, str] | None:
+    """Extract only unique, valid airport codes from a labeled single flight."""
+    match = re.search(
+        r"(?is)\bdeparture\s*:\s*(.{1,512}?)\barrival\s*:\s*(.{1,512})",
+        source_text,
+    )
+    if match is None:
+        return None
+
+    def code_from(segment: str) -> str | None:
+        parenthesized = re.findall(r"\(([A-Za-z]{3,4})\)", segment)
+        candidates = parenthesized or re.findall(r"\b[A-Z]{3,4}\b", segment)
+        valid = {code.upper() for code in candidates if _airport_zone(code)}
+        return next(iter(valid)) if len(valid) == 1 else None
+
+    start = code_from(match[1])
+    end = code_from(match[2])
+    return (start, end) if start and end else None
 
 
 @lru_cache(maxsize=1)
@@ -214,11 +247,17 @@ def _place_zone(kind: str, value: str) -> str | None:
         return _postal_zone(value)
     if kind not in ("city", "address", "venue"):
         return None
-    # A venue name alone is not a geocodable city. Structured address suffix
-    # can be resolved locally, but unknown street addresses remain uncertain.
-    if kind == "venue":
-        return None
+    # A code actually printed with an airport name is evidence even when an
+    # AI provider incorrectly calls the airport a venue or street address.
+    if re.search(r"\([A-Za-z]{3,4}\)", value):
+        airport_zone = _airport_zone(value)
+        if airport_zone is not None:
+            return airport_zone
     parts = [part.strip() for part in value.split(",")]
+    if kind == "venue":
+        # Only the city/state suffix is interpreted. The venue's name itself
+        # is never geocoded or treated as a uniquely identifiable place.
+        return _place_zone("city", ", ".join(parts[-2:])) if len(parts) >= 3 else None
     if kind == "address" and len(parts) >= 3:
         parts = parts[-3:]
         parts = parts[1:] if re.search(r"\d", parts[0]) else parts
@@ -284,17 +323,34 @@ def _range_for_wall(start: datetime, end: datetime, start_name: str,
     return selected[0].isoformat(), selected[1].isoformat(), ambiguous, False
 
 
-def normalize_structured_event(raw: dict, ha_zone: str) -> tuple[dict, TemporalEvidence]:
+def normalize_structured_event(
+    raw: dict, ha_zone: str, source_text: str = "",
+) -> tuple[dict, TemporalEvidence]:
     """Turn structured AI source facts into provisional safe review timestamps."""
     start = _local(raw.get("start_local"))
     end = _local(raw.get("end_local"))
     _zone(ha_zone)
+    raw = dict(raw)
+    # A single labeled flight supplies independently trustworthy airport
+    # identifiers even if a model collapses the itinerary into one venue.
+    # The parser supplies source_text only when exactly one event was extracted.
+    labeled = _labeled_flight_airports(source_text) if source_text else None
+    if labeled:
+        raw.update(start_location_type="airport", start_location_value=labeled[0],
+                   end_location_type="airport", end_location_value=labeled[1])
     explicit = raw.get("explicit_timezone", "")
     if explicit is None:
         explicit = ""
     if not isinstance(explicit, str) or len(explicit) > 128:
         raise ValueError("invalid explicit timezone evidence")
     explicit = explicit.strip()
+    # Models sometimes copy the configured HA zone into an "explicit" field,
+    # even though the invitation never printed it. Never let that hallucinated
+    # claim override real geography, especially on a cross-zone flight.
+    unsupported_explicit = bool(source_text and explicit and
+                                explicit.casefold() not in source_text.casefold())
+    if unsupported_explicit:
+        explicit = ""
     explicit_unknown = False
     if explicit and not _fixed_zone(explicit):
         try:
@@ -342,13 +398,16 @@ def normalize_structured_event(raw: dict, ha_zone: str) -> tuple[dict, TemporalE
         )
     else:
         unresolved = unresolved or end_unresolved
+        if unsupported_explicit and first[1] == "ha_fallback" and second[1] == "ha_fallback":
+            unresolved = True
         if source == "ha_fallback" and end_source != "ha_fallback":
             source = end_source
     a, b, ambiguous, gap = _range_for_wall(start, end, start_zone, end_zone)
     status = ("correction_required" if gap else
               "confirmation_required" if unresolved or ambiguous else "resolved")
     reason = ("The local time does not exist in this timezone." if gap else
-              "Confirm the event timezone or DST occurrence." if status != "resolved" else "")
+              "Choose the first or second DST occurrence." if ambiguous else
+              "Confirm the source location's timezone." if unresolved else "")
     display_location = raw.get("location")
     if not isinstance(display_location, str) or not display_location.strip():
         start_label = raw.get("start_location_value") or ""
