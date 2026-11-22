@@ -134,6 +134,101 @@ def test_invalid_airports_stay_unresolved_instead_of_becoming_ha_fallback(value)
     assert "timezone or DST occurrence" in event.temporal.reason
 
 
+
+@pytest.mark.parametrize(("kind", "value", "zone", "source"), [
+    ("venue", "Moonlight Beach, Encinitas, California", "America/Los_Angeles", "geographic"),
+    ("airport", "Los Angeles International Airport (LAX)", "America/Los_Angeles", "airport"),
+    ("venue", "John F. Kennedy International Airport (JFK)", "America/New_York", "geographic"),
+])
+def test_source_place_suffix_and_printed_airport_codes_resolve(kind, value, zone, source):
+    event, = parse_one(start_location_type=kind, start_location_value=value).events
+    assert (event.temporal.start_zone, event.temporal.status, event.temporal.source) == (
+        zone, "resolved", source,
+    )
+    assert datetime.fromisoformat(event.start).utcoffset() == (
+        datetime.fromisoformat(event.end).utcoffset()
+    )
+
+
+def test_single_flight_labeled_source_repairs_combined_venue_and_hallucinated_explicit_zone():
+    source = """Flight Itinerary
+Flight: AA1234
+Date: July 15, 2027
+Departure:
+Los Angeles International Airport (LAX)
+8:00 AM local time
+Arrival:
+John F. Kennedy International Airport (JFK)
+4:30 PM local time
+All times are local to the respective airports."""
+    event, = parser.parse_ai_data({"events": [structured(
+        title="AA1234 flight",
+        start_local="2027-07-15T08:00:00",
+        end_local="2027-07-15T16:30:00",
+        start_location_type="venue",
+        start_location_value="Los Angeles International Airport (LAX) to JFK",
+        end_location_type="unknown", end_location_value="",
+        explicit_timezone="America/Los_Angeles",
+        location="LAX to JFK",
+    )]}, source_text=source, time_zone="America/Los_Angeles").events
+    assert (event.start, event.end) == (
+        "2027-07-15T08:00:00-07:00", "2027-07-15T16:30:00-04:00",
+    )
+    assert (event.temporal.start_zone, event.temporal.end_zone) == (
+        "America/Los_Angeles", "America/New_York",
+    )
+    assert (event.temporal.source, event.temporal.status,
+            event.temporal.explicit_timezone) == ("airport", "resolved", "")
+    assert (event.temporal.start_location_value, event.temporal.end_location_value) == (
+        "LAX", "JFK",
+    )
+    assert event.location == "LAX to JFK"
+
+
+def test_unsupported_explicit_claim_does_not_override_geography_or_silently_fallback():
+    raw = structured(explicit_timezone="America/New_York")
+    source = "Christmas dinner on December 25, 2027, at 6 PM in Encinitas, CA"
+    normalized, temporal = zones.normalize_structured_event(
+        {**raw, "start_location_type": "city", "start_location_value": "Encinitas, CA"},
+        "America/Los_Angeles", source,
+    )
+    assert normalized["start"] == "2027-12-25T18:00:00-08:00"
+    assert (temporal.source, temporal.status, temporal.explicit_timezone) == (
+        "geographic", "resolved", "",
+    )
+    _, unknown = zones.normalize_structured_event(raw, "America/Los_Angeles", source)
+    assert (unknown.start_zone, unknown.status, unknown.explicit_timezone) == (
+        "America/Los_Angeles", "confirmation_required", "",
+    )
+
+
+def test_printed_explicit_zone_remains_authoritative_and_conflict_is_blocked():
+    source = "All times are in America/New_York time."
+    raw = structured(explicit_timezone="America/New_York")
+    _, temporal = zones.normalize_structured_event(raw, "America/Los_Angeles", source)
+    assert (temporal.source, temporal.status, temporal.start_zone) == (
+        "explicit", "resolved", "America/New_York",
+    )
+    _, conflicting = zones.normalize_structured_event({
+        **raw, "start_location_type": "airport", "start_location_value": "LAX",
+    }, "America/Los_Angeles", source)
+    assert conflicting.status == "confirmation_required"
+    assert conflicting.reason == "Confirm the source location's timezone."
+
+
+def test_labeled_airports_must_be_unique_and_real():
+    assert zones._labeled_flight_airports(
+        "Departure: Los Angeles (LAX) 8 AM Arrival: New York (JFK) 4 PM"
+    ) == ("LAX", "JFK")
+    assert zones._labeled_flight_airports(
+        "Departure: LAX and JFK Arrival: JFK"
+    ) is None
+    assert zones._labeled_flight_airports(
+        "Departure: L0X Arrival: JFK"
+    ) is None
+    assert zones._airport_zone("LAX (LAX) (JFK)") is None
+
+
 def test_unresolvable_venue_and_missing_country_are_not_guessed():
     event, = parse_one(start_location_type="venue", start_location_value="Some School").events
     assert event.temporal.status == "confirmation_required"
