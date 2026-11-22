@@ -18,7 +18,7 @@ from homeassistant.util import dt as dt_util
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_track_time_interval
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from .const import (
     ATTR_EVENT_ID,
@@ -1631,8 +1631,16 @@ async def _async_create_calendar_event(
         data["start_date"] = draft.start
         data["end_date"] = draft.end
     else:
-        data["start_date_time"] = draft.start
-        data["end_date_time"] = draft.end
+        # HA's calendar.create_event schema rejects start/end ISO timestamps
+        # carrying different offsets, even when both denote valid instants.
+        # Submit a single UTC timeline; retain the source-local wall clocks,
+        # endpoint IANA zones and offsets unchanged in the reviewed draft.
+        start = datetime.fromisoformat(draft.start)
+        end = datetime.fromisoformat(draft.end)
+        if start.utcoffset() is None or end.utcoffset() is None:
+            raise DraftValidationError("timed events must include timezone offsets")
+        data["start_date_time"] = start.astimezone(UTC).isoformat()
+        data["end_date_time"] = end.astimezone(UTC).isoformat()
 
     await hass.services.async_call(
         "calendar", "create_event", data, blocking=True, context=context
