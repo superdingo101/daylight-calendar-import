@@ -217,7 +217,8 @@ def _place_zone(kind: str, value: str) -> str | None:
 
 
 def _range_for_wall(start: datetime, end: datetime, start_name: str,
-                    end_name: str) -> tuple[str, str, bool, bool]:
+                    end_name: str, start_occurrence: str | None = None,
+                    end_occurrence: str | None = None) -> tuple[str, str, bool, bool]:
     """Enumerate legal folds. Return instants and ambiguity/gap markers."""
     def candidates(wall: datetime, name: str) -> list[datetime]:
         zone = _zone(name)
@@ -232,11 +233,21 @@ def _range_for_wall(start: datetime, end: datetime, start_name: str,
     starts = candidates(start, start_name)
     ends = candidates(end, end_name)
     gap = not starts or not ends
-    ambiguous = len(starts) > 1 or len(ends) > 1
+    ambiguous = ((len(starts) > 1 and start_occurrence is None) or
+                 (len(ends) > 1 and end_occurrence is None))
     if gap:
         # Keep the original wall clocks visible for correction but block writes.
         return (start.replace(tzinfo=_zone(start_name)).isoformat(),
                 end.replace(tzinfo=_zone(end_name)).isoformat(), ambiguous, True)
+    for occurrence, choices in ((start_occurrence, starts), (end_occurrence, ends)):
+        if occurrence is not None and (occurrence not in ("first", "second") or len(choices) != 2):
+            raise ValueError("Invalid DST occurrence")
+    starts.sort(key=lambda item: item.astimezone(timezone.utc))
+    ends.sort(key=lambda item: item.astimezone(timezone.utc))
+    if start_occurrence is not None:
+        starts = [starts[0 if start_occurrence == "first" else 1]]
+    if end_occurrence is not None:
+        ends = [ends[0 if end_occurrence == "first" else 1]]
     ranges = [(a, b) for a in starts for b in ends if b.astimezone(timezone.utc) >
               a.astimezone(timezone.utc)]
     if not ranges:
@@ -322,14 +333,20 @@ def normalize_structured_event(raw: dict, ha_zone: str) -> tuple[dict, TemporalE
     return {**raw, "start": a, "end": b}, metadata
 
 
-def confirm_zone(evidence: TemporalEvidence, zone_name: str) -> tuple[str, str, TemporalEvidence]:
-    """Recalculate local times from reviewer-selected named zone without a conversion."""
+def confirm_zone(evidence: TemporalEvidence, zone_name: str,
+                 end_zone_name: str | None = None,
+                 start_occurrence: str | None = None,
+                 end_occurrence: str | None = None) -> tuple[str, str, TemporalEvidence]:
+    """Recalculate both source-local endpoints with reviewer-confirmed zones."""
     _zone(zone_name)
+    end_zone_name = end_zone_name or zone_name
+    _zone(end_zone_name)
     a, b, ambiguous, gap = _range_for_wall(
-        _local(evidence.start_local), _local(evidence.end_local), zone_name, zone_name,
+        _local(evidence.start_local), _local(evidence.end_local),
+        zone_name, end_zone_name, start_occurrence, end_occurrence,
     )
     if ambiguous or gap:
         raise ValueError("Choose valid local times and DST occurrence in the editor")
     from dataclasses import replace
-    return a, b, replace(evidence, start_zone=zone_name, end_zone=zone_name,
+    return a, b, replace(evidence, start_zone=zone_name, end_zone=end_zone_name,
                          source="user", status="resolved", reason="")
