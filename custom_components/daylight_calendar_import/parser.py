@@ -36,8 +36,8 @@ Trust boundary:
 Rules:
 - Do not invent dates, times, locations, titles, or durations.
 - For timed events, prefer the structured start_local and end_local fields, representing the clock times actually written in the source (without offsets), and structured location evidence. Do NOT calculate offsets or invent IANA timezone names for these structured fields. Daylight will resolve them deterministically.
-- Emit start_location_type and start_location_value from the source: airport, address, city, postal_code, venue, virtual, or unknown; end_location_type and end_location_value are optional overrides for travel arrival. Use unknown with an empty value if no relevant location appears. Do not mistake an organizer's mailing address for an event venue.
-- Put any explicit clock-zone statement verbatim in explicit_timezone (empty string when absent). An abbreviation like PST, PDT, BST, or DST belongs there, never in a location field. Do not classify it as an airport.
+- Emit start_location_type and start_location_value from the source: airport, address, city, postal_code, venue, virtual, or unknown. For flights and any travel with two different locations, ALWAYS emit independent start AND end location types and values from departure and arrival evidence; do not combine them in a single field. For airport identifiers, use only the printed IATA/ICAO code (e.g. LAX, JFK), not the full name, when one is provided. For named venues followed by a city/state, preserve the full location including its city/state suffix. Use unknown with an empty value if no relevant location appears. Do not mistake an organizer's mailing address for an event venue.
+- Put only a timezone actually printed in the document/source verbatim in explicit_timezone (empty string when absent). NEVER copy Home Assistant's configured timezone, or a zone you inferred from an airport/city, into explicit_timezone. The phrase "local time" does not print a named timezone: use the departure and arrival locations. An abbreviation like PST, PDT, BST, or DST belongs there only if it is literally printed, never in a location field. Do not classify it as an airport.
 - Preserve start/end as a legacy compatibility fallback for old consumers; on structured timed events these are optional, not a reason to invent an offset.
 - If an event lacks enough information to produce both start and end, omit it.
 - For timed events, populate start_local and end_local with the source's exact local wall-clock dates and times, WITHOUT UTC offsets. Do not calculate a UTC offset for these structured fields. The application resolves them from source geography and event-date zoneinfo rules. Legacy start/end timezone-aware datetimes are only a compatibility fallback when structured clocks cannot be supplied.
@@ -55,7 +55,7 @@ Rules:
 - confidence is from 0 to 1 and reflects confidence in the extracted event.
 - Resolve explicitly relative dates and local clock times using the reference datetime and Home Assistant time zone below.
 - Do not infer missing event durations, end times, dates or years that are not deterministically supported by the source and reference date.
-- For each returned event, include an assumptions list explaining every contextual date/time resolution (for example a relative day or a local time zone). Use an empty list for fully explicit timestamps.
+- For each event, include assumptions only for actual ambiguities or inferences, such as an inferred year. Never claim that an explicitly printed year was inferred, or that a timezone requires confirmation solely because the source lacks a printed IANA zone; that is determined by the application from location evidence. Use an empty list when the source already provides complete date/time facts.
 - Recurring schedules are unsupported. Set unsupported_recurrence to true if source text or attachments describe any repeating schedule (including RRULE). Return no events for that source; never expand recurrence or silently reduce it to a single occurrence. An explicit list of independent dates is not recurrence.
 - Always return unsupported_recurrence as a boolean, false for sources without a repeating schedule.
 - Return no events when the source does not contain a calendar event.
@@ -499,7 +499,9 @@ def parse_ai_data(
                 if time_zone is None:
                     raise DraftValidationError("Home Assistant time zone is unavailable")
                 try:
-                    normalized, temporal = normalize_structured_event(raw, time_zone)
+                    normalized, temporal = normalize_structured_event(
+                        raw, time_zone, source_text if len(events) == 1 else "",
+                    )
                 except ValueError as err:
                     raise DraftValidationError(str(err)) from err
                 draft = replace(EventDraft.from_mapping(normalized), temporal=temporal)
