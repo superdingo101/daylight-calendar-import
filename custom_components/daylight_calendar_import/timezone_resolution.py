@@ -19,6 +19,13 @@ _SOURCE_VENUE = re.compile(
     r"(?im)^[ \t]*(?:location|venue|where)[ \t]*:[ \t]*(?:\r?\n[ \t]*)?([^\r\n]+)"
 )
 _FIXED = re.compile(r"(?i:(UTC|GMT))\s*([+-])(\d{1,2})(?::?(\d{2}))?\Z")
+_TRAVEL = re.compile(
+    r"\b(?:flights?|departures?|departing|arrivals?|arriving|boarding|"
+    r"itinerar(?:y|ies)|trains?|ferr(?:y|ies)|buses|bus|"
+    r"journeys?|travell?ing|travels?|trips?|plane tickets?)\b", re.IGNORECASE,
+)
+_AIRPORT_ROUTE = re.compile(r"\b[A-Z]{3,4}\s*(?:to|→|[-–])\s*[A-Z]{3,4}\b")
+
 @dataclass(frozen=True, slots=True)
 class TemporalEvidence:
     """Original wall times and authoritative review state for one draft."""
@@ -422,7 +429,52 @@ def normalize_structured_event(
 
     first = endpoint("start")
     second = endpoint("end", (first[0], first[1]))
+
+    # Independently supplied display or printed location evidence must not
+    # silently disagree with a resolved structured endpoint. This comparison
+    # uses only deterministic, unambiguous geographic matches; it does not
+    # assume that missing image OCR means there was no location in the image.
+    places = [raw.get("location")]
+    printed_places = {item.strip() for item in _SOURCE_VENUE.findall(source_text)
+                      if item.strip()}
+    if len(printed_places) == 1:
+        places.extend(printed_places)
+    endpoint_zones = {first[0], second[0]}
+    location_conflict = False
+    for place in places:
+        if not isinstance(place, str) or not place.strip():
+            continue
+        place_zone = (_place_zone("venue", place) or _place_zone("city", place)
+                      or _place_zone("airport", place))
+        if place_zone is not None and place_zone not in endpoint_zones:
+            location_conflict = True
+
+    # Missing destination geography is tolerable for an ordinary one-location
+    # event, but not when an itinerary explicitly indicates travel. In that
+    # case inheriting the departure zone (or guessing HA for departure) would
+    # produce a plausible but possibly incorrect arrival instant.
+    travel_context = f"{raw.get('title') or ''} {source_text}"
+    travel_incomplete = bool(
+        _TRAVEL.search(travel_context)
+        or _AIRPORT_ROUTE.search(raw.get("location") or "")
+    ) and not (raw.get("start_location_value") and raw.get("end_location_value"))
+
+    # Legacy start/end are optional when structured clocks exist. If supplied,
+    # an inconsistent wall clock is a reason to request confirmation, not to
+    # replace the authoritative structured time with a provider guess.
+    legacy_clock_conflict = False
+    for field, wall in (("start", start), ("end", end)):
+        legacy = raw.get(field)
+        if legacy is None or legacy == "":
+            continue
+        try:
+            if datetime.fromisoformat(legacy).replace(tzinfo=None) != wall:
+                legacy_clock_conflict = True
+        except (ValueError, TypeError):
+            legacy_clock_conflict = True
+
     start_zone, source, unresolved = first
+    unresolved = unresolved or location_conflict or travel_incomplete or legacy_clock_conflict
     end_zone, end_source, end_unresolved = second
     if explicit:
         if not explicit_unknown:
@@ -445,6 +497,9 @@ def normalize_structured_event(
               "confirmation_required" if unresolved or ambiguous else "resolved")
     reason = ("The local time does not exist in this timezone." if gap else
               "Choose the first or second DST occurrence." if ambiguous else
+              "Location evidence conflicts; confirm the event timezone." if location_conflict else
+              "Travel itinerary has an unverified endpoint; confirm both timezones." if travel_incomplete else
+              "Structured and legacy clocks disagree; confirm the event time." if legacy_clock_conflict else
               "Confirm the source location's timezone." if unresolved else "")
     display_location = raw.get("location")
     if not isinstance(display_location, str) or not display_location.strip():
