@@ -118,6 +118,26 @@ def test_explicit_source_zone_is_not_downgraded_to_ha():
     assert event.temporal.status == "resolved"
 
 
+@pytest.mark.parametrize(("explicit", "offset"), [
+    ("UTC-05:00", "-05:00"),
+    ("GMT+05:30", "+05:30"),
+    ("UTC", "+00:00"),
+])
+def test_explicit_fixed_offsets_are_valid_evidence_not_geographic_zones(explicit, offset):
+    event, = parse_one(explicit_timezone=explicit).events
+    assert event.start == "2027-12-25T18:00:00" + offset
+    assert event.temporal.source == "explicit"
+    assert event.temporal.status == "resolved"
+    assert EventDraft.from_mapping(event.as_dict()) == event
+
+
+def test_ambiguous_explicit_abbreviation_never_loses_recoverable_event():
+    event, = parse_one(explicit_timezone="DST").events
+    assert event.temporal.source == "explicit"
+    assert event.temporal.status == "confirmation_required"
+    assert event.temporal.start_zone == "America/Los_Angeles"
+
+
 def test_conflicting_geo_and_explicit_zone_must_be_confirmed():
     event, = parse_one(explicit_timezone="America/New_York",
                        start_location_type="airport", start_location_value="LAX").events
