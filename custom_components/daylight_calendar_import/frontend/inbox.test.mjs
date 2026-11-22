@@ -253,3 +253,32 @@ test("timezone confirmation carries exact event snapshot and validates persisten
   await assert.rejects(confirmEventTimezone({callWS: async () => ({response: {pending_id: "one"}})},
     "one", event, "America/Los_Angeles"), /could not be verified/);
 });
+
+test("review formatting respects a retained geographic zone even when its offset matches HA", () => {
+  const locale = "en-US";
+  const ha = "America/Los_Angeles";
+  const phoenix = {
+    start: "2027-07-15T18:00:00-07:00",
+    end: "2027-07-15T20:00:00-07:00",
+    all_day: false,
+    temporal: {start_zone: "America/Phoenix", end_zone: "America/Phoenix"},
+  };
+  const label = formatEventRange(phoenix, locale, ha);
+  assert.match(label, /MST/);
+  assert.doesNotMatch(label, /PDT/);
+  const legacy = formatEventRange({...phoenix, temporal: undefined}, locale, ha);
+  assert.match(legacy, /PDT/);
+});
+
+test("review formatting preserves distinct arrival and departure zone labels", () => {
+  const flight = {
+    title: "Flight",
+    start: "2027-07-15T08:00:00-07:00",
+    end: "2027-07-15T16:30:00-04:00",
+    all_day: false,
+    temporal: {start_zone: "America/Los_Angeles", end_zone: "America/New_York"},
+  };
+  const label = formatEventRange(flight, "en-US", "America/Los_Angeles");
+  assert.match(label, /PDT/);
+  assert.match(label, /EDT/);
+});
