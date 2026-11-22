@@ -446,7 +446,8 @@ def normalize_structured_event(
             continue
         place_zone = (_place_zone("venue", place) or _place_zone("city", place)
                       or _place_zone("airport", place))
-        if place_zone is not None and place_zone not in endpoint_zones:
+        if (place_zone is not None and place_zone not in endpoint_zones
+                and (first[1] != "ha_fallback" or second[1] != "ha_fallback")):
             location_conflict = True
 
     # Missing destination geography is tolerable for an ordinary one-location
@@ -456,7 +457,8 @@ def normalize_structured_event(
     travel_context = f"{raw.get('title') or ''} {source_text}"
     travel_incomplete = bool(
         _TRAVEL.search(travel_context)
-        or _AIRPORT_ROUTE.search(raw.get("location") or "")
+        or (_AIRPORT_ROUTE.search(raw["location"])
+            if isinstance(raw.get("location"), str) else False)
     ) and not (raw.get("start_location_value") and raw.get("end_location_value"))
 
     # Legacy start/end are optional when structured clocks exist. If supplied,
