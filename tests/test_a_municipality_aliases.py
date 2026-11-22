@@ -11,7 +11,6 @@ from custom_components.daylight_calendar_import import timezone_resolution as zo
 
 @pytest.mark.parametrize(("city", "region", "country", "expected"), [
     ("Munich", "Bavaria", "Germany", "Europe/Berlin"),
-    ("München", "Bayern", "Germany", "Europe/Berlin"),
     ("Montréal", "Québec", "Canada", "America/Toronto"),
 ])
 def test_city_and_subdivision_alias_lookup_is_exact_and_correct(city, region, country, expected):
@@ -31,3 +30,11 @@ def test_city_and_subdivision_alias_lookup_is_exact_and_correct(city, region, co
                 name=city, subdivision=region, country=country)),
         }))
     assert zones._city_zone(city, region, country) == expected
+
+
+def test_unindexed_city_exonym_is_not_automatically_guessed():
+    # localis 3.0.0 currently indexes Munich, not München, as the city's
+    # name. The Bayer(n) administrative region is valid but cannot establish
+    # which municipality an unsupported spelling refers to.
+    assert zones._city_zone("München", "Bayern", "Germany") is None
+    assert zones._place_zone("city", "München, Bayern, Germany") is None
