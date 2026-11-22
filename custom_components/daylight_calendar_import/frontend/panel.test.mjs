@@ -7121,3 +7121,90 @@ test("double confirmation during persisted reload sends only one review service 
   assert.deepEqual(panel._detail.events, [second]);
   assert.equal(requests, 1);
 });
+
+
+test("unresolved timezone appears on each review card and blocks every approval control", () => {
+  const panel = new DaylightImportPanel();
+  panel._status = "ready";
+  panel._selectedId = "timezone-source";
+  const temporal = {
+    status: "confirmation_required",
+    reason: "Location could not be uniquely resolved",
+    source: "geographic",
+    start_local: "2027-12-25T18:00:00",
+    end_local: "2027-12-25T20:00:00",
+    start_zone: "America/Los_Angeles",
+    end_zone: "America/Los_Angeles",
+    start_location_type: "venue",
+    start_location_value: "Community Hall",
+    end_location_type: "unknown",
+    end_location_value: "",
+  };
+  const fields = {
+    start: "2027-12-25T18:00:00-08:00",
+    end: "2027-12-25T20:00:00-08:00",
+    all_day: false, status: "pending", confidence: 0.9,
+    calendar_entity: "calendar.family",
+  };
+  panel._detail = {id: "timezone-source", source_kind: "manual_text",
+    source_text: "Christmas dinner", default_calendar: "calendar.family",
+    events: [{...fields, id: "first", title: "Dinner", temporal},
+      {...fields, id: "second", title: "Sibling"}]};
+  panel.render();
+  const bulkApprove = panel._content.querySelectorAll("button").find(
+    button => button.dataset.batchAction === "approve");
+  const bulkReject = panel._content.querySelectorAll("button").find(
+    button => button.dataset.batchAction === "reject");
+  assert.equal(bulkApprove.disabled, true);
+  assert.notEqual(bulkReject.disabled, true);
+  const firstApprove = panel._content.querySelectorAll("button").find(
+    button => button.dataset.action === "approve" && button.dataset.eventId === "first");
+  const firstReject = panel._content.querySelectorAll("button").find(
+    button => button.dataset.action === "reject" && button.dataset.eventId === "first");
+  assert.equal(firstApprove.disabled, true);
+  assert.notEqual(firstReject.disabled, true);
+  assert.ok(panel._content.querySelectorAll("p").some(
+    node => /Event timezone/.test(node.textContent || "")));
+  assert.ok(panel._content.querySelectorAll("p").some(
+    node => /Location could not be uniquely resolved/.test(node.textContent || "")));
+  const input = panel._content.querySelectorAll("input").find(
+    node => node.placeholder === "America/Los_Angeles");
+  assert.ok(input);
+  assert.equal(input.value, "");
+});
+
+test("timezone confirmation submits the exact loaded event and reloads backend state", async () => {
+  const panel = new DaylightImportPanel();
+  const temporal = {status: "confirmation_required",
+    start_local: "2027-12-25T18:00:00", end_local: "2027-12-25T20:00:00",
+    start_zone: "America/Los_Angeles", end_zone: "America/Los_Angeles",
+    source: "ha_fallback"};
+  const event = {id: "event", title: "Dinner", all_day: false,
+    status: "pending", start: "2027-12-25T18:00:00-08:00",
+    end: "2027-12-25T20:00:00-08:00", temporal};
+  const resolved = {...event, temporal: {...temporal, status: "resolved", source: "user"}};
+  const requests = [];
+  panel._hass = {config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      requests.push(request);
+      if (request.service === "confirm_pending_timezone") {
+        return {response: {pending_id: "source", event: resolved}};
+      }
+      if (request.service === "get_pending") {
+        return {response: {pending: {id: "source", source_kind: "manual_text",
+          source_text: "Dinner", events: [resolved]}}};
+      }
+      throw new Error("Unexpected service request");
+    }};
+  panel._status = "ready";
+  panel._selectedId = "source";
+  panel._detail = {id: "source", source_kind: "manual_text",
+    source_text: "Dinner", events: [event]};
+  panel.render();
+  await panel.confirmTimezone(event, "America/Los_Angeles");
+  assert.deepEqual(requests.map(request => request.service),
+    ["confirm_pending_timezone", "get_pending"]);
+  assert.deepEqual(requests[0].service_data, {pending_id: "source", event_id: "event",
+    time_zone: "America/Los_Angeles", expected_event: event});
+  assert.equal(panel._detail.events[0].temporal.status, "resolved");
+});
