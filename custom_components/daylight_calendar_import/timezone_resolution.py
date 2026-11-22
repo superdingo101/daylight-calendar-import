@@ -45,6 +45,18 @@ _COUNTRIES = {
     "new zealand": "NZ", "nz": "NZ", "mexico": "MX", "mx": "MX",
     "singapore": "SG", "sg": "SG", "brazil": "BR", "br": "BR",
 }
+# GeoNames admin1code uses numeric identifiers for Australia's subdivisions,
+# whereas invitations usually print the ISO state abbreviation or full name.
+_AU_REGIONS = {
+    "australian capital territory": "01", "act": "01",
+    "new south wales": "02", "nsw": "02",
+    "northern territory": "03", "nt": "03",
+    "queensland": "04", "qld": "04",
+    "south australia": "05", "sa": "05",
+    "tasmania": "06", "tas": "06",
+    "victoria": "07", "vic": "07",
+    "western australia": "08", "wa": "08",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,8 +267,18 @@ def _place_zone(kind: str, value: str) -> str | None:
             return airport_zone
     parts = [part.strip() for part in value.split(",")]
     if kind == "venue":
-        # Only the city/state suffix is interpreted. The venue's name itself
-        # is never geocoded or treated as a uniquely identifiable place.
+        # A model may label "Sydney, NSW, Australia" as a venue. Try the
+        # whole geographic location before treating the first component as a
+        # venue name. No bare venue name is geocoded.
+        if len(parts) < 2:
+            return None
+        direct = _place_zone("city", value)
+        if direct is not None:
+            return direct
+        if len(parts) >= 4:
+            suffix = _place_zone("city", ", ".join(parts[-3:]))
+            if suffix is not None:
+                return suffix
         return _place_zone("city", ", ".join(parts[-2:])) if len(parts) >= 3 else None
     if kind == "address" and len(parts) >= 3:
         parts = parts[-3:]
@@ -273,8 +295,11 @@ def _place_zone(kind: str, value: str) -> str | None:
         recognised_country = _COUNTRIES.get(region.casefold())
         if recognised_country:
             country, region = recognised_country, ""
-    region = _STATES.get(region.casefold(), region)
     country = _COUNTRIES.get(country.casefold(), country if len(country) == 2 else "")
+    if country == "AU":
+        region = _AU_REGIONS.get(region.casefold(), region)
+    else:
+        region = _STATES.get(region.casefold(), region)
     if postal and not region:
         return _postal_zone(postal.group(1))
     return _city_zone(city, region, country)
