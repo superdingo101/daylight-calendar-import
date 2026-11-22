@@ -51,6 +51,42 @@ the complete loaded `expected_event`. The backend compares it under the store
 lock before any calendar write or rejection; stale decisions fail with a refresh
 message. Existing action callers may omit the snapshot for compatibility.
 
+### Location-aware timezone interpretation and confirmation
+
+For structured AI extraction, Daylight receives **source-local start and end clocks**
+and event-location evidence (airport IATA/ICAO identifier, city/region/country,
+street address, US postal code, venue, virtual or unknown). The AI's returned
+offset is **not authoritative**. Python resolves geographic identifiers using
+offline data, falls back to the HA configured timezone only when source geography
+is absent, and calculates event-date offsets using zoneinfo. Independent
+departure and arrival locations can have different named timezones. No location
+or source text is transmitted to an external geocoder.
+
+A structured get_pending event can include **temporal**, containing its source
+wall clocks, resolved start_zone and end_zone, provenance, original location
+evidence, and a status of resolved, confirmation_required, or
+correction_required. Legacy pending events without this field retain their
+existing offsets without reinterpretation. A later HA timezone change does
+not silently retime an existing structured pending event.
+
+When the structured temporal status is unresolved, both individual and
+bulk approval are rejected **by the backend before a calendar write**, including
+legacy direct service calls. The response-enabled confirm_pending_timezone action
+requires pending_id, event_id, named time_zone, and the current expected_event
+snapshot. It optionally accepts end_time_zone, start_occurrence, and
+end_occurrence (first or second) for cross-zone events or repeated DST hours.
+The backend validates both source-local endpoints, rejects spring-forward
+nonexistent clocks, impossible intervals, stale snapshots, and duplicates,
+and durably saves the selected zone(s) and final instants atomically before
+approval becomes available.
+
+Editing an unresolved event cannot bypass the confirmation requirement;
+changing its time invalidates any previous timezone confirmation. A reviewer
+may reject the draft instead. Unsupported/ambiguous geographic evidence is
+disclosed on the event card and requires explicit correction or confirmation.
+Geography is inferred conservatively: a venue name alone, an ambiguous city,
+or an unsupported international postal code is not silently assigned a zone.
+
 ### Explicit calendar routing confirmation
 
 An unknown or contradictory `Calendar:` directive retains the configured
