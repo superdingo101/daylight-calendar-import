@@ -320,6 +320,8 @@ export function normalizeEventTemporalEdit({
   originalStart,
   originalEnd,
   timeZone,
+  startTimeZone = timeZone,
+  endTimeZone = timeZone,
   startInstantHint = null,
   endInstantHint = null,
 }) {
@@ -340,12 +342,13 @@ export function normalizeEventTemporalEdit({
   if (!startDateTime || !endDateTime) {
     return {valid: false, error: "Start and end times are required."};
   }
-  const model = classifyEventTimeModel(originalStart, originalEnd, timeZone);
+  const startModel = classifyEventTimeModel(originalStart, originalStart, startTimeZone);
+  const endModel = classifyEventTimeModel(originalEnd, originalEnd, endTimeZone);
   const start = editDateTimeIso(
-    startDateTime, originalStart, timeZone, startInstantHint, model
+    startDateTime, originalStart, startTimeZone, startInstantHint, startModel
   );
   const end = editDateTimeIso(
-    endDateTime, originalEnd, timeZone, endInstantHint, model
+    endDateTime, originalEnd, endTimeZone, endInstantHint, endModel
   );
   if (!start || !end) {
     return {
