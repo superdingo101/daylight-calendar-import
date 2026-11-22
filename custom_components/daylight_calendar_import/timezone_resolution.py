@@ -16,7 +16,7 @@ _BOUNDED = 256
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)*\Z")
 _POSTAL = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 _SOURCE_VENUE = re.compile(
-    r"(?im)^[ \\t]*(?:location|venue|where)[ \\t]*:[ \\t]*(?:\\r?\\n[ \\t]*)?([^\\r\\n]+)"
+    r"(?im)^[ \t]*(?:location|venue|where)[ \t]*:[ \t]*(?:\r?\n[ \t]*)?([^\r\n]+)"
 )
 _FIXED = re.compile(r"(?i:(UTC|GMT))\s*([+-])(\d{1,2})(?::?(\d{2}))?\Z")
 @dataclass(frozen=True, slots=True)
