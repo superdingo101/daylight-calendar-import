@@ -65,7 +65,7 @@ from custom_components.daylight_calendar_import.const import (
     SERVICE_SUBMIT_IMAGE,
     SERVICE_SUBMIT_PDF,
 )
-from custom_components.daylight_calendar_import.models import EventDraft
+from custom_components.daylight_calendar_import.models import DraftValidationError, EventDraft
 from custom_components.daylight_calendar_import.timezone_resolution import TemporalEvidence
 from custom_components.daylight_calendar_import.parser import ParseOutcome
 from custom_components.daylight_calendar_import.providers import SourceValidationError
