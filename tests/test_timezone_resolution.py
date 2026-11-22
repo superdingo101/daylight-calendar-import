@@ -307,3 +307,222 @@ async def test_failed_confirmation_storage_is_atomic(monkeypatch):
     with pytest.raises(RuntimeError, match="disk write failed"):
         await store.async_confirm_timezone(pending.id, original.id, "America/New_York")
     assert store.get_event(pending.id, original.id) == original
+
+
+@pytest.mark.parametrize(("raw_patch", "message"), [
+    ({"status": "unreviewed"}, "invalid timezone status"),
+    ({"source": "trust_the_ai"}, "invalid timezone source"),
+    ({"start_location_type": "server"}, "invalid persisted location type"),
+    ({"reason": 10}, "invalid temporal review fields"),
+    ({"reason": "R" * 257}, "invalid temporal review fields"),
+    ({"start_local": "2027-15-01T10:00:00"}, "invalid local date/time"),
+])
+def test_temporal_storage_strict_validation_catches_corruption(raw_patch, message):
+    event, = parse_one().events
+    snapshot = event.temporal.as_dict()
+    snapshot.update(raw_patch)
+    with pytest.raises(ValueError, match=message):
+        zones.TemporalEvidence.from_dict(snapshot)
+
+
+def test_temporal_storage_rejects_missing_extra_and_nonobject_metadata():
+    event, = parse_one().events
+    snapshot = event.temporal.as_dict()
+    for invalid in (None, [], {"status": "resolved"},
+                    {**snapshot, "extra": "unknown"}):
+        with pytest.raises(ValueError, match="invalid temporal review data"):
+            zones.TemporalEvidence.from_dict(invalid)
+    assert zones.TemporalEvidence.from_dict(snapshot) == event.temporal
+
+
+@pytest.mark.parametrize("value", [None, 1, "1" * 33, "bad-time", "2027-20-01T10:00:00"])
+def test_invalid_local_datetime_values_never_become_timestamp_candidates(value):
+    with pytest.raises(ValueError, match="invalid local date/time"):
+        zones._local(value)
+
+
+@pytest.mark.parametrize("value", ["UTC+25:00", "GMT-14:60", "UTC+24", "UTC+01:99"])
+def test_impossible_fixed_utc_offsets_are_rejected(value):
+    assert zones._fixed_zone(value) is None
+
+
+@pytest.mark.parametrize("value", [None, "", "../etc/passwd", "Unknown/Zone", "A" * 129])
+def test_timezone_names_are_bounded_and_validated(value):
+    with pytest.raises(ValueError, match="timezone name"):
+        zones._zone(value)
+
+
+@pytest.mark.parametrize(("latitude", "longitude"), [
+    (None, None), ("not-a-coordinate", -117), (91, -117),
+    (33, 181), (-91, 0),
+])
+def test_invalid_coordinates_never_produce_a_zone(latitude, longitude):
+    assert zones._coordinates_zone(latitude, longitude) is None
+
+
+def test_city_and_postal_lookup_reject_incomplete_ambiguous_geography():
+    assert zones._postal_zone("London SW1A 1AA") is None
+    assert zones._place_zone("city", "Springfield") is None
+    assert zones._place_zone("virtual", "unspecified") is None
+    assert zones._city_zone("NotARealCityAtAll", "CA", "US") is None
+    assert zones._place_zone("city", "Encinitas, 92024") == "America/Los_Angeles"
+
+
+def test_postal_lookup_falls_back_to_city_and_checks_missing_zone(monkeypatch):
+    monkeypatch.setattr(zones, "_coordinates_zone", lambda *_args: None)
+    monkeypatch.setattr(zones, "_city_zone", lambda *_args: "America/Los_Angeles")
+    assert zones._postal_zone("92024") == "America/Los_Angeles"
+    monkeypatch.setattr(zones, "_city_zone", lambda *_args: None)
+    assert zones._postal_zone("92024") is None
+
+
+@pytest.mark.parametrize(("start_choice", "end_choice", "expected_start", "expected_end"), [
+    ("first", "first", "-07:00", "-07:00"),
+    ("first", "second", "-07:00", "-08:00"),
+    ("second", "second", "-08:00", "-08:00"),
+])
+def test_dst_fold_confirmation_chooses_exact_first_or_second_instants(
+    start_choice, end_choice, expected_start, expected_end,
+):
+    event, = parse_one(start_local="2027-11-07T01:15:00",
+                       end_local="2027-11-07T01:45:00").events
+    start, end, confirmed = zones.confirm_zone(
+        event.temporal, "America/Los_Angeles",
+        start_occurrence=start_choice, end_occurrence=end_choice,
+    )
+    assert (start, end) == ("2027-11-07T01:15:00" + expected_start,
+                            "2027-11-07T01:45:00" + expected_end)
+    assert confirmed.status == "resolved"
+    assert confirmed.source == "user"
+
+
+def test_dst_fold_rejects_invalid_occurrences_and_reversed_instant_range():
+    event, = parse_one(start_local="2027-11-07T01:15:00",
+                       end_local="2027-11-07T01:45:00").events
+    for kwargs in ({"start_occurrence": "third"},
+                   {"start_occurrence": "second", "end_occurrence": "first"}):
+        with pytest.raises(ValueError, match="Invalid DST occurrence|end must be after start"):
+            zones.confirm_zone(event.temporal, "America/Los_Angeles", **kwargs)
+    with pytest.raises(ValueError, match="Invalid DST occurrence"):
+        zones.confirm_zone(parse_one().events[0].temporal, "America/Los_Angeles",
+                           start_occurrence="first")
+
+
+def test_structured_extraction_preserves_source_geo_when_end_only_location():
+    result = parse_one(
+        start_location_type="unknown", start_location_value=None,
+        end_location_type="airport", end_location_value="JFK",
+        end_local="2027-12-25T22:00:00",
+    )
+    event, = result.events
+    assert event.temporal.source == "airport"
+    assert event.temporal.start_zone == "America/Los_Angeles"
+    assert event.temporal.end_zone == "America/New_York"
+    assert event.temporal.status == "resolved"
+    assert event.location == "JFK"
+
+
+def test_structured_source_keeps_explicit_event_location_text_and_null_timezone():
+    event, = parse_one(location="At home", explicit_timezone=None).events
+    assert event.location == "At home"
+    assert event.temporal.explicit_timezone == ""
+    assert event.temporal.status == "resolved"
+
+
+@pytest.mark.parametrize("value", [42, "X" * 129])
+def test_invalid_explicit_timezones_are_rejected_not_guessed(value):
+    outcome = parse_one(explicit_timezone=value)
+    assert not outcome.events
+    assert "invalid explicit timezone evidence" in outcome.warnings[0]
+
+
+@pytest.mark.parametrize("changes", [
+    {"all_day": True},
+    {"start_local": "2027-12-25T18:00:00", "end_local": None},
+])
+def test_incomplete_timed_source_fails_closed_without_calendar_draft(changes):
+    result = parse_one(**changes)
+    assert not result.events
+    assert "invalid" in result.warnings[0] or "require a timed event" in result.warnings[0]
+
+
+def test_structured_source_requires_configured_home_timezone():
+    outcome = parser.parse_ai_data({"events": [structured()]}, time_zone=None)
+    assert outcome.events == []
+    assert "Home Assistant time zone is unavailable" in outcome.warnings[0]
+
+
+def test_invalid_all_day_temporal_and_forged_temporal_are_rejected():
+    event, = parse_one().events
+    raw = event.as_dict()
+    raw["temporal"] = {"status": "resolved"}
+    with pytest.raises(DraftValidationError, match="invalid temporal review state"):
+        EventDraft.from_mapping(raw)
+    raw = event.as_dict()
+    raw.update(start="2027-12-25", end="2027-12-26", all_day=True)
+    with pytest.raises(DraftValidationError, match="all-day events cannot have"):
+        EventDraft.from_mapping(raw)
+
+
+async def test_store_confirm_timezone_missing_inflight_legacy_invalid_and_duplicate(monkeypatch):
+    backend = _Backend()
+    store = _store(monkeypatch, backend)
+    await store.async_load()
+    unresolved, = parse_one(start_location_type="venue",
+                            start_location_value="Community Hall").events
+    pending = (await store.async_add(source_text="one", events=[unresolved])).pending
+    ev = pending.events[0]
+    assert await store.async_confirm_timezone("missing", ev.id, "America/Los_Angeles") is None
+    assert await store.async_confirm_timezone(pending.id, "missing", "America/Los_Angeles") is None
+    with pytest.raises(PendingEventEditError, match="cannot be changed"):
+        store._reprocessing.add(pending.id)
+        try:
+            await store.async_confirm_timezone(pending.id, ev.id, "America/Los_Angeles")
+        finally:
+            store._reprocessing.discard(pending.id)
+    with pytest.raises(PendingEventEditError, match="timezone name"):
+        await store.async_confirm_timezone(pending.id, ev.id, "../etc/passwd")
+    assert store.get_event(pending.id, ev.id) == ev
+
+    legacy = (await store.async_add(source_text="legacy", events=[
+        replace(unresolved, title="Separate record", temporal=None),
+    ])).pending
+    with pytest.raises(PendingEventEditError, match="no structured timezone evidence"):
+        await store.async_confirm_timezone(legacy.id, legacy.events[0].id, "America/Los_Angeles")
+
+    # Two candidates have different fingerprints while unresolved; once the
+    # provisional instant becomes definitive, the duplicate is rejected.
+    exact = replace(unresolved, temporal=None)
+    other = (await store.async_add(source_text="completed", events=[exact])).pending
+    with pytest.raises(PendingEventEditError, match="duplicates a pending"):
+        await store.async_confirm_timezone(pending.id, ev.id, "America/Los_Angeles")
+    assert store.get_event(pending.id, ev.id) == ev
+
+
+async def test_store_timed_to_all_day_conversion_cannot_bypass_gate(monkeypatch):
+    store = _store(monkeypatch, _Backend())
+    await store.async_load()
+    unresolved, = parse_one(start_location_type="venue", start_location_value="Hall").events
+    pending = (await store.async_add(source_text="source", events=[unresolved])).pending
+    previous = pending.events[0]
+    all_day = replace(unresolved, start="2027-12-25", end="2027-12-26",
+                      all_day=True, temporal=None)
+    with pytest.raises(PendingEventEditError, match="Confirm the timezone"):
+        await store.async_edit_event(pending.id, previous.id, all_day, expected_event=previous)
+    confirmed = await store.async_confirm_timezone(pending.id, previous.id, "America/Los_Angeles")
+    edited = await store.async_edit_event(pending.id, previous.id, all_day, expected_event=confirmed)
+    assert edited.draft.temporal is None
+    assert edited.draft.all_day is True
+    assert edited.draft.start == "2027-12-25"
+
+
+async def test_store_invalid_edit_clock_still_retains_original_pending_state(monkeypatch):
+    store = _store(monkeypatch, _Backend())
+    await store.async_load()
+    original, = parse_one(start_location_type="venue", start_location_value="Hall").events
+    pending = (await store.async_add(source_text="source", events=[original])).pending
+    ev = pending.events[0]
+    draft = replace(original, start="2027-12-25 17:00:00-08:00", temporal=None)
+    with pytest.raises(PendingEventEditError, match="Invalid edited local clocks"):
+        await store.async_edit_event(pending.id, ev.id, draft, expected_event=ev)
+    assert store.get_event(pending.id, ev.id) == ev
