@@ -385,9 +385,11 @@ function activityLabel(type) {
     mixed: "Mixed event outcomes"})[type] || type.replaceAll("_", " ");
 }
 
-function syncTimedDuration(start, end, event, timeZone, onChanged = () => {}, endTimeZone = timeZone) {
-  const model = classifyEventTimeModel(event.start, event.start, timeZone);
-  const endModel = classifyEventTimeModel(event.end, event.end, endTimeZone);
+function syncTimedDuration(start, end, event, timeZone, onChanged = () => {}, endTimeZone = null) {
+  const model = endTimeZone ? classifyEventTimeModel(event.start, event.start, timeZone) :
+    classifyEventTimeModel(event.start, event.end, timeZone);
+  const endModel = endTimeZone ? classifyEventTimeModel(event.end, event.end, endTimeZone) : model;
+  endTimeZone ||= timeZone;
   const readDuration = () => {
     const startIso = editDateTimeIso(
       start.value, event.start, timeZone, start._daylightInstantHint || null, model
@@ -2558,8 +2560,8 @@ export class DaylightImportPanel extends HTMLElement {
     };
     const temporal = normalizeEventTemporalEdit({
       allDay,
-      startTimeZone: event.temporal?.start_zone || this._hass?.config?.time_zone,
-      endTimeZone: event.temporal?.end_zone || this._hass?.config?.time_zone,
+      startTimeZone: event.temporal?.start_zone,
+      endTimeZone: event.temporal?.end_zone,
       startDate: fields.namedItem("start_date").value,
       endDate: fields.namedItem("end_date").value,
       startDateTime: fields.namedItem("start").value,
@@ -2688,7 +2690,7 @@ export class DaylightImportPanel extends HTMLElement {
       event.all_day ? event.end + "T00:00" : editDateTimeValue(event.end, endTimeZone),
     );
     let refreshFolds = () => {};
-    const timedSync = syncTimedDuration(start, end, event, timeZone, () => refreshFolds(), endTimeZone);
+    const timedSync = syncTimedDuration(start, end, event, timeZone, () => refreshFolds(), event.temporal ? endTimeZone : null);
     const foldControl = (input, original, title, endpointZone) => {
       const timeModel = classifyEventTimeModel(original, original, endpointZone);
       const label = document.createElement("label");
@@ -2764,8 +2766,8 @@ export class DaylightImportPanel extends HTMLElement {
           originalStart: event.start,
           originalEnd: event.end,
           timeZone,
-          startTimeZone: timeZone,
-          endTimeZone,
+          startTimeZone: event.temporal ? timeZone : null,
+          endTimeZone: event.temporal ? endTimeZone : null,
           startInstantHint: !startFold.select.hidden ?
             startFold.select.value : start._daylightInstantHint || null,
           endInstantHint: !endFold.select.hidden ?
