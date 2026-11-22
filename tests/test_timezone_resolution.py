@@ -96,6 +96,19 @@ def test_encinitas_offline_geography_has_pacific_zone(kind, value):
     assert event.temporal.status == "resolved"
 
 
+@pytest.mark.parametrize(("location", "zone", "offset"), [
+    ("Seattle, Washington", "America/Los_Angeles", "-08:00"),
+    ("Miami, Florida", "America/New_York", "-05:00"),
+    ("Austin, Texas", "America/Chicago", "-06:00"),
+    ("Honolulu, Hawaii", "Pacific/Honolulu", "-10:00"),
+])
+def test_full_us_state_names_resolve_to_correct_regional_timezones(location, zone, offset):
+    event, = parse_one(start_location_type="city", start_location_value=location).events
+    assert event.temporal.status == "resolved"
+    assert event.temporal.start_zone == zone
+    assert event.start == f"2027-12-25T18:00:00{offset}"
+
+
 @pytest.mark.parametrize(("location", "zone"), [
     ("London, UK", "Europe/London"),
     ("Paris, France", "Europe/Paris"),
