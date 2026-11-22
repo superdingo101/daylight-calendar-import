@@ -33,13 +33,19 @@ class TemporalEvidence:
     source: str
     status: str
     reason: str = ""
+    start_location_type: str = "unknown"
+    start_location_value: str = ""
+    end_location_type: str = "unknown"
+    end_location_value: str = ""
+    explicit_timezone: str = ""
 
     @classmethod
     def from_dict(cls, raw: dict) -> TemporalEvidence:
-        if not isinstance(raw, dict) or set(raw) != {
-            "start_local", "end_local", "start_zone", "end_zone",
-            "source", "status", "reason",
-        }:
+        required = {"start_local", "end_local", "start_zone", "end_zone",
+                    "source", "status", "reason"}
+        allowed = required | {"start_location_type", "start_location_value",
+                              "end_location_type", "end_location_value", "explicit_timezone"}
+        if not isinstance(raw, dict) or not required.issubset(raw) or set(raw) - allowed:
             raise ValueError("invalid temporal review data")
         if any(not isinstance(v, str) or len(v) > _BOUNDED for v in raw.values()):
             raise ValueError("invalid temporal review fields")
@@ -51,6 +57,9 @@ class TemporalEvidence:
             raise ValueError("invalid timezone source")
         if raw["status"] not in ("resolved", "confirmation_required", "correction_required"):
             raise ValueError("invalid timezone status")
+        for field_name in ("start_location_type", "end_location_type"):
+            if raw.get(field_name, "unknown") not in KINDS:
+                raise ValueError("invalid persisted location type")
         return cls(**raw)
 
     def as_dict(self) -> dict:
@@ -301,8 +310,15 @@ def normalize_structured_event(raw: dict, ha_zone: str) -> tuple[dict, TemporalE
               "confirmation_required" if unresolved or ambiguous else "resolved")
     reason = ("The local time does not exist in this timezone." if gap else
               "Confirm the event timezone or DST occurrence." if status != "resolved" else "")
-    metadata = TemporalEvidence(start.isoformat(), end.isoformat(), start_zone,
-                                end_zone, source, status, reason)
+    metadata = TemporalEvidence(
+        start.isoformat(), end.isoformat(), start_zone, end_zone, source, status,
+        reason,
+        raw.get("start_location_type", "unknown"),
+        raw.get("start_location_value") or "",
+        raw.get("end_location_type", "unknown"),
+        raw.get("end_location_value") or "",
+        explicit,
+    )
     return {**raw, "start": a, "end": b}, metadata
 
 
@@ -314,7 +330,6 @@ def confirm_zone(evidence: TemporalEvidence, zone_name: str) -> tuple[str, str, 
     )
     if ambiguous or gap:
         raise ValueError("Choose valid local times and DST occurrence in the editor")
-    return a, b, TemporalEvidence(
-        evidence.start_local, evidence.end_local, zone_name, zone_name,
-        "user", "resolved",
-    )
+    from dataclasses import replace
+    return a, b, replace(evidence, start_zone=zone_name, end_zone=zone_name,
+                         source="user", status="resolved", reason="")
