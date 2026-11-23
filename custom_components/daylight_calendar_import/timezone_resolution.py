@@ -479,14 +479,22 @@ def normalize_structured_event(
                       if item.strip()}
     if len(printed_places) == 1 and allow_source_venue:
         places.extend(printed_places)
-        if first[1] == "ha_fallback" and second[1] == "ha_fallback":
+        printed = next(iter(printed_places))
+        display = raw.get("location")
+        source_venue_disagrees = (isinstance(display, str) and bool(display.strip())
+                                  and display.strip().casefold() != printed.casefold())
+        if (not source_venue_disagrees and first[1] == "ha_fallback"
+                and second[1] == "ha_fallback"):
             printed = next(iter(printed_places))
             recovered = (_place_zone("venue", printed) or _place_zone("city", printed))
             if recovered:
                 first = (recovered, "geographic", False)
                 second = (recovered, "geographic", False)
     endpoint_zones = {first[0], second[0]}
-    location_conflict = False
+    location_conflict = bool(len(printed_places) == 1 and allow_source_venue
+                             and isinstance(raw.get("location"), str)
+                             and raw["location"].strip()
+                             and raw["location"].strip().casefold() != next(iter(printed_places)).casefold())
     for place in places:
         if not isinstance(place, str) or not place.strip():
             continue
