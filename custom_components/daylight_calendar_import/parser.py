@@ -506,9 +506,6 @@ def parse_ai_data(
                     source_zone = source_record["zone"]
                     if not claimed:
                         structured_raw["explicit_timezone"] = source_zone
-                    elif claimed != source_zone:
-                        # Force a source-declaration conflict into the review gate.
-                        structured_raw["explicit_timezone"] = claimed
                 # Only document-wide printed declarations may be shared
                 # among multiple independent events; full itinerary text can
                 # describe unrelated flights, venues, or route segments.
