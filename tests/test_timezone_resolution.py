@@ -1331,7 +1331,7 @@ def test_country_parentheses_cannot_be_accepted_as_airport():
 
 
 def test_printed_source_location_recovered_without_ai_location_fields():
-    source = "Meeting\\nLocation: Sydney, NSW, Australia"
+    source = "Meeting\nLocation: Sydney, NSW, Australia"
     event, = parser.parse_ai_data({"events": [structured()]},
         source_text=source, time_zone="America/Los_Angeles").events
     assert event.temporal.status == "resolved"
@@ -1352,7 +1352,7 @@ def test_multi_event_shared_explicit_declaration_is_preserved():
 
 
 def test_printed_declaration_conflicting_with_ai_is_blocked():
-    source = "Time zone: America/New_York\\nOrganizer works in America/Los_Angeles"
+    source = "Time zone: America/New_York\nOrganizer works in America/Los_Angeles"
     event, = parser.parse_ai_data({"events": [structured(
         explicit_timezone="America/Los_Angeles",
     )]}, source_text=source, time_zone="America/Los_Angeles").events
@@ -1391,9 +1391,9 @@ def test_unresolved_dateline_interval_remains_reviewable():
 
 
 def test_multileg_source_does_not_override_known_destination():
-    source = ("Departure: Los Angeles (LAX)\\nArrival: New York (JFK)\\n" +
+    source = ("Departure: Los Angeles (LAX)\nArrival: New York (JFK)\\n" +
               "Baggage terms " + "x" * 600 +
-              "\\nDeparture: New York (JFK)\\nArrival: London (LHR)")
+              "\nDeparture: New York (JFK)\nArrival: London (LHR)")
     event, = parser.parse_ai_data({"events": [structured(
         title="LAX to LHR journey",
         start_local="2027-07-15T08:00:00",
