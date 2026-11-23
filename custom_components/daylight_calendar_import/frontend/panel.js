@@ -3397,6 +3397,9 @@ export class DaylightImportPanel extends HTMLElement {
             const zoneChange = (endpoint, id) => {
               state[endpoint] = id;
               state[endpoint + "Occurrence"] = "";
+              // A single-venue zone controls both clocks. A newly chosen zone
+              // must invalidate both previous DST fold decisions.
+              if (endpoint === "start" && !endZone) state.endOccurrence = "";
               state.preview = null;
               state.error = "";
               refresh();
