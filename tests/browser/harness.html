@@ -44,23 +44,32 @@ panel.hass = {
         matches: [{kind: "conflict", calendar_entity: "calendar.work", existing_title: "Dentist"}]}};
     }
     if (call.service === "preview_pending_timezone") {
-      if (!fixture.pending.events[0].temporal) throw new Error("Not a timezone test");
+      const evidence = fixture.pending.events[0].temporal;
+      if (!evidence) throw new Error("Not a timezone test");
       const zone = call.service_data.time_zone;
       const arrival = call.service_data.end_time_zone;
+      const endLocation = (evidence.end_location_value || "").trim();
+      const different = endLocation &&
+        endLocation.toLowerCase() !== (evidence.start_location_value || "").trim().toLowerCase();
+      const needsEnd = Boolean(evidence.travel_incomplete || different ||
+        evidence.start_zone !== evidence.end_zone);
+      const flight = evidence.start_location_value === "LAX" &&
+        evidence.end_location_value === "JFK";
       return {response: {
         pending_id: fixture.pending.id, event_id: call.service_data.event_id,
-        needs_end_zone: true,
-        suggested_start_zones: ["America/Los_Angeles"],
-        suggested_end_zones: ["America/New_York"],
-        preview: zone && arrival ? {
-          start_zone: zone, end_zone: arrival,
-          start_local: "2028-07-10T08:00:00",
-          end_local: "2028-07-10T16:30:00",
-          start_utc: "2028-07-10T15:00:00+00:00",
-          end_utc: "2028-07-10T20:30:00+00:00",
-          start_offset: "-0700", end_offset: "-0400",
-          start_abbreviation: "PDT", end_abbreviation: "EDT",
-          duration_seconds: 19800,
+        needs_end_zone: needsEnd,
+        suggested_start_zones: evidence.start_location_value === "LAX" ?
+          ["America/Los_Angeles"] : [],
+        suggested_end_zones: needsEnd && evidence.end_location_value === "JFK" ?
+          ["America/New_York"] : [],
+        preview: zone && (!needsEnd || arrival) ? {
+          start_zone: zone, end_zone: needsEnd ? arrival : zone,
+          start_local: evidence.start_local, end_local: evidence.end_local,
+          start_utc: flight ? "2028-07-10T15:00:00+00:00" : "2027-07-17T22:00:00+00:00",
+          end_utc: flight ? "2028-07-10T20:30:00+00:00" : "2027-07-18T01:00:00+00:00",
+          start_offset: "-0700", end_offset: flight ? "-0400" : "-0700",
+          start_abbreviation: "PDT", end_abbreviation: flight ? "EDT" : "PDT",
+          duration_seconds: flight ? 19800 : 10800,
         } : null,
       }};
     }
