@@ -414,8 +414,12 @@ for (const [label, startLocal, endLocal, startInstant, endInstant, expectsFold] 
     const foldEnd = page.locator("label").filter({hasText: "End occurrence (DST fall-back)"});
     await expect(foldStart).toBeHidden();
     await expect(foldEnd).toBeHidden();
-    await page.locator('input[list^="daylight-iana-zones-"]').first()
-      .fill("America/Los_Angeles");
+    await page.getByRole("button", {name: "Event timezone: choose timezone"}).click();
+    const picker = page.getByRole("dialog", {name: "Select event timezone"});
+    await expect(picker).toBeVisible();
+    await picker.locator("select.timezone-picker-list")
+      .selectOption("America/Los_Angeles");
+    await picker.getByRole("button", {name: "Use selected timezone"}).click();
     if (expectsFold) {
       await expect(foldStart).toBeVisible();
       await expect(foldEnd).toBeVisible();
