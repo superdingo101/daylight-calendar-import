@@ -1426,3 +1426,21 @@ def test_legacy_named_source_record_conflicting_ai_zone_is_blocked():
         explicit_timezone="America/Los_Angeles")]},
         source_text=source, time_zone="America/Los_Angeles").events
     assert event.temporal.status == "confirmation_required"
+
+
+async def test_store_minute_precision_iso_edit_requires_timezone_reconfirmation(monkeypatch):
+    store = _store(monkeypatch, _Backend())
+    await store.async_load()
+    original, = parse_one(start_location_type="venue",
+                           start_location_value="Community Hall").events
+    pending = (await store.async_add(source_text="minute precision",
+                                     events=[original])).pending
+    old = pending.events[0]
+    modified = replace(original, start="2027-12-25T17:00-08:00",
+                       end="2027-12-25T19:00-08:00", temporal=None)
+    changed = await store.async_edit_event(pending.id, old.id, modified,
+                                           expected_event=old)
+    assert changed.draft.temporal.status == "confirmation_required"
+    assert changed.draft.temporal.start_local == "2027-12-25T17:00:00"
+    assert changed.draft.temporal.end_local == "2027-12-25T19:00:00"
+    assert store.get_event(pending.id, old.id) == changed
