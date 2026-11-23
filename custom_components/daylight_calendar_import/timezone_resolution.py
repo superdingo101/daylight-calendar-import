@@ -553,7 +553,7 @@ def normalize_structured_event(
         # A provisional HA-zone interval is not evidence that a date-line
         # journey is invalid. Keep clocks in a blocked draft for review.
         a = start.replace(tzinfo=_zone(start_zone)).isoformat()
-        b = end.replace(tzinfo=_zone(end_zone)).isoformat()
+        b = (end + timedelta(days=1)).replace(tzinfo=_zone(end_zone)).isoformat()
         ambiguous, gap = False, False
         unresolved = True
     status = ("correction_required" if gap else
