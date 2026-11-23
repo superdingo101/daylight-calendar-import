@@ -18,6 +18,15 @@ _POSTAL = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 _SOURCE_VENUE = re.compile(
     r"(?im)^[ \t]*(?:location|venue|where)[ \t]*:[ \t]*(?:\r?\n[ \t]*)?([^\r\n]+)"
 )
+# Recover only direct, source-printed IANA declarations when the AI omits
+# explicit_timezone. Incidental addresses, zones in prose and provider
+# assumptions are not independent declarations.
+_SOURCE_DECLARED_ZONE = re.compile(
+    r"\b(?:all\s+(?:event\s+)?times\s+are\s+in|"
+    r"(?:time\s*zone|timezone)\s*(?::|is))\s*"
+    r"(?P<zone>[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)+)\b",
+    re.IGNORECASE,
+)
 _FIXED = re.compile(r"(?i:(UTC|GMT))\s*([+-])(\d{1,2})(?::?(\d{2}))?\Z")
 _TRAVEL = re.compile(
     r"\b(?:flights?|departures?|departing|arrivals?|arriving|boarding|"
@@ -393,6 +402,14 @@ def normalize_structured_event(
     if not isinstance(explicit, str) or len(explicit) > 128:
         raise ValueError("invalid explicit timezone evidence")
     explicit = explicit.strip()
+    # The AI may correctly extract both flight airports yet omit a timezone
+    # visibly stated in the source. Recover a narrow, explicit declaration
+    # independently; conflicting source declarations still require review.
+    declared_zones = {match["zone"] for match in
+                      _SOURCE_DECLARED_ZONE.finditer(source_text)}
+    conflicting_declarations = len(declared_zones) > 1
+    if len(declared_zones) == 1 and not explicit:
+        explicit = next(iter(declared_zones))
     # Models sometimes copy the configured HA zone into an "explicit" field,
     # even though the invitation never printed it. Never let that hallucinated
     # claim override real geography, especially on a cross-zone flight.
@@ -485,7 +502,8 @@ def normalize_structured_event(
             legacy_clock_conflict = True
 
     start_zone, source, unresolved = first
-    unresolved = unresolved or location_conflict or travel_incomplete or legacy_clock_conflict
+    unresolved = (unresolved or location_conflict or travel_incomplete
+                  or legacy_clock_conflict or conflicting_declarations)
     end_zone, end_source, end_unresolved = second
     if explicit:
         if not explicit_unknown:
@@ -508,6 +526,7 @@ def normalize_structured_event(
               "confirmation_required" if unresolved or ambiguous else "resolved")
     reason = ("The local time does not exist in this timezone." if gap else
               "Choose the first or second DST occurrence." if ambiguous else
+              "Source declares conflicting timezones; confirm the event timezone." if conflicting_declarations else
               "Location evidence conflicts; confirm the event timezone." if location_conflict else
               "Travel itinerary has an unverified endpoint; confirm both timezones." if travel_incomplete else
               "Structured and legacy clocks disagree; confirm the event time." if legacy_clock_conflict else
