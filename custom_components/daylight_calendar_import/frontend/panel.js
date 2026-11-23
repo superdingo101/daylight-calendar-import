@@ -2696,8 +2696,13 @@ export class DaylightImportPanel extends HTMLElement {
     );
     let refreshFolds = () => {};
     const timedSync = syncTimedDuration(start, end, event, timeZone, () => refreshFolds(), event.temporal ? endTimeZone : null);
+    // Legacy drafts have a single event-wide time model: two endpoints can
+    // each resemble HA wall time while the pair is actually fixed-offset.
+    const legacyTimeModel = event.temporal ? null :
+      classifyEventTimeModel(event.start, event.end, timeZone);
     const foldControl = (input, original, title, endpointZone) => {
-      const timeModel = classifyEventTimeModel(original, original, endpointZone);
+      const timeModel = legacyTimeModel ||
+        classifyEventTimeModel(original, original, endpointZone);
       const label = document.createElement("label");
       const caption = element("span", title + " occurrence (DST fall-back)");
       const select = document.createElement("select");
