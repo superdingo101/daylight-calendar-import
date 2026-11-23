@@ -1311,3 +1311,81 @@ async def test_printed_flight_conflict_cannot_write_until_reviewer_confirms(monk
             pending.id, original.id, writer, expected_event=original,
         )
     writer.assert_not_awaited()
+
+
+def test_preview_zone_matches_confirmation_for_summer_and_winter_flights():
+    for date, start_offset, end_offset, start_utc, end_utc in [
+        ("2028-07-10", "-0700", "-0400",
+         "2028-07-10T15:00:00+00:00", "2028-07-10T20:30:00+00:00"),
+        ("2028-01-10", "-0800", "-0500",
+         "2028-01-10T16:00:00+00:00", "2028-01-10T21:30:00+00:00"),
+    ]:
+        evidence = zones.TemporalEvidence(
+            date + "T08:00:00", date + "T16:30:00",
+            "America/Los_Angeles", "America/Los_Angeles",
+            "ha_fallback", "confirmation_required",
+            start_location_type="airport", start_location_value="LAX",
+            end_location_type="airport", end_location_value="JFK",
+            travel_incomplete=True,
+        )
+        assert zones.suggested_zone(evidence, "start") == "America/Los_Angeles"
+        assert zones.suggested_zone(evidence, "end") == "America/New_York"
+        assert zones.preview_zone(evidence, "America/Los_Angeles", "America/New_York") == {
+            "start_zone": "America/Los_Angeles",
+            "end_zone": "America/New_York",
+            "start_local": date + "T08:00:00",
+            "end_local": date + "T16:30:00",
+            "start_iso": date + "T08:00:00" + start_offset[:3] + ":" + start_offset[3:],
+            "end_iso": date + "T16:30:00" + end_offset[:3] + ":" + end_offset[3:],
+            "start_utc": start_utc,
+            "end_utc": end_utc,
+            "start_offset": start_offset,
+            "end_offset": end_offset,
+            "start_abbreviation": "PDT" if date.endswith("07-10") else "PST",
+            "end_abbreviation": "EDT" if date.endswith("07-10") else "EST",
+            "duration_seconds": 19800,
+        }
+        with pytest.raises(ValueError, match="Confirm departure and arrival timezones"):
+            zones.preview_zone(evidence, "America/Los_Angeles")
+    assert zones.suggested_zone(replace(evidence, end_location_value=""), "end") is None
+    assert zones.suggested_zone(replace(evidence, end_location_type="unknown"), "end") is None
+    with pytest.raises(ValueError, match="invalid timezone endpoint"):
+        zones.suggested_zone(evidence, "other")
+
+
+def test_preview_zone_rejects_gap_and_requires_both_dst_occurrences():
+    fold = zones.TemporalEvidence(
+        "2027-11-07T01:15:00", "2027-11-07T01:45:00",
+        "America/Los_Angeles", "America/Los_Angeles",
+        "ha_fallback", "confirmation_required",
+    )
+    with pytest.raises(ValueError, match="Choose valid local times"):
+        zones.preview_zone(fold, "America/Los_Angeles")
+    result = zones.preview_zone(
+        fold, "America/Los_Angeles", start_occurrence="first",
+        end_occurrence="second",
+    )
+    assert result["start_iso"] == "2027-11-07T01:15:00-07:00"
+    assert result["end_iso"] == "2027-11-07T01:45:00-08:00"
+    assert result["duration_seconds"] == 5400
+    assert result["start_abbreviation"] == "PDT"
+    assert result["end_abbreviation"] == "PST"
+    gap = replace(fold, start_local="2027-03-14T02:15:00",
+                  end_local="2027-03-14T03:30:00")
+    with pytest.raises(ValueError, match="Choose valid local times"):
+        zones.preview_zone(gap, "America/Los_Angeles")
+    with pytest.raises(ValueError, match="unknown timezone name"):
+        zones.preview_zone(fold, "Imaginary/Nowhere")
+
+
+def test_preview_zone_supports_nonneutral_off_minute_zones():
+    evidence = zones.TemporalEvidence(
+        "2028-07-10T10:00:00", "2028-07-10T12:00:00",
+        "Asia/Kathmandu", "Asia/Kathmandu",
+        "ha_fallback", "confirmation_required",
+    )
+    result = zones.preview_zone(evidence, "Asia/Kathmandu")
+    assert (result["start_offset"], result["end_offset"]) == ("+0545", "+0545")
+    assert result["duration_seconds"] == 7200
+    assert result["start_utc"] == "2028-07-10T04:15:00+00:00"
+    assert result["end_utc"] == "2028-07-10T06:15:00+00:00"
