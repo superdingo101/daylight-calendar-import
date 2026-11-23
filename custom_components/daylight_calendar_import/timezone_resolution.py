@@ -382,7 +382,10 @@ def normalize_structured_event(
     if labeled:
         # Do not overwrite independent, contradictory endpoint evidence.
         existing = (raw.get("start_location_value"), raw.get("end_location_value"))
-        if all(not value or value.upper() == code for value, code in zip(existing, labeled, strict=True)):
+        if all(not value or value.upper() == code or
+               (value.upper().count(f"({code})") == 1 and
+                raw.get("start_location_type" if index == 0 else "end_location_type") != "airport")
+               for index, (value, code) in enumerate(zip(existing, labeled, strict=True))):
             raw.update(start_location_type="airport", start_location_value=labeled[0],
                        end_location_type="airport", end_location_value=labeled[1])
     # An AI provider can fill the event's display location yet omit the
