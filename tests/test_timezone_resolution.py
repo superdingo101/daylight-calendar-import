@@ -1403,3 +1403,26 @@ def test_multileg_source_does_not_override_known_destination():
     )]}, source_text=source, time_zone="America/Los_Angeles").events
     assert event.temporal.end_zone == "Europe/London"
     assert event.end == "2027-07-16T08:00:00+01:00"
+
+
+def test_legacy_named_source_record_protects_structured_event_zone():
+    source = ("Christmas dinner\nDate: December 25, 2027\n"
+              "Time: 6:00 PM - 8:00 PM (America/New_York)")
+    event, = parser.parse_ai_data({"events": [structured()]},
+        source_text=source, time_zone="America/Los_Angeles").events
+    assert event.temporal.status == "resolved"
+    assert event.temporal.start_zone == "America/New_York"
+    assert event.start == "2027-12-25T18:00:00-05:00"
+
+
+def test_legacy_named_source_record_conflicting_ai_zone_is_blocked():
+    source = ("Christmas dinner\nDate: December 25, 2027\n"
+              "Time: 6:00 PM - 8:00 PM (America/New_York)\n"
+              "Organizer works in America/Los_Angeles")
+    # The full-match backstop intentionally does not match extra prose.
+    # A direct declared source zone must still defeat incidental AI claims.
+    source = "Time zone: America/New_York\n" + source
+    event, = parser.parse_ai_data({"events": [structured(
+        explicit_timezone="America/Los_Angeles")]},
+        source_text=source, time_zone="America/Los_Angeles").events
+    assert event.temporal.status == "confirmation_required"
