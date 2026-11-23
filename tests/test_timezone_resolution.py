@@ -426,7 +426,7 @@ def test_conflicting_display_and_source_place_requires_confirmation():
         "ha_fallback", "confirmation_required",
         "unknown", "Montréal, Québec, Canada",
     )
-    assert event.temporal.reason == "Confirm the source location's timezone."
+    assert event.temporal.reason == "Location evidence conflicts; confirm the event timezone."
     assert event.location == "Montréal, Québec, Canada"
 
 
