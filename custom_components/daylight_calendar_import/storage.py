@@ -1637,6 +1637,8 @@ class PendingImportStore:
                 # authoritative timezone approval gate.
                 if not draft.all_day:
                     try:
+                        if "T" not in draft.start or "T" not in draft.end:
+                            raise ValueError("Edited clocks must use ISO T separator")
                         start_local = _local(datetime.fromisoformat(draft.start).replace(tzinfo=None).isoformat()).isoformat()
                         end_local = _local(datetime.fromisoformat(draft.end).replace(tzinfo=None).isoformat()).isoformat()
                     except ValueError as err:
