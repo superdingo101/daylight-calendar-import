@@ -86,7 +86,7 @@ def test_airport_itinerary_two_actual_instant_and_zones():
 @pytest.mark.parametrize(("kind", "value"), [
     ("city", "Encinitas, CA"),
     ("address", "123 Main Street, Encinitas, CA 92024"),
-    ("postal_code", "92024"),
+    ("postal_code", "92024, US"),
 ])
 def test_encinitas_offline_geography_has_pacific_zone(kind, value):
     event, = parse_one(start_location_type=kind, start_location_value=value).events
@@ -1311,3 +1311,95 @@ async def test_printed_flight_conflict_cannot_write_until_reviewer_confirms(monk
             pending.id, original.id, writer, expected_event=original,
         )
     writer.assert_not_awaited()
+
+
+def test_bare_postal_codes_are_not_us_evidence():
+    assert zones._place_zone("postal_code", "75001") is None
+    assert zones._place_zone("postal_code", "92024") is None
+    assert zones._place_zone("postal_code", "92024, US") == "America/Los_Angeles"
+    event, = parse_one(start_location_type="postal_code",
+                       start_location_value="75001").events
+    assert event.temporal.status == "confirmation_required"
+    assert event.temporal.source == "ha_fallback"
+
+
+def test_country_parentheses_cannot_be_accepted_as_airport():
+    assert zones._place_zone("city", "Toronto (CAN)") is None
+    event, = parse_one(start_location_type="city", start_location_value="Toronto (CAN)").events
+    assert event.temporal.status == "confirmation_required"
+    assert event.temporal.start_zone == "America/Los_Angeles"
+
+
+def test_printed_source_location_recovered_without_ai_location_fields():
+    source = "Meeting\\nLocation: Sydney, NSW, Australia"
+    event, = parser.parse_ai_data({"events": [structured()]},
+        source_text=source, time_zone="America/Los_Angeles").events
+    assert event.temporal.status == "resolved"
+    assert event.temporal.start_zone == "Australia/Sydney"
+    assert event.start == "2027-12-25T18:00:00+11:00"
+
+
+def test_multi_event_shared_explicit_declaration_is_preserved():
+    result = parser.parse_ai_data({"events": [
+        structured(title="First"), structured(title="Second"),
+    ]}, source_text="Time zone: America/New_York",
+        time_zone="America/Los_Angeles")
+    assert len(result.events) == 2
+    for event in result.events:
+        assert event.temporal.status == "resolved"
+        assert event.temporal.start_zone == "America/New_York"
+        assert event.start == "2027-12-25T18:00:00-05:00"
+
+
+def test_printed_declaration_conflicting_with_ai_is_blocked():
+    source = "Time zone: America/New_York\\nOrganizer works in America/Los_Angeles"
+    event, = parser.parse_ai_data({"events": [structured(
+        explicit_timezone="America/Los_Angeles",
+    )]}, source_text=source, time_zone="America/Los_Angeles").events
+    assert event.temporal.status == "confirmation_required"
+    assert "conflicting timezones" in event.temporal.reason
+
+
+@pytest.mark.parametrize("abbreviation", ["CET", "EST", "MST", "HST"])
+def test_zoneinfo_abbreviations_still_require_confirmation(abbreviation):
+    event, = parse_one(explicit_timezone=abbreviation).events
+    assert event.temporal.status == "confirmation_required"
+    assert event.temporal.explicit_timezone == abbreviation
+
+
+def test_distinct_explicit_zones_are_distinct_pending_fingerprints():
+    from custom_components.daylight_calendar_import.dedup import event_fingerprint
+    first, = parse_one(start_local="2027-11-07T01:15:00",
+                       end_local="2027-11-07T01:45:00",
+                       explicit_timezone="America/New_York").events
+    second, = parse_one(start_local="2027-11-07T01:15:00",
+                        end_local="2027-11-07T01:45:00",
+                        explicit_timezone="America/Los_Angeles").events
+    assert first.temporal.status == second.temporal.status == "confirmation_required"
+    assert event_fingerprint(first) != event_fingerprint(second)
+
+
+def test_unresolved_dateline_interval_remains_reviewable():
+    event, = parse_one(title="Plane ticket",
+                       start_local="2027-07-15T17:00:00",
+                       end_local="2027-07-15T11:00:00",
+                       start_location_type="airport", start_location_value="INVALID",
+                       end_location_type="airport", end_location_value="MISSING").events
+    assert event.temporal.status == "confirmation_required"
+    assert (event.temporal.start_local, event.temporal.end_local) == (
+        "2027-07-15T17:00:00", "2027-07-15T11:00:00")
+
+
+def test_multileg_source_does_not_override_known_destination():
+    source = ("Departure: Los Angeles (LAX)\\nArrival: New York (JFK)\\n" +
+              "Baggage terms " + "x" * 600 +
+              "\\nDeparture: New York (JFK)\\nArrival: London (LHR)")
+    event, = parser.parse_ai_data({"events": [structured(
+        title="LAX to LHR journey",
+        start_local="2027-07-15T08:00:00",
+        end_local="2027-07-16T08:00:00",
+        start_location_type="airport", start_location_value="LAX",
+        end_location_type="airport", end_location_value="LHR",
+    )]}, source_text=source, time_zone="America/Los_Angeles").events
+    assert event.temporal.end_zone == "Europe/London"
+    assert event.end == "2027-07-16T08:00:00+01:00"
