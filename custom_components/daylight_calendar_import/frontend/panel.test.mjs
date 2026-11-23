@@ -7302,6 +7302,29 @@ test("timezone confirmation shows DST folds only for a genuinely repeated local 
   assert.equal(fallEnd.hidden, false);
   assert.equal(fallStart.querySelector("select").children.length, 3);
   assert.equal(fallEnd.querySelector("select").children.length, 3);
+  const startChoice = fallStart.querySelector("select");
+  const endChoice = fallEnd.querySelector("select");
+  startChoice.value = "first";
+  startChoice.change();
+  endChoice.value = "second";
+  endChoice.change();
+  assert.equal(startChoice.value, "first");
+  assert.equal(endChoice.value, "second");
+
+  // A new single-venue timezone invalidates both prior DST decisions,
+  // even when the new zone also repeats the same local hour.
+  fallTrigger.click();
+  const changeList = fallDialog.querySelector("select");
+  changeList.value = "America/New_York";
+  changeList.change();
+  fallDialog.querySelectorAll("button").find(
+    button => button.textContent === "Use selected timezone").click();
+  assert.equal(fallStart.hidden, false);
+  assert.equal(fallEnd.hidden, false);
+  assert.equal(startChoice.value, "");
+  assert.equal(endChoice.value, "");
+  assert.equal(panel._content.querySelectorAll("button").find(
+    button => button.textContent === "Confirm timezone").disabled, true);
 });
 
 
