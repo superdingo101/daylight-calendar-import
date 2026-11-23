@@ -21,7 +21,7 @@ from .models import (
     normalize_date_time_assumptions,
 )
 from .sources import SourceDocument, TextSourceAdapter
-from .timezone_resolution import normalize_structured_event, _SOURCE_DECLARED_ZONE
+from .timezone_resolution import normalize_structured_event
 
 TASK_NAME = "Extract calendar event drafts"
 _LOGGER = logging.getLogger(__name__)
@@ -506,21 +506,16 @@ def parse_ai_data(
                     source_zone = source_record["zone"]
                     if not claimed:
                         structured_raw["explicit_timezone"] = source_zone
-                # Only document-wide printed declarations may be shared
-                # among multiple independent events; full itinerary text can
-                # describe unrelated flights, venues, or route segments.
-                verified_source = (source_text if len(events) == 1 else
-                    "\n".join(match.group(0) for match in
-                              _SOURCE_DECLARED_ZONE.finditer(source_text)))
+                # Preserve the entire source for safety checks. Association
+                # with this event, not the presence of evidence, controls recovery.
+                verified_source = source_text
                 if (source_record is not None and isinstance(raw.get("title"), str)
                         and raw["title"].strip().casefold() == source_record["title"].strip().casefold()):
                     verified_source += "\nTime zone: " + source_record["zone"]
                 try:
                     normalized, temporal = normalize_structured_event(
                         structured_raw, time_zone, verified_source,
-                        allow_flight_recovery=len(events) == 1,
-                        allow_source_venue=len(events) == 1,
-                        source_travel_context=source_text if len(events) > 1 else "",
+                        event_scoped=len(events) == 1,
                     )
                 except ValueError as err:
                     raise DraftValidationError(str(err)) from err

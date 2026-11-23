@@ -2447,6 +2447,7 @@ export class DaylightImportPanel extends HTMLElement {
       this._detail = await loadImport(this._hass, pendingId);
       if (generation !== this._generation) return;
       this._decisionError = null;
+      this._saving = false;
       this.render();
       this._announcement.replaceChildren(element("span", "Event timezone confirmed"));
       this.focusEvent(event.id);
@@ -2461,6 +2462,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._status = "Could not refresh the event after timezone confirmation.";
       }
       if (generation !== this._generation) return;
+      this._saving = false;
       this.render();
       this._announcement.replaceChildren(element("span", this._decisionError));
     } finally {
