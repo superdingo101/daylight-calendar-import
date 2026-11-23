@@ -132,7 +132,18 @@ export function createTimezonePicker({label, wallDate, locale, value = "",
   });
   choose.addEventListener("click", () => commit(proposed));
   cancel.addEventListener("click", close);
-  dialog.addEventListener("cancel", () => { proposed = ""; });
+  // Escape must dismiss the dialog in HA's nested shadow-root environment.
+  // Handle both native cancel and keydown, since some embedded browsers
+  // deliver one without automatically closing the other.
+  const dismiss = event => {
+    event.preventDefault?.();
+    proposed = "";
+    close();
+  };
+  dialog.addEventListener("cancel", dismiss);
+  dialog.addEventListener("keydown", event => {
+    if (event.key === "Escape") dismiss(event);
+  });
   refreshValue();
 
   return {
