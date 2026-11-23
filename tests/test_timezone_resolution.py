@@ -1332,7 +1332,7 @@ def test_country_parentheses_cannot_be_accepted_as_airport():
 
 def test_printed_source_location_recovered_without_ai_location_fields():
     source = "Meeting\nLocation: Sydney, NSW, Australia"
-    event, = parser.parse_ai_data({"events": [structured()]},
+    event, = parser.parse_ai_data({"events": [structured(explicit_timezone=ai_zone)]},
         source_text=source, time_zone="America/Los_Angeles").events
     assert event.temporal.status == "resolved"
     assert event.temporal.start_zone == "Australia/Sydney"
@@ -1405,7 +1405,8 @@ def test_multileg_source_does_not_override_known_destination():
     assert event.end == "2027-07-16T08:00:00+01:00"
 
 
-def test_legacy_named_source_record_protects_structured_event_zone():
+@pytest.mark.parametrize("ai_zone", ["", "America/New_York"])
+def test_legacy_named_source_record_protects_structured_event_zone(ai_zone):
     source = ("Christmas dinner\nDate: December 25, 2027\n"
               "Time: 6:00 PM - 8:00 PM (America/New_York)")
     event, = parser.parse_ai_data({"events": [structured()]},
