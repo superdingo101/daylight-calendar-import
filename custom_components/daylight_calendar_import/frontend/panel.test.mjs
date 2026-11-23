@@ -7203,8 +7203,10 @@ test("timezone confirmation submits the exact loaded event and reloads backend s
   panel.render();
   await panel.confirmTimezone(event, "America/Los_Angeles");
   assert.deepEqual(requests.map(request => request.service),
-    ["confirm_pending_timezone", "get_pending"]);
+    ["preview_pending_timezone", "confirm_pending_timezone", "get_pending"]);
   assert.deepEqual(requests[0].service_data, {pending_id: "source", event_id: "event",
+    expected_event: event});
+  assert.deepEqual(requests[1].service_data, {pending_id: "source", event_id: "event",
     time_zone: "America/Los_Angeles", expected_event: event});
   assert.equal(panel._detail.events[0].temporal.status, "resolved");
 });
