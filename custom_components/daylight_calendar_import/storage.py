@@ -1637,8 +1637,8 @@ class PendingImportStore:
                 # authoritative timezone approval gate.
                 if not draft.all_day:
                     try:
-                        start_local = _local(draft.start[:19]).isoformat()
-                        end_local = _local(draft.end[:19]).isoformat()
+                        start_local = _local(datetime.fromisoformat(draft.start).replace(tzinfo=None).isoformat()).isoformat()
+                        end_local = _local(datetime.fromisoformat(draft.end).replace(tzinfo=None).isoformat()).isoformat()
                     except ValueError as err:
                         raise PendingEventEditError("Invalid edited local clocks") from err
                     metadata = replace(metadata, start_local=start_local,
@@ -1931,7 +1931,13 @@ class PendingImportStore:
             }
             if fingerprint in self._seen_event_fingerprints or fingerprint in others:
                 raise PendingEventEditError("Resolved event duplicates a pending or handled event")
-            edited = replace(event, draft=draft, date_time_assumptions=())
+            edited = replace(event, draft=draft, date_time_assumptions=tuple(
+                assumption for assumption in event.date_time_assumptions
+                if not any(token in assumption.casefold() for token in (
+                    "timezone", "time zone", "dst occurrence", "first or second dst",
+                    "local time requires correction",
+                ))
+            ))
             updated = replace(pending, events=tuple(
                 edited if item.id == event_id else item for item in pending.events
             ))
