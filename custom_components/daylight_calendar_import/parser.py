@@ -498,9 +498,22 @@ def parse_ai_data(
                     raise DraftValidationError("structured local clocks require a timed event")
                 if time_zone is None:
                     raise DraftValidationError("Home Assistant time zone is unavailable")
+                # The legacy named-source matcher also recognizes explicit
+                # parenthesized zones attached to a Time: range.
+                structured_raw = dict(raw)
+                if source_record is not None:
+                    claimed = structured_raw.get("explicit_timezone")
+                    source_zone = source_record["zone"]
+                    if not claimed:
+                        structured_raw["explicit_timezone"] = source_zone
+                    elif claimed != source_zone:
+                        # Force a source-declaration conflict into the review gate.
+                        structured_raw["explicit_timezone"] = claimed
                 try:
                     normalized, temporal = normalize_structured_event(
-                        raw, time_zone, source_text if len(events) == 1 else "",
+                        structured_raw, time_zone, source_text,
+                        allow_flight_recovery=len(events) == 1,
+                        allow_source_venue=len(events) == 1,
                     )
                 except ValueError as err:
                     raise DraftValidationError(str(err)) from err
