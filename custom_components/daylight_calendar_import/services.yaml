@@ -162,6 +162,48 @@ get_pending:
       selector:
         text:
 
+preview_pending_timezone:
+  name: Preview pending event timezones
+  description: Return read-only geographic suggestions and date-accurate timezone instants, without changing the pending event. A fresh event snapshot and the same permissions as confirmation are required.
+  fields:
+    pending_id:
+      name: Pending import ID
+      required: true
+      selector:
+        text:
+    event_id:
+      name: Pending event ID
+      required: true
+      selector:
+        text:
+    expected_event:
+      name: Previously loaded event
+      required: true
+      selector:
+        object:
+    time_zone:
+      name: Departure or event timezone
+      selector:
+        text:
+    end_time_zone:
+      name: Arrival timezone
+      selector:
+        text:
+    start_occurrence:
+      name: Start occurrence when DST repeats an hour
+      selector:
+        select:
+          options:
+            - first
+            - second
+    end_occurrence:
+      name: End occurrence when DST repeats an hour
+      selector:
+        select:
+          options:
+            - first
+            - second
+
 get_pending_event:
   name: Get pending event
   description: Return one draft by its stable event ID. Requires control of the configured AI Task and calendar entities.
