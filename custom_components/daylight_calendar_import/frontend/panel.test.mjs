@@ -6258,6 +6258,41 @@ test("review editor can select the second occurrence of the fall-back hour", asy
 });
 
 
+test("legacy cross-zone event never offers a fold that the fixed-offset save model would discard", async () => {
+  const panel = new DaylightImportPanel();
+  let current = {
+    id: "travel", title: "Flight", all_day: false, status: "pending",
+    start: "2027-07-15T08:00:00-07:00",
+    end: "2027-07-15T16:00:00-04:00", confidence: 1,
+  };
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") {
+        return {response: {pending: {id: "one", events: [current]}}};
+      }
+      current = {...current, ...request.service_data.event};
+      return {response: {pending_id: "one", event: current}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "travel").click();
+  const form = find(panel._content, "form");
+  const start = form.elements.namedItem("start");
+  start.value = "2027-11-07T01:30";
+  start.change();
+  assert.equal(form.elements.namedItem("start_occurrence"), undefined);
+  await panel.saveEdit(current, form);
+  const saved = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(saved.service_data.event.start, "2027-11-07T01:30:00-07:00");
+});
+
+
 test("fold selector follows edited wall time and disappears outside the repeated hour", () => {
   const panel = new DaylightImportPanel();
   panel._hass = {config: {time_zone: "Europe/Berlin"}};
