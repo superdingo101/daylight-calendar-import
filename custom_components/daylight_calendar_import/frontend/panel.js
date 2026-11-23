@@ -1,7 +1,8 @@
 import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, repeatedHourOptions, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
-import {changeRetryJob, checkEvent, confirmEventTimezone, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {changeRetryJob, checkEvent, confirmEventTimezone, previewEventTimezone, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, saveRetrySettings, settingsErrorMessage} from "./settings.js";
 
+import {createTimezonePicker} from "./timezone_picker.js";
 import {ManualSubmission} from "./manual_submission.js";
 import {FileSubmission} from "./upload_submission.js";
 import {readReturnSession, saveReturnResult} from "./return_session.js";
@@ -65,6 +66,33 @@ const css = `
     padding-left: max(20px, var(--daylight-safe-left));
   }
   button { box-sizing: border-box; min-height: 44px; max-width: 100%; overflow-wrap: anywhere; cursor: pointer; border: 1px solid var(--divider-color); border-radius: 8px; background: var(--card-background-color); color: inherit; padding: 10px 14px; font: inherit; }
+
+  .timezone-field { display: grid; min-width: 0; gap: 5px; margin: 10px 0; }
+  .timezone-field-label { font-weight: 600; }
+  .timezone-field-trigger { width: 100%; text-align: left; }
+  .timezone-field-description { font-size: 0.88em; opacity: 0.85; overflow-wrap: anywhere; }
+  .timezone-picker-dialog {
+    box-sizing: border-box; color: var(--primary-text-color); font: inherit;
+    background: var(--card-background-color); border: 1px solid var(--divider-color);
+    border-radius: 12px; width: min(580px, calc(100vw - 24px));
+    max-width: 100%; max-height: min(85dvh, 760px); overflow-y: auto; padding: 18px;
+  }
+  .timezone-picker-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+  .timezone-picker-dialog h3 { margin: 0 0 12px; }
+  .timezone-picker-dialog label { display: grid; gap: 6px; margin: 12px 0; }
+  .timezone-picker-list { width: 100%; height: min(36dvh, 260px); overflow-y: auto; }
+  .timezone-picker-list option { padding: 8px; }
+  .timezone-picker-suggestions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .timezone-picker-suggestions p { width: 100%; margin: 8px 0 0; font-size: 0.88em; }
+  .timezone-picker-suggestion { min-height: 38px; }
+  .timezone-picker-count, .timezone-picker-detail { font-size: 0.88em; overflow-wrap: anywhere; }
+  .timezone-picker-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+  .timezone-event-preview { margin: 12px 0; padding: 10px; border: 1px solid var(--divider-color); border-radius: 8px; overflow-wrap: anywhere; }
+  .timezone-event-preview[role="alert"] { color: var(--error-color); }
+  @media (max-width: 480px) {
+    .timezone-picker-dialog { padding: 12px; max-height: 90dvh; }
+    .timezone-picker-actions button { flex: 1 1 auto; }
+  }
   button:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 2px; }
   .topbar button { background: transparent; color: inherit; border-color: currentColor; }
   .topbar button:focus-visible { outline-color: currentColor; }
@@ -687,6 +715,7 @@ export class DaylightImportPanel extends HTMLElement {
     this._batchContext = null;
     // Folded source-event previews are view-local; never share expansion across imports.
     this._expandedEventIds = new Set();
+    this._timezoneSelections = new Map();
     this._view = "inbox";
     this._routePath = null;
     this._pendingRoute = null;
@@ -2447,6 +2476,7 @@ export class DaylightImportPanel extends HTMLElement {
       this._detail = await loadImport(this._hass, pendingId);
       if (generation !== this._generation) return;
       this._decisionError = null;
+      this._timezoneSelections.delete(pendingId + ":" + event.id);
       this.render();
       this._announcement.replaceChildren(element("span", "Event timezone confirmed"));
       this.focusEvent(event.id);
@@ -3348,41 +3378,49 @@ export class DaylightImportPanel extends HTMLElement {
               "Confirm the event timezone before approving.", "error");
             warning.setAttribute("role", "alert");
             surface.append(warning);
-            const zoneListId = "daylight-iana-zones-" + event.id;
-            const zoneList = document.createElement("datalist");
-            zoneList.id = zoneListId;
-            for (const zone of (Intl.supportedValuesOf?.("timeZone") || [])) {
-              const option = document.createElement("option");
-              option.value = zone;
-              zoneList.append(option);
+            const key = this._selectedId + ":" + event.id;
+            const snapshot = JSON.stringify(event);
+            let state = this._timezoneSelections.get(key);
+            if (!state || state.snapshot !== snapshot) {
+              state = {snapshot, start: "", end: "", startOccurrence: "",
+                endOccurrence: "", preview: null, suggestionsStart: [],
+                suggestionsEnd: [], request: 0, error: ""};
+              this._timezoneSelections.set(key, state);
             }
-            const zoneInput = (labelText, placeholder) => {
-              const label = element("label", labelText);
-              const input = document.createElement("input");
-              input.type = "text";
-              input.value = "";
-              input.placeholder = placeholder;
-              input.setAttribute("list", zoneListId);
-              label.append(input);
-              surface.append(label);
-              return input;
-            };
-            const startZone = zoneInput("Confirm event timezone (IANA identifier)",
-              temporal.start_zone);
             const distinctEndLocation = Boolean(temporal.end_location_value?.trim()) &&
               temporal.end_location_value.trim().toLocaleLowerCase() !==
                 (temporal.start_location_value || "").trim().toLocaleLowerCase();
             const needsEndZone = temporal.travel_incomplete === true ||
               distinctEndLocation || temporal.end_zone !== temporal.start_zone;
-            const endZone = needsEndZone ?
-              zoneInput("Confirm arrival timezone (IANA identifier)", temporal.end_zone) : null;
-            surface.append(zoneList);
+            const eventStart = temporal.start_local;
+            const eventEnd = temporal.end_local;
+            const zoneChange = (endpoint, id) => {
+              state[endpoint] = id;
+              state[endpoint + "Occurrence"] = "";
+              state.preview = null;
+              state.error = "";
+              refresh();
+            };
+            const startZone = createTimezonePicker({
+              label: needsEndZone ? "Departure timezone" : "Event timezone",
+              wallDate: eventStart, locale: this._hass?.locale?.language,
+              value: state.start, suggestions: state.suggestionsStart,
+              onChange: id => zoneChange("start", id),
+            });
+            const endZone = needsEndZone ? createTimezonePicker({
+              label: "Arrival timezone", wallDate: eventEnd,
+              locale: this._hass?.locale?.language,
+              value: state.end, suggestions: state.suggestionsEnd,
+              onChange: id => zoneChange("end", id),
+            }) : null;
+            surface.append(startZone.element);
+            if (endZone) surface.append(endZone.element);
 
-            const occurrence = (which, clock, zoneInput) => {
+            const occurrence = (which, clock, zonePicker, field) => {
               const label = element("label", which + " occurrence (DST fall-back)");
               const select = document.createElement("select");
-              const refresh = () => {
-                const options = repeatedHourOptions(clock.slice(0, 16), zoneInput.value.trim());
+              const refreshFold = () => {
+                const options = repeatedHourOptions(clock.slice(0, 16), zonePicker.value);
                 label.hidden = options.length !== 2;
                 select.replaceChildren();
                 const placeholder = document.createElement("option");
@@ -3395,48 +3433,117 @@ export class DaylightImportPanel extends HTMLElement {
                   option.textContent = choice.label;
                   select.append(option);
                 }
-                select.value = "";
+                if (options.length !== 2) state[field] = "";
+                select.value = options.length === 2 ? state[field] : "";
               };
+              select.addEventListener("change", () => {
+                state[field] = select.value;
+                state.preview = null;
+                refresh();
+              });
               label.append(select);
               surface.append(label);
-              return {select, label, refresh};
+              return {select, label, refresh: refreshFold};
             };
-            const startFold = occurrence("Start", temporal.start_local, startZone);
-            const endFold = occurrence("End", temporal.end_local, endZone || startZone);
+            const startFold = occurrence("Start", eventStart, startZone, "startOccurrence");
+            const endFold = occurrence("End", eventEnd, endZone || startZone, "endOccurrence");
+            const preview = element("div", "Choose the event timezone to preview the resulting calendar times.",
+              "timezone-event-preview");
+            preview.setAttribute("aria-live", "polite");
+            surface.append(preview);
             const confirm = element("button", "Confirm timezone", "event-primary");
             confirm.type = "button";
+            const selectedOptions = () => ({
+              timeZone: startZone.value,
+              ...(endZone ? {endTimeZone: endZone.value} : {}),
+              ...(!startFold.label.hidden ? {startOccurrence: state.startOccurrence} : {}),
+              ...(!endFold.label.hidden ? {endOccurrence: state.endOccurrence} : {}),
+            });
+            const validSelection = () => Boolean(startZone.value &&
+              (!endZone || endZone.value) &&
+              (startFold.label.hidden || state.startOccurrence) &&
+              (endFold.label.hidden || state.endOccurrence));
+            const displayPreview = () => {
+              const result = state.preview;
+              if (state.error) {
+                preview.setAttribute("role", "alert");
+                preview.textContent = state.error;
+              } else {
+                preview.removeAttribute("role");
+                if (!result) {
+                  preview.textContent = validSelection() ?
+                    "Checking timezone offsets for this event…" :
+                    "Select all required timezones and DST occurrences to preview the event.";
+                } else {
+                  const duration = result.duration_seconds;
+                  const durationText = Math.floor(duration / 3600) + "h " +
+                    Math.floor((duration % 3600) / 60) + "m";
+                  preview.textContent =
+                    "Start: " + result.start_local.replace("T", " ") + " " +
+                    result.start_abbreviation + " (" + result.start_offset + ")" +
+                    " → " + result.start_utc + " UTC. End: " +
+                    result.end_local.replace("T", " ") + " " + result.end_abbreviation +
+                    " (" + result.end_offset + ") → " + result.end_utc +
+                    " UTC. Duration: " + durationText + ".";
+                }
+              }
+              confirm.disabled = !validSelection() || !state.preview || this._saving;
+            };
+            const loadPreview = async () => {
+              const currentRequest = ++state.request;
+              state.preview = null;
+              displayPreview();
+              if (!this._hass?.callWS) return;
+              const options = validSelection() ? selectedOptions() : {};
+              try {
+                const reply = await previewEventTimezone(
+                  this._hass, this._selectedId, event, options);
+                if (currentRequest !== state.request ||
+                    this._timezoneSelections.get(key) !== state ||
+                    this._selectedId + ":" + event.id !== key) return;
+                state.suggestionsStart = reply.suggested_start_zones;
+                state.suggestionsEnd = reply.suggested_end_zones;
+                startZone.setSuggestions(state.suggestionsStart);
+                endZone?.setSuggestions(state.suggestionsEnd);
+                if (reply.needs_end_zone !== needsEndZone) {
+                  throw new Error("Timezone endpoint evidence changed; refresh review.");
+                }
+                if (validSelection()) {
+                  const result = reply.preview;
+                  if (!result || result.start_zone !== startZone.value ||
+                      result.end_zone !== (endZone?.value || startZone.value)) {
+                    throw new Error("Timezone preview did not match the selected endpoints.");
+                  }
+                  state.preview = result;
+                }
+                state.error = "";
+              } catch (error) {
+                if (currentRequest !== state.request) return;
+                state.preview = null;
+                state.error = validSelection() ?
+                  (error?.message || "Could not verify timezone preview.") : "";
+              }
+              displayPreview();
+            };
             const refresh = () => {
               startFold.refresh();
               endFold.refresh();
-              confirm.disabled = !startZone.value.trim() ||
-                (endZone && !endZone.value.trim()) ||
-                (!startFold.label.hidden && !startFold.select.value) ||
-                (!endFold.label.hidden && !endFold.select.value) || this._saving;
+              state.preview = null;
+              state.error = "";
+              displayPreview();
+              void loadPreview();
             };
-            // Changes to a named zone invalidate previous DST selections.
-            startZone.addEventListener("input", refresh);
-            endZone?.addEventListener("input", refresh);
-            startFold.select.addEventListener("change", () => {
-              confirm.disabled = !startZone.value.trim() ||
-                (endZone && !endZone.value.trim()) ||
-                (!startFold.label.hidden && !startFold.select.value) ||
-                (!endFold.label.hidden && !endFold.select.value);
+            confirm.addEventListener("click", () => {
+              if (!validSelection() || !state.preview || this._saving) return;
+              const options = selectedOptions();
+              void this.confirmTimezone(event, startZone.value, {
+                ...(endZone ? {endTimeZone: options.endTimeZone} : {}),
+                ...(options.startOccurrence ? {startOccurrence: options.startOccurrence} : {}),
+                ...(options.endOccurrence ? {endOccurrence: options.endOccurrence} : {}),
+              });
             });
-            endFold.select.addEventListener("change", () => {
-              confirm.disabled = !startZone.value.trim() ||
-                (endZone && !endZone.value.trim()) ||
-                (!startFold.label.hidden && !startFold.select.value) ||
-                (!endFold.label.hidden && !endFold.select.value);
-            });
-            refresh();
-            confirm.addEventListener("click", () => void this.confirmTimezone(
-              event, startZone.value.trim(), {
-                ...(endZone ? {endTimeZone: endZone.value.trim()} : {}),
-                ...(!startFold.label.hidden ? {startOccurrence: startFold.select.value} : {}),
-                ...(!endFold.label.hidden ? {endOccurrence: endFold.select.value} : {}),
-              },
-            ));
             surface.append(confirm);
+            refresh();
           }
         }
         const assumptions = event.date_time_assumptions || [];
