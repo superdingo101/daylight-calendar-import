@@ -569,3 +569,48 @@ def confirm_zone(evidence: TemporalEvidence, zone_name: str,
     from dataclasses import replace
     return a, b, replace(evidence, start_zone=zone_name, end_zone=end_zone_name,
                          source="user", status="resolved", reason="")
+
+
+def suggested_zone(evidence: TemporalEvidence, endpoint: str) -> str | None:
+    """Advisory suggestion from typed endpoint geography, never a confirmation.
+
+    In particular, do not copy the provisional HA fallback or the departure
+    zone into a travel arrival suggestion.
+    """
+    if endpoint not in ("start", "end"):
+        raise ValueError("invalid timezone endpoint")
+    kind = getattr(evidence, endpoint + "_location_type")
+    value = getattr(evidence, endpoint + "_location_value")
+    return _place_zone(kind, value) if value else None
+
+
+def preview_zone(evidence: TemporalEvidence, zone_name: str,
+                 end_zone_name: str | None = None,
+                 start_occurrence: str | None = None,
+                 end_occurrence: str | None = None) -> dict:
+    """Calculate authoritative, read-only instants for the chosen local clocks.
+
+    Uses the exact same validation as confirmation, including DST folds/gaps.
+    No pending event, fingerprint, or persistent state is changed.
+    """
+    start_iso, end_iso, _ = confirm_zone(
+        evidence, zone_name, end_zone_name, start_occurrence, end_occurrence,
+    )
+    end_name = end_zone_name or zone_name
+    start = datetime.fromisoformat(start_iso)
+    end = datetime.fromisoformat(end_iso)
+    return {
+        "start_zone": zone_name,
+        "end_zone": end_name,
+        "start_local": evidence.start_local,
+        "end_local": evidence.end_local,
+        "start_iso": start_iso,
+        "end_iso": end_iso,
+        "start_utc": start.astimezone(timezone.utc).isoformat(),
+        "end_utc": end.astimezone(timezone.utc).isoformat(),
+        "start_offset": start.strftime("%z"),
+        "end_offset": end.strftime("%z"),
+        "start_abbreviation": start.astimezone(_zone(zone_name)).tzname(),
+        "end_abbreviation": end.astimezone(_zone(end_name)).tzname(),
+        "duration_seconds": int((end - start).total_seconds()),
+    }
