@@ -494,7 +494,10 @@ def normalize_structured_event(
     location_conflict = bool(len(printed_places) == 1 and allow_source_venue
                              and isinstance(raw.get("location"), str)
                              and raw["location"].strip()
-                             and raw["location"].strip().casefold() != next(iter(printed_places)).casefold())
+                             and raw["location"].strip().casefold() != next(iter(printed_places)).casefold()
+                             and (first[1] == "ha_fallback" or
+                                  (_place_zone("venue", raw["location"]) or _place_zone("city", raw["location"])) not in {first[0], second[0]} or
+                                  (_place_zone("venue", next(iter(printed_places))) or _place_zone("city", next(iter(printed_places)))) not in {first[0], second[0]}))
     for place in places:
         if not isinstance(place, str) or not place.strip():
             continue
