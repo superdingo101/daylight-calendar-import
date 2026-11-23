@@ -1187,10 +1187,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             expected = _expected_event(call.data["expected_event"], event_id)
             event = pending_store.get_event(pending_id, event_id)
-            if expected is None or event is None or expected != event:
+            if expected is None or event is None:
                 raise PendingEventEditError("Event changed since it was loaded; refresh")
             if event.status != "pending" or event.draft.temporal is None:
                 raise PendingEventEditError("Event is not awaiting timezone confirmation")
+            if expected != event:
+                raise PendingEventEditError("Event changed since it was loaded; refresh")
             temporal = event.draft.temporal
             distinct_end = bool(temporal.end_location_value.strip()) and (
                 temporal.end_location_value.strip().casefold() !=
