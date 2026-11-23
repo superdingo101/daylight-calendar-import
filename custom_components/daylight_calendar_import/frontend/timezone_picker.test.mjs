@@ -105,3 +105,37 @@ test("search can browse all zones without Intl.supportedValuesOf or query", () =
     Intl.supportedValuesOf = original;
   }
 });
+
+
+test("Escape and native cancel close the dialog without selecting a timezone", () => {
+  const changes = [];
+  const picker = createTimezonePicker({
+    label: "Arrival timezone", wallDate: "2028-07-10T16:30:00",
+    onChange: id => changes.push(id),
+  });
+  picker.trigger.fire("click");
+  const dialog = picker.element.querySelectorAll("dialog")[0];
+  assert.ok("open" in dialog.attributes);
+  const search = dialog.querySelectorAll("input")[0];
+  search.value = "New York";
+  search.fire("input");
+  const select = dialog.querySelectorAll("select")[0];
+  select.value = "America/New_York";
+  select.fire("change");
+  let prevented = false;
+  dialog.events.keydown({key: "Escape", preventDefault: () => { prevented = true; }});
+  assert.equal(prevented, true);
+  assert.equal("open" in dialog.attributes, false);
+  assert.equal(picker.value, "");
+  assert.deepEqual(changes, []);
+  assert.equal(globalThis.focused, picker.trigger);
+
+  picker.trigger.fire("click");
+  assert.ok("open" in dialog.attributes);
+  prevented = false;
+  dialog.events.cancel({preventDefault: () => { prevented = true; }});
+  assert.equal(prevented, true);
+  assert.equal("open" in dialog.attributes, false);
+  assert.equal(picker.value, "");
+  assert.deepEqual(changes, []);
+});
