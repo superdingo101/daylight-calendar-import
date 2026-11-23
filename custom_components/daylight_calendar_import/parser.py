@@ -493,7 +493,7 @@ def parse_ai_data(
             review_notes: list[str] = []
             corrected_raw = raw
             ambiguous = False
-            if "start_local" in raw or "end_local" in raw:
+            if raw.get("start_local") or raw.get("end_local"):
                 if raw.get("all_day") is not False:
                     raise DraftValidationError("structured local clocks require a timed event")
                 if time_zone is None:
@@ -520,6 +520,7 @@ def parse_ai_data(
                         structured_raw, time_zone, verified_source,
                         allow_flight_recovery=len(events) == 1,
                         allow_source_venue=len(events) == 1,
+                        source_travel_context=source_text if len(events) > 1 else "",
                     )
                 except ValueError as err:
                     raise DraftValidationError(str(err)) from err
