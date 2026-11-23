@@ -3625,6 +3625,12 @@ async def test_preview_timezone_service_returns_advisory_hints_and_exact_instant
     call.data["expected_event"] = {**unresolved.as_service_dict(), "id": "wrong"}
     with pytest.raises(ServiceValidationError, match="Event changed"):
         await handler(call)
+    call.data["expected_event"] = {
+        **unresolved.as_service_dict(), "title": "Stale client title"
+    }
+    with pytest.raises(ServiceValidationError, match="Event changed"):
+        await handler(call)
+    store.get_event.assert_called_with("source", unresolved.id)
     call.data["expected_event"] = unresolved.as_service_dict()
     store.get_event.return_value = None
     with pytest.raises(ServiceValidationError, match="Event changed"):
