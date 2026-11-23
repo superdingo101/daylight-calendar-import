@@ -49,6 +49,7 @@ from .const import (
     SERVICE_REJECT_PENDING_EVENT,
     SERVICE_RESOLVE_PENDING_EVENT,
     SERVICE_CONFIRM_PENDING_TIMEZONE,
+    SERVICE_PREVIEW_PENDING_TIMEZONE,
     SERVICE_SUBMIT_TEXT,
     SERVICE_SUBMIT_IMAGE,
     SERVICE_SUBMIT_PDF,
@@ -81,6 +82,7 @@ from .notification_delivery import async_deliver_notifications, MAX_ACTIVE_TASKS
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .source_routing import plan_source_routing
 from .uploads import async_image_source
+from .timezone_resolution import preview_zone, suggested_zone
 from .storage import (
     RetryJobConflict,
     PendingEventEditError,
@@ -122,6 +124,7 @@ _ENTRY_SERVICES = (
     SERVICE_APPROVE_PENDING_EVENT,
     SERVICE_RESOLVE_PENDING_EVENT,
     SERVICE_CONFIRM_PENDING_TIMEZONE,
+    SERVICE_PREVIEW_PENDING_TIMEZONE,
 )
 
 
@@ -217,6 +220,17 @@ EDIT_EVENT_SCHEMA = vol.Schema(
         vol.Required("event"): dict,
         vol.Optional(CONF_CALENDAR_ENTITY): cv.entity_id,
         vol.Optional("expected_event"): dict,
+    }
+)
+PREVIEW_TIMEZONE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_PENDING_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required(ATTR_EVENT_ID): vol.All(cv.string, vol.Length(min=1)),
+        vol.Required("expected_event"): dict,
+        vol.Optional("time_zone"): vol.All(cv.string, vol.Length(min=1, max=128)),
+        vol.Optional("end_time_zone"): vol.All(cv.string, vol.Length(min=1, max=128)),
+        vol.Optional("start_occurrence"): vol.In(("first", "second")),
+        vol.Optional("end_occurrence"): vol.In(("first", "second")),
     }
 )
 CONFIRM_TIMEZONE_SCHEMA = vol.Schema(
@@ -1165,6 +1179,47 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         return {"pending_id": pending_id, "event": edited.as_service_dict()}
 
+    async def handle_preview_pending_timezone(call: ServiceCall) -> ServiceResponse:
+        """Read-only, revision-checked evidence hints and authoritative instants."""
+        await check_read_permission(call)
+        pending_id = call.data[ATTR_PENDING_ID]
+        event_id = call.data[ATTR_EVENT_ID]
+        try:
+            expected = _expected_event(call.data["expected_event"], event_id)
+            event = pending_store.get_event(pending_id, event_id)
+            if expected is None or event is None or expected != event:
+                raise PendingEventEditError("Event changed since it was loaded; refresh")
+            if event.status != "pending" or event.draft.temporal is None:
+                raise PendingEventEditError("Event is not awaiting timezone confirmation")
+            temporal = event.draft.temporal
+            distinct_end = bool(temporal.end_location_value.strip()) and (
+                temporal.end_location_value.strip().casefold() !=
+                temporal.start_location_value.strip().casefold()
+            )
+            needs_end_zone = (temporal.travel_incomplete or distinct_end or
+                              temporal.end_zone != temporal.start_zone)
+            suggested_start = suggested_zone(temporal, "start")
+            suggested_end = suggested_zone(temporal, "end") if needs_end_zone else None
+            result = {
+                "pending_id": pending_id,
+                "event_id": event_id,
+                "needs_end_zone": needs_end_zone,
+                "suggested_start_zones": [suggested_start] if suggested_start else [],
+                "suggested_end_zones": [suggested_end] if suggested_end else [],
+                "preview": None,
+            }
+            zone_name = call.data.get("time_zone")
+            end_name = call.data.get("end_time_zone")
+            if zone_name and (not needs_end_zone or end_name):
+                result["preview"] = preview_zone(
+                    temporal, zone_name, end_name,
+                    call.data.get("start_occurrence"),
+                    call.data.get("end_occurrence"),
+                )
+            return result
+        except (DraftValidationError, ValueError) as err:
+            raise ServiceValidationError(str(err)) from err
+
     async def handle_confirm_pending_timezone(call: ServiceCall) -> ServiceResponse:
         await check_read_permission(call)
         pending_id = call.data[ATTR_PENDING_ID]
@@ -1371,6 +1426,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.services.async_register(
             DOMAIN, SERVICE_EDIT_PENDING_EVENT, tracked(handle_edit_pending_event),
             schema=EDIT_EVENT_SCHEMA, supports_response=SupportsResponse.ONLY,
+        )
+        hass.services.async_register(
+            DOMAIN, SERVICE_PREVIEW_PENDING_TIMEZONE, tracked(handle_preview_pending_timezone),
+            schema=PREVIEW_TIMEZONE_SCHEMA, supports_response=SupportsResponse.ONLY,
         )
         hass.services.async_register(
             DOMAIN, SERVICE_CONFIRM_PENDING_TIMEZONE, tracked(handle_confirm_pending_timezone),
