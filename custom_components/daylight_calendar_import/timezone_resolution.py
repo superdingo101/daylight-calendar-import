@@ -500,7 +500,8 @@ def normalize_structured_event(
             continue
         place_zone = (_place_zone("venue", place) or _place_zone("city", place)
                       or _place_zone("airport", place))
-        if place_zone is not None and place_zone not in {first[0], second[0]}:
+        if (place_zone is not None and place_zone not in {first[0], second[0]}
+                and (first[1] != "ha_fallback" or second[1] != "ha_fallback")):
             location_conflict = True
 
     # Missing destination geography is tolerable for an ordinary one-location
