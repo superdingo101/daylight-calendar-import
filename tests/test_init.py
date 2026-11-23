@@ -3680,8 +3680,8 @@ async def test_preview_timezone_service_single_venue_and_unknown_geo_do_not_infe
     assert value["preview"]["end_zone"] == "Asia/Kathmandu"
     assert value["preview"]["duration_seconds"] == 7200
     changed = replace(metadata, start_location_value="Sydney, Australia",
-                      start_location_type="city", end_location_value="New York, NY",
-                      end_location_type="city")
+                      start_location_type="city", end_location_value="JFK",
+                      end_location_type="airport")
     event = replace(event, draft=replace(event.draft, temporal=changed))
     store.get_event.return_value = event
     call.data["expected_event"] = event.as_service_dict()
