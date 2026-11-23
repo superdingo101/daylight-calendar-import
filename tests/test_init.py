@@ -20,6 +20,7 @@ from homeassistant.helpers import issue_registry as ir
 from custom_components.daylight_calendar_import import (
     EDIT_EVENT_SCHEMA,
     CONFIRM_TIMEZONE_SCHEMA,
+    PREVIEW_TIMEZONE_SCHEMA,
     RESOLVE_EVENT_SCHEMA,
     PENDING_EVENT_SCHEMA,
     PENDING_SCHEMA,
@@ -51,6 +52,7 @@ from custom_components.daylight_calendar_import.const import (
     SERVICE_APPROVE_PENDING_EVENT,
     SERVICE_EDIT_PENDING_EVENT,
     SERVICE_CONFIRM_PENDING_TIMEZONE,
+    SERVICE_PREVIEW_PENDING_TIMEZONE,
     SERVICE_GET_PENDING,
     SERVICE_GET_PENDING_EVENT,
     SERVICE_IMPORT_TEXT,
@@ -3551,3 +3553,144 @@ async def test_confirm_timezone_service_enforces_authentication_snapshot_and_res
     with pytest.raises(Unauthorized):
         await handler(call)
     store.async_confirm_timezone.assert_not_awaited()
+
+
+async def test_preview_timezone_service_returns_advisory_hints_and_exact_instants_without_writing(
+    monkeypatch,
+):
+    original = pending().events[0]
+    metadata = TemporalEvidence(
+        "2028-07-10T08:00:00", "2028-07-10T16:30:00",
+        "America/Los_Angeles", "America/Los_Angeles",
+        "ha_fallback", "confirmation_required",
+        "Conflicting source timezone", start_location_type="airport",
+        start_location_value="LAX", end_location_type="airport",
+        end_location_value="JFK", travel_incomplete=True,
+    )
+    unresolved = replace(original, draft=replace(
+        original.draft, start="2028-07-10T08:00:00-07:00",
+        end="2028-07-10T16:30:00-07:00", temporal=metadata,
+    ))
+    store = SimpleNamespace(
+        async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+        get_event=Mock(return_value=unresolved),
+        async_confirm_timezone=AsyncMock(),
+        async_edit_event=AsyncMock(),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore",
+                        lambda _hass: store)
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    handler, opts = hass.services.handlers[(DOMAIN, SERVICE_PREVIEW_PENDING_TIMEZONE)]
+    assert opts["schema"] is PREVIEW_TIMEZONE_SCHEMA
+    assert opts["supports_response"] is SupportsResponse.ONLY
+    call = SimpleNamespace(
+        context=Context(user_id="reviewer"),
+        data={ATTR_PENDING_ID: "source", ATTR_EVENT_ID: unresolved.id,
+              "expected_event": unresolved.as_service_dict()},
+    )
+    assert PREVIEW_TIMEZONE_SCHEMA(call.data) == call.data
+    hint = await handler(call)
+    assert hint == {
+        "pending_id": "source", "event_id": unresolved.id,
+        "needs_end_zone": True,
+        "suggested_start_zones": ["America/Los_Angeles"],
+        "suggested_end_zones": ["America/New_York"],
+        "preview": None,
+    }
+    call.data["time_zone"] = "America/Los_Angeles"
+    assert (await handler(call))["preview"] is None, "arrival cannot inherit departure"
+    call.data["end_time_zone"] = "America/New_York"
+    value = await handler(call)
+    assert value["preview"]["start_utc"] == "2028-07-10T15:00:00+00:00"
+    assert value["preview"]["end_utc"] == "2028-07-10T20:30:00+00:00"
+    assert value["preview"]["duration_seconds"] == 19800
+    assert value["preview"]["start_abbreviation"] == "PDT"
+    assert value["preview"]["end_abbreviation"] == "EDT"
+    store.async_confirm_timezone.assert_not_awaited()
+    store.async_edit_event.assert_not_awaited()
+    store.get_event.assert_called()
+
+    call.data["time_zone"] = "America/Invalid"
+    with pytest.raises(ServiceValidationError, match="unknown timezone name"):
+        await handler(call)
+    call.data["time_zone"] = "America/Los_Angeles"
+    call.data["start_occurrence"] = "first"
+    with pytest.raises(ServiceValidationError, match="Invalid DST occurrence"):
+        await handler(call)
+    call.data.pop("start_occurrence")
+    with pytest.raises(vol.Invalid):
+        PREVIEW_TIMEZONE_SCHEMA({**call.data, "end_occurrence": "third"})
+
+    call.data["expected_event"] = {**unresolved.as_service_dict(), "id": "wrong"}
+    with pytest.raises(ServiceValidationError, match="Event changed"):
+        await handler(call)
+    call.data["expected_event"] = unresolved.as_service_dict()
+    store.get_event.return_value = None
+    with pytest.raises(ServiceValidationError, match="Event changed"):
+        await handler(call)
+    store.get_event.return_value = replace(unresolved, status="write_uncertain")
+    with pytest.raises(ServiceValidationError, match="Event changed"):
+        await handler(call)
+    call.data["expected_event"] = replace(unresolved, status="write_uncertain").as_service_dict()
+    with pytest.raises(ServiceValidationError, match="not awaiting timezone"):
+        await handler(call)
+    store.get_event.return_value = replace(unresolved, draft=replace(
+        unresolved.draft, temporal=None))
+    call.data["expected_event"] = store.get_event.return_value.as_service_dict()
+    with pytest.raises(ServiceValidationError, match="not awaiting timezone"):
+        await handler(call)
+
+    store.get_event.return_value = unresolved
+    call.data["expected_event"] = unresolved.as_service_dict()
+    call.context = Context(user_id=None)
+    with pytest.raises(Unauthorized):
+        await handler(call)
+    store.async_confirm_timezone.assert_not_awaited()
+
+
+async def test_preview_timezone_service_single_venue_and_unknown_geo_do_not_infer_arrival(
+    monkeypatch,
+):
+    base = pending().events[0]
+    metadata = TemporalEvidence(
+        "2028-01-10T10:00:00", "2028-01-10T12:00:00",
+        "America/Los_Angeles", "America/Los_Angeles",
+        "ha_fallback", "confirmation_required",
+        start_location_type="unknown", start_location_value="",
+        end_location_type="unknown", end_location_value="",
+    )
+    event = replace(base, draft=replace(base.draft, temporal=metadata))
+    store = SimpleNamespace(
+        async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+        get_event=Mock(return_value=event),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore",
+                        lambda _hass: store)
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_PREVIEW_PENDING_TIMEZONE)][0]
+    call = SimpleNamespace(
+        context=Context(user_id="reviewer"),
+        data={ATTR_PENDING_ID: "one", ATTR_EVENT_ID: event.id,
+              "expected_event": event.as_service_dict(), "time_zone": "Asia/Kathmandu"},
+    )
+    value = await handler(call)
+    assert value["needs_end_zone"] is False
+    assert value["suggested_start_zones"] == []
+    assert value["suggested_end_zones"] == []
+    assert value["preview"]["start_zone"] == "Asia/Kathmandu"
+    assert value["preview"]["end_zone"] == "Asia/Kathmandu"
+    assert value["preview"]["duration_seconds"] == 7200
+    changed = replace(metadata, start_location_value="Sydney, Australia",
+                      start_location_type="city", end_location_value="New York, NY",
+                      end_location_type="city")
+    event = replace(event, draft=replace(event.draft, temporal=changed))
+    store.get_event.return_value = event
+    call.data["expected_event"] = event.as_service_dict()
+    call.data.pop("time_zone")
+    value = await handler(call)
+    assert value["needs_end_zone"] is True
+    assert value["suggested_end_zones"] == ["America/New_York"]
+    assert value["suggested_start_zones"] == ["Australia/Sydney"]
+    assert value["preview"] is None
