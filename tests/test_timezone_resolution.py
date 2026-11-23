@@ -1444,3 +1444,23 @@ async def test_store_minute_precision_iso_edit_requires_timezone_reconfirmation(
     assert changed.draft.temporal.start_local == "2027-12-25T17:00:00"
     assert changed.draft.temporal.end_local == "2027-12-25T19:00:00"
     assert store.get_event(pending.id, old.id) == changed
+
+
+def test_labeled_flight_does_not_overwrite_distinct_typed_airports():
+    source = "Departure: Los Angeles (LAX) 8 AM Arrival: New York (JFK) 4 PM"
+    event, = parser.parse_ai_data({"events": [structured(
+        title="Connecting flight",
+        start_local="2027-07-15T08:00:00",
+        end_local="2027-07-16T08:00:00",
+        start_location_type="airport", start_location_value="LAX",
+        end_location_type="airport", end_location_value="LHR",
+    )]}, source_text=source, time_zone="America/Los_Angeles").events
+    assert event.temporal.end_zone == "Europe/London"
+    assert event.end == "2027-07-16T08:00:00+01:00"
+
+
+def test_reversed_nontravel_source_without_missing_zones_is_not_kept():
+    result = parse_one(start_local="2027-12-25T20:00:00",
+                       end_local="2027-12-25T18:00:00")
+    assert result.events == []
+    assert "end must be after start" in result.warnings[0]
