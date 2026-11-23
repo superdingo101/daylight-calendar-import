@@ -7245,6 +7245,42 @@ test("timezone confirmation submits the exact loaded event and reloads backend s
 });
 
 
+for (const fail of [false, true]) {
+  test(`timezone confirmation releases navigation controls after ${fail ? "failure" : "success"}`, async () => {
+    const panel = new DaylightImportPanel();
+    const temporal = {status: "confirmation_required",
+      start_local: "2027-12-25T18:00:00", end_local: "2027-12-25T20:00:00",
+      start_zone: "America/Los_Angeles", end_zone: "America/Los_Angeles", source: "ha_fallback"};
+    const event = {id: "event", title: "Dinner", all_day: false, status: "pending",
+      start: "2027-12-25T18:00:00-08:00", end: "2027-12-25T20:00:00-08:00", temporal};
+    const resolved = {...event, temporal: {...temporal, status: "resolved", source: "user"}};
+    const detail = item => ({id: "source", source_kind: "manual_text", events: [item]});
+    panel._hass = {user: {is_admin: true}, config: {time_zone: "America/Los_Angeles"},
+      callWS: async request => {
+        if (request.service === "confirm_pending_timezone") {
+          if (fail) throw new Error("Confirmation refused");
+          return {response: {pending_id: "source", event: resolved}};
+        }
+        if (request.service === "get_pending") return {response: {pending: detail(fail ? event : resolved)}};
+        throw new Error("Unexpected service request");
+      }};
+    panel._status = "ready";
+    panel._selectedId = "source";
+    panel._detail = detail(event);
+    panel.render();
+    await panel.confirmTimezone(event, "America/Los_Angeles");
+    assert.equal(panel._saving, false);
+    assert.equal(panel._refreshButton.disabled, false);
+    const nav = find(panel._content, "nav");
+    assert.ok(nav);
+    for (const button of nav.querySelectorAll("button")) {
+      assert.equal(button.disabled, false, button.textContent);
+    }
+    assert.equal(panel._detail.events[0].temporal.status, fail ? "confirmation_required" : "resolved");
+    assert.equal(panel._decisionError, fail ? "Confirmation refused" : null);
+  });
+}
+
 test("resolved geographic note never labels an explicitly printed year inferred", () => {
   const panel = new DaylightImportPanel();
   panel._hass = {config: {time_zone: "America/Los_Angeles"}};

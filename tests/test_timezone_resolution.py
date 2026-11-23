@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from hypothesis import given, settings, strategies as st
 
 from custom_components.daylight_calendar_import import parser, timezone_resolution as zones
 from custom_components.daylight_calendar_import.models import EventDraft, DraftValidationError
@@ -1465,9 +1466,9 @@ def test_multiple_flights_retain_travel_review_gate_without_cross_event_airport_
     source = ("Flight AA1234 Departure: Los Angeles (LAX) Arrival: New York (JFK)\\n"
               "Flight AA5678 Departure: New York (JFK) Arrival: London (LHR)")
     extracted = [
-        structured(title="Flight AA1234", start_location_type="airport",
+        structured(title="AA1234", start_location_type="airport",
                    start_location_value="LAX"),
-        structured(title="Flight AA5678", start_location_type="airport",
+        structured(title="AA5678", start_location_type="airport",
                    start_location_value="JFK"),
     ]
     result = parser.parse_ai_data({"events": extracted}, source_text=source,
@@ -1554,3 +1555,95 @@ def test_reversed_nontravel_source_without_missing_zones_is_not_kept():
                        end_local="2027-12-25T18:00:00")
     assert result.events == []
     assert "end must be after start" in result.warnings[0]
+
+
+@settings(max_examples=24, deadline=None)
+@given(
+    venues=st.lists(st.sampled_from(["Sydney, NSW, Australia", "London, UK",
+                                    "Community Hall", "Encinitas, CA"]),
+                    min_size=1, max_size=3, unique=True),
+    count=st.integers(min_value=2, max_value=4),
+    ha_zone=st.sampled_from(["America/Los_Angeles", "America/New_York", "UTC"]),
+)
+def test_unassociated_document_venues_never_authorize_ha_fallback(venues, count, ha_zone):
+    source = "\n".join(f"Location: {venue}" for venue in venues)
+    result = parser.parse_ai_data(
+        {"events": [structured(title=f"Meeting {index}") for index in range(count)]},
+        source_text=source, time_zone=ha_zone,
+    )
+    assert len(result.events) == count
+    assert len(result.warnings) == count
+    for event in result.events:
+        assert event.temporal.status == "confirmation_required"
+        assert event.temporal.source == "ha_fallback"
+        assert event.temporal.start_zone == event.temporal.end_zone == ha_zone
+        assert event.temporal.start_location_value == ""
+        assert event.temporal.end_location_value == ""
+        assert event.temporal.reason == "The printed venue could not be verified; confirm the event timezone."
+        assert EventDraft.from_mapping(event.as_dict()) == event
+
+
+@settings(max_examples=12, deadline=None)
+@given(
+    first=st.sampled_from(["Sydney, NSW, Australia", "London, UK", "Community Hall"]),
+    second=st.sampled_from(["Encinitas, CA", "Paris, France", "School gym"]),
+    explicit=st.sampled_from(["", "America/Los_Angeles"]),
+)
+def test_adding_unassociated_venue_evidence_cannot_remove_confirmation(first, second, explicit):
+    source = f"Location: {first}\nWhere: {second}"
+    if explicit:
+        source += f"\nTime zone: {explicit}"
+    event, = parser.parse_ai_data({"events": [structured(explicit_timezone=explicit)]},
+        source_text=source, time_zone="America/Los_Angeles").events
+    assert event.temporal.status == "confirmation_required"
+    assert event.temporal.start_location_value == event.temporal.end_location_value == ""
+    assert event.temporal.reason == "The printed venue could not be verified; confirm the event timezone."
+
+
+def test_source_only_recovered_venue_survives_fold_review_and_dedup():
+    from custom_components.daylight_calendar_import.dedup import event_fingerprint
+    events = []
+    for location, zone in [
+        ("Los Angeles International Airport (LAX)", "America/Los_Angeles"),
+        ("John F. Kennedy International Airport (JFK)", "America/New_York"),
+    ]:
+        event, = parser.parse_ai_data({"events": [structured(
+            start_local="2027-11-07T01:15:00", end_local="2027-11-07T01:45:00",
+        )]}, source_text=f"Location: {location}", time_zone="America/Los_Angeles").events
+        assert event.temporal.status == "confirmation_required"
+        assert event.temporal.start_location_value == location
+        assert event.temporal.start_location_type == "venue"
+        assert event.location == location
+        assert event.temporal.start_zone == event.temporal.end_zone == zone
+        assert EventDraft.from_mapping(event.as_dict()) == event
+        events.append(event)
+    assert event_fingerprint(events[0]) != event_fingerprint(events[1])
+
+
+@pytest.mark.parametrize(("start_place", "end_place", "arrival_zone", "arrival_offset"), [
+    ("LAX", "JFK", "America/New_York", "-05:00"),
+    ("LAX", "SFO", "America/Los_Angeles", "-08:00"),
+])
+def test_complete_travel_confirmation_requires_independent_arrival(start_place, end_place, arrival_zone, arrival_offset):
+    event, = parse_one(title="Flight", start_local="2027-11-07T01:30:00",
+        end_local="2027-11-07T10:00:00", start_location_type="airport",
+        start_location_value=start_place, end_location_type="airport",
+        end_location_value=end_place).events
+    assert event.temporal.status == "confirmation_required"
+    assert event.temporal.travel_incomplete is False
+    with pytest.raises(ValueError, match="Confirm departure and arrival timezones independently"):
+        zones.confirm_zone(event.temporal, "America/Los_Angeles", start_occurrence="first")
+    start, end, evidence = zones.confirm_zone(event.temporal, "America/Los_Angeles",
+        end_zone_name=arrival_zone, start_occurrence="first")
+    assert start == "2027-11-07T01:30:00-07:00"
+    assert end == "2027-11-07T10:00:00" + arrival_offset
+    assert evidence.status == "resolved"
+    assert evidence.end_zone == arrival_zone
+
+
+def test_distinct_zone_without_location_still_requires_independent_arrival():
+    event, = parse_one(start_local="2027-11-07T01:15:00",
+                       end_local="2027-11-07T01:45:00").events
+    evidence = replace(event.temporal, end_zone="America/New_York")
+    with pytest.raises(ValueError, match="Confirm departure and arrival timezones independently"):
+        zones.confirm_zone(evidence, "America/Los_Angeles", start_occurrence="first")
