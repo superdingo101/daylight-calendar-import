@@ -369,6 +369,7 @@ def _range_for_wall(start: datetime, end: datetime, start_name: str,
 def normalize_structured_event(
     raw: dict, ha_zone: str, source_text: str = "", *,
     allow_flight_recovery: bool = True, allow_source_venue: bool = True,
+    source_travel_context: str = "",
 ) -> tuple[dict, TemporalEvidence]:
     """Turn structured AI source facts into provisional safe review timestamps."""
     start = _local(raw.get("start_local"))
@@ -379,6 +380,7 @@ def normalize_structured_event(
     # identifiers even if a model collapses the itinerary into one venue.
     # The parser supplies source_text only when exactly one event was extracted.
     labeled = _labeled_flight_airports(source_text) if source_text and allow_flight_recovery else None
+    flight_endpoint_conflict = False
     if labeled:
         # Do not overwrite independent, contradictory endpoint evidence.
         existing = (raw.get("start_location_value"), raw.get("end_location_value"))
@@ -388,6 +390,10 @@ def normalize_structured_event(
                for index, (value, code) in enumerate(zip(existing, labeled, strict=True))):
             raw.update(start_location_type="airport", start_location_value=labeled[0],
                        end_location_type="airport", end_location_value=labeled[1])
+        else:
+            # Keep both competing accounts; do not silently treat an AI route
+            # that contradicts an independently printed flight as verified.
+            flight_endpoint_conflict = True
     # An AI provider can fill the event's display location yet omit the
     # separate typed start-location fields. Treat this as actual geographic
     # evidence, NOT as permission to silently use the HA timezone.
@@ -477,19 +483,31 @@ def normalize_structured_event(
     places = [raw.get("location")]
     printed_places = {item.strip() for item in _SOURCE_VENUE.findall(source_text)
                       if item.strip()}
+    printed_venue_unresolved = False
     if len(printed_places) == 1 and allow_source_venue:
         places.extend(printed_places)
         printed = next(iter(printed_places))
         display = raw.get("location")
         source_venue_disagrees = (isinstance(display, str) and bool(display.strip())
                                   and display.strip().casefold() != printed.casefold())
-        if (not source_venue_disagrees and first[1] == "ha_fallback"
-                and second[1] == "ha_fallback"):
-            printed = next(iter(printed_places))
+        # Recovery is permitted only for a genuinely shared location whose
+        # endpoints have NO independent geographic claims. A failed lookup
+        # does not mean the source had no venue.
+        no_endpoint_evidence = not (raw.get("start_location_value")
+                                    or raw.get("end_location_value"))
+        if not source_venue_disagrees and no_endpoint_evidence:
             recovered = (_place_zone("venue", printed) or _place_zone("city", printed))
             if recovered:
                 first = (recovered, "geographic", False)
                 second = (recovered, "geographic", False)
+            else:
+                printed_venue_unresolved = True
+        elif not source_venue_disagrees:
+            # An unresolvable printed venue may name a different destination;
+            # never treat its mere presence as proof of the existing zones.
+            printed_venue_unresolved = not bool(
+                _place_zone("venue", printed) or _place_zone("city", printed)
+            )
     endpoint_zones = {first[0], second[0]}
     location_conflict = bool(len(printed_places) == 1 and allow_source_venue
                              and isinstance(raw.get("location"), str)
@@ -511,7 +529,7 @@ def normalize_structured_event(
     # event, but not when an itinerary explicitly indicates travel. In that
     # case inheriting the departure zone (or guessing HA for departure) would
     # produce a plausible but possibly incorrect arrival instant.
-    travel_context = f"{raw.get('title') or ''} {source_text}"
+    travel_context = f"{raw.get('title') or ''} {source_text} {source_travel_context}"
     has_start_location = (raw.get("start_location_type") not in ("unknown", "virtual")
                           and bool(raw.get("start_location_value")))
     has_end_location = (raw.get("end_location_type") not in ("unknown", "virtual")
@@ -539,7 +557,8 @@ def normalize_structured_event(
 
     start_zone, source, unresolved = first
     unresolved = (unresolved or location_conflict or travel_incomplete
-                  or legacy_clock_conflict or conflicting_declarations)
+                  or legacy_clock_conflict or conflicting_declarations
+                  or flight_endpoint_conflict or printed_venue_unresolved)
     end_zone, end_source, end_unresolved = second
     if explicit:
         if not explicit_unknown:
@@ -573,7 +592,8 @@ def normalize_structured_event(
     reason = ("The local time does not exist in this timezone." if gap else
               "Choose the first or second DST occurrence." if ambiguous else
               "Source declares conflicting timezones; confirm the event timezone." if conflicting_declarations else
-              "Location evidence conflicts; confirm the event timezone." if location_conflict else
+              "Location evidence conflicts; confirm the event timezone." if (location_conflict or flight_endpoint_conflict) else
+              "The printed venue could not be verified; confirm the event timezone." if printed_venue_unresolved else
               "Travel itinerary has an unverified endpoint; confirm both timezones." if travel_incomplete else
               "Structured and legacy clocks disagree; confirm the event time." if legacy_clock_conflict else
               "Confirm the source location's timezone." if unresolved else "")
