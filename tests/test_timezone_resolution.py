@@ -1460,6 +1460,95 @@ def test_labeled_flight_does_not_overwrite_distinct_typed_airports():
     assert event.end == "2027-07-16T08:00:00+01:00"
 
 
+
+def test_multiple_flights_retain_travel_review_gate_without_cross_event_airport_recovery():
+    source = ("Flight AA1234 Departure: Los Angeles (LAX) Arrival: New York (JFK)\\n"
+              "Flight AA5678 Departure: New York (JFK) Arrival: London (LHR)")
+    extracted = [
+        structured(title="Flight AA1234", start_location_type="airport",
+                   start_location_value="LAX"),
+        structured(title="Flight AA5678", start_location_type="airport",
+                   start_location_value="JFK"),
+    ]
+    result = parser.parse_ai_data({"events": extracted}, source_text=source,
+                                  time_zone="America/Los_Angeles")
+    assert len(result.events) == 2
+    for event, departure in zip(result.events, ("America/Los_Angeles", "America/New_York"), strict=True):
+        assert event.temporal.start_zone == departure
+        assert event.temporal.end_zone == departure
+        assert event.temporal.status == "confirmation_required"
+        assert event.temporal.travel_incomplete is True
+        assert "Travel itinerary" in event.temporal.reason
+
+
+def test_conflicting_printed_flight_endpoint_requires_review_without_overwriting_ai_fields():
+    source = "Departure: Los Angeles (LAX) 8 AM Arrival: New York (JFK) 4 PM"
+    event, = parser.parse_ai_data({"events": [structured(
+        title="Flight", start_location_type="airport", start_location_value="LAX",
+        end_location_type="airport", end_location_value="LHR",
+    )]}, source_text=source, time_zone="America/Los_Angeles").events
+    assert event.temporal.end_location_value == "LHR"
+    assert event.temporal.end_zone == "Europe/London"
+    assert event.temporal.status == "confirmation_required"
+    assert "Location evidence conflicts" in event.temporal.reason
+
+
+def test_source_venue_never_erases_unresolved_independent_arrival():
+    event, = parser.parse_ai_data({"events": [structured(
+        title="Flight", start_location_type="airport",
+        start_location_value="Los Angeles International Airport",
+        end_location_type="airport",
+        end_location_value="John F Kennedy International Airport",
+    )]}, source_text="Location: Los Angeles International Airport (LAX)",
+        time_zone="America/Los_Angeles").events
+    assert event.temporal.start_location_value == "Los Angeles International Airport"
+    assert event.temporal.end_location_value == "John F Kennedy International Airport"
+    assert event.temporal.start_zone == "America/Los_Angeles"
+    assert event.temporal.end_zone == "America/Los_Angeles"
+    assert event.temporal.status == "confirmation_required"
+    assert "Confirm" in event.temporal.reason
+
+
+def test_unresolvable_printed_venue_without_ai_geography_blocks_fallback():
+    event, = parser.parse_ai_data({"events": [structured()]},
+        source_text="Location: Community Hall",
+        time_zone="America/Los_Angeles").events
+    assert event.temporal.start_zone == "America/Los_Angeles"
+    assert event.temporal.end_zone == "America/Los_Angeles"
+    assert event.temporal.source == "ha_fallback"
+    assert event.temporal.status == "confirmation_required"
+    assert event.temporal.reason == "The printed venue could not be verified; confirm the event timezone."
+
+
+def test_all_day_empty_optional_structured_clocks_are_not_discarded():
+    event = {"title": "Christmas Day", "all_day": True,
+             "start": "2027-12-25", "end": "2027-12-26",
+             "start_local": "", "end_local": "", "location": "",
+             "confidence": 0.9}
+    result = parser.parse_ai_data({"events": [event]},
+        time_zone="America/Los_Angeles")
+    assert result.warnings == []
+    draft, = result.events
+    assert draft.all_day is True
+    assert (draft.start, draft.end) == ("2027-12-25", "2027-12-26")
+    assert draft.temporal is None
+
+
+@pytest.mark.parametrize(("clock", "other"), [
+    ("2027-12-25T18:00:00", ""),
+    ("", "2027-12-25T20:00:00"),
+])
+def test_all_day_rejects_actual_structured_timed_clock(clock, other):
+    raw = {"title": "Christmas Day", "all_day": True,
+           "start": "2027-12-25", "end": "2027-12-26",
+           "start_local": clock, "end_local": other,
+           "confidence": 0.9}
+    result = parser.parse_ai_data({"events": [raw]},
+                                  time_zone="America/Los_Angeles")
+    assert result.events == []
+    assert "structured local clocks require a timed event" in result.warnings[0]
+
+
 def test_reversed_nontravel_source_without_missing_zones_is_not_kept():
     result = parse_one(start_local="2027-12-25T20:00:00",
                        end_local="2027-12-25T18:00:00")
