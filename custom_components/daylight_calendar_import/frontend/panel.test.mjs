@@ -7273,9 +7273,11 @@ for (const fail of [false, true]) {
     assert.equal(panel._refreshButton.disabled, false);
     const nav = find(panel._content, "nav");
     assert.ok(nav);
-    for (const button of nav.querySelectorAll("button")) {
-      assert.equal(button.disabled, false, button.textContent);
-    }
+    const buttons = nav.querySelectorAll("button");
+    assert.equal(buttons.find(button => button.textContent === "Review inbox").disabled, true);
+    assert.equal(buttons.find(button => button.textContent === "Recent activity").disabled, false);
+    assert.equal(buttons.find(button => button.textContent === "Settings").disabled, false);
+    assert.equal(panel._newImportButton.disabled, false);
     assert.equal(panel._detail.events[0].temporal.status, fail ? "confirmation_required" : "resolved");
     assert.equal(panel._decisionError, fail ? "Confirmation refused" : null);
   });
