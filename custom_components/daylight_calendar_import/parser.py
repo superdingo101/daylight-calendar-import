@@ -509,9 +509,13 @@ def parse_ai_data(
                     elif claimed != source_zone:
                         # Force a source-declaration conflict into the review gate.
                         structured_raw["explicit_timezone"] = claimed
+                verified_source = source_text
+                if (source_record is not None and isinstance(raw.get("title"), str)
+                        and raw["title"].strip().casefold() == source_record["title"].strip().casefold()):
+                    verified_source += "\nTime zone: " + source_record["zone"]
                 try:
                     normalized, temporal = normalize_structured_event(
-                        structured_raw, time_zone, source_text,
+                        structured_raw, time_zone, verified_source,
                         allow_flight_recovery=len(events) == 1,
                         allow_source_venue=len(events) == 1,
                     )
