@@ -3632,7 +3632,6 @@ async def test_preview_timezone_service_returns_advisory_hints_and_exact_instant
     store.get_event.return_value = replace(unresolved, status="write_uncertain")
     with pytest.raises(ServiceValidationError, match="Event changed"):
         await handler(call)
-    call.data["expected_event"] = replace(unresolved, status="write_uncertain").as_service_dict()
     with pytest.raises(ServiceValidationError, match="not awaiting timezone"):
         await handler(call)
     store.get_event.return_value = replace(unresolved, draft=replace(
