@@ -3300,6 +3300,7 @@ export class DaylightImportPanel extends HTMLElement {
         // expanded, but force advisory checks and active decisions into view.
         let surface = card;
         const grouped = detail.events.length > 1;
+        const assumptions = event.date_time_assumptions || [];
         if (grouped) {
           const fold = element("details", "", "event-fold");
           const summary = element("summary", "", "event-fold-heading");
@@ -3309,9 +3310,7 @@ export class DaylightImportPanel extends HTMLElement {
             element("p", reviewRange(event, this._hass), "event-date"),
             element("p", "Calendar · " +
               reviewCalendarName(event, this._hass, detail.default_calendar), "event-calendar"));
-          const hasReviewAssumptions = event.date_time_assumptions?.length &&
-            (!event.temporal || event.date_time_assumptions.some(note =>
-              /\b(?:(?:inferred|assumed) (?:the )?year|year (?:was )?(?:inferred|assumed))\b/i.test(note)));
+          const hasReviewAssumptions = assumptions.length > 0;
           if (event.routing_unresolved || hasReviewAssumptions ||
               (event.temporal && event.temporal.status !== "resolved") ||
               event.status === "write_uncertain") {
@@ -3320,7 +3319,8 @@ export class DaylightImportPanel extends HTMLElement {
                 event.routing_unresolved ? "Destination needs attention" :
                 event.temporal?.status === "correction_required" ? "Invalid local time — correct before approval" :
                 event.temporal?.status === "confirmation_required" ? "Timezone needs confirmation" :
-                  "Review date interpretation", "event-fold-alert"));
+                  event.temporal?.status === "resolved" ? "Review extraction notes" :
+                    "Review date interpretation", "event-fold-alert"));
           }
           summary.append(summaryText, element("span", reviewStatus(event.status), "event-status"));
           const foldBody = element("div", "", "event-fold-body");
@@ -3461,33 +3461,27 @@ export class DaylightImportPanel extends HTMLElement {
             }
           }
         }
-        const assumptions = event.date_time_assumptions || [];
         const yearInferred = assumptions.some(note =>
           /\b(?:(?:inferred|assumed) (?:the )?year|year (?:was )?(?:inferred|assumed))\b/i.test(note));
+        const timezoneResolved = event.temporal?.status === "resolved";
         if (yearInferred || (!event.temporal && assumptions.length)) {
           surface.append(element("p", yearInferred ?
             "Year inferred — verify the date" : "Date interpretation needs review", "event-note"));
         }
-        // Only authoritative backend warnings should interrupt review for
-        // structured, resolved events. AI-authored explanations are advisory.
-        if (!event.temporal || event.temporal.status !== "resolved") {
-          for (const assumption of assumptions) {
-            surface.append(element("p", "Date/time assumption: " + assumption, "event-note"));
-          }
+        // Timezone confirmation does not establish the source date. Preserve
+        // all provider disclosures visibly without claiming every note is an
+        // inferred date or imposing a new approval requirement.
+        for (const assumption of assumptions) {
+          surface.append(element("p", (timezoneResolved ?
+            "AI extraction note: " : "Date/time assumption: ") + assumption, "event-note"));
         }
-        if (typeof event.confidence === "number" || event.calendar_entity ||
-            (event.temporal?.status === "resolved" && assumptions.length)) {
+        if (typeof event.confidence === "number" || event.calendar_entity) {
           const diagnostics = element("details", "", "event-diagnostics");
           diagnostics.append(element("summary", "Extraction details"));
           if (event.calendar_entity) diagnostics.append(element("p", "Calendar ID: " + event.calendar_entity));
           if (typeof event.confidence === "number") {
             diagnostics.append(element("p", "AI confidence: " +
               Math.round(event.confidence * 100) + "% (estimate)"));
-          }
-          if (event.temporal?.status === "resolved") {
-            for (const note of assumptions) {
-              diagnostics.append(element("p", "AI extraction note: " + note));
-            }
           }
           surface.append(diagnostics);
         }

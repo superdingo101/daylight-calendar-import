@@ -7306,9 +7306,10 @@ test("resolved geographic note never labels an explicitly printed year inferred"
   const notes = cards[0].querySelectorAll(".event-note").map(n => n.textContent).join(" ");
   assert.match(notes, /Event timezone · America\/Los_Angeles \(geographic\)/);
   assert.doesNotMatch(notes, /Year inferred|Date interpretation needs review|Date\/time assumption/);
-  const diagnostic = cards[0].querySelector(".event-diagnostics");
-  assert.ok(diagnostic.querySelectorAll("p").some(n =>
+  assert.ok(cards[0].querySelectorAll(".event-note").some(n =>
     n.textContent === "AI extraction note: Year 2027 is explicitly stated in the source."));
+  assert.ok(cards[0].querySelectorAll(".event-note").some(n =>
+    n.textContent === "AI extraction note: Inferred America/Los_Angeles from the venue location in Encinitas, California."));
   assert.equal(cards[0].querySelectorAll("button").find(n => n.dataset.action === "approve").disabled,
     undefined);
 });
@@ -7483,4 +7484,34 @@ test("blocked gap draft shows original local clocks rather than provisional plac
   const inputs = form.querySelectorAll("input");
   assert.equal(inputs.find(input => input.name === "start").value, "2027-03-14T02:30");
   assert.equal(inputs.find(input => input.name === "end").value, "2027-03-14T03:00");
+});
+
+
+test("resolved timezone retains arbitrary date inference notes outside collapsed diagnostics", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "source";
+  const event = {id: "a", title: "Dinner", status: "pending", all_day: false,
+    start: "2027-12-25T18:00:00-08:00", end: "2027-12-25T20:00:00-08:00",
+    temporal: {status: "resolved", source: "user", start_zone: "America/Los_Angeles",
+      end_zone: "America/Los_Angeles", start_local: "2027-12-25T18:00:00",
+      end_local: "2027-12-25T20:00:00"}};
+  const notes = ["Assumed 2027 because no year is printed in the invitation.",
+    "Sunday was resolved using the reference date", "Time zone and date were inferred."];
+  panel._detail = {id: "source", source_kind: "manual_text", events: [
+    {...event, date_time_assumptions: notes}, {...event, id: "b", title: "No notes"}]};
+  panel.render();
+  const cards = panel._content.querySelectorAll(".detail-event");
+  assert.equal(cards.length, 2);
+  assert.equal(cards[0].querySelector(".event-fold-alert").textContent, "Review extraction notes");
+  assert.equal(cards[1].querySelector(".event-fold-alert"), null);
+  assert.deepEqual(cards[0].querySelectorAll(".event-note").map(n => n.textContent)
+    .filter(note => note.startsWith("AI extraction note: ")), notes.map(note => "AI extraction note: " + note));
+  assert.equal(cards[0].querySelector(".event-diagnostics"), null);
+  assert.notEqual(cards[0].querySelectorAll("button").find(n => n.dataset.action === "approve").disabled, true);
+  panel._detail = {...panel._detail, events: [panel._detail.events[0]]};
+  panel.render();
+  const single = panel._content.querySelectorAll(".event-note").map(n => n.textContent);
+  for (const note of notes) assert.ok(single.includes("AI extraction note: " + note));
 });

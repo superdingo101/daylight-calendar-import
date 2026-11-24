@@ -1941,10 +1941,10 @@ class PendingImportStore:
                 raise PendingEventEditError("Resolved event duplicates a pending or handled event")
             edited = replace(event, draft=draft, date_time_assumptions=tuple(
                 assumption for assumption in event.date_time_assumptions
-                if not any(token in assumption.casefold() for token in (
-                    "timezone", "time zone", "dst occurrence", "first or second dst",
-                    "local time requires correction",
-                ))
+                if assumption not in (
+                    "Event timezone or DST occurrence needs confirmation.",
+                    "Event's local time requires correction.",
+                )
             ))
             updated = replace(pending, events=tuple(
                 edited if item.id == event_id else item for item in pending.events

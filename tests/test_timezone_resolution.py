@@ -1838,3 +1838,107 @@ async def test_confirmation_with_unrepresentable_utc_instant_is_atomic(monkeypat
     with pytest.raises(PendingEventEditError, match="Confirm the event timezone"):
         await store.async_approve_event(pending.id, original.id, writer)
     writer.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("title", "source", "display"), [
+    ("AA1234", "AA1234\nLAX → JFK\nJuly 15 08:00–16:30", ""),
+    ("LAX → JFK", "", ""),
+    ("AA1234", "", "LAX → JFK"),
+    ("AA1234", "", "Departure flight"),
+])
+async def test_route_context_blocks_missing_arrival_before_calendar_write(monkeypatch, title, source, display):
+    result = parser.parse_ai_data({"events": [structured(
+        title=title, location=display, start_location_type="airport",
+        start_location_value="LAX", start_local="2027-07-15T08:00:00",
+        end_local="2027-07-15T16:30:00",
+    )]}, source_text=source, time_zone="America/Los_Angeles")
+    event, = result.events
+    assert event.temporal.travel_incomplete is True
+    assert event.temporal.status == "confirmation_required"
+    assert event.temporal.start_zone == event.temporal.end_zone == "America/Los_Angeles"
+    assert event.temporal.end_location_value == ""
+    assert event.end == "2027-07-15T16:30:00-07:00"
+    store = _store(monkeypatch, _Backend())
+    await store.async_load()
+    item = (await store.async_add(source_text=source or title, events=[event])).pending
+    original = item.events[0]
+    writer = AsyncMock()
+    with pytest.raises(PendingEventEditError, match="Confirm the event timezone"):
+        await store.async_approve_event(item.id, original.id, writer)
+    with pytest.raises(PendingEventEditError, match="Resolve all event timezones"):
+        await store.async_process_events(item.id, writer)
+    writer.assert_not_awaited()
+    with pytest.raises(PendingEventEditError, match="Confirm departure and arrival timezones independently"):
+        await store.async_confirm_timezone(item.id, original.id, "America/Los_Angeles")
+    confirmed = await store.async_confirm_timezone(
+        item.id, original.id, "America/Los_Angeles", end_zone_name="America/New_York",
+        expected_event=original,
+    )
+    assert confirmed.draft.start == "2027-07-15T08:00:00-07:00"
+    assert confirmed.draft.end == "2027-07-15T16:30:00-04:00"
+    assert confirmed.draft.temporal.status == "resolved"
+
+
+@pytest.mark.parametrize(("route", "start", "end", "status"), [
+    ("LAX → JFK", "LAX", "JFK", "resolved"),
+    ("LAX → JFK", "LAX", "LHR", "confirmation_required"),
+    ("LAX → JFK", "LHR", "JFK", "confirmation_required"),
+    ("ZZZZ → JFK", "LAX", "JFK", "resolved"),
+    ("LAX → ZZZZ", "LAX", "JFK", "resolved"),
+])
+def test_scoped_route_conflict_never_replaces_extracted_airport_zones(route, start, end, status):
+    event, = parser.parse_ai_data({"events": [structured(
+        title="AA1234", start_local="2027-07-15T08:00:00",
+        end_local="2027-07-15T20:30:00", start_location_type="airport",
+        start_location_value=start, end_location_type="airport", end_location_value=end,
+    )]}, source_text=route, time_zone="America/Los_Angeles").events
+    assert event.temporal.status == status
+    assert event.temporal.start_location_value == start
+    assert event.temporal.end_location_value == end
+    assert event.temporal.start_zone == {"LAX": "America/Los_Angeles", "LHR": "Europe/London"}[start]
+    assert event.temporal.end_zone == {"JFK": "America/New_York", "LHR": "Europe/London"}[end]
+    assert event.temporal.reason == (
+        "Location evidence conflicts; confirm the event timezone." if status == "confirmation_required" else ""
+    )
+
+
+def test_multi_event_route_source_does_not_override_independent_complete_airports():
+    result = parser.parse_ai_data({"events": [
+        structured(title="AA1", start_location_type="airport", start_location_value="LAX",
+                   end_location_type="airport", end_location_value="JFK", end_local="2027-12-25T23:30:00"),
+        structured(title="AA2", start_location_type="airport", start_location_value="JFK",
+                   end_location_type="airport", end_location_value="LHR", end_local="2027-12-26T08:30:00"),
+    ]}, source_text="LAX → JFK\nJFK → LHR", time_zone="America/Los_Angeles")
+    assert result.warnings == []
+    assert [(e.temporal.status, e.temporal.start_zone, e.temporal.end_zone) for e in result.events] == [
+        ("resolved", "America/Los_Angeles", "America/New_York"),
+        ("resolved", "America/New_York", "Europe/London"),
+    ]
+
+
+@pytest.mark.parametrize(("start", "end", "initial_status", "zone"), [
+    ("2027-12-25T18:00:00", "2027-12-25T20:00:00", "confirmation_required", "America/Los_Angeles"),
+    ("2027-03-14T02:15:00", "2027-03-14T02:45:00", "correction_required", "America/Phoenix"),
+])
+async def test_timezone_confirmation_preserves_original_date_disclosures(monkeypatch, start, end, initial_status, zone):
+    notes = [
+        "Assumed 2027 because no year is printed in the invitation.",
+        "The date and time zone were inferred from the reference date.",
+        "Date inferred independently of the DST occurrence.",
+    ]
+    result = parse_one(start_local=start, end_local=end, start_location_type="venue",
+                       start_location_value="Community Hall", assumptions=notes)
+    event, = result.events
+    assert event.temporal.status == initial_status
+    assert list(result.event_assumptions[0][1:]) == notes
+    backend = _Backend()
+    store = _store(monkeypatch, backend)
+    await store.async_load()
+    item = (await store.async_add(source_text="source", events=[event],
+                                  event_assumptions=result.event_assumptions)).pending
+    original = item.events[0]
+    confirmed = await store.async_confirm_timezone(item.id, original.id, zone, expected_event=original)
+    assert confirmed.draft.temporal.status == "resolved"
+    assert confirmed.date_time_assumptions == tuple(notes)
+    restored = PendingImport.from_dict(store.get(item.id).as_dict())
+    assert restored.events[0].date_time_assumptions == tuple(notes)

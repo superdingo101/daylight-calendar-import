@@ -36,7 +36,7 @@ _TRAVEL = re.compile(
     r"itinerar(?:y|ies)|trains?|ferr(?:y|ies)|buses|bus|"
     r"journeys?|travell?ing|travels?|trips?|plane tickets?)\b", re.IGNORECASE,
 )
-_AIRPORT_ROUTE = re.compile(r"\b[A-Z]{3,4}\s*(?:to|→|[-–])\s*[A-Z]{3,4}\b")
+_AIRPORT_ROUTE = re.compile(r"\b([A-Z]{3,4})\s*(?:to|→|[-–])\s*([A-Z]{3,4})\b")
 
 @dataclass(frozen=True, slots=True)
 class TemporalEvidence:
@@ -494,9 +494,20 @@ def _collect_geography(raw: dict, source: _SourceEvidence) -> _GeographyEvidence
 
     has_start = start.kind not in ("unknown", "virtual") and bool(start.value)
     has_end = end.kind not in ("unknown", "virtual") and bool(end.value)
-    travel_context = f"{raw.get('title') or ''} {source.text}"
-    travel = bool(_TRAVEL.search(travel_context) or _AIRPORT_ROUTE.search(display))
+    travel_context = f"{raw.get('title') or ''} {source.text} {display}"
+    travel = bool(_TRAVEL.search(travel_context) or _AIRPORT_ROUTE.search(travel_context))
     travel_incomplete = (travel or (has_end and not has_start)) and not (has_start and has_end)
+    # A route in an individual event's title/display or single-event source
+    # must not silently disagree with two independently extracted airports.
+    if start.kind == end.kind == "airport":
+        scoped_route_text = f"{raw.get('title') or ''} {display}"
+        if source.event_scoped:
+            scoped_route_text += " " + source.text
+        for departure, arrival in _AIRPORT_ROUTE.findall(scoped_route_text):
+            if (_airport_zone(departure) and _airport_zone(arrival)
+                    and (_airport_zone(departure) != _airport_zone(start.value)
+                         or _airport_zone(arrival) != _airport_zone(end.value))):
+                conflict = True
     return _GeographyEvidence(
         start, end, display, conflict, bool(source.venues and not venue), travel_incomplete,
     )
