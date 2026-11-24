@@ -951,6 +951,8 @@ async def test_commercial_account_status_validates_authority_and_public_response
     guard = Mock()
     session = Mock(return_value=(provider, guard))
     monkeypatch.setattr(r, "parse_session", session)
+    if failure is not None:
+        r._commercial_status = value
     if failure == "transport":
         get.side_effect = HostedParseError("private")
     elif failure == "guard":
@@ -1030,3 +1032,20 @@ async def test_delivery_runtime_preserves_operation_id_into_atomic_acceptance(ru
     assert backend.data["hosted_parse_operations"][identity]["accepted"] is True
     assert backend.data["hosted_delivery_journal"][0]["acceptance_disposition"] == "pending"
     await r.async_stop()
+
+@pytest.mark.parametrize("configured", [False, True])
+async def test_byo_delivery_requires_an_explicit_configured_ai_task(hass, configured):
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+    from custom_components.daylight_calendar_import.const import (
+        CONF_AI_TASK_ENTITY, CONF_PARSER_PROVIDER, PARSER_PROVIDER_AI_TASK,
+    )
+
+    config = entry({module.CONF_HOSTED_DELIVERY_POLL: True})
+    config.data = {
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_AI_TASK,
+        **({CONF_AI_TASK_ENTITY: "ai_task.local"} if configured else {}),
+    }
+    runtime = await async_setup_hosted_runtime(hass, config)
+    assert runtime._delivery_parser_selected is configured
+    assert runtime.snapshot()["delivery_polling"] is True
+    await runtime.async_stop()
