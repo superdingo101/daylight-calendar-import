@@ -538,13 +538,15 @@ async def test_startup_does_not_recover_incomplete_connections(hass, monkeypatch
     await runtime.async_stop()
 
 
-async def test_delivery_poll_is_opt_in_single_flight_and_backed_off(hass, monkeypatch):
+@pytest.mark.parametrize("byo", [False, True])
+async def test_delivery_poll_is_opt_in_single_flight_and_backed_off(hass, monkeypatch, byo):
     from datetime import UTC, datetime
     from unittest.mock import Mock
 
     from custom_components.daylight_calendar_import import hosted_runtime as module
     from custom_components.daylight_calendar_import.const import (
-        CONF_PARSER_PROVIDER, PARSER_PROVIDER_DAYLIGHT_CLOUD,
+        CONF_AI_TASK_ENTITY, CONF_PARSER_PROVIDER, PARSER_PROVIDER_AI_TASK,
+        PARSER_PROVIDER_DAYLIGHT_CLOUD,
     )
 
     cancel = Mock()
@@ -554,19 +556,17 @@ async def test_delivery_poll_is_opt_in_single_flight_and_backed_off(hass, monkey
     monkeypatch.setattr(module.ir, "async_create_issue", issue)
     config = entry({
         module.CONF_HOSTED_DELIVERY_POLL: True,
-        CONF_PARSER_PROVIDER: PARSER_PROVIDER_DAYLIGHT_CLOUD,
+        CONF_PARSER_PROVIDER: PARSER_PROVIDER_AI_TASK if byo else PARSER_PROVIDER_DAYLIGHT_CLOUD,
+        **({CONF_AI_TASK_ENTITY: "ai_task.test"} if byo else {}),
     })
     config.data = {}
     runtime = await async_setup_hosted_runtime(hass, config)
+    assert runtime._delivery_parser_selected is True
     assert runtime.snapshot()["delivery_polling"] is True
     runtime.resume()
     assert not timer.called
     runtime.configure_delivery(store=object(), route_source=object(), parse_source=object())
     runtime._state = HostedConnectionResult("connected", credential_status="current")
-    runtime._delivery_parser_selected = False
-    runtime._schedule_delivery_poll()
-    assert not timer.called
-    runtime._delivery_parser_selected = True
     runtime._schedule_delivery_poll()
     assert timer.call_count == 1
     passed = AsyncMock(side_effect=HostedTransportError("rate_limited", status=429, retry_after=300))
