@@ -305,6 +305,9 @@ export class HostedConnectionSettings {
     if (!this.syncSession() || this.busy || !this.snapshot) return;
     const draft = preserveDraft ? this._captureDraft() : null;
     const previousState = this.snapshot.state;
+    if (Object.hasOwn(this.snapshot, "commercial_status")) {
+      this.snapshot = {...this.snapshot, commercial_status: null};
+    }
     if (!preserveDraft) this.confirmation = null;
     this._cancelGuidance();
     if (["connect", "reconnect"].includes(action)) {
