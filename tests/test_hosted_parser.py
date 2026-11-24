@@ -928,7 +928,7 @@ async def test_durable_parser_refuses_nonterminal_operation_without_v1_fallback(
     with pytest.raises(HostedParseError) as raised:
         await client.async_parse(TextSourceAdapter().create("School calendar"),
                                  reference_datetime="2026-11-17T12:00:00Z", time_zone="UTC")
-    assert (raised.value.code, raised.value.uncertain) == ("operation_" + status, True)
+    assert (raised.value.code, raised.value.uncertain) == ("operation_" + status, status not in ("failed", "expired"))
     client._transport.async_parse.assert_not_awaited()
 
 

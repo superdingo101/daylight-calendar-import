@@ -33,6 +33,12 @@ items, including no-event outcomes. A recovered result cannot create duplicate
 review items after ordinary deduplication history is reset. Explicit source
 reprocessing uses a new operation identity. The journal is bounded at10000 keys;
 full journals fail closed and require operator recovery rather than key eviction.
+For hosted email, an explicit administrator retry may retire a validated failed
+or expired operation associated with the fenced delivery, retaining its original
+record and allowing a fresh key. Pending and uncertain operations retain their
+original key. Independent legacy parse_text and import_text calls use fresh local
+invocation IDs; these calls do not provide cross-invocation calendar-write
+idempotency. Use the review workflow and stable source IDs for durable recovery.
 
 `GET /v2/account` publishes independent managed_ai, new_email_intake and
 accepted_source_drain capabilities, plus trial/paid balance/deadline, grace,

@@ -19,7 +19,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util.json import json_loads
 
-from .hosted_operations import payload_digest, validate_records
+from .hosted_operations import digest, payload_digest, validate_records
 from .hosted_delivery_journal import HostedDeliveryEvidence, HostedDeliveryJournalEntry
 from .const import DOMAIN
 from .dedup import (
@@ -1532,7 +1532,7 @@ class PendingImportStore:
                 request["source"]["id"] = record["request_id"]
                 request["source"]["received_at"] = record["received_at"]
                 request["reference_datetime"] = record["reference_datetime"]
-                request["time_zone"] = record["time_zone"]
+                request["time_zone"] = record.get("time_zone", request["time_zone"])
                 if payload_digest(request, attachments) != record["digest"]:
                     raise ValueError("operation payload conflict")
                 return deepcopy(record), False
@@ -1546,6 +1546,21 @@ class PendingImportStore:
             records[identity] = record
             await self._async_save(self._items, hosted_operations=records)
             return deepcopy(record), True
+
+    async def async_mark_hosted_operation_terminal(self, identity, key, source_id):
+        """Record a validated terminal result only for the currently fenced delivery."""
+        async with self._lock:
+            if self._hosted_writes_closed or self._storage_blocked:
+                raise PendingImportStorageError(_STORAGE_ERROR)
+            fingerprint = build_source_fingerprint(source_id)
+            if self._hosted_parse_attempt != fingerprint:
+                return
+            records = deepcopy(self._hosted_operations)
+            record = records.get(identity)
+            if record is None or record["key"] != key or record["accepted"]:
+                return
+            record["terminal_source"] = fingerprint
+            await self._async_save(self._items, hosted_operations=records)
 
     def hosted_ack_journal(self) -> tuple[HostedDeliveryJournalEntry, ...]:
         """Return independent snapshots; the private store owns mutable evidence."""
@@ -1567,7 +1582,7 @@ class PendingImportStore:
         """A managed parse was attempted without a durable terminal result."""
         return self._hosted_parse_attempt is not None
 
-    async def async_change_hosted_parse_attempt(self, source_id: str | None) -> None:
+    async def async_change_hosted_parse_attempt(self, source_id: str | None, *, retry_terminal: bool = False) -> None:
         """Fence a managed POST durably, or clear it after explicit recovery."""
         async def change() -> None:
             async with self._lock:
@@ -1576,7 +1591,24 @@ class PendingImportStore:
                 if source_id is not None and self._hosted_parse_attempt is not None:
                     raise ValueError("hosted parse requires explicit recovery")
                 attempt = build_source_fingerprint(source_id) if source_id is not None else None
-                await self._async_save(self._items, hosted_parse_attempt=(attempt,))
+                operations = None
+                if retry_terminal and attempt is None and self._hosted_parse_attempt is not None:
+                    records = deepcopy(self._hosted_operations)
+                    matches = [identity for identity, record in records.items()
+                               if record.get("terminal_source") == self._hosted_parse_attempt]
+                    if len(matches) > 1:
+                        raise ValueError("ambiguous terminal operation")
+                    if matches:
+                        identity = matches[0]
+                        record = records.pop(identity)
+                        archive = digest({"retired_operation": record["key"]})
+                        if archive in records:
+                            raise ValueError("operation archive conflict")
+                        del record["terminal_source"]
+                        records[archive] = record
+                        operations = records
+                await self._async_save(self._items, hosted_parse_attempt=(attempt,),
+                                       hosted_operations=operations)
 
         _, cancelled = await self._async_complete_transaction(change())
         if cancelled:

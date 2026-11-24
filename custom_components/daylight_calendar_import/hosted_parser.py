@@ -311,7 +311,13 @@ class DaylightHostedParserProvider:
             except ValueError:
                 raise HostedParseError("provider_invalid_response", uncertain=True) from None
             if envelope["status"] != "succeeded":
-                raise HostedParseError("operation_" + envelope["status"], uncertain=True)
+                terminal = envelope["status"] in ("failed", "expired")
+                if terminal and source.kind is SourceKind.EMAIL and source.upstream_source_id is not None:
+                    if self._authority() != credential:
+                        raise HostedParseError("unauthenticated", status=401, uncertain=True)
+                    await self._operation_store.async_mark_hosted_operation_terminal(
+                        identity, record["key"], source.upstream_source_id)
+                raise HostedParseError("operation_" + envelope["status"], uncertain=not terminal)
             response = envelope["result"]
         try:
             if self._authority() != credential:

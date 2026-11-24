@@ -297,3 +297,118 @@ async def test_accepted_operation_replay_releases_only_matching_claim(hass, clai
             await store.async_add(**kwargs)
         assert backend.data == before
         assert store._source_claims == {"claim": fingerprint}
+
+
+@pytest.mark.parametrize("status", ["pending", "uncertain", "failed", "expired"])
+async def test_delivery_retry_rekeys_only_verified_terminal_operation(hass, status):
+    from dataclasses import replace
+    from custom_components.daylight_calendar_import.sources import SourceKind
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    backend = Backend()
+    store = PendingImportStore(hass)
+    store._store = backend
+    saved = checkpoint()
+    provider = DaylightHostedParserProvider(
+        hass, service_binding=SERVICE, checkpoint=lambda: saved, active=lambda: True,
+        operation_store=store, operation_namespace="entry:service",
+    )
+    source = replace(TextSourceAdapter().create("Meeting"), kind=SourceKind.EMAIL,
+                     upstream_source_id="hosted:entry:receipt-123")
+    await store.async_change_hosted_parse_attempt(source.upstream_source_id)
+
+    async def post(req, attachments, *, token, operation_key):
+        return envelope(operation_key, payload_digest(req, attachments), status=status)
+
+    provider._transport.async_parse = AsyncMock(side_effect=post)
+    with pytest.raises(HostedParseError) as error:
+        await provider.async_parse(source, reference_datetime=source.received_at.isoformat(), time_zone="UTC")
+    assert error.value.code == "operation_" + status
+    terminal = status in ("failed", "expired")
+    assert error.value.uncertain is not terminal
+    identity, record = next(iter(store._hosted_operations.items()))
+    assert record.get("terminal_source") == (
+        source_fingerprint(source.upstream_source_id) if terminal else None)
+    assert store.hosted_parse_uncertain
+    restarted = PendingImportStore(hass)
+    restarted._store = backend
+    await restarted.async_load()
+    await restarted.async_change_hosted_parse_attempt(None, retry_terminal=True)
+    assert not restarted.hosted_parse_uncertain
+    assert (identity in restarted._hosted_operations) is not terminal
+    retained = next(iter(restarted._hosted_operations.values()))
+    assert retained["key"] == record["key"] and "terminal_source" not in retained
+    provider._operation_store = restarted
+    provider._transport.async_operation = AsyncMock(
+        return_value=envelope(record["key"], record["digest"], status=status))
+    await restarted.async_change_hosted_parse_attempt(source.upstream_source_id)
+    with pytest.raises(HostedParseError):
+        await provider.async_parse(source, reference_datetime=source.received_at.isoformat(), time_zone="UTC")
+    if terminal:
+        provider._transport.async_operation.assert_not_awaited()
+        assert provider._transport.async_parse.await_count == 2
+        assert provider.last_operation_id != record["key"]
+        assert len(restarted._hosted_operations) == 2
+    else:
+        provider._transport.async_operation.assert_awaited_once_with(record["key"], token=saved.current.token)
+        assert provider._transport.async_parse.await_count == 1
+        assert provider.last_operation_id == record["key"]
+
+
+async def test_terminal_marker_cannot_retire_unrelated_or_accepted_operation(hass):
+    backend = Backend()
+    store = PendingImportStore(hass)
+    store._store = backend
+    identity = "a" * 64
+    record, _ = await store.async_prepare_hosted_operation(identity, request(), ())
+    await store.async_mark_hosted_operation_terminal(identity, record["key"], "different")
+    assert store._hosted_operations[identity] == record
+    await store.async_change_hosted_parse_attempt("source")
+    for wrong_identity, wrong_key in (("b" * 64, record["key"]), (identity, "different")):
+        await store.async_mark_hosted_operation_terminal(wrong_identity, wrong_key, "source")
+        assert store._hosted_operations[identity] == record
+    await store.async_add(source_text="Meeting", events=(), hosted_operation_id=record["key"])
+    await store.async_mark_hosted_operation_terminal(identity, record["key"], "source")
+    assert store._hosted_operations[identity]["accepted"] is True
+    assert "terminal_source" not in store._hosted_operations[identity]
+    store.close_hosted_writes()
+    with pytest.raises(PendingImportStorageError):
+        await store.async_mark_hosted_operation_terminal(identity, record["key"], "source")
+
+
+@pytest.mark.parametrize("conflict", ["archive", "ambiguous"])
+async def test_explicit_terminal_retry_conflicts_preserve_entire_journal(hass, conflict):
+    from custom_components.daylight_calendar_import.hosted_operations import digest
+
+    store = PendingImportStore(hass)
+    backend = Backend()
+    store._store = backend
+    identity = "a" * 64
+    record, _ = await store.async_prepare_hosted_operation(identity, request(), ())
+    await store.async_change_hosted_parse_attempt("source")
+    await store.async_mark_hosted_operation_terminal(identity, record["key"], "source")
+    other = digest({"retired_operation": record["key"]}) if conflict == "archive" else "b" * 64
+    other_record, _ = await store.async_prepare_hosted_operation(other, request(), ())
+    if conflict == "ambiguous":
+        await store.async_mark_hosted_operation_terminal(other, other_record["key"], "source")
+    before = deepcopy(backend.data)
+    with pytest.raises(ValueError, match="operation archive conflict|ambiguous terminal operation"):
+        await store.async_change_hosted_parse_attempt(None, retry_terminal=True)
+    assert backend.data == before
+    assert store.hosted_parse_uncertain
+
+
+def test_terminal_journal_marker_requires_valid_source_fingerprint_and_unaccepted_operation():
+    from tests.test_hosted_mutation_contracts import record
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    identity = "a" * 64
+    legacy = record()
+    del legacy["time_zone"]
+    assert validate_records({identity: legacy}) == {identity: legacy}
+    marked = {**record(), "terminal_source": source_fingerprint("source")}
+    assert validate_records({identity: marked}) == {identity: marked}
+    for invalid in ({**marked, "accepted": True}, {**marked, "terminal_source": 1},
+                    {**marked, "terminal_source": "wrong"}):
+        with pytest.raises(ValueError, match="invalid operation journal"):
+            validate_records({identity: invalid})

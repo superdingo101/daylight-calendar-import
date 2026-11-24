@@ -614,8 +614,8 @@ async def test_delivery_poll_defers_foreground_and_requires_explicit_recovery(ha
         await runtime.async_retry_delivery_parse()
     runtime._delivery_poll_enabled = runtime._delivery_parser_selected = True
     store = SimpleNamespace(hosted_parse_uncertain=True, active_submissions={object()})
-    async def clear(value):
-        assert value is None
+    async def clear(value, *, retry_terminal):
+        assert value is None and retry_terminal is True
         store.hosted_parse_uncertain = False
     store.async_change_hosted_parse_attempt = AsyncMock(side_effect=clear)
     runtime.configure_delivery(store=store, route_source=object(), parse_source=object())
@@ -632,7 +632,7 @@ async def test_delivery_poll_defers_foreground_and_requires_explicit_recovery(ha
         await runtime.async_retry_delivery_parse()
     runtime._delivery_poll_running = False
     assert "delivery_parse_uncertain" not in await runtime.async_retry_delivery_parse()
-    store.async_change_hosted_parse_attempt.assert_awaited_once_with(None)
+    store.async_change_hosted_parse_attempt.assert_awaited_once_with(None, retry_terminal=True)
     delete_issue.assert_called_with(hass, "daylight_calendar_import",
                                     "hosted_delivery_uncertain_hosted-entry")
     assert timer.call_count == 1
@@ -832,8 +832,8 @@ async def test_explicit_delivery_retry_fences_permission_and_owns_transaction(ru
     monkeypatch.setattr(module.ir, "async_delete_issue", delete)
     monkeypatch.setattr(module.ir, "async_create_issue", Mock())
     store = SimpleNamespace(hosted_parse_uncertain=True)
-    async def clear_attempt(value):
-        assert value is None
+    async def clear_attempt(value, *, retry_terminal):
+        assert value is None and retry_terminal is True
         assert r._delivery_poll_running is True
         store.hosted_parse_uncertain = False
     store.async_change_hosted_parse_attempt = AsyncMock(side_effect=clear_attempt)

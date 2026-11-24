@@ -468,7 +468,7 @@ class HostedConnectionRuntime:
             raise HostedRuntimeError("hosted_busy")
         self._delivery_poll_running = True
         try:
-            await self._delivery_handlers[0].async_change_hosted_parse_attempt(None)
+            await self._delivery_handlers[0].async_change_hosted_parse_attempt(None, retry_terminal=True)
             ir.async_delete_issue(self._hass, DOMAIN, f"hosted_delivery_uncertain_{self._entry_id}")
             self._delivery_due_at = None
         finally:

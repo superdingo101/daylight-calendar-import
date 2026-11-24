@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from hashlib import sha256
 import json
+import re
 from uuid import UUID
 
 import voluptuous as vol
@@ -35,16 +36,22 @@ def source_identity(request, attachments, *, namespace: str, upstream: str | Non
 def validate_records(value):
     if type(value) is not dict or len(value) > 10000:
         raise ValueError("invalid operation journal")
+    required = {"key", "digest", "request_id", "received_at", "reference_datetime", "accepted"}
     for identity, record in value.items():
         if (type(identity) is not str or len(identity) != 64 or type(record) is not dict
-                or set(record) != {"key", "digest", "request_id", "received_at", "reference_datetime",
-                                   "accepted", "time_zone"} or type(record["accepted"]) is not bool
+                or not required <= set(record) or set(record) - (required | {"time_zone", "terminal_source"})
+                or type(record["accepted"]) is not bool
                 or str(UUID(record["key"])) != record["key"]
                 or type(record["digest"]) is not str or len(record["digest"]) != 64):
             raise ValueError("invalid operation journal")
         for key in ("request_id", "received_at", "reference_datetime", "time_zone"):
+            if key == "time_zone" and key not in record:
+                continue
             if type(record[key]) is not str or not 1 <= len(record[key]) <= 128:
                 raise ValueError("invalid operation journal")
+        if "terminal_source" in record and (record["accepted"] or not isinstance(record["terminal_source"], str)
+                or re.fullmatch(r"v1:source:[0-9a-f]{64}", record["terminal_source"]) is None):
+            raise ValueError("invalid operation journal")
     return deepcopy(value)
 
 

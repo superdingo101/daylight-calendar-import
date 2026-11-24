@@ -509,7 +509,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         else:
             await _async_check_entity_control_permission(hass, None, call.context)
-            outcome, guard = await selected_parse(TextSourceAdapter().create(call.data[ATTR_TEXT]))
+            source = TextSourceAdapter().create(call.data[ATTR_TEXT])
+            outcome, guard = await selected_parse(replace(source, metadata={"hosted_reparse": source.id}))
             guard()
         return {"events": [draft.as_dict() for draft in outcome.events],
                 "warnings": outcome.warnings}

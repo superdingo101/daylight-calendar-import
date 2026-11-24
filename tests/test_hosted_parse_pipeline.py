@@ -541,6 +541,11 @@ async def test_cloud_parse_service_and_explicit_legacy_import_keep_local_write_a
     parsed = await call(client, "parse_text", text="School concert")
     assert parsed["success"], parsed
     assert parsed["result"]["response"]["events"] == [DRAFT.as_dict()]
+    first = runtime.provider.async_parse.await_args.args[0]
+    assert first.metadata["hosted_reparse"] == first.id
+    assert (await call(client, "parse_text", text="School concert"))["success"]
+    second = runtime.provider.async_parse.await_args.args[0]
+    assert second.metadata["hosted_reparse"] == second.id != first.id
     runtime.writes.assert_not_awaited()
     await client.send_json_auto_id(
         {
@@ -554,6 +559,8 @@ async def test_cloud_parse_service_and_explicit_legacy_import_keep_local_write_a
     imported = await call(client, "import_text", text="School concert")
     assert imported["success"], imported
     assert imported["result"]["response"]["imported"] == 1
+    third = runtime.provider.async_parse.await_args.args[0]
+    assert third.metadata["hosted_reparse"] == third.id and third.id not in {first.id, second.id}
     runtime.writes.assert_awaited_once()
     assert not hass.data[DOMAIN][runtime.entry.entry_id].list()
 
