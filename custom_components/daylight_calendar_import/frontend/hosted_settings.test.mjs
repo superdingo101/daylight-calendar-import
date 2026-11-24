@@ -861,4 +861,9 @@ test("durable parsing is explicit and displays trusted account status", async ()
   assert.ok(texts(settings.element).some(text => text.includes("configured BYO AI Task")));
   assert.equal(settings.element.querySelectorAll("a").find(a => a.textContent === "Manage Daylight account and billing").href,
     "https://account.example.test/account");
+  setHandler(async () => { throw new Error("service unavailable"); });
+  findButton(settings.element, "Refresh allowance and access").click();
+  await flush(); await flush();
+  assert.ok(!texts(settings.element).some(text => text.includes("Trial: 12/20")));
+  assert.ok(!texts(settings.element).some(text => text.includes("Managed AI parsing:")));
 });
