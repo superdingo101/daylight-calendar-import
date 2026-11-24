@@ -5,7 +5,6 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 import re
-from uuid import UUID
 
 import voluptuous as vol
 
@@ -40,13 +39,17 @@ def validate_records(value):
     if type(value) is not dict or len(value) > 10000:
         raise ValueError("invalid operation journal")
     required = {"key", "digest", "request_id", "received_at", "reference_datetime", "accepted"}
+    keys = set()
     for identity, record in value.items():
-        if (type(identity) is not str or len(identity) != 64 or type(record) is not dict
+        if (type(identity) is not str or re.fullmatch(r"[0-9a-f]{64}", identity) is None or type(record) is not dict
                 or not required <= set(record) or set(record) - (required | {"time_zone", "terminal_source"})
                 or type(record["accepted"]) is not bool
-                or str(UUID(record["key"])) != record["key"]
-                or type(record["digest"]) is not str or len(record["digest"]) != 64):
+                or type(record["key"]) is not str
+                or re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", record["key"]) is None
+                or type(record["digest"]) is not str or re.fullmatch(r"[0-9a-f]{64}", record["digest"]) is None
+                or record["key"] in keys):
             raise ValueError("invalid operation journal")
+        keys.add(record["key"])
         for key in ("request_id", "received_at", "reference_datetime", "time_zone"):
             if key == "time_zone" and key not in record:
                 continue

@@ -16,7 +16,7 @@ _ROOT = {"items", "activity", "notifications", "source_claims", "seen_source_fin
 _ITEM = {"id", "created_at", "source_text", "events", "source_fingerprint", "source_kind", "source_title", "source_sender", "warnings", "duplicate_events"}
 _EVENT = {"id", "draft", "status", "calendar_entity", "write_attempt", "routing_unresolved", "date_time_assumptions"}
 _DRAFT = {"title", "start", "end", "all_day", "location", "description", "confidence"}
-_ACTIVITY = {"id", "created_at", "source_kind", "source_title", "title", "created_count", "rejected_count", "status", "transitions", "notification_delivery_failed", "guidance", "failure_code"}
+_ACTIVITY = {"id", "created_at", "source_kind", "source_title", "title", "created_count", "rejected_count", "status", "transitions", "notification_delivery_failed", "guidance", "failure_code", "manual_source_text"}
 _TRANSITION = {"type", "at", "event_id", "write_attempt"}
 _NOTIFICATION = {"import_id", "transition_type", "occurred_at", "event_id", "target", "status", "attempts", "next_attempt_at", "failure", "write_attempt", "recovered", "conflict_revision", "terminal_at"}
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{16,128}")
@@ -52,6 +52,13 @@ def _local_data(data: dict[str, Any], allow_delivery: bool = False) -> None:
         ):
             raise NamespaceReconciliationError(_ERROR)
         if activity.get("source_kind") not in _KINDS:
+            raise NamespaceReconciliationError(_ERROR)
+        if "manual_source_text" in activity and (
+            activity["source_kind"] != "manual_text"
+            or activity["status"] not in ("duplicate", "no_events")
+            or type(activity["manual_source_text"]) is not str
+            or not 1 <= len(activity["manual_source_text"]) <= 4096
+        ):
             raise NamespaceReconciliationError(_ERROR)
         for transition in activity["transitions"]:
             _closed(transition, _TRANSITION)

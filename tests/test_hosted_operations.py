@@ -545,3 +545,24 @@ async def test_reprocess_operation_acceptance_is_atomic_and_fenced(hass, mode):
     snapshot = deepcopy(backend.data)
     assert await restarted.async_reprocess(original.id, replay, acceptance_guard=guard) == (restored, 0, 0)
     assert backend.data == snapshot
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+@pytest.mark.parametrize("fence", ["closed", "blocked"])
+async def test_manual_operation_acceptance_respects_storage_owner_fence(hass, accepted, fence):
+    backend = Backend()
+    store = PendingImportStore(hass)
+    store._store = backend
+    record, _ = await store.async_prepare_hosted_operation("a" * 64, request(), ())
+    if accepted:
+        await store.async_add(source_text="Meeting", events=(), hosted_operation_id=record["key"])
+    if fence == "closed":
+        store.close_hosted_writes()
+    else:
+        store._storage_blocked = True
+    before = deepcopy(backend.data)
+    with pytest.raises(PendingImportStorageError):
+        await store.async_add(source_text="Meeting", events=(), hosted_operation_id=record["key"])
+    assert backend.data == before
+    assert store._hosted_operations["a" * 64]["accepted"] is accepted
+    assert not store.list()

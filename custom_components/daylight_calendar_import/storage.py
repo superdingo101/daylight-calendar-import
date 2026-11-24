@@ -1846,6 +1846,8 @@ class PendingImportStore:
 
             operations = None
             if hosted_operation_id is not None:
+                if self._hosted_writes_closed or self._storage_blocked:
+                    raise PendingImportStorageError(_STORAGE_ERROR)
                 operations = deepcopy(self._hosted_operations)
                 matches = [row for row in operations.values() if row["key"] == hosted_operation_id]
                 if len(matches) != 1:

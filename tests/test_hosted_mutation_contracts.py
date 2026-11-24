@@ -100,9 +100,11 @@ def test_operation_journal_string_bounds_and_error_contract(field):
 
 def test_operation_journal_invalid_shape_and_exact_limit():
     base = record()
-    records = {str(i).zfill(64): base for i in range(10000)}
+    from uuid import UUID
+
+    records = {str(i).zfill(64): {**base, "key": str(UUID(int=i + 1))} for i in range(10000)}
     assert len(validate_records(records)) == 10000
-    records["z" * 64] = base
+    records["f" * 64] = {**base, "key": str(UUID(int=10001))}
     with pytest.raises(ValueError, match="^invalid operation journal$"):
         validate_records(records)
     for bad in (
@@ -111,6 +113,10 @@ def test_operation_journal_invalid_shape_and_exact_limit():
         {SHA: {**base, "digest": "x" * 63}},
         {SHA: {**base, "accepted": 0}},
         {"short": base}, {SHA: {**base, "other": 42}},
+        {"g" * 64: base}, {"A" * 64: base},
+        {SHA: {**base, "digest": "g" * 64}}, {SHA: {**base, "digest": "A" * 64}},
+        {SHA: {**base, "key": None}}, {SHA: {**base, "key": "A" * 36}},
+        {SHA: base, "b" * 64: {**base, "digest": "c" * 64}},
     ):
         with pytest.raises((ValueError, TypeError), match="invalid operation journal|badly formed"):
             validate_records(bad)

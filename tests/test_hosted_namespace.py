@@ -448,3 +448,35 @@ async def test_cancelled_operation_executor_write_blocks_drain_and_survives_relo
     assert final._hosted_operations == replacement._hosted_operations
     assert final.list() == replacement.list()
     assert len(final.list()) == 1
+
+
+@pytest.mark.parametrize("allow_delivery", [False, True])
+async def test_reconnect_recognizes_bounded_manual_recurrence_history(pending, allow_delivery):
+    from datetime import UTC, datetime
+
+    from custom_components.daylight_calendar_import.parser import UNSUPPORTED_RECURRENCE_WARNING
+
+    activity_id = await pending.async_begin_submission(
+        source_kind="manual_text", source_title=None, received_at=datetime.now(UTC),
+    )
+    await pending.async_add(source_text="Recurring meeting", events=(), activity_id=activity_id,
+                            warnings=(UNSUPPORTED_RECURRENCE_WARNING,))
+    path = Path(pending._store.path)
+    before = path.read_bytes()
+    assert pending.get_activity(activity_id)["manual_source_text"] == "Recurring meeting"
+    assert "manual_source_text" not in pending.list_activity()[0]
+    reconciler = module.LocalOnlyNamespaceReconciler(pending, allow_delivery=allow_delivery)
+    assert await reconciler.async_receipt(None) == module.LOCAL_ONLY_CONTRACT
+    assert path.read_bytes() == before
+    for change in ({"source_kind": "email"}, {"status": "failed"},
+                   {"manual_source_text": None}, {"manual_source_text": ""},
+                   {"manual_source_text": "x" * 4097}):
+        envelope = json.loads(before)
+        envelope["data"]["activity"][0].update(change)
+        path.write_text(json.dumps(envelope))
+        tampered = path.read_bytes()
+        with pytest.raises(module.NamespaceReconciliationError):
+            await reconciler.async_receipt(None)
+        assert path.read_bytes() == tampered
+    path.write_bytes(before)
+    assert await reconciler.async_receipt(None) == module.LOCAL_ONLY_CONTRACT
