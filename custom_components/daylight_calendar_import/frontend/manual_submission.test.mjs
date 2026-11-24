@@ -364,3 +364,51 @@ test("a completed text re-import rejection clears the override for later submiss
   assert.equal(calls[2].source_id, calls[1].source_id);
   assert.equal(calls[2].reimport_duplicates, undefined);
 });
+
+
+test("terminal text failure offers a new key only on explicit action; stale actions cannot run", async () => {
+  const requests = [];
+  const failure = {code: "home_assistant_error", message: "Daylight Cloud parse operation ended without a recoverable result. Start a new parse to retry."};
+  const form = new ManualSubmission({getHass: () => ({callWS: async request => {
+    requests.push(request.service_data);
+    if (requests.length < 3) throw failure;
+    return {response: pending};
+  }})});
+  form.text.value = "Lunch tomorrow at noon";
+  await form.form.submit(event);
+  assert.equal(form.status.textContent, failure.message);
+  const stale = form.feedback.actions.children[0];
+  assert.equal(stale.textContent, "Start new parse");
+  await form.form.submit(event);
+  assert.equal(requests[1].source_id, requests[0].source_id);
+  await stale.click();
+  assert.equal(requests.length, 2);
+  await form.feedback.actions.children[0].click();
+  assert.equal(requests.length, 3);
+  assert.notEqual(requests[2].source_id, requests[0].source_id);
+  assert.equal(requests[2].text, requests[0].text);
+  assert.equal(requests[2].reimport_duplicates, undefined);
+  assert.match(form.status.textContent, /ready for review/);
+});
+
+test("verified terminal text re-import preserves deliberate duplicate override across new parse and uncertain retry", async () => {
+  const requests = [];
+  const form = new ManualSubmission({getHass: () => ({callWS: async request => {
+    requests.push(request.service_data);
+    if (requests.length === 1) return {response: {...empty, duplicate: true, duplicate_events: 1}};
+    if (requests.length === 2) throw {code: "home_assistant_error", message: "Daylight Cloud parse operation ended without a recoverable result. Start a new parse to retry."};
+    if (requests.length === 3) throw {code: "home_assistant_error", message: "Daylight Cloud parse outcome is uncertain. Check recent activity and the review inbox before deliberately retrying; the request was not replayed."};
+    return {response: pending};
+  }})});
+  form.text.value = "Same flyer";
+  await form.form.submit(event);
+  await form.feedback.actions.children[0].click();
+  assert.equal(form.feedback.actions.children[0].textContent, "Start new parse");
+  await form.feedback.actions.children[0].click();
+  assert.equal(form.feedback.actions.children.length, 0);
+  assert.notEqual(requests[2].source_id, requests[1].source_id);
+  assert.equal(requests[2].reimport_duplicates, true);
+  await form.form.submit(event);
+  assert.equal(requests[3].source_id, requests[2].source_id);
+  assert.equal(requests[3].reimport_duplicates, true);
+});

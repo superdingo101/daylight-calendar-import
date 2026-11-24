@@ -326,3 +326,32 @@ async def test_operation_journal_reconnect_requires_exact_durable_agreement(pend
             await reconciler.async_receipt(None)
         assert path.read_bytes() == altered
     assert pending._hosted_operations == {identity: record}
+
+
+@pytest.mark.parametrize("code", ["hosted_operation_terminal", "hosted_outcome_uncertain", "provider_timeout"])
+async def test_namespace_receipt_preserves_known_failure_history_and_rejects_unknown_codes(pending, code):
+    from datetime import UTC, datetime
+
+    from tests.test_storage import hosted_operation_request
+
+    await pending.async_prepare_hosted_operation("a" * 64, hosted_operation_request(), ())
+    activity_id = await pending.async_begin_submission(
+        source_kind="manual_text", source_title=None, received_at=datetime.now(UTC),
+    )
+    await pending.async_record_parse_failure(activity_id, provider_error_code=code)
+    assert pending.get_activity(activity_id)["failure_code"] == code
+    path = Path(pending._store.path)
+    before = path.read_bytes()
+    reconciler = module.LocalOnlyNamespaceReconciler(pending, allow_delivery=True)
+    assert await reconciler.async_receipt(None) == module.DELIVERY_CONTRACT
+    assert path.read_bytes() == before
+    for invalid in ("unrecognized_future_code", None, ["hosted_operation_terminal"]):
+        envelope = json.loads(before)
+        envelope["data"]["activity"][0]["failure_code"] = invalid
+        path.write_text(json.dumps(envelope))
+        tampered = path.read_bytes()
+        with pytest.raises(module.NamespaceReconciliationError):
+            await reconciler.async_receipt(None)
+        assert path.read_bytes() == tampered
+    path.write_bytes(before)
+    assert await reconciler.async_receipt(None) == module.DELIVERY_CONTRACT

@@ -16,7 +16,7 @@ _ROOT = {"items", "activity", "notifications", "source_claims", "seen_source_fin
 _ITEM = {"id", "created_at", "source_text", "events", "source_fingerprint", "source_kind", "source_title", "source_sender", "warnings", "duplicate_events"}
 _EVENT = {"id", "draft", "status", "calendar_entity", "write_attempt", "routing_unresolved", "date_time_assumptions"}
 _DRAFT = {"title", "start", "end", "all_day", "location", "description", "confidence"}
-_ACTIVITY = {"id", "created_at", "source_kind", "source_title", "title", "created_count", "rejected_count", "status", "transitions", "notification_delivery_failed", "guidance"}
+_ACTIVITY = {"id", "created_at", "source_kind", "source_title", "title", "created_count", "rejected_count", "status", "transitions", "notification_delivery_failed", "guidance", "failure_code"}
 _TRANSITION = {"type", "at", "event_id", "write_attempt"}
 _NOTIFICATION = {"import_id", "transition_type", "occurred_at", "event_id", "target", "status", "attempts", "next_attempt_at", "failure", "write_attempt", "recovered", "conflict_revision", "terminal_at"}
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{16,128}")
@@ -35,6 +35,8 @@ def _local_data(data: dict[str, Any], allow_delivery: bool = False) -> None:
     """Pin every identity-bearing collection rather than accepting future fields."""
     _closed(data, _ROOT | {"hosted_delivery_journal", "hosted_parse_attempt", "hosted_parse_operations"} if allow_delivery else _ROOT)
     storage._decode_storage_data(data)
+    if "hosted_parse_operations" in data:
+        storage.validate_records(data["hosted_parse_operations"])
     for item in data["items"]:
         _closed(item, _ITEM)
         if item.get("source_kind", "manual_text") not in _KINDS:
@@ -44,6 +46,11 @@ def _local_data(data: dict[str, Any], allow_delivery: bool = False) -> None:
             _closed(event["draft"], _DRAFT)
     for activity in data.get("activity", ()):
         _closed(activity, _ACTIVITY)
+        if "failure_code" in activity and (
+            type(activity["failure_code"]) is not str
+            or activity["failure_code"] not in storage.PROVIDER_FAILURE_GUIDANCE
+        ):
+            raise NamespaceReconciliationError(_ERROR)
         if activity.get("source_kind") not in _KINDS:
             raise NamespaceReconciliationError(_ERROR)
         for transition in activity["transitions"]:

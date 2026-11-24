@@ -1566,3 +1566,133 @@ async def test_fresh_delivery_batch_surfaces_its_terminal_ack_expiry(hass, hoste
     assert await runtime.async_delivery_pass() == []
     assert repair.call_args.kwargs["translation_key"] == "hosted_delivery_expired"
     await runtime.async_stop()
+
+
+@pytest.mark.parametrize("kind", ["text", "image", "pdf"])
+@pytest.mark.parametrize("mode", ["anonymous", "failed", "expired", "pending", "uncertain"])
+async def test_durable_manual_submissions_separate_invocations_and_retry_only_explicitly(
+    hass, hass_ws_client, hass_client, hosted_review, tmp_path, monkeypatch, kind, mode,
+):
+    from custom_components.daylight_calendar_import.hosted_operations import payload_digest
+    from custom_components.daylight_calendar_import.hosted_runtime import CONF_HOSTED_PARSE_OPERATIONS
+    from custom_components.daylight_calendar_import.provider_failures import PROVIDER_FAILURE_GUIDANCE
+
+    review = hosted_review
+    runtime = review.store.hosted_runtime
+    credential = BoundCredential(
+        "account-identifier-1234", "installation-identifier-1234", "x" * 60,
+        (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+    )
+    runtime._service = SERVICE
+    runtime._credential_store = SimpleNamespace(snapshot=CredentialCheckpoint(
+        processing_consent=True, current=credential, service_binding=SERVICE,
+    ))
+    runtime._verified_parse_credential = credential
+    runtime._state = HostedConnectionResult("connected", "current")
+    runtime._options = {**runtime._options, CONF_HOSTED_PARSE_OPERATIONS: True}
+    monkeypatch.setattr(HostedConnectionRuntime, "parse_session", REAL_PARSE_SESSION)
+    responses = {}
+    posts = []
+
+    def success(key, digest, draft):
+        return {"schema_version": 2, "operation_id": key, "payload_sha256": digest,
+                "status": "succeeded", "replay_expires_at": "2999-01-01T00:00:00Z",
+                "result": {"schema_version": 1, "events": [{"draft": draft.as_dict(), "warnings": []}],
+                           "rejected": [], "warnings": [], "provider_metadata": None}}
+
+    async def post(request, attachments, *, token, operation_key):
+        assert token == credential.token
+        assert operation_key not in responses
+        posts.append((operation_key, request["source"]["id"]))
+        digest = payload_digest(request, attachments)
+        if mode != "anonymous" and len(posts) == 1:
+            response = {"schema_version": 2, "operation_id": operation_key, "payload_sha256": digest,
+                        "status": mode, "result": None, "replay_expires_at": None}
+        else:
+            draft = DRAFT if len(posts) == 1 else replace(
+                DRAFT, start="2026-11-13T19:00:00-08:00", end="2026-11-13T20:00:00-08:00",
+            )
+            response = success(operation_key, digest, draft)
+        responses[operation_key] = response
+        return response
+
+    async def lookup(key, *, token):
+        assert token == credential.token
+        return responses[key]
+
+    wire = AsyncMock(side_effect=post)
+    recover = AsyncMock(side_effect=lookup)
+    monkeypatch.setattr(HostedParseTransport, "async_parse", wire)
+    monkeypatch.setattr(HostedParseTransport, "async_operation", recover)
+    client = await hass_ws_client(hass)
+    if kind != "text":
+        hass.config.media_dirs = {"local": str(tmp_path / "media")}
+        http = await hass_client()
+        if kind == "image":
+            payload, filename, media_type = PNG, "event.png", "image/png"
+        else:
+            writer = PdfWriter()
+            page = writer.add_blank_page(width=200, height=200)
+            stream = DecodedStreamObject()
+            stream.set_data(b"0 0 100 100 re f")
+            page[NameObject("/Contents")] = writer._add_object(stream)
+            output = BytesIO()
+            writer.write(output)
+            payload, filename, media_type = output.getvalue(), "event.pdf", "application/pdf"
+
+    async def submit(source_id=None):
+        data = {"text": "Lunch tomorrow at noon"}
+        if source_id is not None:
+            data["source_id"] = source_id
+        if kind != "text":
+            multipart = FormData()
+            multipart.add_field("file", payload, filename=filename, content_type=media_type)
+            uploaded = await http.post("/api/file_upload", data=multipart)
+            assert uploaded.status == 200
+            data["file_id"] = (await uploaded.json())["file_id"]
+        return await call(client, "submit_" + kind, **data)
+
+    if mode == "anonymous":
+        first, second = await submit(), await submit()
+        assert first["success"] and second["success"], (first, second)
+        assert first["result"]["response"]["duplicate_source"] is False
+        assert second["result"]["response"]["duplicate_source"] is False
+        assert len(review.store.list()) == 2
+        assert len(posts) == 2 and posts[0][0] != posts[1][0] and posts[0][1] != posts[1][1]
+        recover.assert_not_awaited()
+        assert all(row["accepted"] for row in review.store._hosted_operations.values())
+    else:
+        first = await submit("stable-draft")
+        assert not first["success"]
+        terminal = mode in ("failed", "expired")
+        if terminal:
+            assert first["error"]["code"] == "home_assistant_error"
+            assert first["error"]["message"] == PROVIDER_FAILURE_GUIDANCE["hosted_operation_terminal"]
+        else:
+            assert "outcome is uncertain" in first["error"]["message"]
+        assert not review.store.list()
+        first_key = posts[0][0]
+        second = await submit("stable-draft")
+        assert not second["success"]
+        assert first["error"]["message"] == second["error"]["message"]
+        assert wire.await_count == 1
+        recover.assert_awaited_once_with(first_key, token=credential.token)
+        if terminal:
+            third = await submit("explicit-new-draft")
+            assert third["success"], third
+            assert len(posts) == 2 and posts[1][0] != first_key
+            assert {row["key"]: row["accepted"] for row in review.store._hosted_operations.values()} == {
+                first_key: False, posts[1][0]: True,
+            }
+            assert recover.await_count == 1
+        else:
+            responses[first_key] = success(first_key, responses[first_key]["payload_sha256"], DRAFT)
+            third = await submit("stable-draft")
+            assert third["success"], third
+            assert wire.await_count == 1
+            assert recover.await_count == 2
+            assert {row["key"]: row["accepted"] for row in review.store._hosted_operations.values()} == {first_key: True}
+        assert len(review.store.list()) == 1
+    review.writes.assert_not_awaited()
+    review.generate.assert_not_awaited()
+    await runtime.async_stop()

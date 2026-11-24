@@ -984,7 +984,8 @@ async def test_durable_parser_rechecks_authority_before_every_network_request(
 
 
 @pytest.mark.parametrize("change", ["disconnect", "rotate"])
-async def test_terminal_result_cannot_authorize_retry_after_credential_change(provider, change):
+@pytest.mark.parametrize("kind", [SourceKind.EMAIL, SourceKind.MANUAL_TEXT])
+async def test_terminal_result_cannot_authorize_retry_after_credential_change(provider, change, kind):
     from uuid import uuid4
 
     client, saved, active = provider
@@ -1005,7 +1006,7 @@ async def test_terminal_result_cannot_authorize_retry_after_credential_change(pr
                 "status": "failed", "result": None, "replay_expires_at": None}
 
     client._transport.async_operation = AsyncMock(side_effect=lookup)
-    source = replace(TextSourceAdapter().create("School event"), kind=SourceKind.EMAIL,
+    source = replace(TextSourceAdapter().create("School event"), kind=kind,
                      upstream_source_id="hosted:entry:source")
     with pytest.raises(HostedParseError) as error:
         await client.async_parse(source, reference_datetime="2026-11-17T12:00:00Z", time_zone="UTC")

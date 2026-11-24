@@ -535,3 +535,47 @@ test("known file service rejection terminates the re-import override", async () 
   assert.equal(services[2].service_data.reimport_duplicates, undefined);
   assert.equal(services[2].service_data.source_id, services[1].service_data.source_id);
 });
+
+
+test("terminal image and PDF attempts rotate source IDs only when the user starts a new parse", async () => {
+  for (const selected of [image(), pdf()]) {
+    const {form, hass, services, uploads} = setup();
+    const failure = {code: "home_assistant_error", message: "Daylight Cloud parse operation ended without a recoverable result. Start a new parse to retry."};
+    hass.callWS = async request => {
+      services.push(request);
+      if (services.length < 3) throw failure;
+      return {response: pending};
+    };
+    form.file.files = [selected];
+    form.text.value = "Lunch tomorrow";
+    await form.form.submit(event);
+    assert.equal(form.status.textContent, failure.message);
+    assert.equal(form.feedback.actions.children[0].textContent, "Start new parse");
+    await form.form.submit(event);
+    assert.equal(services[1].service_data.source_id, services[0].service_data.source_id);
+    await form.feedback.actions.children[0].click();
+    assert.notEqual(services[2].service_data.source_id, services[0].service_data.source_id);
+    assert.equal(services[2].service_data.reimport_duplicates, undefined);
+    assert.equal(services[2].service_data.text, "Lunch tomorrow");
+    assert.equal(form.file.files[0], selected);
+    assert.equal(uploads.filter(({options}) => options.method === "POST").length, 3);
+    assert.match(form.status.textContent, /ready for review/);
+  }
+});
+
+test("uncertain upload service result never offers a new parse and preserves re-import override", async () => {
+  const {form, hass, services} = setup();
+  hass.callWS = async request => {
+    services.push(request);
+    if (services.length === 1) return {response: {...empty, duplicate: true, duplicate_events: 1}};
+    if (services.length === 2) throw {code: "home_assistant_error", message: "Daylight Cloud parse outcome is uncertain. Check recent activity and the review inbox before deliberately retrying; the request was not replayed."};
+    return {response: pending};
+  };
+  form.file.files = [pdf()];
+  await form.form.submit(event);
+  await form.feedback.actions.children[0].click();
+  assert.equal(form.feedback.actions.children.length, 0);
+  await form.form.submit(event);
+  assert.equal(services[2].service_data.source_id, services[1].service_data.source_id);
+  assert.equal(services[2].service_data.reimport_duplicates, true);
+});
