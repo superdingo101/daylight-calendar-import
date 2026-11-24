@@ -1799,3 +1799,39 @@ async def test_hosted_delivery_uses_explicit_byo_and_stages_verified_attachments
     assert not store._hosted_operations
     assert not list(tmp_path.iterdir())
     await runtime.async_stop()
+
+async def test_byo_delivery_rechecks_owner_after_staging_before_provider(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import (
+        email_attachments, hosted_ack_recovery, hosted_text_batch,
+    )
+    from custom_components.daylight_calendar_import.hosted_runtime import HostedRuntimeError
+
+    runtime, _ = await verified_runtime(hass, monkeypatch)
+    original = SimpleNamespace(attachments=(object(),))
+    prepared = object()
+    cleanup = AsyncMock()
+
+    async def stage(local_hass, source):
+        assert local_hass is hass and source is original
+        # Simulate unload or local disconnection while the executor is staging.
+        runtime.pause()
+        return SimpleNamespace(document=prepared, async_cleanup=cleanup)
+
+    stager = AsyncMock(side_effect=stage)
+    parser = AsyncMock()
+    monkeypatch.setattr(email_attachments, "async_stage_verified_hosted_attachments", stager)
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", AsyncMock())
+
+    async def batch(**kwargs):
+        await kwargs["parse_source"](original)
+
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
+    runtime.configure_delivery(
+        store=object(), route_source=object(), parse_source=parser, stage_byo_attachments=True,
+    )
+    with pytest.raises(HostedRuntimeError, match="hosted_unavailable"):
+        await runtime.async_delivery_pass()
+    stager.assert_awaited_once_with(hass, original)
+    parser.assert_not_awaited()
+    cleanup.assert_awaited_once_with("hosted email processing")
+    await runtime.async_stop()
