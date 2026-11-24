@@ -89,6 +89,29 @@ export async function saveEvent(hass, pendingId, original, draft, calendarEntity
   return result.response.event;
 }
 
+/** Persist a deliberate source-wall-clock interpretation in a named zone. */
+export async function confirmEventTimezone(hass, pendingId, event, timeZone, options = {}) {
+  if (!event?.temporal || !timeZone) throw new Error("Select a valid timezone");
+  const result = await hass.callWS({
+    type: "call_service", domain: "daylight_calendar_import",
+    service: "confirm_pending_timezone",
+    service_data: {
+      pending_id: pendingId, event_id: event.id,
+      time_zone: timeZone, expected_event: event,
+      ...(options.endTimeZone ? {end_time_zone: options.endTimeZone} : {}),
+      ...(options.startOccurrence ? {start_occurrence: options.startOccurrence} : {}),
+      ...(options.endOccurrence ? {end_occurrence: options.endOccurrence} : {}),
+    },
+    return_response: true,
+  });
+  const updated = result?.response?.event;
+  if (result?.response?.pending_id !== pendingId ||
+      updated?.id !== event.id || updated?.temporal?.status !== "resolved") {
+    throw new Error("Timezone confirmation could not be verified. Refresh review.");
+  }
+  return updated;
+}
+
 export async function decideEvent(hass, pendingId, event, action) {
   if (action !== "approve" && action !== "reject") throw new Error("Invalid review action");
   const result = await hass.callWS({
@@ -199,6 +222,18 @@ function eventDisplayZones(start, end, event, timeZone) {
   const startOffset = isoOffsetMinutes(event.start);
   const endOffset = isoOffsetMinutes(event.end);
   if (startOffset === null || endOffset === null) return null;
+  if (event.temporal && typeof event.temporal === "object") {
+    const named = (instant, offset, candidate) => (
+      typeof candidate === "string" &&
+      namedZoneOffsetMinutes(instant, candidate) === offset ?
+        {timeZone: candidate, fixedOffset: null, label: null} :
+        fixedOffsetZone(offset)
+    );
+    return {
+      start: named(start, startOffset, event.temporal.start_zone),
+      end: named(end, endOffset, event.temporal.end_zone),
+    };
+  }
   if (timeZone &&
       namedZoneOffsetMinutes(start, timeZone) === startOffset &&
       namedZoneOffsetMinutes(end, timeZone) === endOffset) {

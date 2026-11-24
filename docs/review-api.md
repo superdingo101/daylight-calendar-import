@@ -51,6 +51,75 @@ the complete loaded `expected_event`. The backend compares it under the store
 lock before any calendar write or rejection; stale decisions fail with a refresh
 message. Existing action callers may omit the snapshot for compatibility.
 
+### Location-aware timezone interpretation and confirmation
+
+For structured AI extraction, Daylight receives **source-local start and end clocks**
+and event-location evidence (airport IATA/ICAO identifier, city/region/country,
+street address, US postal code, venue, virtual or unknown). The AI's returned
+offset is **not authoritative**. Python resolves airports using the bundled airportsdata reference and
+city/administrative-division/country evidence using pinned `localis==3.0.0`,
+whose offline ISO 3166, GeoNames and CLDR reference data replaces Daylight's
+hand-maintained country, state and city-name maps. Country names/codes and city
+subdivision aliases are checked with **exact filters**, not a ranked or fuzzy
+search result. All matching city coordinates must imply one valid IANA zone;
+when the city, country or subdivision is ambiguous, Daylight retains a
+provisional HA timezone **and requires confirmation before approval**. Only
+truly location-free events use the HA configured timezone without review.
+TimezoneFinder converts matched coordinates to IANA zones, and `zoneinfo`
+calculates event-date offsets. Independent departure and arrival locations
+can have different named timezones. US ZIP lookup remains separate and is
+cross-checked against any printed city/subdivision. Unsupported foreign postal
+codes are not treated as US ZIP codes. No location or source text is
+transmitted to an external geocoder.
+
+A structured get_pending event can include **temporal**, containing its source
+wall clocks, resolved start_zone and end_zone, provenance, original location
+evidence, and a status of resolved, confirmation_required, or
+correction_required. Legacy pending events without this field retain their
+existing offsets without reinterpretation. A later HA timezone change does
+not silently retime an existing structured pending event.
+
+When the structured temporal status is unresolved, both individual and
+bulk approval are rejected **by the backend before a calendar write**, including
+legacy direct service calls. The response-enabled confirm_pending_timezone action
+requires pending_id, event_id, named time_zone, and the current expected_event
+snapshot. It optionally accepts end_time_zone, start_occurrence, and
+end_occurrence (first or second) for cross-zone events or repeated DST hours.
+The backend validates both source-local endpoints, rejects spring-forward
+nonexistent clocks, impossible intervals, stale snapshots, and duplicates,
+and durably saves the selected zone(s) and final instants atomically before
+approval becomes available. A partial travel itinerary persists
+`temporal.travel_incomplete=true` and requires both a departure time zone and
+an explicitly selected `end_time_zone` in confirmation, even if the two zones
+turn out to be equal. The review UI exposes separate fields in that case.
+Legacy persisted records without the optional flag default to false.
+
+On calendar creation, timed drafts preserve their original local clocks and
+start/end IANA zones in the review record, but Daylight submits **both instants
+in UTC** to Home Assistant's `calendar.create_event` service. This is required
+for flights or DST transitions: Home Assistant rejects a start/end pair with
+different offsets even when both instants are correct ("Expected all values
+to have the same timezone"). UTC normalization occurs only at the service
+boundary, preserving the reviewed draft, deduplication identity, and absolute
+duration. All-day calendar dates are not converted. A pre-fix event saved as
+`write_uncertain` still needs explicit confirmation against the destination
+calendar before resolving its outcome; installing the fixed code does not
+automatically retry potentially duplicated writes.
+
+Editing an unresolved event cannot bypass the confirmation requirement;
+changing its time invalidates any previous timezone confirmation. A reviewer
+may reject the draft instead. Unsupported/ambiguous geographic evidence is
+disclosed on the event card and requires explicit correction or confirmation.
+Geography is inferred conservatively: a venue name alone, a city with
+inconsistent regional evidence, an ambiguous city, or an unsupported
+international postal code is not silently assigned a zone. `localis` carries
+attributed ISO (LGPL-2.1-or-later), GeoNames (CC BY 4.0), Unicode CLDR
+(Unicode License v3), and Wikidata (CC0) data; its published `NOTICE` and
+license texts are retained in the installed distribution. The 24.7 MB
+`localis==3.0.0` pure-Python wheel is an explicit trade-off for offline
+global coverage; memory and initialization cost should be measured on
+resource-constrained Home Assistant hosts.
+
 ### Explicit calendar routing confirmation
 
 An unknown or contradictory `Calendar:` directive retains the configured

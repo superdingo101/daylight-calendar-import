@@ -19,6 +19,7 @@ from homeassistant.helpers import issue_registry as ir
 
 from custom_components.daylight_calendar_import import (
     EDIT_EVENT_SCHEMA,
+    CONFIRM_TIMEZONE_SCHEMA,
     RESOLVE_EVENT_SCHEMA,
     PENDING_EVENT_SCHEMA,
     PENDING_SCHEMA,
@@ -49,6 +50,7 @@ from custom_components.daylight_calendar_import.const import (
     SERVICE_APPROVE_PENDING,
     SERVICE_APPROVE_PENDING_EVENT,
     SERVICE_EDIT_PENDING_EVENT,
+    SERVICE_CONFIRM_PENDING_TIMEZONE,
     SERVICE_GET_PENDING,
     SERVICE_GET_PENDING_EVENT,
     SERVICE_IMPORT_TEXT,
@@ -63,7 +65,8 @@ from custom_components.daylight_calendar_import.const import (
     SERVICE_SUBMIT_IMAGE,
     SERVICE_SUBMIT_PDF,
 )
-from custom_components.daylight_calendar_import.models import EventDraft
+from custom_components.daylight_calendar_import.models import DraftValidationError, EventDraft
+from custom_components.daylight_calendar_import.timezone_resolution import TemporalEvidence
 from custom_components.daylight_calendar_import.parser import ParseOutcome
 from custom_components.daylight_calendar_import.providers import SourceValidationError
 from custom_components.daylight_calendar_import.sources import SourceAttachment, SourceDocument, SourceKind, TextSourceAdapter
@@ -1275,7 +1278,8 @@ async def test_calendar_event_payloads():
     hass = FakeHass()
     await _async_create_calendar_event(hass, "calendar.family", draft())
     timed_data = hass.services.calls[-1][2]
-    assert timed_data["start_date_time"].endswith("-07:00")
+    assert timed_data["start_date_time"] == "2026-10-09T00:30:00+00:00"
+    assert timed_data["end_date_time"] == "2026-10-09T01:30:00+00:00"
     assert timed_data["description"] == ""
 
     await _async_create_calendar_event(hass, "calendar.family", draft(True))
@@ -1292,6 +1296,66 @@ async def test_calendar_event_payloads():
     )
     await _async_create_calendar_event(hass, "calendar.family", no_location)
     assert "location" not in hass.services.calls[-1][2]
+
+
+@pytest.mark.parametrize(("start", "end", "start_utc", "end_utc"), [
+    # LAX to JFK: Home Assistant rejects the original -07/-04 pair.
+    ("2028-07-15T08:00:00-07:00", "2028-07-15T16:30:00-04:00",
+     "2028-07-15T15:00:00+00:00", "2028-07-15T20:30:00+00:00"),
+    # Winter flight uses different UTC offsets but still has a valid duration.
+    ("2028-01-15T08:00:00-08:00", "2028-01-15T16:30:00-05:00",
+     "2028-01-15T16:00:00+00:00", "2028-01-15T21:30:00+00:00"),
+    # One region crossing its fall-back transition (-07 -> -08).
+    ("2028-11-05T01:15:00-07:00", "2028-11-05T01:45:00-08:00",
+     "2028-11-05T08:15:00+00:00", "2028-11-05T09:45:00+00:00"),
+    # International Date Line: arrival's local date can equal departure's.
+    ("2028-07-15T17:00:00+09:00", "2028-07-15T11:00:00-07:00",
+     "2028-07-15T08:00:00+00:00", "2028-07-15T18:00:00+00:00"),
+    # Both endpoints have the same offset: also use the canonical UTC payload.
+    ("2028-07-15T10:00:00+05:45", "2028-07-15T11:30:00+05:45",
+     "2028-07-15T04:15:00+00:00", "2028-07-15T05:45:00+00:00"),
+])
+async def test_calendar_create_event_uses_one_utc_zone_without_changing_source_draft(
+    start, end, start_utc, end_utc,
+):
+    """All timed service writes use one zone, preserving each original instant."""
+    hass = FakeHass()
+    original = EventDraft(
+        title="Cross-zone flight", start=start, end=end, all_day=False,
+        description="Flight AA1234", location="LAX to JFK", confidence=1.0,
+    )
+    context = Context(user_id="calendar-test")
+    await _async_create_calendar_event(hass, "calendar.family", original, context=context)
+    assert hass.services.calls == [(
+        "calendar", "create_event",
+        {
+            "entity_id": "calendar.family",
+            "summary": "Cross-zone flight",
+            "description": "Flight AA1234",
+            "location": "LAX to JFK",
+            "start_date_time": start_utc,
+            "end_date_time": end_utc,
+        },
+        True, context,
+    )]
+    assert datetime.fromisoformat(start_utc) == datetime.fromisoformat(start)
+    assert datetime.fromisoformat(end_utc) == datetime.fromisoformat(end)
+    assert datetime.fromisoformat(end_utc) > datetime.fromisoformat(start_utc)
+    assert (original.start, original.end) == (start, end)
+    assert original.all_day is False
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("2028-07-15T08:00:00", "2028-07-15T16:30:00-04:00"),
+    ("2028-07-15T08:00:00-07:00", "2028-07-15T16:30:00"),
+])
+async def test_calendar_create_event_refuses_naive_timed_endpoints_before_write(start, end):
+    """Direct draft construction must not silently use the host's local timezone."""
+    hass = FakeHass()
+    original = EventDraft(title="Incomplete flight", start=start, end=end, all_day=False)
+    with pytest.raises(DraftValidationError, match="timed events must include timezone offsets"):
+        await _async_create_calendar_event(hass, "calendar.family", original)
+    assert hass.services.calls == []
 
 
 async def test_remove_entry_deletes_pending_storage(monkeypatch, tmp_path):
@@ -1334,8 +1398,8 @@ async def test_calendar_event_payload_contract_is_exact():
             "summary": "Practice",
             "description": "",
             "location": "Park",
-            "start_date_time": "2026-10-08T17:30:00-07:00",
-            "end_date_time": "2026-10-08T18:30:00-07:00",
+            "start_date_time": "2026-10-09T00:30:00+00:00",
+            "end_date_time": "2026-10-09T01:30:00+00:00",
         },
         True,
         context,
@@ -3414,3 +3478,76 @@ async def test_oversized_combined_pdf_is_rejected_before_activity_creation(monke
     parser.assert_not_awaited()
     assert store.active_submissions == set()
     assert cleaned == [True]
+
+
+async def test_confirm_timezone_service_enforces_authentication_snapshot_and_response(monkeypatch):
+    item = pending()
+    base = item.events[0]
+    metadata = TemporalEvidence(
+        "2026-10-08T17:30:00", "2026-10-08T18:30:00",
+        "America/Los_Angeles", "America/Los_Angeles",
+        "ha_fallback", "confirmation_required",
+        "Source timezone needs confirmation",
+    )
+    unresolved = replace(base, draft=replace(base.draft, temporal=metadata))
+    confirmed = replace(
+        unresolved, draft=replace(unresolved.draft,
+                                  temporal=replace(metadata, source="user", status="resolved"))
+    )
+    store = SimpleNamespace(
+        async_load=AsyncMock(),
+        list_notifications=Mock(return_value=()),
+        async_begin_submission=AsyncMock(return_value="activity-id"),
+        async_confirm_timezone=AsyncMock(return_value=confirmed),
+    )
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.PendingImportStore", lambda _hass: store
+    )
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    handler, options = hass.services.handlers[(DOMAIN, SERVICE_CONFIRM_PENDING_TIMEZONE)]
+    assert options["schema"] is CONFIRM_TIMEZONE_SCHEMA
+    assert options["supports_response"] is SupportsResponse.ONLY
+    call = SimpleNamespace(
+        context=Context(user_id="reviewer"),
+        data={
+            ATTR_PENDING_ID: item.id, ATTR_EVENT_ID: base.id,
+            "time_zone": "America/Los_Angeles",
+            "end_time_zone": "America/New_York",
+            "start_occurrence": "first",
+            "end_occurrence": "second",
+            "expected_event": unresolved.as_service_dict(),
+        },
+    )
+    result = await handler(call)
+    assert result == {"pending_id": item.id, "event": confirmed.as_service_dict()}
+    store.async_confirm_timezone.assert_awaited_once_with(
+        item.id, base.id, "America/Los_Angeles", expected_event=unresolved,
+        end_zone_name="America/New_York",
+        start_occurrence="first", end_occurrence="second",
+    )
+    assert CONFIRM_TIMEZONE_SCHEMA(call.data)["end_occurrence"] == "second"
+    with pytest.raises(vol.Invalid):
+        CONFIRM_TIMEZONE_SCHEMA({**call.data, "start_occurrence": "third"})
+    with pytest.raises(vol.Invalid):
+        CONFIRM_TIMEZONE_SCHEMA({key: val for key, val in call.data.items()
+                                 if key != "expected_event"})
+
+    call.data["expected_event"] = None
+    with pytest.raises(ServiceValidationError, match="fresh event snapshot"):
+        await handler(call)
+    call.data["expected_event"] = {**unresolved.as_service_dict(), "id": "other"}
+    with pytest.raises(ServiceValidationError, match="Event changed"):
+        await handler(call)
+    call.data["expected_event"] = unresolved.as_service_dict()
+    store.async_confirm_timezone.return_value = None
+    with pytest.raises(ServiceValidationError, match="not found"):
+        await handler(call)
+    store.async_confirm_timezone.side_effect = PendingEventEditError("Stale timezone confirmation")
+    with pytest.raises(ServiceValidationError, match="Stale timezone confirmation"):
+        await handler(call)
+    store.async_confirm_timezone.reset_mock(side_effect=True)
+    call.context = Context(user_id=None)
+    with pytest.raises(Unauthorized):
+        await handler(call)
+    store.async_confirm_timezone.assert_not_awaited()

@@ -737,3 +737,81 @@ def test_mutation_ambiguous_named_zone_validates_both_endpoints(caplog):
     assert caplog.text.count(
         "Timezone candidate validated: origin=provider_named zone=America/Los_Angeles"
     ) == 2
+
+
+@pytest.mark.parametrize(("case", "overrides", "expected"), [
+    (
+        "reconstructed Christmas 2027 Gemini offset mismatch",
+        {
+            "title": "Christmas dinner",
+            # This is the location-free Christmas dinner regression, not the
+            # unrelated Encinitas invitation inherited from BASE.
+            "location": "",
+            "start": "2027-12-25T18:00:00-05:00",
+            "end": "2027-12-25T20:00:00-05:00",
+            "start_local": "2027-12-25T18:00:00",
+            "end_local": "2027-12-25T20:00:00",
+            "start_location_type": "unknown",
+            "start_location_value": "",
+            "time_zone_basis": "ha_fallback",
+        },
+        ("2027-12-25T18:00:00-08:00", "2027-12-25T20:00:00-08:00",
+         "America/Los_Angeles", "America/Los_Angeles"),
+    ),
+    (
+        "cross-zone airport itinerary",
+        {
+            "title": "Flight LAX to JFK",
+            "start": "2027-07-15T08:00:00-07:00",
+            "end": "2027-07-15T16:30:00-04:00",
+            "start_local": "2027-07-15T08:00:00",
+            "end_local": "2027-07-15T16:30:00",
+            "start_location_type": "airport",
+            "start_location_value": "LAX",
+            "end_location_type": "airport",
+            "end_location_value": "JFK",
+            "time_zone_basis": "geographic",
+        },
+        ("2027-07-15T08:00:00-07:00", "2027-07-15T16:30:00-04:00",
+         "America/Los_Angeles", "America/New_York"),
+    ),
+])
+async def test_new_structured_source_contract_through_production_provider(
+    monkeypatch, case, overrides, expected,
+):
+    """Provider schema → parser → real draft → durable review (not a bypass test)."""
+    event = {**BASE, **overrides}
+    outcome = await replay(monkeypatch, event)
+    assert outcome.warnings == [], case
+    assert len(outcome.events) == 1
+    draft = outcome.events[0]
+    assert (draft.start, draft.end,
+            draft.temporal.start_zone, draft.temporal.end_zone) == expected
+    assert draft.temporal.status == "resolved"
+    pending = PendingImport.create(
+        source_text="synthetic structured extraction", events=outcome.events,
+        event_assumptions=outcome.event_assumptions,
+    )
+    restored = PendingImport.from_dict(pending.as_dict())
+    assert restored.events[0].draft == draft
+
+
+@pytest.mark.parametrize("support", ["", "Please import the attached invitation",
+                                    "Location: Los Angeles International Airport (LAX)"])
+async def test_attachment_explicit_zone_conflict_survives_support_text(monkeypatch, support):
+    event = {
+        **BASE, "title": "Airport meeting", "location": "",
+        "start": "2027-07-15T08:00:00-04:00", "end": "2027-07-15T09:00:00-04:00",
+        "start_local": "2027-07-15T08:00:00", "end_local": "2027-07-15T09:00:00",
+        "start_location_type": "airport", "start_location_value": "LAX",
+        "explicit_timezone": "America/New_York",
+    }
+    result = await replay(monkeypatch, event, support=support)
+    draft, = result.events
+    assert draft.temporal.status == "confirmation_required"
+    assert draft.temporal.explicit_timezone == "America/New_York"
+    assert draft.temporal.start_location_value == "LAX"
+    assert draft.temporal.start_zone == "America/New_York"
+    assert draft.start == "2027-07-15T08:00:00-04:00"
+    assert draft.end == "2027-07-15T09:00:00-04:00"
+    assert result.warnings

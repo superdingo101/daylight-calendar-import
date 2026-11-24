@@ -298,3 +298,22 @@ test("repeated-hour options expose only real first/second fall-back instants", (
   assert.deepEqual(repeatedHourOptions("not a date", "America/Los_Angeles"), []);
   assert.deepEqual(repeatedHourOptions("2026-11-01T01:30", null), []);
 });
+
+test("different endpoint zones remain independent across seasonal travel edits", () => {
+  const event = {
+    originalStart: "2027-07-15T08:00:00-07:00",
+    originalEnd: "2027-07-15T16:30:00-04:00",
+    startDateTime: "2027-12-15T08:00",
+    endDateTime: "2027-12-15T16:30",
+    allDay: false,
+    timeZone: "America/Los_Angeles",
+    startTimeZone: "America/Los_Angeles",
+    endTimeZone: "America/New_York",
+  };
+  const result = normalizeEventTemporalEdit(event);
+  assert.deepEqual(result, {
+    valid: true,
+    start: "2027-12-15T08:00:00-08:00",
+    end: "2027-12-15T16:30:00-05:00",
+  });
+});

@@ -34,6 +34,7 @@ from .source_routing import LEGACY_UNRESOLVED_WARNINGS
 from .provider_failures import PROVIDER_FAILURE_GUIDANCE
 from .retry_jobs import RetryJob, RETRYABLE_PROVIDER_CODES
 from .retry_settings import RetrySettings, next_retry_at
+from .timezone_resolution import TemporalEvidence, confirm_zone, _range_for_wall, _local
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1609,11 +1610,50 @@ class PendingImportStore:
             target = calendar_entity or event.calendar_entity
             # Only an explicit destination selection resolves an unknown route.
             unresolved = event.routing_unresolved and calendar_entity is None
-            if (event.draft == draft and target == event.calendar_entity
+            if draft.temporal is not None:
+                raise PendingEventEditError("Timezone review metadata cannot be edited directly")
+            if (replace(event.draft, temporal=None) == draft and target == event.calendar_entity
                     and unresolved == event.routing_unresolved):
                 return event
 
-            fingerprint = event_fingerprint(draft)
+            temporal_changed = any((
+                event.draft.start != draft.start,
+                event.draft.end != draft.end,
+                event.draft.all_day != draft.all_day,
+            ))
+            metadata = event.draft.temporal
+            if metadata is not None and temporal_changed:
+                # Never let an unrelated edit or a forged request clear the
+                # authoritative timezone approval gate.
+                if not draft.all_day:
+                    try:
+                        if "T" not in draft.start or "T" not in draft.end:
+                            raise ValueError("Edited clocks must use ISO T separator")
+                        start_local = _local(datetime.fromisoformat(draft.start).replace(tzinfo=None).isoformat()).isoformat()
+                        end_local = _local(datetime.fromisoformat(draft.end).replace(tzinfo=None).isoformat()).isoformat()
+                    except ValueError as err:
+                        raise PendingEventEditError("Invalid edited local clocks") from err
+                    metadata = replace(metadata, start_local=start_local,
+                                       end_local=end_local,
+                                       status="confirmation_required",
+                                       reason="Edited times need timezone reconfirmation")
+                else:
+                    if metadata.status != "resolved":
+                        raise PendingEventEditError(
+                            "Confirm the timezone before changing an unresolved event to all-day"
+                        )
+                    metadata = None
+            # A manual geography edit can invalidate an earlier zone decision
+            # even if neither wall clock changes.
+            if (metadata is not None and metadata.status == "resolved"
+                    and event.draft.location != draft.location):
+                metadata = replace(metadata, status="confirmation_required",
+                                   reason="Edited location needs timezone reconfirmation")
+            edited = replace(event, draft=replace(draft, temporal=metadata),
+                             calendar_entity=target, routing_unresolved=unresolved,
+                             date_time_assumptions=(() if temporal_changed
+                                                    else event.date_time_assumptions))
+            fingerprint = event_fingerprint(edited.draft)
             other_active = {
                 event_fingerprint(item.draft)
                 for active in self._items.values()
@@ -1623,15 +1663,6 @@ class PendingImportStore:
             if fingerprint in self._seen_event_fingerprints or fingerprint in other_active:
                 raise PendingEventEditError("Edited event duplicates a pending or handled event")
 
-            temporal_changed = any((
-                event.draft.start != draft.start,
-                event.draft.end != draft.end,
-                event.draft.all_day != draft.all_day,
-            ))
-            edited = replace(event, draft=draft, calendar_entity=target,
-                             routing_unresolved=unresolved,
-                             date_time_assumptions=(() if temporal_changed
-                                                    else event.date_time_assumptions))
             updated = replace(pending, events=tuple(
                 edited if item.id == event_id else item for item in pending.events
             ))
@@ -1869,6 +1900,61 @@ class PendingImportStore:
                 duplicate_events=duplicate_events,
             )
 
+    async def async_confirm_timezone(
+        self, pending_id: str, event_id: str, zone_name: str,
+        expected_event: PendingEvent | None = None,
+        end_zone_name: str | None = None,
+        start_occurrence: str | None = None,
+        end_occurrence: str | None = None,
+    ) -> PendingEvent | None:
+        """Confirm a named timezone under the same lock as calendar approval."""
+        async with self._lock:
+            pending = self._items.get(pending_id)
+            if pending is None:
+                return None
+            event = next((item for item in pending.events if item.id == event_id), None)
+            if event is None:
+                return None
+            if expected_event is not None and event != expected_event:
+                raise PendingEventEditError("Event changed since it was loaded; refresh")
+            if event.status != "pending" or pending_id in self._reprocessing:
+                raise PendingEventEditError("Event cannot be changed during a calendar write")
+            metadata = event.draft.temporal
+            if metadata is None:
+                raise PendingEventEditError("Event has no structured timezone evidence")
+            try:
+                start, end, resolved = confirm_zone(
+                    metadata, zone_name, end_zone_name,
+                    start_occurrence, end_occurrence,
+                )
+                draft = replace(event.draft, start=start, end=end, temporal=resolved)
+                fingerprint = event_fingerprint(draft)
+            except (ValueError, OverflowError) as err:
+                raise PendingEventEditError(str(err)) from err
+            others = {
+                event_fingerprint(item.draft)
+                for active in self._items.values()
+                for item in active.events
+                if active.id != pending_id or item.id != event_id
+            }
+            if fingerprint in self._seen_event_fingerprints or fingerprint in others:
+                raise PendingEventEditError("Resolved event duplicates a pending or handled event")
+            edited = replace(event, draft=draft, date_time_assumptions=tuple(
+                assumption for assumption in event.date_time_assumptions
+                if assumption not in (
+                    "Event timezone or DST occurrence needs confirmation.",
+                    "Event's local time requires correction.",
+                )
+            ))
+            updated = replace(pending, events=tuple(
+                edited if item.id == event_id else item for item in pending.events
+            ))
+            items = dict(self._items)
+            items[pending_id] = updated
+            await self._async_save(items)
+            self._commit_items(items)
+            return edited
+
     async def async_remove(self, pending_id: str) -> bool:
         """Reject and remember a pending import if it exists."""
         async with self._lock:
@@ -2021,6 +2107,9 @@ class PendingImportStore:
                 raise PendingEventEditError(
                     "Confirm all event destinations in the editor before bulk approval"
                 )
+            if any(event.draft.temporal is not None and
+                   event.draft.temporal.status != "resolved" for event in pending.events):
+                raise PendingEventEditError("Resolve all event timezones before bulk approval")
 
             original = pending
             while pending is not None:
@@ -2062,6 +2151,8 @@ class PendingImportStore:
             raise PendingEventEditError(
                 "Confirm the destination calendar in the event editor before approval"
             )
+        if event.draft.temporal is not None and event.draft.temporal.status != "resolved":
+            raise PendingEventEditError("Confirm the event timezone before approval")
         # Validate calendar safety while the event remains pending and BEFORE
         # persisting a write-in-flight checkpoint. A read/duplicate rejection
         # is not an ambiguous external calendar write.

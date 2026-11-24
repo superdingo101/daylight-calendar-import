@@ -1,5 +1,5 @@
 import {allDayEditToTimedRange, classifyEventTimeModel, dateOnlyFromTimed, editDateTimeIso, editDateTimeValue, instantEditDateTimeIso, instantEditDateTimeValue, normalizeEventTemporalEdit, repeatedHourOptions, timedEditToAllDayRange, visibleAllDayEnd} from "./event_datetime.js";
-import {changeRetryJob, checkEvent, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {changeRetryJob, checkEvent, confirmEventTimezone, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 import {isSettingsErrorCode, loadSettings, saveCoreSettings, saveEmailSettings, saveCalendarIntelligenceSettings, saveNotificationSettings, saveRetrySettings, settingsErrorMessage} from "./settings.js";
 
 import {ManualSubmission} from "./manual_submission.js";
@@ -120,6 +120,9 @@ const css = `
   .event-controls button { min-height: 44px; }
   .event-controls .event-primary, .event-group .actions .event-primary { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 600; }
   .event-controls .event-primary { margin-left: auto; }
+  .event-controls .event-primary:disabled, .event-group .actions .event-primary:disabled {
+    opacity: .5; cursor: not-allowed;
+  }
   .event-more { position: relative; flex: 0 0 44px; }
   .event-more[open] { z-index: 10; }
   .event-more summary {
@@ -174,6 +177,8 @@ const css = `
   }
   form { display: grid; gap: 12px; }
   label { display: grid; gap: 4px; }
+  /* An author display rule otherwise overrides the user-agent [hidden] rule. */
+  label[hidden] { display: none; }
   input, textarea, select { box-sizing: border-box; width: 100%; padding: 8px; font: inherit; color: inherit; background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 6px; }
   input[type=checkbox] { width: auto; }
   textarea { min-height: 10rem; resize: vertical; }
@@ -338,6 +343,10 @@ function eventRange(event, hass) {
 // Date-only strings are calendar dates, not local instants. Format in UTC to
 // avoid shifting a school all-day event to the previous day in western zones.
 function reviewRange(event, hass) {
+  if (event.temporal && event.temporal.status !== "resolved") {
+    return event.temporal.start_local.replace("T", " ") + " – " +
+      event.temporal.end_local.replace("T", " ") + " · Unconfirmed local time";
+  }
   if (!event.all_day || !/^\d{4}-\d{2}-\d{2}$/.test(event.start || "") ||
       !/^\d{4}-\d{2}-\d{2}$/.test(event.end || "")) return eventRange(event, hass);
   const start = new Date(event.start + "T12:00:00Z");
@@ -385,14 +394,17 @@ function activityLabel(type) {
     mixed: "Mixed event outcomes"})[type] || type.replaceAll("_", " ");
 }
 
-function syncTimedDuration(start, end, event, timeZone, onChanged = () => {}) {
-  const model = classifyEventTimeModel(event.start, event.end, timeZone);
+function syncTimedDuration(start, end, event, timeZone, onChanged = () => {}, endTimeZone = null) {
+  const model = endTimeZone ? classifyEventTimeModel(event.start, event.start, timeZone) :
+    classifyEventTimeModel(event.start, event.end, timeZone);
+  const endModel = endTimeZone ? classifyEventTimeModel(event.end, event.end, endTimeZone) : model;
+  endTimeZone ||= timeZone;
   const readDuration = () => {
     const startIso = editDateTimeIso(
       start.value, event.start, timeZone, start._daylightInstantHint || null, model
     );
     const endIso = editDateTimeIso(
-      end.value, event.end, timeZone, end._daylightInstantHint || null, model
+      end.value, event.end, endTimeZone, end._daylightInstantHint || null, endModel
     );
     if (!startIso || !endIso) return null;
     const startValue = new Date(startIso);
@@ -411,9 +423,9 @@ function syncTimedDuration(start, end, event, timeZone, onChanged = () => {}) {
       const nextStart = new Date(startIso);
       if (!Number.isNaN(nextStart.getTime())) {
         const nextEnd = new Date(nextStart.getTime() + duration);
-        end.value = instantEditDateTimeValue(nextEnd, event.end, timeZone, model);
+        end.value = instantEditDateTimeValue(nextEnd, event.end, endTimeZone, endModel);
         end._daylightInstantHint = instantEditDateTimeIso(
-          nextEnd, event.end, timeZone, model
+          nextEnd, event.end, endTimeZone, endModel
         );
       }
     }
@@ -2426,6 +2438,45 @@ export class DaylightImportPanel extends HTMLElement {
     }
   }
 
+  async confirmTimezone(event, timeZone, options = {}) {
+    if (this._saving || this._editingId || this._decision || this._batchAction ||
+        this._resolution || event.status !== "pending" || !event.temporal ||
+        event.temporal.status === "resolved" || !timeZone) return;
+    const pendingId = this._selectedId;
+    const generation = this._generation;
+    this._saving = true;
+    this._refreshButton.disabled = true;
+    for (const button of this._content.querySelectorAll("button")) button.disabled = true;
+    try {
+      await confirmEventTimezone(this._hass, pendingId, event, timeZone, options);
+      if (generation !== this._generation) return;
+      this._detail = await loadImport(this._hass, pendingId);
+      if (generation !== this._generation) return;
+      this._decisionError = null;
+      this._saving = false;
+      this.render();
+      this._announcement.replaceChildren(element("span", "Event timezone confirmed"));
+      this.focusEvent(event.id);
+    } catch (error) {
+      if (generation !== this._generation) return;
+      this._decisionError = typeof error?.message === "string" ?
+        error.message : "Timezone confirmation failed. Refresh review.";
+      try {
+        this._detail = await loadImport(this._hass, pendingId);
+      } catch {
+        this._detail = null;
+        this._status = "Could not refresh the event after timezone confirmation.";
+      }
+      if (generation !== this._generation) return;
+      this._saving = false;
+      this.render();
+      this._announcement.replaceChildren(element("span", this._decisionError));
+    } finally {
+      this._saving = false;
+      this._refreshButton.disabled = Boolean(this._editingId);
+    }
+  }
+
   async runResolution(event, resolution) {
     if (this._saving || this._resolution?.id !== event.id || this._resolution.choice !== resolution) return;
     const pendingId = this._selectedId;
@@ -2514,12 +2565,16 @@ export class DaylightImportPanel extends HTMLElement {
       const input = fields.namedItem(name);
       const chooser = fields.namedItem(name + "_occurrence");
       return !allDay && chooser && !chooser.hidden &&
-        repeatedHourOptions(input.value, this._hass?.config?.time_zone)
+        repeatedHourOptions(input.value, (name === "start" ?
+          event.temporal?.start_zone : event.temporal?.end_zone) ||
+          this._hass?.config?.time_zone)
           .some(option => option.value === chooser.value) ?
         chooser.value : input._daylightInstantHint || null;
     };
     const temporal = normalizeEventTemporalEdit({
       allDay,
+      startTimeZone: event.temporal?.start_zone,
+      endTimeZone: event.temporal?.end_zone,
       startDate: fields.namedItem("start_date").value,
       endDate: fields.namedItem("end_date").value,
       startDateTime: fields.namedItem("start").value,
@@ -2622,7 +2677,8 @@ export class DaylightImportPanel extends HTMLElement {
     allDay.type = "checkbox";
     allDay.checked = event.all_day;
 
-    const timeZone = this._hass?.config?.time_zone;
+    const timeZone = event.temporal?.start_zone || this._hass?.config?.time_zone;
+    const endTimeZone = event.temporal?.end_zone || timeZone;
     const timedFields = document.createElement("div");
     timedFields.className = "timed-event-fields";
     const timedField = (name, title, value) => {
@@ -2639,17 +2695,26 @@ export class DaylightImportPanel extends HTMLElement {
     const start = timedField(
       "start",
       "Start",
-      event.all_day ? event.start + "T00:00" : editDateTimeValue(event.start, timeZone),
+      event.all_day ? event.start + "T00:00" :
+        event.temporal && event.temporal.status !== "resolved" ?
+          event.temporal.start_local.slice(0, 16) : editDateTimeValue(event.start, timeZone),
     );
     const end = timedField(
       "end",
       "End",
-      event.all_day ? event.end + "T00:00" : editDateTimeValue(event.end, timeZone),
+      event.all_day ? event.end + "T00:00" :
+        event.temporal && event.temporal.status !== "resolved" ?
+          event.temporal.end_local.slice(0, 16) : editDateTimeValue(event.end, endTimeZone),
     );
     let refreshFolds = () => {};
-    const timedSync = syncTimedDuration(start, end, event, timeZone, () => refreshFolds());
-    const timeModel = classifyEventTimeModel(event.start, event.end, timeZone);
-    const foldControl = (input, original, title) => {
+    const timedSync = syncTimedDuration(start, end, event, timeZone, () => refreshFolds(), event.temporal ? endTimeZone : null);
+    // Legacy drafts have a single event-wide time model: two endpoints can
+    // each resemble HA wall time while the pair is actually fixed-offset.
+    const legacyTimeModel = event.temporal ? null :
+      classifyEventTimeModel(event.start, event.end, timeZone);
+    const foldControl = (input, original, title, endpointZone) => {
+      const timeModel = legacyTimeModel ||
+        classifyEventTimeModel(original, original, endpointZone);
       const label = document.createElement("label");
       const caption = element("span", title + " occurrence (DST fall-back)");
       const select = document.createElement("select");
@@ -2658,7 +2723,7 @@ export class DaylightImportPanel extends HTMLElement {
       const refresh = () => {
         const previous = select.value;
         const choices = !allDay.checked && timeModel.kind === "named" ?
-          repeatedHourOptions(input.value, timeZone) : [];
+          repeatedHourOptions(input.value, endpointZone) : [];
         label.hidden = choices.length !== 2;
         select.hidden = label.hidden;
         // Don't put an unused selector into the form or its keyboard navigation.
@@ -2681,8 +2746,8 @@ export class DaylightImportPanel extends HTMLElement {
       input.addEventListener("input", refresh);
       return {select, refresh};
     };
-    const startFold = foldControl(start, event.start, "Start");
-    const endFold = foldControl(end, event.end, "End");
+    const startFold = foldControl(start, event.start, "Start", timeZone);
+    const endFold = foldControl(end, event.end, "End", endTimeZone);
     // Preserve duration syncing and refresh fold choices after either field changes.
     refreshFolds = () => { startFold.refresh(); endFold.refresh(); };
 
@@ -2706,7 +2771,7 @@ export class DaylightImportPanel extends HTMLElement {
     const endDate = dateField(
       "end_date",
       "End date",
-      event.all_day ? visibleAllDayEnd(event.end) : dateOnlyFromTimed(event.end, timeZone),
+      event.all_day ? visibleAllDayEnd(event.end) : dateOnlyFromTimed(event.end, endTimeZone),
     );
     const dateSync = syncDateDuration(startDate, endDate);
     form.append(timedFields, allDayFields);
@@ -2723,6 +2788,8 @@ export class DaylightImportPanel extends HTMLElement {
           originalStart: event.start,
           originalEnd: event.end,
           timeZone,
+          startTimeZone: event.temporal ? timeZone : null,
+          endTimeZone: event.temporal ? endTimeZone : null,
           startInstantHint: !startFold.select.hidden ?
             startFold.select.value : start._daylightInstantHint || null,
           endInstantHint: !endFold.select.hidden ?
@@ -3199,9 +3266,10 @@ export class DaylightImportPanel extends HTMLElement {
             const button = element("button", `${action === "approve" ? "Approve" : "Reject"} all ${ready.length}`);
             button.type = "button";
             button.dataset.batchAction = action;
-            if (action === "approve" && ready.some(item => item.routing_unresolved)) {
+            if (action === "approve" && ready.some(item => item.routing_unresolved ||
+                (item.temporal && item.temporal.status !== "resolved"))) {
               button.disabled = true;
-              button.title = "Confirm every unresolved destination before bulk approval";
+              button.title = "Confirm every unresolved destination and timezone before bulk approval";
             }
             button.addEventListener("click", () => {
               if (this._saving) return;
@@ -3232,6 +3300,7 @@ export class DaylightImportPanel extends HTMLElement {
         // expanded, but force advisory checks and active decisions into view.
         let surface = card;
         const grouped = detail.events.length > 1;
+        const assumptions = event.date_time_assumptions || [];
         if (grouped) {
           const fold = element("details", "", "event-fold");
           const summary = element("summary", "", "event-fold-heading");
@@ -3241,12 +3310,17 @@ export class DaylightImportPanel extends HTMLElement {
             element("p", reviewRange(event, this._hass), "event-date"),
             element("p", "Calendar · " +
               reviewCalendarName(event, this._hass, detail.default_calendar), "event-calendar"));
-          if (event.routing_unresolved || event.date_time_assumptions?.length ||
+          const hasReviewAssumptions = assumptions.length > 0;
+          if (event.routing_unresolved || hasReviewAssumptions ||
+              (event.temporal && event.temporal.status !== "resolved") ||
               event.status === "write_uncertain") {
             summaryText.append(element("span",
               event.status === "write_uncertain" ? "Needs calendar confirmation" :
                 event.routing_unresolved ? "Destination needs attention" :
-                  "Review date interpretation", "event-fold-alert"));
+                event.temporal?.status === "correction_required" ? "Invalid local time — correct before approval" :
+                event.temporal?.status === "confirmation_required" ? "Timezone needs confirmation" :
+                  event.temporal?.status === "resolved" ? "Review extraction notes" :
+                    "Review date interpretation", "event-fold-alert"));
           }
           summary.append(summaryText, element("span", reviewStatus(event.status), "event-status"));
           const foldBody = element("div", "", "event-fold-body");
@@ -3280,15 +3354,126 @@ export class DaylightImportPanel extends HTMLElement {
         if (event.routing_unresolved) {
           surface.append(element("p", "Choose a destination calendar before approving this event.", "error"));
         }
-        if (event.date_time_assumptions?.length) {
-          const yearInferred = event.date_time_assumptions.some(note => /year/i.test(note));
+        if (event.temporal) {
+          const temporal = event.temporal;
+          const zones = temporal.start_zone === temporal.end_zone ?
+            temporal.start_zone : temporal.start_zone + " → " + temporal.end_zone;
+          surface.append(element("p", "Event timezone · " + zones +
+            " (" + temporal.source.replaceAll("_", " ") + ")", "event-note"));
+          if (temporal.status !== "resolved") {
+            const warning = element("p", temporal.reason ||
+              "Confirm the event timezone before approving.", "error");
+            warning.setAttribute("role", "alert");
+            surface.append(warning);
+            // Confirmation reloads the import. Never expose this action
+            // while another review transaction or unsaved edit is active.
+            if (event.status === "pending" && !this._editingId && !this._decision &&
+                !this._batchAction && !this._resolution) {
+              const zoneListId = "daylight-iana-zones-" + event.id;
+              const zoneList = document.createElement("datalist");
+              zoneList.id = zoneListId;
+              for (const zone of (Intl.supportedValuesOf?.("timeZone") || [])) {
+                const option = document.createElement("option");
+                option.value = zone;
+                zoneList.append(option);
+              }
+              const zoneInput = (labelText, placeholder) => {
+                const label = element("label", labelText);
+                const input = document.createElement("input");
+                input.type = "text";
+                input.value = "";
+                input.placeholder = placeholder;
+                input.setAttribute("list", zoneListId);
+                label.append(input);
+                surface.append(label);
+                return input;
+              };
+              const startZone = zoneInput("Confirm event timezone (IANA identifier)",
+                temporal.start_zone);
+              const distinctEndLocation = Boolean(temporal.end_location_value?.trim()) &&
+                temporal.end_location_value.trim().toLocaleLowerCase() !==
+                  (temporal.start_location_value || "").trim().toLocaleLowerCase();
+              const needsEndZone = temporal.travel_incomplete === true ||
+                distinctEndLocation || temporal.end_zone !== temporal.start_zone;
+              const endZone = needsEndZone ?
+                zoneInput("Confirm arrival timezone (IANA identifier)", temporal.end_zone) : null;
+              surface.append(zoneList);
+
+              const occurrence = (which, clock, zoneInput) => {
+                const label = element("label", which + " occurrence (DST fall-back)");
+                const select = document.createElement("select");
+                const refresh = () => {
+                  const options = repeatedHourOptions(clock.slice(0, 16), zoneInput.value.trim());
+                  label.hidden = options.length !== 2;
+                  select.replaceChildren();
+                  const placeholder = document.createElement("option");
+                  placeholder.value = "";
+                  placeholder.textContent = "Choose first or second occurrence";
+                  select.append(placeholder);
+                  for (const choice of options) {
+                    const option = document.createElement("option");
+                    option.value = choice.label.startsWith("First") ? "first" : "second";
+                    option.textContent = choice.label;
+                    select.append(option);
+                  }
+                  select.value = "";
+                };
+                label.append(select);
+                surface.append(label);
+                return {select, label, refresh};
+              };
+              const startFold = occurrence("Start", temporal.start_local, startZone);
+              const endFold = occurrence("End", temporal.end_local, endZone || startZone);
+              const confirm = element("button", "Confirm timezone", "event-primary");
+              confirm.type = "button";
+              const refresh = () => {
+                startFold.refresh();
+                endFold.refresh();
+                confirm.disabled = !startZone.value.trim() ||
+                  (endZone && !endZone.value.trim()) ||
+                  (!startFold.label.hidden && !startFold.select.value) ||
+                  (!endFold.label.hidden && !endFold.select.value) || this._saving;
+              };
+              // Changes to a named zone invalidate previous DST selections.
+              startZone.addEventListener("input", refresh);
+              endZone?.addEventListener("input", refresh);
+              startFold.select.addEventListener("change", () => {
+                confirm.disabled = !startZone.value.trim() ||
+                  (endZone && !endZone.value.trim()) ||
+                  (!startFold.label.hidden && !startFold.select.value) ||
+                  (!endFold.label.hidden && !endFold.select.value);
+              });
+              endFold.select.addEventListener("change", () => {
+                confirm.disabled = !startZone.value.trim() ||
+                  (endZone && !endZone.value.trim()) ||
+                  (!startFold.label.hidden && !startFold.select.value) ||
+                  (!endFold.label.hidden && !endFold.select.value);
+              });
+              refresh();
+              confirm.addEventListener("click", () => void this.confirmTimezone(
+                event, startZone.value.trim(), {
+                  ...(endZone ? {endTimeZone: endZone.value.trim()} : {}),
+                  ...(!startFold.label.hidden ? {startOccurrence: startFold.select.value} : {}),
+                  ...(!endFold.label.hidden ? {endOccurrence: endFold.select.value} : {}),
+                },
+              ));
+              surface.append(confirm);
+            }
+          }
+        }
+        const yearInferred = assumptions.some(note =>
+          /\b(?:(?:inferred|assumed) (?:the )?year|year (?:was )?(?:inferred|assumed))\b/i.test(note));
+        const timezoneResolved = event.temporal?.status === "resolved";
+        if (yearInferred || (!event.temporal && assumptions.length)) {
           surface.append(element("p", yearInferred ?
             "Year inferred — verify the date" : "Date interpretation needs review", "event-note"));
         }
-        // Temporal safety disclosures belong to the event, outside collapsed
-        // extraction diagnostics, so reviewers see them before approval.
-        for (const assumption of event.date_time_assumptions || []) {
-          surface.append(element("p", "Date/time assumption: " + assumption, "event-note"));
+        // Timezone confirmation does not establish the source date. Preserve
+        // all provider disclosures visibly without claiming every note is an
+        // inferred date or imposing a new approval requirement.
+        for (const assumption of assumptions) {
+          surface.append(element("p", (timezoneResolved ?
+            "AI extraction note: " : "Date/time assumption: ") + assumption, "event-note"));
         }
         if (typeof event.confidence === "number" || event.calendar_entity) {
           const diagnostics = element("details", "", "event-diagnostics");
@@ -3381,7 +3566,8 @@ export class DaylightImportPanel extends HTMLElement {
             button.type = "button";
             button.dataset.action = action;
             button.dataset.eventId = event.id;
-            if (action === "approve" && event.routing_unresolved) button.disabled = true;
+            if (action === "approve" && (event.routing_unresolved ||
+                (event.temporal && event.temporal.status !== "resolved"))) button.disabled = true;
             button.addEventListener("click", () => {
               if (this._saving || this._editingId || this._decision) return;
               this._calendarCheck = null;

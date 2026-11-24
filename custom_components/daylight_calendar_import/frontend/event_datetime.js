@@ -320,6 +320,8 @@ export function normalizeEventTemporalEdit({
   originalStart,
   originalEnd,
   timeZone,
+  startTimeZone = null,
+  endTimeZone = null,
   startInstantHint = null,
   endInstantHint = null,
 }) {
@@ -340,12 +342,19 @@ export function normalizeEventTemporalEdit({
   if (!startDateTime || !endDateTime) {
     return {valid: false, error: "Start and end times are required."};
   }
+  // Preserve the legacy event-wide fixed-offset model unless this draft has
+  // explicit per-endpoint IANA zones from structured extraction.
+  const split = Boolean(startTimeZone || endTimeZone);
   const model = classifyEventTimeModel(originalStart, originalEnd, timeZone);
+  const startZone = startTimeZone || timeZone;
+  const endZone = endTimeZone || timeZone;
+  const startModel = split ? classifyEventTimeModel(originalStart, originalStart, startZone) : model;
+  const endModel = split ? classifyEventTimeModel(originalEnd, originalEnd, endZone) : model;
   const start = editDateTimeIso(
-    startDateTime, originalStart, timeZone, startInstantHint, model
+    startDateTime, originalStart, startZone, startInstantHint, startModel
   );
   const end = editDateTimeIso(
-    endDateTime, originalEnd, timeZone, endInstantHint, model
+    endDateTime, originalEnd, endZone, endInstantHint, endModel
   );
   if (!start || !end) {
     return {

@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from typing import Any
 
+from .timezone_resolution import TemporalEvidence
+
 
 UNSUPPORTED_RECURRENCE_WARNING = (
     "unsupported_recurrence: Repeating schedules require manual calendar entry. "
@@ -34,6 +36,7 @@ class EventDraft:
     location: str | None = None
     description: str | None = None
     confidence: float = 0.0
+    temporal: TemporalEvidence | None = None
 
     @classmethod
     def from_mapping(cls, raw: dict[str, Any]) -> EventDraft:
@@ -55,6 +58,14 @@ class EventDraft:
             raise DraftValidationError("confidence must be between 0 and 1")
 
         _validate_temporal_range(start, end, all_day)
+        temporal = None
+        if raw.get("temporal") is not None:
+            try:
+                temporal = TemporalEvidence.from_dict(raw["temporal"])
+            except (ValueError, TypeError) as err:
+                raise DraftValidationError("invalid temporal review state") from err
+            if all_day:
+                raise DraftValidationError("all-day events cannot have temporal review state")
         return cls(
             title=title,
             start=start,
@@ -63,11 +74,15 @@ class EventDraft:
             location=location,
             description=description,
             confidence=confidence,
+            temporal=temporal,
         )
 
     def as_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable representation."""
-        return asdict(self)
+        data = asdict(self)
+        if self.temporal is None:
+            data.pop("temporal")
+        return data
 
 
 def _required_text(raw: dict[str, Any], key: str) -> str:
