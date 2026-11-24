@@ -1134,7 +1134,8 @@ async def test_delivery_guard_blocks_acceptance_after_pause(hass, monkeypatch):
     await runtime.async_stop()
 
 
-async def test_delivery_pass_runs_real_acceptance_and_ack(hass, hosted_review, monkeypatch):
+@pytest.mark.parametrize("durable", [False, True])
+async def test_delivery_pass_runs_real_acceptance_and_ack(hass, hosted_review, monkeypatch, durable):
     from custom_components.daylight_calendar_import import hosted_runtime, hosted_source_transport
     from tests.test_hosted_ack_dispatch import Transport, checkpoint
     from tests.test_hosted_text_acceptance import page
@@ -1148,11 +1149,26 @@ async def test_delivery_pass_runs_real_acceptance_and_ack(hass, hosted_review, m
     runtime._verified_parse_credential = credential.current
     runtime._state = HostedConnectionResult("connected", "current")
     monkeypatch.setattr(HostedConnectionRuntime, "parse_session", REAL_PARSE_SESSION)
-    wire = AsyncMock(return_value={
+    from custom_components.daylight_calendar_import.hosted_operations import payload_digest
+    from custom_components.daylight_calendar_import.hosted_runtime import CONF_HOSTED_PARSE_OPERATIONS
+    runtime._options = {**runtime._options, CONF_HOSTED_PARSE_OPERATIONS: durable}
+    response = {
         "schema_version": 1,
         "events": [{"draft": DRAFT.as_dict(), "warnings": []}],
         "rejected": [], "warnings": [], "provider_metadata": None,
-    })
+    }
+
+    async def parse(request, attachments, *, token, operation_key=None):
+        if not durable:
+            assert operation_key is None
+            return response
+        assert operation_key is not None
+        return {"schema_version": 2, "operation_id": operation_key,
+                "payload_sha256": payload_digest(request, attachments),
+                "status": "succeeded", "result": response,
+                "replay_expires_at": "2999-01-01T00:00:00Z"}
+
+    wire = AsyncMock(side_effect=parse)
     monkeypatch.setattr(HostedParseTransport, "async_parse", wire)
     ack = Transport()
     claim = SimpleNamespace(service_binding=SERVICE, async_claim=AsyncMock(return_value=page()))
@@ -1163,6 +1179,13 @@ async def test_delivery_pass_runs_real_acceptance_and_ack(hass, hosted_review, m
     assert wire.await_count == 1
     assert len(ack.calls) == 1
     assert review.store.hosted_ack_journal()[0].ack_status == "confirmed"
+    if durable:
+        assert len(review.store._hosted_operations) == 1
+        record = next(iter(review.store._hosted_operations.values()))
+        assert record["accepted"] is True
+        assert record["key"] == wire.await_args.kwargs["operation_key"]
+    else:
+        assert review.store._hosted_operations == {}
     await runtime.async_stop()
 
 

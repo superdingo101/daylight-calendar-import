@@ -981,3 +981,34 @@ async def test_durable_parser_rechecks_authority_before_every_network_request(
         client._transport.async_operation.assert_awaited_once_with(key, token=TOKEN)
     else:
         client._transport.async_operation.assert_not_awaited()
+
+
+@pytest.mark.parametrize("change", ["disconnect", "rotate"])
+async def test_terminal_result_cannot_authorize_retry_after_credential_change(provider, change):
+    from uuid import uuid4
+
+    client, saved, active = provider
+    key = str(uuid4())
+    digest = "a" * 64
+    store = MagicMock()
+    store.async_prepare_hosted_operation = AsyncMock(return_value=({"key": key, "digest": digest}, False))
+    store.async_mark_hosted_operation_terminal = AsyncMock()
+    client._operation_store = store
+    client._operation_namespace = "entry:origin"
+
+    async def lookup(*args, **kwargs):
+        if change == "disconnect":
+            active[0] = False
+        else:
+            saved[0] = replace(saved[0], current=replace(saved[0].current, token="R" * 43))
+        return {"schema_version": 2, "operation_id": key, "payload_sha256": digest,
+                "status": "failed", "result": None, "replay_expires_at": None}
+
+    client._transport.async_operation = AsyncMock(side_effect=lookup)
+    source = replace(TextSourceAdapter().create("School event"), kind=SourceKind.EMAIL,
+                     upstream_source_id="hosted:entry:source")
+    with pytest.raises(HostedParseError) as error:
+        await client.async_parse(source, reference_datetime="2026-11-17T12:00:00Z", time_zone="UTC")
+    assert (error.value.code, error.value.status, error.value.uncertain) == ("unauthenticated", 401, True)
+    store.async_mark_hosted_operation_terminal.assert_not_awaited()
+    client._transport.async_parse.assert_not_awaited()
