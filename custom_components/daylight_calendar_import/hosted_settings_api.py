@@ -142,7 +142,8 @@ async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: 
                 if ((result["api_origin"], result["account_origin"]) != (
                     service.api_origin, service.account_origin,
                 ) or result.get("automatic_lifecycle", False) != automatic
-                        or result.get("delivery_polling", False) != poll):
+                        or result.get("delivery_polling", False) != poll
+                        or result.get("parse_operations_v2", False) != v2):
                     loaded.pause()
                     raise HostedRuntimeError("reload_failed")
     except SettingsValidationError as error:

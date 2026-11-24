@@ -391,6 +391,7 @@ class HostedConnectionRuntime:
     def pause(self) -> None:
         """Close admission before platform unload starts."""
         self._accepting = False
+        self._commercial_status = None
         self._cancel_delivery_poll()
         self._parse_generation += 1
         if self._cancel_timer is not None:
@@ -576,6 +577,7 @@ class HostedConnectionRuntime:
             raise
 
     def _start_work(self, action: str, kwargs: dict[str, Any]) -> asyncio.Task:
+        self._commercial_status = None
         self._parse_generation += 1
         if self._cancel_timer is not None:
             self._cancel_timer()

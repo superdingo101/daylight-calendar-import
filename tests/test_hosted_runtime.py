@@ -964,6 +964,8 @@ async def test_commercial_account_status_validates_authority_and_public_response
         assert snapshot["commercial_status"] is not value
         assert token not in str(snapshot)
         assert snapshot == r.snapshot()
+        r.pause()
+        assert r.snapshot()["commercial_status"] is None
     else:
         with pytest.raises(HostedRuntimeError, match="^hosted_action_failed$"):
             await r.async_account_status()

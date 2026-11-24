@@ -330,6 +330,13 @@ async def test_delivery_retry_rekeys_only_verified_terminal_operation(hass, stat
     assert record.get("terminal_source") == (
         source_fingerprint(source.upstream_source_id) if terminal else None)
     assert store.hosted_parse_uncertain
+    if terminal:
+        with pytest.raises(HostedParseError, match="Daylight Cloud") as blocked:
+            await provider.async_parse(source, reference_datetime=source.received_at.isoformat(), time_zone="UTC")
+        assert blocked.value.code == "operation_terminal"
+        assert provider._transport.async_parse.await_count == 1
+        with pytest.raises(ValueError, match="terminal hosted operation cannot be accepted"):
+            await store.async_add(source_text="Meeting", events=(), hosted_operation_id=record["key"])
     restarted = PendingImportStore(hass)
     restarted._store = backend
     await restarted.async_load()
@@ -337,7 +344,8 @@ async def test_delivery_retry_rekeys_only_verified_terminal_operation(hass, stat
     assert not restarted.hosted_parse_uncertain
     assert (identity in restarted._hosted_operations) is not terminal
     retained = next(iter(restarted._hosted_operations.values()))
-    assert retained["key"] == record["key"] and "terminal_source" not in retained
+    assert retained["key"] == record["key"]
+    assert retained.get("terminal_source") == record.get("terminal_source")
     provider._operation_store = restarted
     provider._transport.async_operation = AsyncMock(
         return_value=envelope(record["key"], record["digest"], status=status))
@@ -349,6 +357,13 @@ async def test_delivery_retry_rekeys_only_verified_terminal_operation(hass, stat
         assert provider._transport.async_parse.await_count == 2
         assert provider.last_operation_id != record["key"]
         assert len(restarted._hosted_operations) == 2
+        with pytest.raises(ValueError, match="terminal hosted operation cannot be accepted"):
+            await restarted.async_add(source_text="Meeting", events=(), hosted_operation_id=record["key"])
+        new_key = provider.last_operation_id
+        await restarted.async_change_hosted_parse_attempt(None, retry_terminal=True)
+        assert not restarted.hosted_parse_uncertain
+        assert {row["key"] for row in restarted._hosted_operations.values()} == {record["key"], new_key}
+        assert identity not in restarted._hosted_operations
     else:
         provider._transport.async_operation.assert_awaited_once_with(record["key"], token=saved.current.token)
         assert provider._transport.async_parse.await_count == 1

@@ -1595,7 +1595,8 @@ class PendingImportStore:
                 if retry_terminal and attempt is None and self._hosted_parse_attempt is not None:
                     records = deepcopy(self._hosted_operations)
                     matches = [identity for identity, record in records.items()
-                               if record.get("terminal_source") == self._hosted_parse_attempt]
+                               if record.get("terminal_source") == self._hosted_parse_attempt
+                               and identity != digest({"retired_operation": record["key"]})]
                     if len(matches) > 1:
                         raise ValueError("ambiguous terminal operation")
                     if matches:
@@ -1604,7 +1605,6 @@ class PendingImportStore:
                         archive = digest({"retired_operation": record["key"]})
                         if archive in records:
                             raise ValueError("operation archive conflict")
-                        del record["terminal_source"]
                         records[archive] = record
                         operations = records
                 await self._async_save(self._items, hosted_parse_attempt=(attempt,),
@@ -1819,6 +1819,8 @@ class PendingImportStore:
                 matches = [row for row in operations.values() if row["key"] == hosted_operation_id]
                 if len(matches) != 1:
                     raise ValueError("unknown hosted operation")
+                if "terminal_source" in matches[0]:
+                    raise ValueError("terminal hosted operation cannot be accepted")
                 if matches[0]["accepted"]:
                     # A recovered parse may belong to a newly leased delivery.
                     # Journal its ACK in the same durable write even though the
