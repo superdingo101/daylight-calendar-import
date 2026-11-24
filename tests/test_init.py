@@ -3729,3 +3729,69 @@ async def test_preview_timezone_service_unicode_endpoints_require_independent_ch
     call.data["end_time_zone"] = "Europe/Berlin"
     result = await handler(call)
     assert result["preview"]["duration_seconds"] == 7200
+
+
+async def test_timezone_preview_executor_revalidates_snapshot_and_wraps_overflow(monkeypatch):
+    metadata = TemporalEvidence(
+        "2028-07-10T08:00:00", "2028-07-10T16:30:00",
+        "America/Los_Angeles", "America/Los_Angeles",
+        "ha_fallback", "confirmation_required",
+        start_location_type="airport", start_location_value="LAX",
+        end_location_type="airport", end_location_value="JFK", travel_incomplete=True,
+    )
+    base = pending().events[0]
+    event = replace(base, draft=replace(base.draft, temporal=metadata))
+    store = SimpleNamespace(
+        async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+        get_event=Mock(return_value=event), async_confirm_timezone=AsyncMock(),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore",
+                        lambda _hass: store)
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_PREVIEW_PENDING_TIMEZONE)][0]
+    call = SimpleNamespace(
+        context=Context(user_id="reviewer"),
+        data={ATTR_PENDING_ID: "one", ATTR_EVENT_ID: event.id,
+              "expected_event": event.as_service_dict(), "time_zone": "America/Los_Angeles",
+              "end_time_zone": "America/New_York"},
+    )
+    from custom_components.daylight_calendar_import.timezone_resolution import preview_zone, suggested_zone
+    calls = []
+
+    async def executor(func, *args):
+        calls.append((func, args))
+        return func(*args)
+
+    hass.async_add_executor_job = executor
+    result = await handler(call)
+    assert calls == [
+        (suggested_zone, (metadata, "start")),
+        (suggested_zone, (metadata, "end")),
+        (preview_zone, (metadata, "America/Los_Angeles", "America/New_York", None, None)),
+    ]
+    assert result["preview"]["duration_seconds"] == 19800
+    for changed in (None, replace(event, draft=replace(event.draft, title="Changed"))):
+        store.get_event.return_value = event
+
+        async def change_during_lookup(func, *args):
+            result = func(*args)
+            if func is preview_zone:
+                store.get_event.return_value = changed
+            return result
+
+        hass.async_add_executor_job = change_during_lookup
+        with pytest.raises(ServiceValidationError, match="Event changed"):
+            await handler(call)
+
+    store.get_event.return_value = event
+
+    async def overflow(func, *args):
+        if func is preview_zone:
+            raise OverflowError("date value out of range")
+        return func(*args)
+
+    hass.async_add_executor_job = overflow
+    with pytest.raises(ServiceValidationError, match="date value out of range"):
+        await handler(call)
+    store.async_confirm_timezone.assert_not_awaited()

@@ -1195,8 +1195,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 raise PendingEventEditError("Event changed since it was loaded; refresh")
             temporal = event.draft.temporal
             needs_end_zone = needs_end_timezone(temporal)
-            suggested_start = suggested_zone(temporal, "start")
-            suggested_end = suggested_zone(temporal, "end") if needs_end_zone else None
+            # Geography dependencies lazily load sizeable offline data, including
+            # after HA restarts with already-persisted pending imports.
+            suggested_start = await hass.async_add_executor_job(suggested_zone, temporal, "start")
+            suggested_end = (
+                await hass.async_add_executor_job(suggested_zone, temporal, "end")
+                if needs_end_zone else None
+            )
             result = {
                 "pending_id": pending_id,
                 "event_id": event_id,
@@ -1208,13 +1213,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             zone_name = call.data.get("time_zone")
             end_name = call.data.get("end_time_zone")
             if zone_name and (not needs_end_zone or end_name):
-                result["preview"] = preview_zone(
-                    temporal, zone_name, end_name,
+                result["preview"] = await hass.async_add_executor_job(
+                    preview_zone, temporal, zone_name, end_name,
                     call.data.get("start_occurrence"),
                     call.data.get("end_occurrence"),
                 )
+            # Work off the HA event loop, but never return a preview for an
+            # event edited, removed, or approved during the executor work.
+            if pending_store.get_event(pending_id, event_id) != event:
+                raise PendingEventEditError("Event changed since it was loaded; refresh")
             return result
-        except (DraftValidationError, ValueError) as err:
+        except (DraftValidationError, ValueError, OverflowError) as err:
             raise ServiceValidationError(str(err)) from err
 
     async def handle_confirm_pending_timezone(call: ServiceCall) -> ServiceResponse:

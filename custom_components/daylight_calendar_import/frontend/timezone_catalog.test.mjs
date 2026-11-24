@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {execFileSync} from "node:child_process";
+import {mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, copyFileSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {allTimezones, findTimezone, searchTimezones, timezoneDescription,
   timezoneHeading, validSuggestedTimezones} from "./timezone_catalog.js";
 import {TZDB_SOURCE_VERSION, TZDB_VERSION} from "./timezone_catalog_data.js";
@@ -71,4 +75,37 @@ test("committed catalog order uses locale-independent identifier ordering", () =
   const ids = allTimezones().map(zone => zone.id);
   assert.deepEqual(ids, [...ids].sort());
   assert.ok(ids.indexOf("America/Matamoros") < ids.indexOf("America/Mazatlan"));
+});
+
+
+test("catalog generator produces identical bytes under English and Estonian defaults", () => {
+  // Exercise the actual generator without installing development dependencies
+  // in normal offline frontend tests. The two IDs reverse in Estonian collation.
+  const root = mkdtempSync(join(tmpdir(), "daylight-tzdb-"));
+  try {
+    const pkg = join(root, "node_modules", "@vvo", "tzdb");
+    mkdirSync(pkg, {recursive: true});
+    writeFileSync(join(pkg, "package.json"), JSON.stringify({type: "module", main: "index.js"}));
+    writeFileSync(join(pkg, "index.js"), `
+export const tzdbVersion = "2026f";
+export const timeZonesNames = ["America/Mazatlan", "America/Matamoros"];
+export const rawTimeZones = timeZonesNames.map(id => ({
+  group: [id], countryName: "Mexico", countryCode: "MX",
+  alternativeName: "Mexico Time", abbreviation: "MT", mainCities: [id],
+}));
+`);
+    const generator = join(root, "generate_timezone_catalog.mjs");
+    copyFileSync(new URL("./generate_timezone_catalog.mjs", import.meta.url), generator);
+    const target = join(root, "timezone_catalog_data.js");
+    const run = (locale, ...args) => execFileSync(process.execPath, [generator, ...args],
+      {env: {...process.env, LANG: locale, LC_ALL: locale}});
+    run("en_US.UTF-8");
+    const english = readFileSync(target, "utf8");
+    run("et_EE.UTF-8", "--check");
+    run("et_EE.UTF-8");
+    assert.equal(readFileSync(target, "utf8"), english);
+    assert.match(english, /export const TIMEZONE_IDS = \[\["America\/Matamoros",1\],\["America\/Mazatlan",0\],\["Etc\/UTC",2\]\];/);
+  } finally {
+    rmSync(root, {recursive: true, force: true});
+  }
 });
