@@ -858,7 +858,7 @@ async def test_explicit_delivery_retry_fences_permission_and_owns_transaction(ru
     assert "delivery_parse_uncertain" not in result
     assert r._delivery_due_at is None
     assert r._delivery_poll_running is False
-    store.async_change_hosted_parse_attempt.assert_awaited_once_with(None)
+    store.async_change_hosted_parse_attempt.assert_awaited_once_with(None, retry_terminal=True)
     delete.assert_any_call(hass, module.DOMAIN, "hosted_delivery_uncertain_hosted-entry")
     assert timer.called
     await r.async_stop()
