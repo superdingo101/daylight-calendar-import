@@ -29,7 +29,9 @@ HA durably stores key, digest and original ephemeral request IDs/timestamps befo
 submission. It stores no source content or credential in this journal. Retrying
 normalizes those fields and the original time zone to their original values and verifies the binding. Local
 operation acceptance is recorded in the same immediate storage commit as review
-items, including no-event outcomes. A recovered result cannot create duplicate
+items, including no-event outcomes and retained-text reprocessing. Operation
+journal writes retain storage ownership through cancellation until persistence
+finishes; the retiring store must drain before a replacement loads. A recovered result cannot create duplicate
 review items after ordinary deduplication history is reset. Explicit source
 reprocessing uses a new operation identity. The journal is bounded at10000 keys;
 full journals fail closed and require operator recovery rather than key eviction.

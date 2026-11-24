@@ -806,15 +806,22 @@ async def test_runtime_parse_permission_requires_successful_current_verification
     await runtime.async_stop()
 
 
+@pytest.mark.parametrize("durable", [False, True])
 async def test_hosted_reprocess_retains_existing_drafts_and_original_reference_context(
     hass,
     hass_ws_client,
     hosted_review,
+    durable,
 ):
     runtime = hosted_review
     client = await hass_ws_client(hass)
     response = await call(client, "submit_text", text="School concert")
     original = runtime.store.get(response["result"]["response"]["pending"]["id"])
+    if durable:
+        from tests.test_hosted_operations import request
+
+        record, _ = await runtime.store.async_prepare_hosted_operation("a" * 64, request(), ())
+        runtime.provider.last_operation_id = record["key"]
     runtime.provider.async_parse.return_value = ParseOutcome(
         [replace(DRAFT, title="Second concert")], []
     )
@@ -826,6 +833,15 @@ async def test_hosted_reprocess_retains_existing_drafts_and_original_reference_c
     assert datetime.fromisoformat(
         runtime.provider.async_parse.await_args.kwargs["reference_datetime"]
     ) == datetime.fromisoformat(original.created_at)
+    if durable:
+        assert runtime.store._hosted_operations == {"a" * 64: {**record, "accepted": True}}
+        replay = await call(client, "reprocess_pending", pending_id=original.id)
+        assert replay["success"], replay
+        assert replay["result"]["response"]["added_events"] == 0
+        assert replay["result"]["response"]["duplicate_events"] == 0
+        assert runtime.store.get(original.id) == updated
+    else:
+        assert runtime.store._hosted_operations == {}
     runtime.writes.assert_not_awaited()
 
 

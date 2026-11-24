@@ -1414,6 +1414,7 @@ class PendingImportStore:
                 # Only passed to the transaction when a guard was supplied.
                 acceptance_guard()
 
+            guarded_acceptance.hosted_operation_id = getattr(acceptance_guard, "hosted_operation_id", None)
             result, cancelled = await self._async_complete_transaction(
                 self._async_commit_reprocessed(
                     original, candidates, warnings,
@@ -1443,6 +1444,20 @@ class PendingImportStore:
                 # retained source. Preserve that work, append no stale candidates,
                 # and keep the source-level safety warning authoritative.
                 original, candidates = current, ()
+            operations = None
+            operation_id = getattr(acceptance_guard, "hosted_operation_id", None)
+            if operation_id is not None:
+                if self._hosted_writes_closed or self._storage_blocked:
+                    raise PendingImportStorageError(_STORAGE_ERROR)
+                operations = deepcopy(self._hosted_operations)
+                matches = [row for row in operations.values() if row["key"] == operation_id]
+                if len(matches) != 1:
+                    raise ValueError("unknown hosted operation")
+                if "terminal_source" in matches[0]:
+                    raise ValueError("terminal hosted operation cannot be accepted")
+                if matches[0]["accepted"]:
+                    return original, 0, 0
+                matches[0]["accepted"] = True
             known = set(self._seen_event_fingerprints) | self._active_event_fingerprints()
             accepted = []
             duplicates = 0
@@ -1461,7 +1476,8 @@ class PendingImportStore:
             items = dict(self._items)
             items[original.id] = updated
             activity = self._transition(updated, "source_reprocessed", remaining=updated.events)
-            await self._async_save(items, activity=activity)
+            await self._async_save(items, activity=activity,
+                                   **({"hosted_operations": operations} if operations is not None else {}))
             self._commit_items(items)
             return updated, len(accepted), duplicates
 

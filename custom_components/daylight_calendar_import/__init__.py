@@ -767,6 +767,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         acceptance_guard = None
 
+        def reprocess_guard():
+            acceptance_guard()
+
         async def reparse(original: PendingImport):
             nonlocal acceptance_guard
             source = SourceDocument(
@@ -779,6 +782,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             outcome, acceptance_guard = await selected_parse(
                 route.parser_source, reference_datetime=source.received_at,
             )
+            reprocess_guard.hosted_operation_id = getattr(acceptance_guard, "hosted_operation_id", None)
             assumptions = outcome.event_assumptions or ((),) * len(outcome.events)
             candidates = tuple(PendingEvent.create(
                 event, route.calendar_entity,
@@ -793,7 +797,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             try:
                 updated, added, duplicates = await pending_store.async_reprocess(
                     call.data[ATTR_PENDING_ID], reparse,
-                    **({"acceptance_guard": lambda: acceptance_guard()} if ai_task_entity is None else {}),
+                    **({"acceptance_guard": reprocess_guard} if ai_task_entity is None else {}),
                 )
             except PendingEventEditError as err:
                 raise ServiceValidationError(str(err)) from err

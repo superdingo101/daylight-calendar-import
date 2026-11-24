@@ -481,3 +481,67 @@ async def test_cancelled_provider_preparation_never_dispatches_and_reuses_key(ha
     assert provider.last_operation_id == row["key"]
     provider._transport.async_operation.assert_awaited_once_with(row["key"], token=saved.current.token)
     provider._transport.async_parse.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mode", ["novel", "empty", "unknown", "terminal", "closed", "blocked", "failed"])
+async def test_reprocess_operation_acceptance_is_atomic_and_fenced(hass, mode):
+    from custom_components.daylight_calendar_import.storage import PendingEvent
+    from tests.test_storage import draft
+
+    backend = Backend()
+    store = PendingImportStore(hass)
+    store._store = backend
+    original = (await store.async_add(source_text="Meeting", events=[draft()])).pending
+    identity = "a" * 64
+    record, _ = await store.async_prepare_hosted_operation(identity, request(), ())
+    if mode == "terminal":
+        await store.async_change_hosted_parse_attempt("source")
+        await store.async_mark_hosted_operation_terminal(identity, record["key"], "source")
+    if mode == "closed":
+        store.close_hosted_writes()
+    if mode == "blocked":
+        store._storage_blocked = True
+    before = deepcopy(backend.data)
+    candidate = PendingEvent.create(EventDraft(
+        title="New meeting", start="2026-12-02T10:00:00Z", end="2026-12-02T11:00:00Z",
+        all_day=False,
+    ), None)
+
+    async def parser(item):
+        assert item is original
+        return (() if mode == "empty" else (candidate,)), ("New warning",)
+
+    def guard():
+        pass
+
+    guard.hosted_operation_id = "unknown" if mode == "unknown" else record["key"]
+    if mode in ("unknown", "terminal", "closed", "blocked", "failed"):
+        if mode == "failed":
+            backend.fail = True
+        error = (OSError if mode == "failed" else PendingImportStorageError
+                 if mode in ("closed", "blocked") else ValueError)
+        with pytest.raises(error):
+            await store.async_reprocess(original.id, parser, acceptance_guard=guard)
+        assert store.get(original.id) is original
+        assert store._hosted_operations[identity]["accepted"] is False
+        if mode != "failed":
+            assert backend.data == before
+        else:
+            assert store._storage_blocked and not store.accepting_services
+            assert backend.data["hosted_parse_operations"][identity]["accepted"] is True
+        return
+    updated, added, duplicates = await store.async_reprocess(original.id, parser, acceptance_guard=guard)
+    assert added == (0 if mode == "empty" else 1) and duplicates == 0
+    assert updated.events == original.events + (() if mode == "empty" else (candidate,))
+    assert updated.warnings == ("New warning",)
+    assert backend.data["hosted_parse_operations"][identity]["accepted"] is True
+    assert backend.data["items"] == [updated.as_dict()]
+    restarted = PendingImportStore(hass)
+    restarted._store = backend
+    await restarted.async_load()
+    async def replay(item):
+        return (candidate,), ("Must not be appended again",)
+    restored = restarted.get(original.id)
+    snapshot = deepcopy(backend.data)
+    assert await restarted.async_reprocess(original.id, replay, acceptance_guard=guard) == (restored, 0, 0)
+    assert backend.data == snapshot
