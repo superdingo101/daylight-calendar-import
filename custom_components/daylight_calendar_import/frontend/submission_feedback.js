@@ -20,6 +20,13 @@ export class SubmissionAttempt {
     this.reimportDuplicates = true;
     return sourceId;
   }
+  retryTerminal(text, file = null) {
+    const preserveOverride = this.text === text && this.file === file && this.reimportDuplicates;
+    this.reset();
+    const sourceId = this.forDraft(text, file);
+    this.reimportDuplicates = preserveOverride;
+    return sourceId;
+  }
   complete() { this.reimportDuplicates = false; }
 }
 
@@ -67,16 +74,25 @@ export function submissionPreprocessingFailure(error) {
   return pdfPreprocessingFailure(error);
 }
 
+// Home Assistant sends a generic WebSocket error code for ProviderError.
+const hostedTerminalMessage = "Daylight Cloud parse operation ended without a recoverable result. Start a new parse to retry.";
+const hostedUncertainMessage = "Daylight Cloud parse outcome is uncertain. Check recent activity and the review inbox before deliberately retrying; the request was not replayed.";
+
+export function submissionTerminalOperation(error, submitted = true) {
+  return submitted && error?.code === "home_assistant_error" && error.message === hostedTerminalMessage;
+}
+
 /** Preserve an opt-in retry only when the service outcome may be unknown. */
 export function submissionOutcomeUncertain(error, submitted = true) {
-  return submitted && !completedErrors.has(error?.code) &&
-    !submissionPreprocessingFailure(error);
+  return submitted && (error?.message === hostedUncertainMessage ||
+    (!completedErrors.has(error?.code) && !submissionPreprocessingFailure(error)));
 }
 
 /** Separate rejected work from a transport failure whose result is unknown. */
 export function submissionErrorMessage(error, submitted = true) {
   const detail = typeof error?.message === "string" && error.message.trim() ? error.message.trim() : "Could not submit this import.";
   const identifier = `${error?.code || ""} ${error?.translation_key || ""} ${detail}`;
+  if (submissionTerminalOperation(error, submitted)) return detail;
   if (/Daylight Cloud/.test(identifier)) {
     if (/rate limit/i.test(detail)) return `${detail} Wait before trying again.`;
     if (/outcome is uncertain/i.test(detail)) return detail;
@@ -141,12 +157,13 @@ const node = (tag, text = "") => {
 
 /** Rendering feedback is separate from refreshing or navigating the review UI. */
 export class SubmissionFeedback {
-  constructor(status, {onReview, onActivity, onReimport} = {}) {
+  constructor(status, {onReview, onActivity, onReimport, onRetryTerminal} = {}) {
     this.generation = 0;
     this.status = status;
     this.onReview = onReview;
     this.onActivity = onActivity;
     this.onReimport = onReimport;
+    this.onRetryTerminal = onRetryTerminal;
     this.actions = node("div");
     this.actions.className = "submission-actions";
     this.actions.hidden = true;
@@ -167,7 +184,7 @@ export class SubmissionFeedback {
     const button = node("button", label);
     button.type = "button";
     button.addEventListener("click", async () => {
-      if (button.disabled) return;
+      if (button.disabled || generation !== this.generation) return;
       button.disabled = true;
       try { await callback(); }
       catch {
@@ -191,6 +208,7 @@ export class SubmissionFeedback {
   error(error, submitted = true) {
     this.clear();
     this.status.textContent = submissionErrorMessage(error, submitted);
+    if (submissionTerminalOperation(error, submitted)) this.action("Start new parse", this.onRetryTerminal);
     if (submitted && this.onActivity && !submissionPreprocessingFailure(error)) this.action("Check recent activity", () => this.onActivity(null));
   }
 }

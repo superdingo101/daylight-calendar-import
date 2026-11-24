@@ -47,6 +47,10 @@ class HostedParseError(ProviderError):
         self.uncertain = uncertain
 
 
+class HostedTerminalOperationError(HostedParseError):
+    """A validated, terminal operation envelope, not an arbitrary API error code."""
+
+
 def _number(raw: str) -> Decimal | int:
     """Keep fractional confidence exact; never round a schema integer."""
     try:

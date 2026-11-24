@@ -25,8 +25,11 @@ def payload_digest(request, attachments) -> str:
 def source_identity(request, attachments, *, namespace: str, upstream: str | None,
                     reparse: str | None = None) -> str:
     source = deepcopy(request["source"])
-    source.pop("id")
+    invocation_id = source.pop("id")
     source.pop("received_at")
+    # Only an explicit stable upstream ID or reparse marker authorizes reuse.
+    if upstream is None and reparse is None:
+        reparse = invocation_id
     return digest({"namespace": namespace, "upstream": upstream, "reparse": reparse,
                    "source": source, "attachments": [
                        {"media_type": media, "sha256": sha256(content).hexdigest()}

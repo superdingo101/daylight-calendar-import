@@ -1316,6 +1316,11 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 def _hosted_parse_failure(error: Any) -> ProviderError:
     """Translate public status into safe hosted guidance without server text."""
+    from .hosted_parse_transport import HostedTerminalOperationError
+    from .provider_failures import PROVIDER_FAILURE_GUIDANCE
+
+    if isinstance(error, HostedTerminalOperationError):
+        return ProviderError("hosted_operation_terminal", PROVIDER_FAILURE_GUIDANCE["hosted_operation_terminal"])
     if error.status == 401:
         return ProviderError("hosted_authentication", "Daylight Cloud rejected the connection credential. Open Daylight Cloud settings to repair the connection before retrying.")
     if error.status == 403:

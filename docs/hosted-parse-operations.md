@@ -38,7 +38,15 @@ or expired operation associated with the fenced delivery, retaining its original
 record and allowing a fresh key. Pending and uncertain operations retain their
 original key. Independent legacy parse_text and import_text calls use fresh local
 invocation IDs; these calls do not provide cross-invocation calendar-write
-idempotency. Use the review workflow and stable source IDs for durable recovery.
+idempotency. Review submissions without a stable source ID likewise use their
+unique invocation ID, not content equality. Use the review workflow and stable
+source IDs for durable recovery across separate service calls. A validated
+failed or expired manual operation offers **Start new parse** in the native
+form. This deliberately uses a fresh source ID without bypassing event
+deduplication unless the user previously opted into re-import. Pending and
+uncertain outcomes offer no fresh-operation action; ordinary retries retain
+the existing source ID. Automation callers may choose a new source ID after
+a verified terminal failure, not after an ambiguous response.
 
 `GET /v2/account` publishes independent managed_ai, new_email_intake and
 accepted_source_drain capabilities, plus trial/paid balance/deadline, grace,

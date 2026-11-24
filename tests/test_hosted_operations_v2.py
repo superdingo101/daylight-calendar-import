@@ -53,8 +53,20 @@ def test_operation_identity_is_stable_across_ephemeral_fields():
     other["source"].update(id="second", received_at="tomorrow")
     original = copy.deepcopy(request)
     attachments = (("x", "image/png", b"image"),)
-    assert source_identity(request, attachments, namespace="n", upstream=None) == source_identity(
+    assert source_identity(request, attachments, namespace="n", upstream=None) != source_identity(
         other, attachments, namespace="n", upstream=None)
+    same_invocation = copy.deepcopy(request)
+    same_invocation["source"]["received_at"] = "tomorrow"
+    assert source_identity(request, attachments, namespace="n", upstream=None) == source_identity(
+        same_invocation, attachments, namespace="n", upstream=None)
+    assert source_identity(request, attachments, namespace="n", upstream="stable") == source_identity(
+        other, attachments, namespace="n", upstream="stable")
+    assert source_identity(request, attachments, namespace="n", upstream=None, reparse="explicit") == source_identity(
+        other, attachments, namespace="n", upstream=None, reparse="explicit")
+    assert source_identity(request, attachments, namespace="n", upstream=None) == digest({
+        "namespace": "n", "upstream": None, "reparse": "first", "source": {"text": "Lunch"},
+        "attachments": [{"media_type": "image/png", "sha256": __import__("hashlib").sha256(b"image").hexdigest()}],
+    })
     assert request == original
     assert source_identity(request, attachments, namespace="n", upstream="upstream") != source_identity(
         request, attachments, namespace="n", upstream=None)

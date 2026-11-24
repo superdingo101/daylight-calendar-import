@@ -31,6 +31,7 @@ from custom_components.daylight_calendar_import.hosted_lifecycle import (
 from custom_components.daylight_calendar_import.hosted_parse_transport import (
     HostedParseError,
     HostedParseTransport,
+    HostedTerminalOperationError,
 )
 from custom_components.daylight_calendar_import.hosted_runtime import (
     CONF_HOSTED_SERVICE,
@@ -312,6 +313,10 @@ async def test_first_calendar_can_be_configured_without_resolving_or_writing_dra
 @pytest.mark.parametrize(
     "error,code",
     [
+        (HostedParseError("operation_failed", status=500), "hosted_parse_failed"),
+        (HostedParseError("operation_expired", status=500), "hosted_parse_failed"),
+        (HostedTerminalOperationError("operation_failed"), "hosted_operation_terminal"),
+        (HostedTerminalOperationError("operation_expired"), "hosted_operation_terminal"),
         (HostedParseError("unauthenticated", status=401), "hosted_authentication"),
         (HostedParseError("forbidden", status=403), "hosted_access"),
         (

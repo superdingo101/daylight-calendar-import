@@ -108,7 +108,7 @@ async def test_provider_lost_response_recovers_without_second_post_and_rotation(
                                            active=lambda: True, operation_store=store,
                                            operation_namespace="entry:service")
     provider._transport.async_parse = AsyncMock(side_effect=HostedParseError("provider_timeout", uncertain=True))
-    source = TextSourceAdapter().create("Meeting")
+    source = TextSourceAdapter().create("Meeting", source_id="stable-source")
     with pytest.raises(HostedParseError):
         await provider.async_parse(source, reference_datetime=source.received_at.isoformat(), time_zone="UTC")
     record = next(iter(store._hosted_operations.values()))
@@ -117,7 +117,7 @@ async def test_provider_lost_response_recovers_without_second_post_and_rotation(
     await restarted.async_load()
     provider._operation_store = restarted
     provider._transport.async_operation = AsyncMock(return_value=envelope(record["key"], record["digest"]))
-    retry = TextSourceAdapter().create("Meeting")
+    retry = TextSourceAdapter().create("Meeting", source_id="stable-source")
     outcome = await provider.async_parse(retry, reference_datetime=retry.received_at.isoformat(), time_zone="UTC")
     assert len(outcome.events) == 1 and provider._transport.async_parse.await_count == 1
     assert provider.last_operation_id == record["key"]

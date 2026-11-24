@@ -24,7 +24,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .hosted_credentials import BoundCredential, CredentialCheckpoint
-from .hosted_parse_transport import HostedParseError, HostedParseTransport
+from .hosted_parse_transport import HostedParseError, HostedParseTransport, HostedTerminalOperationError
 from .hosted_transport import HostedServiceBinding, _strict_strings, _timestamp
 from .hosted_operations import source_identity, validate_envelope
 from .models import EventDraft
@@ -314,15 +314,17 @@ class DaylightHostedParserProvider:
                 raise HostedParseError("provider_invalid_response", uncertain=True) from None
             if envelope["status"] != "succeeded":
                 terminal = envelope["status"] in ("failed", "expired")
-                if terminal and source.kind is SourceKind.EMAIL and source.upstream_source_id is not None:
+                if terminal:
                     try:
                         if self._authority() != credential:
                             raise HostedParseError("unauthenticated", status=401)
                     except HostedParseError as error:
                         raise HostedParseError(error.code, status=error.status, uncertain=True) from None
-                    await self._operation_store.async_mark_hosted_operation_terminal(
-                        identity, record["key"], source.upstream_source_id)
-                raise HostedParseError("operation_" + envelope["status"], uncertain=not terminal)
+                    if source.kind is SourceKind.EMAIL and source.upstream_source_id is not None:
+                        await self._operation_store.async_mark_hosted_operation_terminal(
+                            identity, record["key"], source.upstream_source_id)
+                    raise HostedTerminalOperationError("operation_" + envelope["status"])
+                raise HostedParseError("operation_" + envelope["status"], uncertain=True)
             response = envelope["result"]
         try:
             if self._authority() != credential:
