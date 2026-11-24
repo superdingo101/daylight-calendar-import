@@ -1171,3 +1171,105 @@ async def test_async_stage_cancellation_uses_exact_cleanup_context(
 
     assert contexts == ["staging cancellation"]
     assert list(tmp_path.iterdir()) == []
+
+def _hosted_attachment():
+    return SourceAttachment(
+        id="hosted-1", media_type="image/png", size_bytes=len(PNG), content_ref="",
+        filename="../../untrusted.png", sha256=sha256(PNG).hexdigest(), content=PNG,
+    )
+
+
+async def test_verified_hosted_stage_preserves_evidence_and_removes_bytes(tmp_path):
+    from dataclasses import replace
+
+    attachment = _hosted_attachment()
+    document = replace(_document(), attachments=(attachment,))
+    stage = await email_attachments.async_stage_verified_hosted_attachments(
+        AttachmentHass(tmp_path), document,
+    )
+    staged, = stage.document.attachments
+    path, = tuple(tmp_path.iterdir())
+    assert path.read_bytes() == PNG
+    assert path.name.startswith("daylight-email-") and path.suffix == ".png"
+    assert staged == replace(attachment, content=None,
+                             content_ref=f"media-source://media_source/local/{path.name}")
+    assert document.attachments == (attachment,)
+    await stage.async_cleanup("hosted email processing")
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("change", [
+    {"content": None}, {"size_bytes": 1}, {"sha256": "a" * 64},
+    {"media_type": "application/octet-stream"},
+])
+def test_verified_hosted_staging_rejects_bad_evidence_and_cleans_partial(tmp_path, change):
+    from dataclasses import replace
+
+    first = _hosted_attachment()
+    second = replace(first, id="second", **change)
+    with pytest.raises(email_attachments.EmailAttachmentError, match="Hosted attachment could not be verified"):
+        email_attachments._stage_verified_hosted_attachments(
+            (first, second), {"local": str(tmp_path)},
+        )
+    assert not list(tmp_path.iterdir())
+
+
+def test_verified_hosted_staging_requires_media_directory():
+    with pytest.raises(SourceValidationError, match="No local media directory configured"):
+        email_attachments._stage_verified_hosted_attachments((_hosted_attachment(),), {})
+
+
+def test_verified_hosted_staging_reports_cleanup_failure(monkeypatch, caplog, tmp_path):
+    from dataclasses import replace
+
+    first = _hosted_attachment()
+
+    def cleanup_failure(paths):
+        assert len(paths) == 1
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(email_attachments, "_cleanup_paths", cleanup_failure)
+    with pytest.raises(email_attachments.EmailAttachmentError):
+        email_attachments._stage_verified_hosted_attachments(
+            (first, replace(first, content=None)), {"local": str(tmp_path)},
+        )
+    assert "hosted staging failure" in caplog.text
+    assert "cleanup failed" in caplog.text
+
+
+@pytest.mark.parametrize("cleanup_cancelled", [False, True])
+async def test_verified_hosted_stage_cancellation_finishes_before_exit(tmp_path, monkeypatch, cleanup_cancelled):
+    from dataclasses import replace
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    document = replace(_document(), attachments=(_hosted_attachment(),))
+
+    class DelayedHass(AttachmentHass):
+        async def async_add_executor_job(self, func, *args):
+            if func is email_attachments._stage_verified_hosted_attachments:
+                started.set()
+                await release.wait()
+            return await asyncio.to_thread(func, *args)
+
+    if cleanup_cancelled:
+        original = email_attachments.EmailAttachmentStage.async_cleanup
+
+        async def cleanup_then_cancel(self, context):
+            assert context == "hosted staging cancellation"
+            await original(self, context)
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(email_attachments.EmailAttachmentStage, "async_cleanup", cleanup_then_cancel)
+
+    task = asyncio.create_task(email_attachments.async_stage_verified_hosted_attachments(
+        DelayedHass(tmp_path), document,
+    ))
+    async with asyncio.timeout(3):
+        await started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert not list(tmp_path.iterdir())
