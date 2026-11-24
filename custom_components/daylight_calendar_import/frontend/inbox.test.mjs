@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {changeRetryJob, checkEvent, confirmEventTimezone, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
+import {changeRetryJob, checkEvent, confirmEventTimezone, previewEventTimezone, decideEvent, formatDateTime, formatEventRange, loadActivity, loadActivityDetail, loadInbox, loadImport, resolveEvent, saveEvent, summarizeImport} from "./inbox.js";
 
 test("uncertain recovery sends a scoped explicit resolution and validates the response", async () => {
   const requests = [];
@@ -281,4 +281,48 @@ test("review formatting preserves distinct arrival and departure zone labels", (
   const label = formatEventRange(flight, "en-US", "America/Los_Angeles");
   assert.match(label, /PDT/);
   assert.match(label, /EDT/);
+});
+
+
+test("timezone preview is read-only, exact and revision-checked", async () => {
+  const event = {id: "event", status: "pending", temporal: {status: "confirmation_required"}};
+  const calls = [];
+  const hass = {callWS: async request => {
+    calls.push(request);
+    return {response: {
+      pending_id: "import", event_id: "event", needs_end_zone: true,
+      suggested_start_zones: ["America/Los_Angeles"],
+      suggested_end_zones: ["America/New_York"],
+      preview: {start_zone: "America/Los_Angeles", end_zone: "America/New_York",
+        duration_seconds: 19800},
+    }};
+  }};
+  const preview = await previewEventTimezone(hass, "import", event, {
+    timeZone: "America/Los_Angeles", endTimeZone: "America/New_York",
+    startOccurrence: "first", endOccurrence: "second",
+  });
+  assert.equal(preview.preview.duration_seconds, 19800);
+  assert.deepEqual(calls[0], {
+    type: "call_service", domain: "daylight_calendar_import",
+    service: "preview_pending_timezone", return_response: true,
+    service_data: {
+      pending_id: "import", event_id: "event", expected_event: event,
+      time_zone: "America/Los_Angeles", end_time_zone: "America/New_York",
+      start_occurrence: "first", end_occurrence: "second",
+    },
+  });
+  await previewEventTimezone(hass, "import", event);
+  assert.deepEqual(calls[1].service_data, {
+    pending_id: "import", event_id: "event", expected_event: event,
+  });
+  await assert.rejects(previewEventTimezone(hass, "import", {...event, temporal: null}),
+    /no timezone evidence/);
+  for (const response of [{}, {pending_id: "import", event_id: "wrong",
+    suggested_start_zones: [], suggested_end_zones: []},
+  {pending_id: "import", event_id: "event", suggested_start_zones: [],
+    suggested_end_zones: "invalid"}]) {
+    await assert.rejects(previewEventTimezone(
+      {callWS: async () => ({response})}, "import", event,
+    ), /could not be verified/);
+  }
 });

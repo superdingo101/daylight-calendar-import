@@ -414,8 +414,12 @@ for (const [label, startLocal, endLocal, startInstant, endInstant, expectsFold] 
     const foldEnd = page.locator("label").filter({hasText: "End occurrence (DST fall-back)"});
     await expect(foldStart).toBeHidden();
     await expect(foldEnd).toBeHidden();
-    await page.locator('input[list^="daylight-iana-zones-"]').first()
-      .fill("America/Los_Angeles");
+    await page.getByRole("button", {name: "Event timezone: choose timezone"}).click();
+    const picker = page.getByRole("dialog", {name: "Select event timezone"});
+    await expect(picker).toBeVisible();
+    await picker.locator("select.timezone-picker-list")
+      .selectOption("America/Los_Angeles");
+    await picker.getByRole("button", {name: "Use selected timezone"}).click();
     if (expectsFold) {
       await expect(foldStart).toBeVisible();
       await expect(foldEnd).toBeVisible();
@@ -428,3 +432,88 @@ for (const [label, startLocal, endLocal, startInstant, endInstant, expectsFold] 
     }
   });
 }
+
+
+async function openConflictingFlight(page) {
+  await page.evaluate(async () => {
+    const temporal = {
+      status: "confirmation_required", source: "ha_fallback",
+      reason: "Printed timezone conflicts with destination airport",
+      start_local: "2028-07-10T08:00:00",
+      end_local: "2028-07-10T16:30:00",
+      start_zone: "America/Los_Angeles",
+      end_zone: "America/Los_Angeles",
+      start_location_type: "airport", start_location_value: "LAX",
+      end_location_type: "airport", end_location_value: "JFK",
+      travel_incomplete: true,
+    };
+    const flight = {
+      id: "event-1", title: "Flight AA1234",
+      start: "2028-07-10T08:00:00-07:00",
+      end: "2028-07-10T16:30:00-07:00",
+      all_day: false, status: "pending", temporal,
+    };
+    const fixture = window.fixture;
+    fixture.pending = {...fixture.pending, source_text: "All times are in America/Los_Angeles",
+      events: [flight]};
+    fixture.imports = [{id: fixture.pending.id}];
+    await document.querySelector("daylight-import-panel").showImport(fixture.pending.id);
+  });
+}
+
+test("reviewer browses independent airport zones and previews actual duration", async ({page}) => {
+  await openConflictingFlight(page);
+  const confirm = page.getByRole("button", {name: "Confirm timezone", exact: true});
+  await expect(confirm).toBeDisabled();
+  await expect(page.getByText("Printed timezone conflicts with destination airport")).toBeVisible();
+  const departure = page.getByRole("button", {name: "Departure timezone: choose timezone"});
+  const arrival = page.getByRole("button", {name: "Arrival timezone: choose timezone"});
+  await expect(departure).toContainText("Choose timezone");
+  await expect(arrival).toContainText("Choose timezone");
+  await departure.click();
+  const first = page.getByRole("dialog", {name: "Select departure timezone"});
+  await expect(first).toBeVisible();
+  await expect(first.getByRole("button", {name: /Select suggested Los Angeles/})).toBeVisible();
+  await first.getByRole("button", {name: /Select suggested Los Angeles/}).click();
+  await expect(confirm).toBeDisabled();
+  await arrival.click();
+  const second = page.getByRole("dialog", {name: "Select arrival timezone"});
+  await expect(second).toBeVisible();
+  await second.getByRole("searchbox", {name: /Search timezones/}).fill("Eastern");
+  await expect(second.locator("option[value='America/New_York']")).toHaveCount(1);
+  await second.locator("select.timezone-picker-list").selectOption("America/New_York");
+  await second.getByRole("button", {name: "Use selected timezone"}).click();
+  await expect(confirm).toBeEnabled();
+  await expect(page.locator(".timezone-event-preview")).toContainText("Duration: 5h 30m");
+  await expect(page.locator(".timezone-event-preview")).toContainText("PDT");
+  await expect(page.locator(".timezone-event-preview")).toContainText("EDT");
+  await confirm.click();
+  await expect(confirm).toHaveCount(0);
+  await expect(page.getByText("Event timezone · America/Los_Angeles → America/New_York", {exact: false})).toBeVisible();
+  const requests = await page.evaluate(() => window.fixture.calls.filter(call =>
+    call.service === "confirm_pending_timezone"));
+  expect(requests).toHaveLength(1);
+  expect(requests[0].service_data).toMatchObject({
+    time_zone: "America/Los_Angeles", end_time_zone: "America/New_York",
+  });
+});
+
+test.describe("narrow Android-sized timezone review", () => {
+  test.use({viewport: {width: 390, height: 844}});
+  test("picker scrolls, cancels and remains inside the viewport", async ({page}) => {
+    await openConflictingFlight(page);
+    const button = page.getByRole("button", {name: "Arrival timezone: choose timezone"});
+    await button.click();
+    const dialog = page.getByRole("dialog", {name: "Select arrival timezone"});
+    const bounds = await dialog.boundingBox();
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(391);
+    await expect(dialog.locator(".timezone-picker-list option")).toHaveCount(420);
+    await dialog.getByRole("searchbox", {name: /Search timezones/}).fill("New York");
+    await expect(dialog.locator("option[value='America/New_York']")).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(button).toContainText("Choose timezone");
+    await expect(page.getByRole("button", {name: "Confirm timezone"})).toBeDisabled();
+  });
+});

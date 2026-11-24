@@ -698,17 +698,25 @@ def normalize_structured_event(
     return {**raw, "start": a, "end": b, "location": display_location}, metadata
 
 
+def needs_end_timezone(evidence: TemporalEvidence) -> bool:
+    """Require independent selection for distinct or incomplete endpoints.
+
+    Use identical ASCII-only whitespace and case normalization in the browser.
+    Non-ASCII spelling differences conservatively require both selections.
+    """
+    table = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+    end = evidence.end_location_value.strip(" \t\r\n\v\f").translate(table)
+    start = evidence.start_location_value.strip(" \t\r\n\v\f").translate(table)
+    return (evidence.travel_incomplete or (bool(end) and end != start)
+            or evidence.end_zone != evidence.start_zone)
+
+
 def confirm_zone(evidence: TemporalEvidence, zone_name: str,
                  end_zone_name: str | None = None,
                  start_occurrence: str | None = None,
                  end_occurrence: str | None = None) -> tuple[str, str, TemporalEvidence]:
     """Recalculate both source-local endpoints with reviewer-confirmed zones."""
-    distinct_end = bool(evidence.end_location_value.strip()) and (
-        evidence.end_location_value.strip().casefold() !=
-        evidence.start_location_value.strip().casefold()
-    )
-    if (evidence.travel_incomplete or distinct_end or
-            evidence.end_zone != evidence.start_zone) and not end_zone_name:
+    if needs_end_timezone(evidence) and not end_zone_name:
         raise ValueError("Confirm departure and arrival timezones independently")
     _zone(zone_name)
     end_zone_name = end_zone_name or zone_name
@@ -722,3 +730,48 @@ def confirm_zone(evidence: TemporalEvidence, zone_name: str,
     from dataclasses import replace
     return a, b, replace(evidence, start_zone=zone_name, end_zone=end_zone_name,
                          source="user", status="resolved", reason="")
+
+
+def suggested_zone(evidence: TemporalEvidence, endpoint: str) -> str | None:
+    """Advisory suggestion from typed endpoint geography, never a confirmation.
+
+    In particular, do not copy the provisional HA fallback or the departure
+    zone into a travel arrival suggestion.
+    """
+    if endpoint not in ("start", "end"):
+        raise ValueError("invalid timezone endpoint")
+    kind = getattr(evidence, endpoint + "_location_type")
+    value = getattr(evidence, endpoint + "_location_value")
+    return _place_zone(kind, value) if value else None
+
+
+def preview_zone(evidence: TemporalEvidence, zone_name: str,
+                 end_zone_name: str | None = None,
+                 start_occurrence: str | None = None,
+                 end_occurrence: str | None = None) -> dict:
+    """Calculate authoritative, read-only instants for the chosen local clocks.
+
+    Uses the exact same validation as confirmation, including DST folds/gaps.
+    No pending event, fingerprint, or persistent state is changed.
+    """
+    start_iso, end_iso, _ = confirm_zone(
+        evidence, zone_name, end_zone_name, start_occurrence, end_occurrence,
+    )
+    end_name = end_zone_name or zone_name
+    start = datetime.fromisoformat(start_iso)
+    end = datetime.fromisoformat(end_iso)
+    return {
+        "start_zone": zone_name,
+        "end_zone": end_name,
+        "start_local": evidence.start_local,
+        "end_local": evidence.end_local,
+        "start_iso": start_iso,
+        "end_iso": end_iso,
+        "start_utc": start.astimezone(timezone.utc).isoformat(),
+        "end_utc": end.astimezone(timezone.utc).isoformat(),
+        "start_offset": start.strftime("%z"),
+        "end_offset": end.strftime("%z"),
+        "start_abbreviation": start.astimezone(_zone(zone_name)).tzname(),
+        "end_abbreviation": end.astimezone(_zone(end_name)).tzname(),
+        "duration_seconds": int((end - start).total_seconds()),
+    }

@@ -1,5 +1,11 @@
 {
   "private": true,
   "type": "module",
-  "scripts": {"test": "node --test *.test.mjs"}
+  "scripts": {
+    "test": "node --test *.test.mjs",
+    "generate:timezones": "node generate_timezone_catalog.mjs"
+  },
+  "devDependencies": {
+    "@vvo/tzdb": "6.206.0"
+  }
 }

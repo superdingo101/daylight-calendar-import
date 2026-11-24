@@ -7202,10 +7202,10 @@ test("unresolved timezone appears on each review card and blocks every approval 
     node => /Event timezone/.test(node.textContent || "")));
   assert.ok(panel._content.querySelectorAll("p").some(
     node => /Location could not be uniquely resolved/.test(node.textContent || "")));
-  const input = panel._content.querySelectorAll("input").find(
-    node => node.placeholder === "America/Los_Angeles");
-  assert.ok(input);
-  assert.equal(input.value, "");
+  const choices = panel._content.querySelectorAll(".timezone-field-trigger");
+  assert.equal(choices.length, 1);
+  assert.equal(choices[0].textContent, "Choose timezone");
+  assert.ok(panel._content.querySelectorAll(".timezone-picker-dialog").length === 1);
 });
 
 test("timezone confirmation submits the exact loaded event and reloads backend state", async () => {
@@ -7238,8 +7238,10 @@ test("timezone confirmation submits the exact loaded event and reloads backend s
   panel.render();
   await panel.confirmTimezone(event, "America/Los_Angeles");
   assert.deepEqual(requests.map(request => request.service),
-    ["confirm_pending_timezone", "get_pending"]);
+    ["preview_pending_timezone", "confirm_pending_timezone", "get_pending"]);
   assert.deepEqual(requests[0].service_data, {pending_id: "source", event_id: "event",
+    expected_event: event});
+  assert.deepEqual(requests[1].service_data, {pending_id: "source", event_id: "event",
     time_zone: "America/Los_Angeles", expected_event: event});
   assert.equal(panel._detail.events[0].temporal.status, "resolved");
 });
@@ -7339,11 +7341,15 @@ test("timezone confirmation shows DST folds only for a genuinely repeated local 
   assert.ok(startFold && endFold);
   assert.equal(startFold.hidden, true);
   assert.equal(endFold.hidden, true);
-  const input = panel._content.querySelectorAll("input").find(n =>
-    n.placeholder === "America/Los_Angeles");
-  assert.ok(input);
-  input.value = "America/Los_Angeles";
-  input.input();
+  const picker = panel._content.querySelector(".timezone-field-trigger");
+  assert.equal(picker.textContent, "Choose timezone");
+  picker.click();
+  const pickerDialog = panel._content.querySelector(".timezone-picker-dialog");
+  const cityList = pickerDialog.querySelector("select");
+  cityList.value = "America/Los_Angeles";
+  cityList.change();
+  pickerDialog.querySelectorAll("button").find(
+    button => button.textContent === "Use selected timezone").click();
   assert.equal(startFold.hidden, true);
   assert.equal(endFold.hidden, true);
 
@@ -7358,18 +7364,45 @@ test("timezone confirmation shows DST folds only for a genuinely repeated local 
     n.textContent === "Start occurrence (DST fall-back)");
   const fallEnd = panel._content.querySelectorAll("label").find(n =>
     n.textContent === "End occurrence (DST fall-back)");
-  const fallInput = panel._content.querySelectorAll("input").find(n =>
-    n.placeholder === "America/Los_Angeles");
-  fallInput.value = "America/Los_Angeles";
-  fallInput.input();
+  const fallTrigger = panel._content.querySelector(".timezone-field-trigger");
+  fallTrigger.click();
+  const fallDialog = panel._content.querySelector(".timezone-picker-dialog");
+  const fallList = fallDialog.querySelector("select");
+  fallList.value = "America/Los_Angeles";
+  fallList.change();
+  fallDialog.querySelectorAll("button").find(
+    button => button.textContent === "Use selected timezone").click();
   assert.equal(fallStart.hidden, false);
   assert.equal(fallEnd.hidden, false);
   assert.equal(fallStart.querySelector("select").children.length, 3);
   assert.equal(fallEnd.querySelector("select").children.length, 3);
+  const startChoice = fallStart.querySelector("select");
+  const endChoice = fallEnd.querySelector("select");
+  startChoice.value = "first";
+  startChoice.change();
+  endChoice.value = "second";
+  endChoice.change();
+  assert.equal(startChoice.value, "first");
+  assert.equal(endChoice.value, "second");
+
+  // A new single-venue timezone invalidates both prior DST decisions,
+  // even when the new zone also repeats the same local hour.
+  fallTrigger.click();
+  const changeList = fallDialog.querySelector("select");
+  changeList.value = "America/New_York";
+  changeList.change();
+  fallDialog.querySelectorAll("button").find(
+    button => button.textContent === "Use selected timezone").click();
+  assert.equal(fallStart.hidden, false);
+  assert.equal(fallEnd.hidden, false);
+  assert.equal(startChoice.value, "");
+  assert.equal(endChoice.value, "");
+  assert.equal(panel._content.querySelectorAll("button").find(
+    button => button.textContent === "Confirm timezone").disabled, true);
 });
 
 
-test("timezone confirmation does not invent an arrival field for one Sydney venue", () => {
+test("timezone confirmation does not invent an arrival field for one Sydney venue", async () => {
   const panel = new DaylightImportPanel();
   panel._hass = {config: {time_zone: "America/Los_Angeles"}};
   panel._status = "ready";
@@ -7387,9 +7420,16 @@ test("timezone confirmation does not invent an arrival field for one Sydney venu
     all_day: false, temporal, calendar_entity: "calendar.test"};
   panel._detail = {id: "sydney", source_kind: "manual_text", events: [event]};
   panel.render();
-  let labels = panel._content.querySelectorAll("label").map(label => label.textContent);
-  assert.ok(labels.includes("Confirm event timezone (IANA identifier)"));
-  assert.ok(!labels.includes("Confirm arrival timezone (IANA identifier)"));
+  let labels = panel._content.querySelectorAll(".timezone-field-label").map(label => label.textContent);
+  assert.ok(labels.includes("Event timezone"));
+  assert.ok(!labels.includes("Arrival timezone"));
+  panel._detail = {id: "sydney", source_kind: "manual_text", events: [{
+    ...event, temporal: {...temporal, start_location_value: "Hauptstrasse 1, Berlin",
+      end_location_value: "Hauptstraße 1, Berlin"},
+  }]};
+  panel.render();
+  labels = panel._content.querySelectorAll(".timezone-field-label").map(label => label.textContent);
+  assert.deepEqual(labels, ["Departure timezone", "Arrival timezone"]);
 
   // A flight with genuinely different endpoints must retain both fields,
   // even if a model gave them the same provisional HA timezone.
@@ -7397,8 +7437,8 @@ test("timezone confirmation does not invent an arrival field for one Sydney venu
     ...event, temporal: {...temporal, end_location_value: "New York, NY"},
   }]};
   panel.render();
-  labels = panel._content.querySelectorAll("label").map(label => label.textContent);
-  assert.ok(labels.includes("Confirm arrival timezone (IANA identifier)"));
+  labels = panel._content.querySelectorAll(".timezone-field-label").map(label => label.textContent);
+  assert.ok(labels.includes("Arrival timezone"));
 
   // A partial itinerary still needs two deliberately selected IANA zones,
   // even when the source offers no destination and provisional offsets match.
@@ -7410,24 +7450,47 @@ test("timezone confirmation does not invent an arrival field for one Sydney venu
       end_location_type: "unknown", end_location_value: "",
     },
   }]};
+  panel._hass = {callWS: async request => ({
+    response: {
+      pending_id: "sydney", event_id: "event",
+      needs_end_zone: true, suggested_start_zones: ["America/Los_Angeles"],
+      suggested_end_zones: ["America/New_York"],
+      preview: request.service_data.time_zone && request.service_data.end_time_zone ? {
+        start_zone: "America/Los_Angeles", end_zone: "America/New_York",
+        start_local: "2027-12-15T10:00:00", end_local: "2027-12-15T12:00:00",
+        start_utc: "2027-12-15T18:00:00+00:00",
+        end_utc: "2027-12-15T17:00:00+00:00",
+        start_offset: "-0800", end_offset: "-0500",
+        start_abbreviation: "PST", end_abbreviation: "EST", duration_seconds: 3600,
+      } : null,
+    },
+  })};
   const captured = [];
   panel.confirmTimezone = (item, zone, options) => {
     captured.push({id: item.id, zone, options});
   };
   panel.render();
-  labels = panel._content.querySelectorAll("label").map(label => label.textContent);
-  assert.ok(labels.includes("Confirm arrival timezone (IANA identifier)"));
-  const inputs = panel._content.querySelectorAll("input").filter(
-    input => input.placeholder === "America/Los_Angeles");
-  assert.equal(inputs.length, 2);
+  labels = panel._content.querySelectorAll(".timezone-field-label").map(label => label.textContent);
+  assert.ok(labels.includes("Arrival timezone"));
+  const triggers = panel._content.querySelectorAll(".timezone-field-trigger");
+  assert.equal(triggers.length, 2);
   const confirm = panel._content.querySelectorAll("button").find(
     button => button.textContent === "Confirm timezone");
   assert.equal(confirm.disabled, true);
-  inputs[0].value = "America/Los_Angeles";
-  inputs[0].input();
+  const dialogs = panel._content.querySelectorAll(".timezone-picker-dialog");
+  const choose = (index, id) => {
+    triggers[index].click();
+    const list = dialogs[index].querySelector("select");
+    list.value = id;
+    list.change();
+    dialogs[index].querySelectorAll("button").find(
+      button => button.textContent === "Use selected timezone").click();
+  };
+  choose(0, "America/Los_Angeles");
   assert.equal(confirm.disabled, true);
-  inputs[1].value = "America/New_York";
-  inputs[1].input();
+  choose(1, "America/New_York");
+  assert.equal(confirm.disabled, true, "must await authoritative preview");
+  await flush();
   assert.equal(confirm.disabled, false);
   confirm.click();
   assert.deepEqual(captured, [{id: "event", zone: "America/Los_Angeles",
@@ -7458,7 +7521,7 @@ test("timezone confirmation cannot discard a sibling's unsaved edit", async () =
   title.value = "Unsaved changes";
   assert.ok(!panel._content.querySelectorAll("button").some(b => b.textContent === "Confirm timezone"));
   await panel.confirmTimezone(second, "America/Los_Angeles");
-  assert.equal(requests.length, 0);
+  assert.deepEqual(requests.map(request => request.service), ["preview_pending_timezone"]);
   assert.equal(panel._editingId, "a");
   assert.equal(title.value, "Unsaved changes");
   assert.equal(panel._content.querySelectorAll("form")[0], form);
