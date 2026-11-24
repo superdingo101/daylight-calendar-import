@@ -331,6 +331,12 @@ def _reference_zone_endpoint(value: object, zone: ZoneInfo) -> tuple[str, bool]:
             ambiguous)
 
 
+def _printed_clock(source_clock: str) -> time:
+    """Read the English 12-hour clock guaranteed by the source pattern."""
+    hour, minute = source_clock.split(":")
+    return time(int(hour) % 12 + 12 * (source_clock[-2:].upper() == "PM"), int(minute[:2]))
+
+
 def _named_zone_endpoint(
     value: object, zone_name: str, source_clock: str | None, *, check_offset: bool,
     origin: str = "provider_named",
@@ -349,9 +355,7 @@ def _named_zone_endpoint(
     _LOGGER.debug("Timezone candidate validated: origin=%s zone=%s offsets=%s",
                   origin, zone.key, tuple(str(offset) for offset in candidates))
     if source_clock is not None:
-        # The source pattern guarantees an English 12-hour clock and minutes.
-        hour, minute = source_clock.split(":")
-        clock = time(int(hour) % 12 + 12 * (source_clock[-2:].upper() == "PM"), int(minute[:2]))
+        clock = _printed_clock(source_clock)
         if instant.time() != clock:
             # Test the supplied wall clock so a shifted gap still gets the
             # actionable DST warning. A different valid clock also needs review.
@@ -503,26 +507,34 @@ def parse_ai_data(
                     raise DraftValidationError("Home Assistant time zone is unavailable")
                 # The legacy named-source matcher also recognizes explicit
                 # parenthesized zones attached to a Time: range.
-                structured_raw = dict(raw)
-                if source_record is not None:
-                    claimed = structured_raw.get("explicit_timezone")
-                    source_zone = source_record["zone"]
-                    if not claimed:
-                        structured_raw["explicit_timezone"] = source_zone
-                # Preserve the entire source for safety checks. Association
-                # with this event, not the presence of evidence, controls recovery.
+                # Recover a declaration only when the source record belongs
+                # to this event; otherwise keep the candidate blocked.
+                matched_record = (source_record is not None
+                                  and isinstance(raw.get("title"), str)
+                                  and raw["title"].strip().casefold() == source_record["title"].strip().casefold())
                 verified_source = source_text
-                if (source_record is not None and isinstance(raw.get("title"), str)
-                        and raw["title"].strip().casefold() == source_record["title"].strip().casefold()):
+                if matched_record:
                     verified_source += "\nTime zone: " + source_record["zone"]
                 try:
                     normalized, temporal = normalize_structured_event(
-                        structured_raw, time_zone, verified_source,
+                        raw, time_zone, verified_source,
                         event_scoped=len(events) == 1,
                         has_attachments=has_attachments,
                     )
                 except (ValueError, OverflowError) as err:
                     raise DraftValidationError(str(err)) from err
+                if matched_record:
+                    # Validate original wall clocks, never provisional instants
+                    # (which may be placeholders for a blocked DST gap).
+                    for field in ("start", "end"):
+                        local = datetime.fromisoformat(getattr(temporal, field + "_local"))
+                        if local.time() != _printed_clock(source_record[field]):
+                            raise DraftValidationError("Extracted clock time differs from the source time")
+                elif source_record is not None and temporal.status == "resolved":
+                    temporal = replace(
+                        temporal, status="confirmation_required",
+                        reason="Source record title differs; verify the source date and timezone.",
+                    )
                 draft = replace(EventDraft.from_mapping(normalized), temporal=temporal)
                 if temporal.status != "resolved":
                     note = ("Event's local time requires correction." if

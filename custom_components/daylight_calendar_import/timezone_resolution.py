@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta, tzinfo
 from functools import lru_cache
+from hashlib import sha256
+import json
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -55,6 +57,7 @@ class TemporalEvidence:
     end_location_value: str = ""
     explicit_timezone: str = ""
     travel_incomplete: bool = False
+    source_evidence_id: str = ""
 
     @classmethod
     def from_dict(cls, raw: dict) -> TemporalEvidence:
@@ -62,13 +65,16 @@ class TemporalEvidence:
                     "source", "status", "reason"}
         allowed = required | {"start_location_type", "start_location_value",
                               "end_location_type", "end_location_value", "explicit_timezone",
-                              "travel_incomplete"}
+                              "travel_incomplete", "source_evidence_id"}
         if not isinstance(raw, dict) or not required.issubset(raw) or set(raw) - allowed:
             raise ValueError("invalid temporal review data")
         if (any(not isinstance(value, str) or len(value) > _BOUNDED
                 for key, value in raw.items() if key != "travel_incomplete")
                 or type(raw.get("travel_incomplete", False)) is not bool):
             raise ValueError("invalid temporal review fields")
+        identity = raw.get("source_evidence_id", "")
+        if identity and not re.fullmatch(r"[0-9a-f]{64}", identity):
+            raise ValueError("invalid source evidence identity")
         for name in ("start_local", "end_local"):
             _local(raw[name])
         for name in ("start_zone", "end_zone"):
@@ -410,6 +416,22 @@ class _SourceEvidence:
             text,
         )
 
+    def identity(self) -> str:
+        """Hash independent printed claims, not a guessed event association.
+
+        Retain only the digest; order, repeated venue labels and whitespace
+        do not distinguish otherwise identical evidence.
+        """
+        claims = (
+            sorted({" ".join(venue.split()).casefold() for venue in self.venues}),
+            sorted(self.declared_zones),
+            sorted(set(_AIRPORT_ROUTE.findall(self.text))),
+            self.flight,
+        )
+        if not any(claims):
+            return ""
+        return sha256(json.dumps(claims, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
     @property
     def has_unassociated_zone(self) -> bool:
         return not self.event_scoped and any(
@@ -671,6 +693,7 @@ def normalize_structured_event(
         geography.end.kind,
         geography.end.value,
         explicit, travel_incomplete,
+        source_evidence.identity() if status != "resolved" else "",
     )
     return {**raw, "start": a, "end": b, "location": display_location}, metadata
 

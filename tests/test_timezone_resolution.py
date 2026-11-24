@@ -1942,3 +1942,121 @@ async def test_timezone_confirmation_preserves_original_date_disclosures(monkeyp
     assert confirmed.date_time_assumptions == tuple(notes)
     restored = PendingImport.from_dict(store.get(item.id).as_dict())
     assert restored.events[0].date_time_assumptions == tuple(notes)
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("2027-12-25T15:00:00", "2027-12-25T20:00:00"),
+    ("2027-12-25T18:00:00", "2027-12-25T17:00:00"),
+    ("2027-12-25T15:00:00", "2027-12-25T17:00:00"),
+    ("2027-12-25T18:00:01", "2027-12-25T20:00:00"),
+])
+def test_structured_matched_source_record_rejects_wrong_printed_clock(start, end):
+    source = ("Christmas dinner\nDate: December 25, 2027\n"
+              "Time: 6:00 PM - 8:00 PM (America/New_York)")
+    result = parser.parse_ai_data({"events": [structured(
+        start_local=start, end_local=end,
+    )]}, source_text=source, time_zone="America/Los_Angeles")
+    assert result.events == []
+    assert result.warnings == ["event 0 is invalid: Extracted clock time differs from the source time"]
+
+
+def test_structured_matched_source_record_compares_original_gap_clocks():
+    source = ("Christmas dinner\nDate: March 14, 2027\n"
+              "Time: 2:30 am - 3:00 am (America/Los_Angeles)")
+    event, = parser.parse_ai_data({"events": [structured(
+        start_local="2027-03-14T02:30:00", end_local="2027-03-14T03:00:00",
+    )]}, source_text=source, time_zone="America/New_York").events
+    assert event.temporal.status == "correction_required"
+    assert event.temporal.start_local == "2027-03-14T02:30:00"
+    assert event.temporal.end_local == "2027-03-14T03:00:00"
+    assert event.end == "2027-03-14T03:31:00-07:00"
+
+
+@pytest.mark.parametrize("explicit", ["", "America/New_York"])
+def test_unmatched_source_title_cannot_authorize_timezone_guess(explicit):
+    source = ("Different event\nDate: December 25, 2027\n"
+              "Time: 6:00 PM - 8:00 PM (America/New_York)")
+    result = parser.parse_ai_data({"events": [structured(explicit_timezone=explicit)]},
+        source_text=source, time_zone="America/Los_Angeles")
+    event, = result.events
+    assert event.temporal.status == "confirmation_required"
+    assert event.temporal.explicit_timezone == explicit
+    assert event.temporal.start_zone == (explicit or "America/Los_Angeles")
+    assert event.temporal.reason == "Source record title differs; verify the source date and timezone."
+    assert result.warnings == ["event 0: Event timezone or DST occurrence needs confirmation."]
+
+
+def test_unmatched_source_title_does_not_replace_existing_correction_status():
+    source = ("Different event\nDate: March 14, 2027\n"
+              "Time: 2:30 AM - 3:00 AM (America/Los_Angeles)")
+    event, = parser.parse_ai_data({"events": [structured(
+        start_local="2027-03-14T02:30:00", end_local="2027-03-14T03:00:00",
+    )]}, source_text=source, time_zone="America/Los_Angeles").events
+    assert event.temporal.status == "correction_required"
+    assert event.temporal.reason == "The local time does not exist in this timezone."
+
+
+@pytest.mark.parametrize(("first_source", "second_source", "equivalent_source"), [
+    ("Location: Sydney, NSW, Australia", "Location: London, UK",
+     "Where:  SYDNEY,  NSW, AUSTRALIA\nLocation: Sydney, NSW, Australia"),
+    ("Time zone: Australia/Sydney", "Time zone: Europe/London",
+     "Timezone is Australia/Sydney\nTime zone: Australia/Sydney"),
+    ("LAX → JFK", "LAX → LHR", "LAX to JFK\nLAX → JFK"),
+])
+async def test_unassociated_printed_evidence_preserves_distinct_pending_dedup_identity(
+    monkeypatch, first_source, second_source, equivalent_source,
+):
+    from custom_components.daylight_calendar_import.dedup import event_fingerprint
+
+    def extract(source):
+        return parser.parse_ai_data({"events": [
+            structured(title="Session A"), structured(title="Session B"),
+        ]}, source_text=source, time_zone="America/Los_Angeles").events
+
+    first, second, equivalent = map(extract, (first_source, second_source, equivalent_source))
+    assert len(first) == len(second) == len(equivalent) == 2
+    for a, b, c in zip(first, second, equivalent, strict=True):
+        assert a.temporal.status == b.temporal.status == c.temporal.status == "confirmation_required"
+        assert a.temporal.start_location_value == b.temporal.start_location_value == ""
+        assert a.temporal.end_location_value == b.temporal.end_location_value == ""
+        assert a.location is None and b.location is None
+        assert a.temporal.start_zone == b.temporal.start_zone == "America/Los_Angeles"
+        assert len(a.temporal.source_evidence_id) == 64
+        assert a.temporal.source_evidence_id != b.temporal.source_evidence_id
+        assert a.temporal.source_evidence_id == c.temporal.source_evidence_id
+        assert event_fingerprint(a) != event_fingerprint(b)
+        assert event_fingerprint(a) == event_fingerprint(c)
+        assert EventDraft.from_mapping(a.as_dict()) == a
+    backend = _Backend()
+    store = _store(monkeypatch, backend)
+    await store.async_load()
+    one = await store.async_add(source_text=first_source, events=first)
+    two = await store.async_add(source_text=second_source, events=second)
+    repeat = await store.async_add(source_text=equivalent_source, events=equivalent)
+    assert len(one.pending.events) == len(two.pending.events) == 2
+    assert one.duplicate_events == two.duplicate_events == 0
+    assert repeat.pending is None
+    assert repeat.duplicate_events == 2
+    reboot = _store(monkeypatch, backend)
+    await reboot.async_load()
+    assert reboot.get(one.pending.id) == one.pending
+    assert reboot.get(two.pending.id) == two.pending
+    original = one.pending.events[0]
+    zones_to_confirm = dict(end_zone_name="Australia/Sydney") if original.draft.temporal.travel_incomplete else {}
+    confirmed = await reboot.async_confirm_timezone(one.pending.id, original.id, "Australia/Sydney",
+                                                      expected_event=original, **zones_to_confirm)
+    assert confirmed.draft.temporal.status == "resolved"
+    assert event_fingerprint(confirmed.draft) == event_fingerprint(replace(confirmed.draft, temporal=None))
+    assert confirmed.draft.start == "2027-12-25T18:00:00+11:00"
+
+
+def test_source_evidence_id_is_optional_and_strictly_validated():
+    event, = parse_one().events
+    assert event.temporal.source_evidence_id == ""
+    old = event.as_dict()
+    del old["temporal"]["source_evidence_id"]
+    assert EventDraft.from_mapping(old) == event
+    invalid = event.temporal.as_dict()
+    invalid["source_evidence_id"] = "not-a-digest"
+    with pytest.raises(ValueError, match="invalid source evidence identity"):
+        zones.TemporalEvidence.from_dict(invalid)
