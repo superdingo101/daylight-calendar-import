@@ -1946,7 +1946,7 @@ async def test_timezone_confirmation_preserves_original_date_disclosures(monkeyp
 
 @pytest.mark.parametrize(("start", "end"), [
     ("2027-12-25T15:00:00", "2027-12-25T20:00:00"),
-    ("2027-12-25T18:00:00", "2027-12-25T17:00:00"),
+    ("2027-12-25T18:00:00", "2027-12-25T19:00:00"),
     ("2027-12-25T15:00:00", "2027-12-25T17:00:00"),
     ("2027-12-25T18:00:01", "2027-12-25T20:00:00"),
 ])
@@ -1982,7 +1982,8 @@ def test_unmatched_source_title_cannot_authorize_timezone_guess(explicit):
     assert event.temporal.status == "confirmation_required"
     assert event.temporal.explicit_timezone == explicit
     assert event.temporal.start_zone == (explicit or "America/Los_Angeles")
-    assert event.temporal.reason == "Source record title differs; verify the source date and timezone."
+    assert event.temporal.reason == "Source declares conflicting timezones; confirm the event timezone."
+    assert len(event.temporal.source_evidence_id) == 64
     assert result.warnings == ["event 0: Event timezone or DST occurrence needs confirmation."]
 
 
