@@ -111,6 +111,7 @@ class HostedConnectionRuntime:
         self._task: asyncio.Task | None = None
         self._delivery_owner: asyncio.Task | None = None
         self._delivery_handlers = None
+        self._delivery_stage_byo_attachments = False
         registry = hass.data.setdefault(f"{DOMAIN}_hosted_tasks", {})
         self._tasks: set[asyncio.Task] = registry.setdefault(entry.entry_id, set())
         self._options = entry.options
@@ -276,11 +277,12 @@ class HostedConnectionRuntime:
             raise HostedRuntimeError("hosted_action_failed") from None
         return self.snapshot()
 
-    def configure_delivery(self, *, store, route_source, parse_source) -> None:
+    def configure_delivery(self, *, store, route_source, parse_source, stage_byo_attachments=False) -> None:
         """Bind entry-local routing and parsing without starting delivery."""
         if self._delivery_handlers is not None:
             raise HostedRuntimeError("hosted_already_configured")
         self._delivery_handlers = (store, route_source, parse_source)
+        self._delivery_stage_byo_attachments = stage_byo_attachments
 
     async def async_delivery_pass(self, *, limit=20):
         """Run one explicitly requested recovery-first pass; never schedule it."""
@@ -317,7 +319,16 @@ class HostedConnectionRuntime:
                         await store.async_change_hosted_parse_attempt(source.upstream_source_id)
                         guard_delivery(require_owner=True)
                     try:
-                        outcome, parser_guard = await parse_source(source)
+                        if self._delivery_stage_byo_attachments and source.attachments:
+                            from .email_attachments import async_stage_verified_hosted_attachments
+                            stage = await async_stage_verified_hosted_attachments(self._hass, source)
+                            try:
+                                guard_delivery(require_owner=True)
+                                outcome, parser_guard = await parse_source(stage.document)
+                            finally:
+                                await stage.async_cleanup("hosted email processing")
+                        else:
+                            outcome, parser_guard = await parse_source(source)
                     except (SourceValidationError, HostedParseError) as error:
                         definitive = isinstance(error, SourceValidationError) or (
                             not error.uncertain and error.status in (400, 401, 403, 413, 429)
