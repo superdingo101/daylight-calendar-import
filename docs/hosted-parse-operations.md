@@ -27,7 +27,7 @@ reconciliation; elapsed time alone must not release the reservation or redispatc
 
 HA durably stores key, digest and original ephemeral request IDs/timestamps before
 submission. It stores no source content or credential in this journal. Retrying
-normalizes those fields to their original values and verifies the binding. Local
+normalizes those fields and the original time zone to their original values and verifies the binding. Local
 operation acceptance is recorded in the same immediate storage commit as review
 items, including no-event outcomes. A recovered result cannot create duplicate
 review items after ordinary deduplication history is reset. Explicit source

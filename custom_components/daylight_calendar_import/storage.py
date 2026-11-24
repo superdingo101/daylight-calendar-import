@@ -1532,6 +1532,7 @@ class PendingImportStore:
                 request["source"]["id"] = record["request_id"]
                 request["source"]["received_at"] = record["received_at"]
                 request["reference_datetime"] = record["reference_datetime"]
+                request["time_zone"] = record["time_zone"]
                 if payload_digest(request, attachments) != record["digest"]:
                     raise ValueError("operation payload conflict")
                 return deepcopy(record), False
@@ -1540,7 +1541,8 @@ class PendingImportStore:
             record = {"key": str(uuid4()), "digest": payload_digest(request, attachments),
                       "request_id": request["source"]["id"],
                       "received_at": request["source"]["received_at"],
-                      "reference_datetime": request["reference_datetime"], "accepted": False}
+                      "reference_datetime": request["reference_datetime"], "time_zone": request["time_zone"],
+                       "accepted": False}
             records[identity] = record
             await self._async_save(self._items, hosted_operations=records)
             return deepcopy(record), True
@@ -1941,7 +1943,7 @@ class PendingImportStore:
                 activity=activity,
                 source_claims=source_claims,
                 hosted_operations=operations,
-                        hosted_delivery_journal=hosted_journal("pending"),
+                hosted_delivery_journal=hosted_journal("pending"),
             )
             self._commit_items(items)
             self._source_claims = source_claims

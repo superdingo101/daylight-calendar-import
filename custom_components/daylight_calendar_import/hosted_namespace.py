@@ -33,7 +33,7 @@ def _closed(value: Any, fields: set[str]) -> None:
 
 def _local_data(data: dict[str, Any], allow_delivery: bool = False) -> None:
     """Pin every identity-bearing collection rather than accepting future fields."""
-    _closed(data, _ROOT | {"hosted_delivery_journal", "hosted_parse_attempt"} if allow_delivery else _ROOT)
+    _closed(data, _ROOT | {"hosted_delivery_journal", "hosted_parse_attempt", "hosted_parse_operations"} if allow_delivery else _ROOT)
     storage._decode_storage_data(data)
     for item in data["items"]:
         _closed(item, _ITEM)
@@ -112,6 +112,9 @@ class LocalOnlyNamespaceReconciler:
                         raise NamespaceReconciliationError(_ERROR)
                     loaded["hosted_delivery_journal"] = [record.as_dict() for record in journal]
                     loaded["hosted_parse_attempt"] = attempt
+                operations = pending._hosted_operations
+                if operations:
+                    loaded["hosted_parse_operations"] = operations
                 _local_data(loaded, self._allow_delivery)
                 durable = await pending._store.hass.async_add_executor_job(
                     _read_contract, pending._store.path, self._allow_delivery,
@@ -122,8 +125,9 @@ class LocalOnlyNamespaceReconciler:
                     raise NamespaceReconciliationError(_ERROR)
                 if self._allow_delivery and durable is not None:
                     decoded = storage._decode_storage_data(durable)
-                    if decoded[-2:] != (journal, attempt):
+                    if (decoded[-2:] != (journal, attempt)
+                            or durable.get("hosted_parse_operations", {}) != operations):
                         raise NamespaceReconciliationError(_ERROR)
-            return DELIVERY_CONTRACT if journal or attempt is not None else LOCAL_ONLY_CONTRACT
+            return DELIVERY_CONTRACT if journal or attempt is not None or operations else LOCAL_ONLY_CONTRACT
         except Exception:  # noqa: BLE001 -- never expose source contents or private paths
             raise NamespaceReconciliationError(_ERROR) from None

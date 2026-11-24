@@ -84,10 +84,10 @@ def test_source_identity_exact_contract_and_attachment_order():
 def record():
     return {"key": KEY, "digest": SHA, "request_id": "source",
             "received_at": "2026-11-17T12:00:00Z",
-            "reference_datetime": "2026-11-17T12:00:00Z", "accepted": False}
+            "reference_datetime": "2026-11-17T12:00:00Z", "time_zone": "UTC", "accepted": False}
 
 
-@pytest.mark.parametrize("field", ["request_id", "received_at", "reference_datetime"])
+@pytest.mark.parametrize("field", ["request_id", "received_at", "reference_datetime", "time_zone"])
 def test_operation_journal_string_bounds_and_error_contract(field):
     for acceptable in ("x", "x" * 128):
         item = {**record(), field: acceptable}

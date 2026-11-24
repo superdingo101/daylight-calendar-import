@@ -70,7 +70,7 @@ def test_operation_identity_is_stable_across_ephemeral_fields():
 def test_operation_journal_is_validated_and_defensively_copied():
     record = {"key": KEY, "digest": SHA, "request_id": "r",
               "received_at": "2026-11-17T00:00:00Z",
-              "reference_datetime": "2026-11-17T00:00:00Z", "accepted": False}
+              "reference_datetime": "2026-11-17T00:00:00Z", "time_zone": "UTC", "accepted": False}
     records = {SHA: record}
     assert validate_records(records) == records
     assert validate_records(records) is not records

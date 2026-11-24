@@ -293,3 +293,36 @@ async def test_delivery_aware_receipt_rechecks_ownership_after_disk_read(pending
             await module.LocalOnlyNamespaceReconciler(pending, allow_delivery=True).async_receipt(None)
         monkeypatch.setattr(pending._store.hass, "async_add_executor_job", original)
     pending._store._data = None
+
+
+@pytest.mark.parametrize("tamper", [None, "missing", "changed", "malformed"])
+async def test_operation_journal_reconnect_requires_exact_durable_agreement(pending, tamper):
+    from tests.test_storage import hosted_operation_request
+
+    identity = "a" * 64
+    record, _ = await pending.async_prepare_hosted_operation(
+        identity, hosted_operation_request(), (),
+    )
+    path = Path(pending._store.path)
+    before = path.read_bytes()
+    with pytest.raises(module.NamespaceReconciliationError):
+        await module.LocalOnlyNamespaceReconciler(pending).async_receipt(None)
+    reconciler = module.LocalOnlyNamespaceReconciler(pending, allow_delivery=True)
+    if tamper is None:
+        assert await reconciler.async_receipt(None) == module.DELIVERY_CONTRACT
+        assert path.read_bytes() == before
+    else:
+        envelope = json.loads(before)
+        operations = envelope["data"]["hosted_parse_operations"]
+        if tamper == "missing":
+            del envelope["data"]["hosted_parse_operations"]
+        elif tamper == "changed":
+            operations[identity]["accepted"] = True
+        else:
+            operations[identity]["key"] = "invalid"
+        path.write_text(json.dumps(envelope))
+        altered = path.read_bytes()
+        with pytest.raises(module.NamespaceReconciliationError):
+            await reconciler.async_receipt(None)
+        assert path.read_bytes() == altered
+    assert pending._hosted_operations == {identity: record}

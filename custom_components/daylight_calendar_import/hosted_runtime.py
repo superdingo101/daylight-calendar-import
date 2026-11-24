@@ -330,6 +330,7 @@ class HostedConnectionRuntime:
                         if parser_guard is not None:
                             parser_guard()
 
+                    acceptance_guard.hosted_operation_id = getattr(parser_guard, "hosted_operation_id", None)
                     return outcome, acceptance_guard
 
                 session = async_get_clientsession(self._hass)

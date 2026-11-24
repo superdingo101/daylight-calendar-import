@@ -38,11 +38,11 @@ def validate_records(value):
     for identity, record in value.items():
         if (type(identity) is not str or len(identity) != 64 or type(record) is not dict
                 or set(record) != {"key", "digest", "request_id", "received_at", "reference_datetime",
-                                   "accepted"} or type(record["accepted"]) is not bool
+                                   "accepted", "time_zone"} or type(record["accepted"]) is not bool
                 or str(UUID(record["key"])) != record["key"]
                 or type(record["digest"]) is not str or len(record["digest"]) != 64):
             raise ValueError("invalid operation journal")
-        for key in ("request_id", "received_at", "reference_datetime"):
+        for key in ("request_id", "received_at", "reference_datetime", "time_zone"):
             if type(record[key]) is not str or not 1 <= len(record[key]) <= 128:
                 raise ValueError("invalid operation journal")
     return deepcopy(value)

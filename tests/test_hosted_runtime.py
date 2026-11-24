@@ -973,3 +973,58 @@ async def test_commercial_account_status_validates_authority_and_public_response
     get.assert_awaited_once_with("/account", token=token)
     assert guard.call_count == (0 if failure == "transport" else 1)
     await r.async_stop()
+
+
+async def test_delivery_runtime_preserves_operation_id_into_atomic_acceptance(runtime, hass, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
+    from custom_components.daylight_calendar_import.storage import PendingImportStore
+    from tests.test_hosted_operations import Backend, request
+    from tests.test_hosted_delivery_journal import evidence
+    from tests.test_storage import draft
+
+    r, credentials = runtime
+    binding = HostedServiceBinding(**SERVICE)
+    credential = BoundCredential(
+        "account_1234567890", "installation_1234567890", "x" * 60,
+        (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+    )
+    credentials.snapshot = CredentialCheckpoint(
+        service_binding=binding, processing_consent=True, current=credential,
+    )
+    r._verified_parse_credential = credential
+    r._state = HostedConnectionResult("connected", credential_status="current")
+    store = PendingImportStore(hass)
+    backend = Backend()
+    store._store = backend
+    identity = "a" * 64
+    record, _ = await store.async_prepare_hosted_operation(identity, request(), ())
+    guard = Mock()
+    guard.hosted_operation_id = record["key"]
+    outcome = object()
+    parse = AsyncMock(return_value=(outcome, guard))
+    source = object()
+    item = evidence()
+
+    async def batch(**kwargs):
+        parsed, wrapped_guard = await kwargs["parse_source"](source)
+        assert parsed is outcome
+        assert wrapped_guard.hosted_operation_id == record["key"]
+        return await kwargs["store"].async_add(
+            source_text="Meeting", events=[draft()], source_id=item.source_id,
+            hosted_evidence=item, acceptance_guard=wrapped_guard,
+            hosted_operation_id=wrapped_guard.hosted_operation_id,
+        )
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.hosted_text_batch.async_process_text_batch",
+        batch,
+    )
+    r.configure_delivery(store=store, route_source=object(), parse_source=parse)
+    result = await r.async_delivery_pass(limit=1)
+    assert result.pending is not None
+    parse.assert_awaited_once_with(source)
+    guard.assert_called_once_with()
+    assert backend.data["hosted_parse_operations"][identity]["accepted"] is True
+    assert backend.data["hosted_delivery_journal"][0]["acceptance_disposition"] == "pending"
+    await r.async_stop()

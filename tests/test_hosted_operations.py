@@ -63,6 +63,7 @@ async def test_restart_payload_binding_and_failed_write_fails_closed(hass):
     retry = request()
     retry["source"]["id"] = "regenerated"
     retry["reference_datetime"] = "2026-11-18T10:00:00Z"
+    retry["time_zone"] = "America/Los_Angeles"
     recovered, fresh = await restarted.async_prepare_hosted_operation("a" * 64, retry, ())
     assert recovered == record and not fresh and retry == request()
     retry["source"]["text"] = "Changed"
