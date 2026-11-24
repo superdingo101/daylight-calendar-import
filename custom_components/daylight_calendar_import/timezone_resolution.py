@@ -18,13 +18,16 @@ _POSTAL = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 _SOURCE_VENUE = re.compile(
     r"(?im)^[ \t]*(?:location|venue|where)[ \t]*:[ \t]*(?:\r?\n[ \t]*)?([^\r\n]+)"
 )
-# Recover only direct, source-printed IANA declarations when the AI omits
-# explicit_timezone. Incidental addresses, zones in prose and provider
-# assumptions are not independent declarations.
+# Recover only direct, source-printed declarations when the AI omits the
+# explicit field. A local declaration in a multi-event document is evidence
+# of uncertainty, not a document-wide zone assignment.
 _SOURCE_DECLARED_ZONE = re.compile(
-    r"\b(?:all\s+(?:event\s+)?times\s+are\s+in|"
+    r"\b(?:(?P<global>all\s+(?:event\s+)?times\s+are\s+in)|"
     r"(?:time\s*zone|timezone)\s*(?::|is))\s*"
-    r"(?P<zone>[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)+)\b",
+    r"(?P<zone>[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)+|"
+    r"(?:(?:UTC|GMT)\s*)?[+-]\d{1,2}(?::?\d{2})?|"
+    r"UTC|GMT|Z|CET|EET|WET|EST|MST|HST|PST|PDT|CST|CDT|EDT|MDT|"
+    r"BST|IST|JST|AEST|AEDT|DST)(?=$|[\s,.;!?)\]])",
     re.IGNORECASE,
 )
 _FIXED = re.compile(r"(?i:(UTC|GMT))?\s*([+-])(\d{1,2})(?::?(\d{2}))?\Z")
@@ -408,6 +411,12 @@ class _SourceEvidence:
         )
 
     @property
+    def has_unassociated_zone(self) -> bool:
+        return not self.event_scoped and any(
+            not match["global"] for match in _SOURCE_DECLARED_ZONE.finditer(self.text)
+        )
+
+    @property
     def venue(self) -> str | None:
         return self.venues[0] if self.event_scoped and len(self.venues) == 1 else None
 
@@ -475,11 +484,13 @@ def _collect_geography(raw: dict, source: _SourceEvidence) -> _GeographyEvidence
     # A printed venue is a shared-location candidate, never a substitute for
     # an independently supplied departure or arrival.
     venue = source.venue
-    if start.kind == "unknown" and not start.value and not end.value:
-        if venue and (not display or display.casefold() == venue.casefold()):
+    if start.kind in ("unknown", "virtual") and not start.value and not end.value:
+        if start.kind == "unknown" and venue and (
+            not display or display.casefold() == venue.casefold()
+        ):
             start = _EndpointEvidence("venue", venue[:_BOUNDED])
         elif display:
-            start = _EndpointEvidence("unknown", display[:_BOUNDED])
+            start = _EndpointEvidence(start.kind, display[:_BOUNDED])
 
     has_start = start.kind not in ("unknown", "virtual") and bool(start.value)
     has_end = end.kind not in ("unknown", "virtual") and bool(end.value)
@@ -511,7 +522,7 @@ def _check_geography(
             # Aliases are safe only when both independently match a known zone.
             if _venue_zone(geo.display) not in known or printed_zone not in known:
                 conflict = True
-        if known and printed_zone is not None and printed_zone not in known:
+        if printed_zone is not None and printed_zone not in known:
             conflict = True
     if geo.display:
         display_zone = _venue_zone(geo.display) or _place_zone("airport", geo.display)
@@ -546,10 +557,10 @@ def normalize_structured_event(
     # visibly stated in the source. Recover a narrow, explicit declaration
     # independently; conflicting source declarations still require review.
     declared_zones = source_evidence.declared_zones
-    conflicting_declarations = len(declared_zones) > 1 or bool(
+    conflicting_declarations = source_evidence.has_unassociated_zone or len(declared_zones) > 1 or bool(
         explicit and declared_zones and explicit not in declared_zones
     )
-    if len(declared_zones) == 1 and not explicit:
+    if len(declared_zones) == 1 and not explicit and not source_evidence.has_unassociated_zone:
         explicit = next(iter(declared_zones))
     # Models sometimes copy the configured HA zone into an "explicit" field,
     # even though the invitation never printed it. Never let that hallucinated

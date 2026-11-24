@@ -1643,6 +1643,12 @@ class PendingImportStore:
                             "Confirm the timezone before changing an unresolved event to all-day"
                         )
                     metadata = None
+            # A manual geography edit can invalidate an earlier zone decision
+            # even if neither wall clock changes.
+            if (metadata is not None and metadata.status == "resolved"
+                    and event.draft.location != draft.location):
+                metadata = replace(metadata, status="confirmation_required",
+                                   reason="Edited location needs timezone reconfirmation")
             edited = replace(event, draft=replace(draft, temporal=metadata),
                              calendar_entity=target, routing_unresolved=unresolved,
                              date_time_assumptions=(() if temporal_changed
@@ -1923,7 +1929,7 @@ class PendingImportStore:
                 )
                 draft = replace(event.draft, start=start, end=end, temporal=resolved)
                 fingerprint = event_fingerprint(draft)
-            except ValueError as err:
+            except (ValueError, OverflowError) as err:
                 raise PendingEventEditError(str(err)) from err
             others = {
                 event_fingerprint(item.draft)

@@ -794,3 +794,24 @@ async def test_new_structured_source_contract_through_production_provider(
     )
     restored = PendingImport.from_dict(pending.as_dict())
     assert restored.events[0].draft == draft
+
+
+@pytest.mark.parametrize("support", ["", "Please import the attached invitation",
+                                    "Location: Los Angeles International Airport (LAX)"])
+async def test_attachment_explicit_zone_conflict_survives_support_text(monkeypatch, support):
+    event = {
+        **BASE, "title": "Airport meeting", "location": "",
+        "start": "2027-07-15T08:00:00-04:00", "end": "2027-07-15T09:00:00-04:00",
+        "start_local": "2027-07-15T08:00:00", "end_local": "2027-07-15T09:00:00",
+        "start_location_type": "airport", "start_location_value": "LAX",
+        "explicit_timezone": "America/New_York",
+    }
+    result = await replay(monkeypatch, event, support=support)
+    draft, = result.events
+    assert draft.temporal.status == "confirmation_required"
+    assert draft.temporal.explicit_timezone == "America/New_York"
+    assert draft.temporal.start_location_value == "LAX"
+    assert draft.temporal.start_zone == "America/New_York"
+    assert draft.start == "2027-07-15T08:00:00-04:00"
+    assert draft.end == "2027-07-15T09:00:00-04:00"
+    assert result.warnings

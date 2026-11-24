@@ -476,6 +476,8 @@ def parse_ai_data(
             warnings.append(f"event {index} must be an object")
             continue
         try:
+            if raw.get("temporal") is not None:
+                raise DraftValidationError("Provider cannot supply authoritative timezone review metadata")
             try:
                 assumptions = normalize_date_time_assumptions(raw.get("assumptions", []))
             except ValueError as err:
@@ -494,7 +496,7 @@ def parse_ai_data(
             review_notes: list[str] = []
             corrected_raw = raw
             ambiguous = False
-            if raw.get("start_local") or raw.get("end_local"):
+            if any(raw.get(field) not in (None, "") for field in ("start_local", "end_local")):
                 if raw.get("all_day") is not False:
                     raise DraftValidationError("structured local clocks require a timed event")
                 if time_zone is None:
@@ -519,7 +521,7 @@ def parse_ai_data(
                         event_scoped=len(events) == 1,
                         has_attachments=has_attachments,
                     )
-                except ValueError as err:
+                except (ValueError, OverflowError) as err:
                     raise DraftValidationError(str(err)) from err
                 draft = replace(EventDraft.from_mapping(normalized), temporal=temporal)
                 if temporal.status != "resolved":

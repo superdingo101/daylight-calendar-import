@@ -7432,3 +7432,55 @@ test("timezone confirmation does not invent an arrival field for one Sydney venu
   assert.deepEqual(captured, [{id: "event", zone: "America/Los_Angeles",
     options: {endTimeZone: "America/New_York"}}]);
 });
+
+
+test("timezone confirmation cannot discard a sibling's unsaved edit", async () => {
+  const panel = new DaylightImportPanel();
+  const requests = [];
+  panel._hass = {config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => { requests.push(request); throw new Error("Unexpected request"); }};
+  panel._status = "ready";
+  panel._selectedId = "source";
+  const first = {id: "a", title: "First", all_day: false, status: "pending",
+    start: "2027-12-25T18:00:00-08:00", end: "2027-12-25T20:00:00-08:00"};
+  const second = {...first, id: "b", title: "Second", temporal: {
+    status: "confirmation_required", source: "ha_fallback",
+    start_zone: "America/Los_Angeles", end_zone: "America/Los_Angeles",
+    start_local: "2027-12-25T18:00:00", end_local: "2027-12-25T20:00:00"}};
+  panel._detail = {id: "source", source_kind: "manual_text", events: [first, second]};
+  panel.render();
+  assert.ok(panel._content.querySelectorAll("button").some(b => b.textContent === "Confirm timezone"));
+  panel._content.querySelectorAll("button").find(b => b.dataset.eventId === "a" && b.textContent === "Edit").click();
+  assert.equal(panel._editingId, "a");
+  const form = panel._content.querySelectorAll("form")[0];
+  const title = form.querySelectorAll("input").find(input => input.name === "title");
+  title.value = "Unsaved changes";
+  assert.ok(!panel._content.querySelectorAll("button").some(b => b.textContent === "Confirm timezone"));
+  await panel.confirmTimezone(second, "America/Los_Angeles");
+  assert.equal(requests.length, 0);
+  assert.equal(panel._editingId, "a");
+  assert.equal(title.value, "Unsaved changes");
+  assert.equal(panel._content.querySelectorAll("form")[0], form);
+});
+
+test("blocked gap draft shows original local clocks rather than provisional placeholder", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "source";
+  const event = {id: "gap", title: "Gap", all_day: false, status: "pending",
+    start: "2027-03-14T02:30:00-08:00", end: "2027-03-14T03:31:00-07:00",
+    temporal: {status: "correction_required", source: "ha_fallback",
+      start_zone: "America/Los_Angeles", end_zone: "America/Los_Angeles",
+      start_local: "2027-03-14T02:30:00", end_local: "2027-03-14T03:00:00",
+      reason: "The local time does not exist in this timezone."}};
+  panel._detail = {id: "source", source_kind: "manual_text", events: [event]};
+  panel.render();
+  assert.ok(panel._content.querySelectorAll("p").some(node =>
+    node.textContent === "2027-03-14 02:30:00 – 2027-03-14 03:00:00 · Unconfirmed local time"));
+  panel._content.querySelectorAll("button").find(b => b.dataset.eventId === "gap" && b.textContent === "Edit").click();
+  const form = panel._content.querySelectorAll("form")[0];
+  const inputs = form.querySelectorAll("input");
+  assert.equal(inputs.find(input => input.name === "start").value, "2027-03-14T02:30");
+  assert.equal(inputs.find(input => input.name === "end").value, "2027-03-14T03:00");
+});

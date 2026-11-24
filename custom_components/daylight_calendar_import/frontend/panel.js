@@ -3398,7 +3398,7 @@ export class DaylightImportPanel extends HTMLElement {
               const endZone = needsEndZone ?
                 zoneInput("Confirm arrival timezone (IANA identifier)", temporal.end_zone) : null;
               surface.append(zoneList);
-  
+
               const occurrence = (which, clock, zoneInput) => {
                 const label = element("label", which + " occurrence (DST fall-back)");
                 const select = document.createElement("select");
