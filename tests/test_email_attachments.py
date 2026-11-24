@@ -1179,23 +1179,47 @@ def _hosted_attachment():
     )
 
 
-async def test_verified_hosted_stage_preserves_evidence_and_removes_bytes(tmp_path):
+@pytest.mark.parametrize("nested", [False, True])
+async def test_verified_hosted_stage_preserves_evidence_and_removes_bytes(
+    tmp_path, monkeypatch, nested,
+) -> None:
     from dataclasses import replace
 
+    media_dir = tmp_path / "nested" / "media" / "email" if nested else tmp_path
+    real_create = email_attachments.tempfile.NamedTemporaryFile
+    calls: list[dict[str, object]] = []
+
+    def capture(**kwargs):
+        calls.append(dict(kwargs))
+        return real_create(**kwargs)
+
+    monkeypatch.setattr(email_attachments.tempfile, "NamedTemporaryFile", capture)
     attachment = _hosted_attachment()
     document = replace(_document(), attachments=(attachment,))
     stage = await email_attachments.async_stage_verified_hosted_attachments(
-        AttachmentHass(tmp_path), document,
+        AttachmentHass(media_dir), document,
     )
-    staged, = stage.document.attachments
-    path, = tuple(tmp_path.iterdir())
-    assert path.read_bytes() == PNG
-    assert path.name.startswith("daylight-email-") and path.suffix == ".png"
-    assert staged == replace(attachment, content=None,
-                             content_ref=f"media-source://media_source/local/{path.name}")
-    assert document.attachments == (attachment,)
-    await stage.async_cleanup("hosted email processing")
-    assert not list(tmp_path.iterdir())
+    try:
+        assert media_dir.is_dir()
+        staged, = stage.document.attachments
+        path, = tuple(media_dir.iterdir())
+        assert path.read_bytes() == PNG
+        assert path.name.startswith("daylight-email-") and path.suffix == ".png"
+        assert calls == [{
+            "prefix": "daylight-email-",
+            "suffix": ".png",
+            "dir": media_dir,
+            "delete": False,
+        }]
+        assert calls[0]["delete"] is False
+        assert staged == replace(
+            attachment, content=None,
+            content_ref=f"media-source://media_source/local/{path.name}",
+        )
+        assert document.attachments == (attachment,)
+    finally:
+        await stage.async_cleanup("hosted email processing")
+    assert not list(media_dir.iterdir())
 
 
 @pytest.mark.parametrize("change", [
@@ -1207,16 +1231,21 @@ def test_verified_hosted_staging_rejects_bad_evidence_and_cleans_partial(tmp_pat
 
     first = _hosted_attachment()
     second = replace(first, id="second", **change)
-    with pytest.raises(email_attachments.EmailAttachmentError, match="Hosted attachment could not be verified"):
+    with pytest.raises(email_attachments.EmailAttachmentError) as caught:
         email_attachments._stage_verified_hosted_attachments(
             (first, second), {"local": str(tmp_path)},
         )
+    assert caught.value.code == "invalid_attachment"
+    assert str(caught.value) == "Hosted attachment could not be verified"
     assert not list(tmp_path.iterdir())
 
 
-def test_verified_hosted_staging_requires_media_directory():
-    with pytest.raises(SourceValidationError, match="No local media directory configured"):
+def test_verified_hosted_staging_requires_media_directory() -> None:
+    with pytest.raises(SourceValidationError) as caught:
         email_attachments._stage_verified_hosted_attachments((_hosted_attachment(),), {})
+
+    assert caught.value.code == "media_storage_unavailable"
+    assert str(caught.value) == "No local media directory configured"
 
 
 def test_verified_hosted_staging_reports_cleanup_failure(monkeypatch, caplog, tmp_path):
@@ -1233,8 +1262,10 @@ def test_verified_hosted_staging_reports_cleanup_failure(monkeypatch, caplog, tm
         email_attachments._stage_verified_hosted_attachments(
             (first, replace(first, content=None)), {"local": str(tmp_path)},
         )
-    assert "hosted staging failure" in caplog.text
-    assert "cleanup failed" in caplog.text
+    assert caplog.records[-1].getMessage() == (
+        "Failed to clean staged email attachments after hosted staging failure: "
+        "cleanup failed"
+    )
 
 
 @pytest.mark.parametrize("cleanup_cancelled", [False, True])
