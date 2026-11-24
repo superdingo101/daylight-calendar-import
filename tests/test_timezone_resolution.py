@@ -1508,7 +1508,7 @@ def test_source_venue_never_erases_unresolved_independent_arrival():
     assert event.temporal.start_zone == "America/Los_Angeles"
     assert event.temporal.end_zone == "America/Los_Angeles"
     assert event.temporal.status == "confirmation_required"
-    assert "Confirm" in event.temporal.reason
+    assert event.temporal.reason == "Location evidence conflicts; confirm the event timezone."
 
 
 def test_unresolvable_printed_venue_without_ai_geography_blocks_fallback():
@@ -1818,3 +1818,23 @@ async def test_resolved_location_edit_requires_reconfirmation_before_write(monke
     assert confirmed.draft.start == "2027-12-25T18:00:00-05:00"
     assert confirmed.draft.end == "2027-12-25T20:00:00-05:00"
     assert confirmed.draft.temporal.status == "resolved"
+
+
+async def test_confirmation_with_unrepresentable_utc_instant_is_atomic(monkeypatch):
+    store = _store(monkeypatch, _Backend())
+    await store.async_load()
+    draft, = parse_one(start_local="0001-01-01T00:00:00",
+                       end_local="0001-01-01T01:00:00",
+                       start_location_type="venue", start_location_value="Unknown").events
+    assert draft.temporal.status == "confirmation_required"
+    pending = (await store.async_add(source_text="source", events=[draft])).pending
+    original = pending.events[0]
+    with pytest.raises(PendingEventEditError):
+        await store.async_confirm_timezone(
+            pending.id, original.id, "UTC+14:00", expected_event=original,
+        )
+    assert store.get_event(pending.id, original.id) == original
+    writer = AsyncMock()
+    with pytest.raises(PendingEventEditError, match="Confirm the event timezone"):
+        await store.async_approve_event(pending.id, original.id, writer)
+    writer.assert_not_awaited()
