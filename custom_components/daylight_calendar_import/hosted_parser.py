@@ -291,7 +291,7 @@ class DaylightHostedParserProvider:
             response = await self._transport.async_parse(request, tuple(binaries), token=credential.token)
         else:
             identity = source_identity(
-                request, binaries, namespace=self._operation_namespace,
+                request, binaries, namespace=self._operation_namespace + ":" + credential.account_id,
                 upstream=source.upstream_source_id, reparse=source.metadata.get("hosted_reparse"),
             )
             record, fresh = await self._operation_store.async_prepare_hosted_operation(

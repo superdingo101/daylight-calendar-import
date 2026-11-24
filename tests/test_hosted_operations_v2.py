@@ -95,7 +95,7 @@ def test_operation_journal_is_validated_and_defensively_copied():
 ])
 def test_operation_envelope_contract(status, result):
     envelope = {"schema_version": 2, "operation_id": KEY, "payload_sha256": SHA,
-                "status": status, "result": result, "replay_expires_at": None}
+                "status": status, "result": result, "replay_expires_at": "2999-01-01T00:00:00Z" if status == "succeeded" else None}
     assert validate_envelope(envelope, KEY, SHA) is envelope
     mutations = [
         {**envelope, "schema_version": 1}, {**envelope, "operation_id": str(uuid4())},

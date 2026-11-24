@@ -833,3 +833,26 @@ test("retrying an uncertain delivery requires deliberate confirmation", async ()
   assert.equal(calls[0].confirm_delivery_retry, true);
   assert.equal(calls[0].action, "retry_delivery");
 });
+
+test("durable parsing is explicit and displays trusted account status", async () => {
+  const status = {...snapshot, state: "connected", credential_status: "current",
+    credential_expires_at: "2099-01-01T00:00:00Z"};
+  const {settings, calls, setHandler} = setup(status);
+  await settings.load("entry-1");
+  assert.ok(findButton(settings.element, "Enable durable managed parsing"));
+  setHandler(async () => ({...status, parse_operations_v2: true, commercial_status: null}));
+  findButton(settings.element, "Enable durable managed parsing").click();
+  await flush(); await flush();
+  assert.equal(calls.at(-1).parse_operations_v2, true);
+  assert.ok(findButton(settings.element, "Refresh allowance and access"));
+  const commercial_status = {billing: {state: "trial", trial_remaining: 12, paid_remaining: 0,
+    trial_ends_at: "2099-01-01T00:00:00Z", period_ends_at: null, grace_ends_at: null},
+    account_url: "https://account.example.test/account"};
+  setHandler(async () => ({...status, parse_operations_v2: true, commercial_status}));
+  findButton(settings.element, "Refresh allowance and access").click();
+  await flush(); await flush();
+  assert.equal(calls.at(-1).action, "account");
+  assert.ok(texts(settings.element).some(text => text.includes("Trial: 12/20")));
+  assert.equal(settings.element.querySelectorAll("a").find(a => a.textContent === "Manage Daylight account and billing").href,
+    "https://account.example.test/account");
+});

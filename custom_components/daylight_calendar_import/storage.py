@@ -1785,6 +1785,24 @@ class PendingImportStore:
                 if len(matches) != 1:
                     raise ValueError("unknown hosted operation")
                 if matches[0]["accepted"]:
+                    # A recovered parse may belong to a newly leased delivery.
+                    # Journal its ACK in the same durable write even though the
+                    # operation tombstone prevents adding its events twice.
+                    claims = self._source_claims
+                    if activity_id is not None and activity_id in claims:
+                        if source_fp is None or claims[activity_id] != source_fp:
+                            raise ValueError("source_id does not match claimed source")
+                        claims = {key: value for key, value in claims.items() if key != activity_id}
+                    journal = None if hosted_evidence is None else self._hosted_delivery_journal + (
+                        HostedDeliveryJournalEntry(hosted_evidence, source_fp, "duplicate"),
+                    )
+                    if activity_id is not None or journal is not None:
+                        await self._async_save(
+                            self._items, activity=self._finish_submission(activity_id, "duplicate"),
+                            source_claims=claims, hosted_operations=operations,
+                            hosted_delivery_journal=journal,
+                        )
+                        self._source_claims = claims
                     return PendingImportAddResult(None, True, 0)
                 matches[0]["accepted"] = True
 

@@ -424,3 +424,37 @@ async def test_cancelled_hosted_parse_attempt_waits_for_durable_fence(monkeypatc
         await task
     assert store.hosted_parse_uncertain
     assert "hosted_parse_attempt" in backend.saved[-1]
+
+
+async def test_recovered_operation_journals_new_delivery_ack_without_duplicate_events(monkeypatch):
+    """An accepted parse tombstone must not lose a newly leased delivery's ACK."""
+    from tests.test_hosted_delivery_journal import evidence
+    from tests.test_storage import hosted_operation_request
+
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    await store.async_load()
+    operation, _ = await store.async_prepare_hosted_operation(
+        "a" * 64, hosted_operation_request(), (),
+    )
+    original = await store.async_add(
+        source_text="Practice", events=[draft()], hosted_operation_id=operation["key"],
+    )
+    assert original.pending is not None
+    delivery = evidence("recovered")
+    await store.async_change_hosted_parse_attempt(delivery.source_id)
+    result = await store.async_add(
+        source_text="Practice", events=[draft()], source_id=delivery.source_id,
+        hosted_operation_id=operation["key"], hosted_evidence=delivery,
+        reimport_duplicates=True,
+    )
+    assert result.duplicate_source is True
+    assert len(store.list()) == 1
+    assert not store.hosted_parse_uncertain
+    assert store.hosted_ack_journal()[0].evidence == delivery
+    assert store.hosted_ack_journal()[0].acceptance_disposition == "duplicate"
+    assert backend.saved[-1]["hosted_delivery_journal"][0]["delivery_id"] == "recovered"
+    restarted = make_store(monkeypatch, FakeStoreBackend(load_result=backend.saved[-1]))
+    await restarted.async_load()
+    assert len(restarted.list()) == 1
+    assert restarted.hosted_ack_journal()[0].evidence == delivery

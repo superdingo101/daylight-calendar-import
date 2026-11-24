@@ -790,7 +790,7 @@ async def test_durable_operation_parse_and_recovery(provider, fresh, status, val
         "schema_version": 2, "operation_id": key if valid else str(uuid4()),
         "payload_sha256": digest, "status": status,
         "result": result() if status == "succeeded" else None,
-        "replay_expires_at": None,
+        "replay_expires_at": "2999-01-01T00:00:00Z" if status == "succeeded" else None,
     }
     client._transport.async_operation = AsyncMock(return_value=envelope if not fresh else None)
     client._transport.async_parse = AsyncMock(return_value=envelope)
@@ -824,7 +824,7 @@ async def test_durable_operation_not_found_replays_only_original_key(provider):
     client._transport.async_operation = AsyncMock(return_value=None)
     client._transport.async_parse = AsyncMock(return_value={
         "schema_version": 2, "operation_id": key, "payload_sha256": "a" * 64,
-        "status": "succeeded", "result": result(), "replay_expires_at": None,
+        "status": "succeeded", "result": result(), "replay_expires_at": "2999-01-01T00:00:00Z",
     })
     await client.async_parse(TextSourceAdapter().create("School event"),
                              reference_datetime="2026-11-17T12:00:00Z", time_zone="UTC")
@@ -853,7 +853,7 @@ async def test_durable_parser_binds_exact_source_identity_and_payload(
     client._operation_store = store
     client._transport.async_parse = AsyncMock(return_value={
         "schema_version": 2, "operation_id": key, "payload_sha256": digest,
-        "status": "succeeded", "result": result(), "replay_expires_at": None,
+        "status": "succeeded", "result": result(), "replay_expires_at": "2999-01-01T00:00:00Z",
     })
     observed = []
     def identify(request, attachments, *, namespace, upstream, reparse):
@@ -870,7 +870,7 @@ async def test_durable_parser_binds_exact_source_identity_and_payload(
     await client.async_parse(source, reference_datetime="2026-11-17T12:00:00Z", time_zone="UTC")
     assert len(observed) == 1
     request, attachments, namespace, actual_upstream, actual_reparse, identity = observed[0]
-    assert namespace == client._operation_namespace
+    assert namespace == client._operation_namespace + ":" + checkpoint().current.account_id
     assert actual_upstream == upstream
     assert actual_reparse == reparse
     assert request["source"]["text"] == "School calendar"
@@ -899,7 +899,7 @@ async def test_durable_parser_recovery_pins_existing_authority_and_payload(provi
     client._transport.async_operation = AsyncMock(return_value=None)
     client._transport.async_parse = AsyncMock(return_value={
         "schema_version": 2, "operation_id": key, "payload_sha256": digest,
-        "status": "succeeded", "result": result(), "replay_expires_at": None,
+        "status": "succeeded", "result": result(), "replay_expires_at": "2999-01-01T00:00:00Z",
     })
     source = TextSourceAdapter().create("School calendar")
     await client.async_parse(source, reference_datetime="2026-11-17T12:00:00Z", time_zone="UTC")

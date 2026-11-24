@@ -108,4 +108,6 @@ async def async_accept_hosted_text(
         source_title=document.title, source_sender=document.metadata.get("sender"),
         warnings=[*outcome.warnings, *route.warnings], acceptance_guard=acceptance_guard,
         hosted_evidence=evidence,
+        **({"hosted_operation_id": parser_guard.hosted_operation_id}
+           if getattr(parser_guard, "hosted_operation_id", None) else {}),
     )

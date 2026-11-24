@@ -2,7 +2,7 @@
 
 const PREFIX = "daylight_calendar_import/hosted/";
 const STATE_KEYS = ["entry_id", "configured", "automatic_lifecycle", "api_origin", "account_origin", "account_url", "state", "credential_status", "credential_expires_at"];
-const ACTIONS = new Set(["connect", "reconnect", "poll", "reconcile", "rotate", "disconnect", "retry_delivery"]);
+const ACTIONS = new Set(["connect", "reconnect", "poll", "reconcile", "rotate", "disconnect", "retry_delivery", "account"]);
 const SAFE_FAILURE = "The connection request could not be confirmed. Check status before making another change.";
 
 function node(tag, text = "", className) {
@@ -52,12 +52,16 @@ export function validateHostedState(result, {entryId, pairing = false} = {}) {
   const pollKeys = ["delivery_polling", "delivery_parse_uncertain"].filter(
     key => Object.hasOwn(result || {}, key),
   );
-  const keys = [...STATE_KEYS, ...progressKeys, ...pollKeys, ...(hasPairing && pairing ? ["pairing"] : [])];
+  const commercialKeys = ["parse_operations_v2", "commercial_status"].filter(key => Object.hasOwn(result || {}, key));
+  const keys = [...STATE_KEYS, ...progressKeys, ...pollKeys, ...commercialKeys, ...(hasPairing && pairing ? ["pairing"] : [])];
   if (!closed(result, keys) || typeof result.entry_id !== "string" ||
       result.entry_id.length < 1 || result.entry_id.length > 128 ||
       entryId !== undefined && result.entry_id !== entryId ||
       progressKeys.length > 0 && typeof result.reconnect_in_progress !== "boolean" ||
       pollKeys.some(key => typeof result[key] !== "boolean") ||
+      commercialKeys.includes("parse_operations_v2") && typeof result.parse_operations_v2 !== "boolean" ||
+      commercialKeys.includes("commercial_status") && result.commercial_status !== null &&
+        (typeof result.commercial_status !== "object" || Array.isArray(result.commercial_status)) ||
       typeof result.configured !== "boolean" || typeof result.automatic_lifecycle !== "boolean" ||
       ![null, "current", "overlap"].includes(result.credential_status) ||
       result.credential_expires_at !== null && !deadline(result.credential_expires_at) ||
@@ -92,7 +96,7 @@ export async function loadHostedState(hass, entryId) {
   return validateHostedState(await hass.callWS({type: `${PREFIX}get`, ...(entryId ? {entry_id: entryId} : {})}), {entryId});
 }
 
-export async function configureHostedService(hass, entryId, apiOrigin, accountOrigin, automatic, deliveryPolling) {
+export async function configureHostedService(hass, entryId, apiOrigin, accountOrigin, automatic, deliveryPolling, parseOperations) {
   if (!trustedHostedOrigin(apiOrigin) || !trustedHostedOrigin(accountOrigin)) {
     throw new Error("Enter complete HTTPS service origins, without paths or credentials.");
   }
@@ -105,10 +109,14 @@ export async function configureHostedService(hass, entryId, apiOrigin, accountOr
   if (deliveryPolling !== undefined && typeof deliveryPolling !== "boolean") {
     throw new Error("Unexpected hosted email setting.");
   }
+  if (parseOperations !== undefined && typeof parseOperations !== "boolean") {
+    throw new Error("Unexpected durable parsing setting.");
+  }
   return validateHostedState(await hass.callWS({
     type: `${PREFIX}configure`, entry_id: entryId, api_origin: apiOrigin, account_origin: accountOrigin,
     ...(automatic === undefined ? {} : {automatic_lifecycle: automatic}),
     ...(deliveryPolling === undefined ? {} : {delivery_polling: deliveryPolling}),
+    ...(parseOperations === undefined ? {} : {parse_operations_v2: parseOperations}),
   }), {entryId});
 }
 
@@ -317,7 +325,7 @@ export class HostedConnectionSettings {
     try {
       const result = action === "configure" ?
         await configureHostedService(this.getHass(), entryId, input.api_origin, input.account_origin,
-          input.enable_automatic === true ? true : undefined, input.delivery_polling) :
+          input.enable_automatic === true ? true : undefined, input.delivery_polling, input.parse_operations_v2) :
         await runHostedAction(this.getHass(), entryId, action, input);
       if (!this.syncSession() || generation !== this.generation) return;
       const {pairing, ...snapshot} = result;
@@ -555,6 +563,41 @@ export class HostedConnectionSettings {
       diagnostics.open = true;
     }
     if (!state.configured) return;
+
+    if (state.credential_status === "current") {
+      const commercial = node("div");
+      if (!state.parse_operations_v2) {
+        const enable = node("button", "Enable durable managed parsing");
+        enable.type = "button";
+        enable.disabled = this.busy;
+        enable.addEventListener("click", () => void this.submit("configure", {
+          api_origin: state.api_origin, account_origin: state.account_origin, parse_operations_v2: true,
+        }));
+        commercial.append(enable);
+      } else {
+        const refresh = node("button", "Refresh allowance and access");
+        refresh.type = "button";
+        refresh.disabled = this.busy;
+        refresh.addEventListener("click", () => void this.submit("account"));
+        commercial.append(refresh);
+        const status = state.commercial_status;
+        if (status?.billing) {
+          const billing = status.billing;
+          commercial.append(node("p", `Access: ${billing.state}. Trial: ${billing.trial_remaining}/20. Paid: ${billing.paid_remaining}/100.`));
+          for (const [key, label] of [["trial_ends_at", "Trial deadline"], ["period_ends_at", "Allowance resets"], ["grace_ends_at", "Payment grace ends"]]) {
+            if (billing[key]) commercial.append(node("p", `${label}: ${billing[key]}`));
+          }
+          if (trustedAccountLink(status.account_url, state.account_origin)) {
+            const link = node("a", "Manage Daylight account and billing");
+            link.href = status.account_url;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            commercial.append(link);
+          }
+        }
+      }
+      diagnostics.append(commercial);
+    }
 
     if (state.credential_status === "current" || state.delivery_polling) {
       const delivery = node("div");

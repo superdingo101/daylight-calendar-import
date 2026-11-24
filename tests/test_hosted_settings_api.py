@@ -604,3 +604,14 @@ async def test_retry_delivery_requires_an_explicit_admin_confirmation():
         **base, "action": "reconcile", "confirm_delivery_retry": True,
     })
     assert wrong.errors[0][1] == "invalid_hosted_action"
+
+
+async def test_account_status_action_is_admin_owned_and_routes_to_runtime():
+    cfg = entry()
+    hass = hass_for(cfg)
+    runtime = fake_runtime(hass, cfg)
+    runtime.async_account_status = AsyncMock(return_value={"state": "connected"})
+    response = await invoke(api.websocket_hosted_action, hass,
+                            {"entry_id": cfg.entry_id, "action": "account"})
+    runtime.async_account_status.assert_awaited_once_with()
+    assert response.results
