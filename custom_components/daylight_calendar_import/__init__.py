@@ -1148,6 +1148,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         pending_store.hosted_runtime = await async_setup_hosted_runtime(hass, entry)
         async def parse_hosted_delivery(source):
+            # Hosted delivery bytes are verified in memory. BYO AI Task needs
+            # local media references; never submit empty references or omit files.
+            if effective_parser_provider(entry) == PARSER_PROVIDER_AI_TASK:
+                if ai_task_entity is None:
+                    raise ProviderError("provider_unavailable", "Configure an AI Task before processing hosted email.")
+                if source.attachments:
+                    from .email_attachments import async_stage_verified_hosted_attachments
+                    stage = await async_stage_verified_hosted_attachments(hass, source)
+                    try:
+                        return await selected_parse(stage.document, delivery_owner=True)
+                    finally:
+                        await stage.async_cleanup("hosted email processing")
             return await selected_parse(source, delivery_owner=True)
 
         pending_store.hosted_runtime.configure_delivery(
