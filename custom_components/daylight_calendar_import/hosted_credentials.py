@@ -159,6 +159,11 @@ class AutomationState:
         return cls(**parsed)
 
 
+LOCAL_ONLY_CONTRACT = "pending-v2-local-only"
+DELIVERY_CONTRACT = "pending-v2-hosted-delivery"
+SUPPORTED_JOURNAL_CONTRACTS = (LOCAL_ONLY_CONTRACT, DELIVERY_CONTRACT)
+
+
 @dataclass(frozen=True, slots=True)
 class ReconnectIntent:
     """Local repair intent; neither a receipt nor evidence of owner authority."""
@@ -177,7 +182,7 @@ class ReconnectIntent:
         if self.prior_disconnect not in ("none", "unconfirmed", "confirmed"):
             raise ValueError("invalid prior disconnect marker")
         if (type(self.journal_contract) is not str
-                or self.journal_contract != "pending-v2-local-only"):
+                or self.journal_contract not in SUPPORTED_JOURNAL_CONTRACTS):
             raise ValueError("unsupported namespace contract")
 
     @property

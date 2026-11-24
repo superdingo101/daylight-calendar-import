@@ -2,7 +2,7 @@
 
 const PREFIX = "daylight_calendar_import/hosted/";
 const STATE_KEYS = ["entry_id", "configured", "automatic_lifecycle", "api_origin", "account_origin", "account_url", "state", "credential_status", "credential_expires_at"];
-const ACTIONS = new Set(["connect", "reconnect", "poll", "reconcile", "rotate", "disconnect"]);
+const ACTIONS = new Set(["connect", "reconnect", "poll", "reconcile", "rotate", "disconnect", "retry_delivery"]);
 const SAFE_FAILURE = "The connection request could not be confirmed. Check status before making another change.";
 
 function node(tag, text = "", className) {
@@ -49,11 +49,15 @@ function trustedAccountLink(value, accountOrigin) {
 export function validateHostedState(result, {entryId, pairing = false} = {}) {
   const hasPairing = result !== null && typeof result === "object" && Object.hasOwn(result, "pairing");
   const progressKeys = Object.hasOwn(result || {}, "reconnect_in_progress") ? ["reconnect_in_progress"] : [];
-  const keys = hasPairing && pairing ? [...STATE_KEYS, ...progressKeys, "pairing"] : [...STATE_KEYS, ...progressKeys];
+  const pollKeys = ["delivery_polling", "delivery_parse_uncertain"].filter(
+    key => Object.hasOwn(result || {}, key),
+  );
+  const keys = [...STATE_KEYS, ...progressKeys, ...pollKeys, ...(hasPairing && pairing ? ["pairing"] : [])];
   if (!closed(result, keys) || typeof result.entry_id !== "string" ||
       result.entry_id.length < 1 || result.entry_id.length > 128 ||
       entryId !== undefined && result.entry_id !== entryId ||
       progressKeys.length > 0 && typeof result.reconnect_in_progress !== "boolean" ||
+      pollKeys.some(key => typeof result[key] !== "boolean") ||
       typeof result.configured !== "boolean" || typeof result.automatic_lifecycle !== "boolean" ||
       ![null, "current", "overlap"].includes(result.credential_status) ||
       result.credential_expires_at !== null && !deadline(result.credential_expires_at) ||
@@ -88,7 +92,7 @@ export async function loadHostedState(hass, entryId) {
   return validateHostedState(await hass.callWS({type: `${PREFIX}get`, ...(entryId ? {entry_id: entryId} : {})}), {entryId});
 }
 
-export async function configureHostedService(hass, entryId, apiOrigin, accountOrigin, automatic) {
+export async function configureHostedService(hass, entryId, apiOrigin, accountOrigin, automatic, deliveryPolling) {
   if (!trustedHostedOrigin(apiOrigin) || !trustedHostedOrigin(accountOrigin)) {
     throw new Error("Enter complete HTTPS service origins, without paths or credentials.");
   }
@@ -98,9 +102,13 @@ export async function configureHostedService(hass, entryId, apiOrigin, accountOr
   if (automatic !== undefined && typeof automatic !== "boolean") {
     throw new Error("Unexpected Daylight maintenance setting.");
   }
+  if (deliveryPolling !== undefined && typeof deliveryPolling !== "boolean") {
+    throw new Error("Unexpected hosted email setting.");
+  }
   return validateHostedState(await hass.callWS({
     type: `${PREFIX}configure`, entry_id: entryId, api_origin: apiOrigin, account_origin: accountOrigin,
     ...(automatic === undefined ? {} : {automatic_lifecycle: automatic}),
+    ...(deliveryPolling === undefined ? {} : {delivery_polling: deliveryPolling}),
   }), {entryId});
 }
 
@@ -122,6 +130,10 @@ export async function runHostedAction(hass, entryId, action, input = {}) {
   if (action === "disconnect") {
     if (input.confirm_disconnect !== true) throw new Error("Confirm local stop and disconnection first.");
     request.confirm_disconnect = true;
+  }
+  if (action === "retry_delivery") {
+    if (input.confirm_delivery_retry !== true) throw new Error("Confirm that you want to retry the uncertain import.");
+    request.confirm_delivery_retry = true;
   }
   return validateHostedState(await hass.callWS(request), {entryId, pairing: ["connect", "reconnect"].includes(action)});
 }
@@ -305,7 +317,7 @@ export class HostedConnectionSettings {
     try {
       const result = action === "configure" ?
         await configureHostedService(this.getHass(), entryId, input.api_origin, input.account_origin,
-          input.enable_automatic === true ? true : undefined) :
+          input.enable_automatic === true ? true : undefined, input.delivery_polling) :
         await runHostedAction(this.getHass(), entryId, action, input);
       if (!this.syncSession() || generation !== this.generation) return;
       const {pairing, ...snapshot} = result;
@@ -543,6 +555,40 @@ export class HostedConnectionSettings {
       diagnostics.open = true;
     }
     if (!state.configured) return;
+
+    if (state.credential_status === "current" || state.delivery_polling) {
+      const delivery = node("div");
+      delivery.append(node("p", "Automatically check for hosted email and add results to the Review Inbox. Requires Daylight Cloud as the selected parser and hosted email access for this installation."));
+      const toggleDelivery = node("button", state.delivery_polling ? "Pause hosted email checks" : "Enable hosted email checks");
+      toggleDelivery.type = "button";
+      toggleDelivery.disabled = this.busy;
+      toggleDelivery.addEventListener("click", () => void this.submit("configure", {
+        api_origin: state.api_origin, account_origin: state.account_origin,
+        delivery_polling: !state.delivery_polling,
+      }));
+      delivery.append(toggleDelivery);
+      if (state.delivery_parse_uncertain && state.delivery_polling) {
+        delivery.append(node("p", "The previous hosted email parse may have completed. Check Recent Activity and the Review Inbox before retrying. A retry may use another managed parse."));
+        const retryForm = document.createElement("form");
+        const confirm = document.createElement("input");
+        confirm.name = "confirm_delivery_retry";
+        confirm.type = "checkbox";
+        confirm.disabled = this.busy;
+        const label = node("label", "I checked the previous attempt and want to retry");
+        label.append(confirm);
+        const retry = node("button", "Retry hosted email");
+        retry.type = "submit";
+        retry.disabled = true;
+        confirm.addEventListener("change", () => { retry.disabled = !confirm.checked || this.busy; });
+        retryForm.append(label, retry);
+        retryForm.addEventListener("submit", event => {
+          event.preventDefault();
+          if (confirm.checked) void this.submit("retry_delivery", {confirm_delivery_retry: true});
+        });
+        delivery.append(retryForm);
+      }
+      diagnostics.append(delivery);
+    }
 
     // The former default was opt-out. Do not silently change an existing
     // credential's persisted policy: offer a one-time upgrade instead.

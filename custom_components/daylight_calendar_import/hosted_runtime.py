@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import asdict, replace
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -16,7 +17,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_utc_time
 
-from .const import DOMAIN
+from .const import DOMAIN, PARSER_PROVIDER_DAYLIGHT_CLOUD
 from .hosted_automation import HostedAutomationPolicy
 from .hosted_credentials import (
     HostedCredentialConflict,
@@ -36,10 +37,15 @@ from .hosted_transport import (
     HostedTransportError,
 )
 from .storage import PendingImportStore
-from .providers import ParserProvider, ProviderError
+from .settings import effective_parser_provider
+from .providers import ParserProvider, ProviderError, SourceValidationError
 
 CONF_HOSTED_SERVICE = "hosted_service"
 CONF_HOSTED_AUTOMATIC = "hosted_automatic_lifecycle"
+CONF_HOSTED_DELIVERY_POLL = "hosted_delivery_polling"
+_LOGGER = logging.getLogger(__name__)
+_DELIVERY_INTERVAL = 60
+_MAX_DELIVERY_BACKOFF = 900
 
 
 def hosted_signal(entry_id: str) -> str:
@@ -108,6 +114,15 @@ class HostedConnectionRuntime:
         self._tasks: set[asyncio.Task] = registry.setdefault(entry.entry_id, set())
         self._options = entry.options
         self._automatic = entry.options.get(CONF_HOSTED_AUTOMATIC) is True
+        self._delivery_poll_enabled = entry.options.get(CONF_HOSTED_DELIVERY_POLL) is True
+        self._delivery_parser_selected = (
+            self._delivery_poll_enabled
+            and effective_parser_provider(entry) == PARSER_PROVIDER_DAYLIGHT_CLOUD
+        )
+        self._delivery_failures = 0
+        self._delivery_due_at: datetime | None = None
+        self._delivery_poll_timer = None
+        self._delivery_poll_running = False
         self._automation: HostedAutomationPolicy | None = None
         self._cancel_timer = None
         self._cancel_stop = None
@@ -141,7 +156,7 @@ class HostedConnectionRuntime:
             self._state = HostedConnectionResult("storage_repair")
             return
         pending = self._hass.data.get(DOMAIN, {}).get(self._entry_id)
-        kwargs = ({"reconciler": LocalOnlyNamespaceReconciler(pending)}
+        kwargs = ({"reconciler": LocalOnlyNamespaceReconciler(pending, allow_delivery=True)}
                   if type(pending) is PendingImportStore else {})
         self._credential_store = store
         self._verified_parse_credential = None
@@ -173,6 +188,8 @@ class HostedConnectionRuntime:
             "entry_id": self._entry_id,
             "configured": self._service is not None,
             "automatic_lifecycle": self._automatic,
+            **({"delivery_polling": True} if self._delivery_poll_enabled else {}),
+            **({"delivery_parse_uncertain": True} if self._has_delivery_parse_attempt() else {}),
             "reconnect_in_progress": (self._controller is not None
                                       and self._controller.reconnect_in_progress is True),
             "api_origin": self._service.api_origin if self._service else None,
@@ -254,6 +271,7 @@ class HostedConnectionRuntime:
             raise HostedRuntimeError("hosted_unavailable")
         store, route_source, parse_source = self._delivery_handlers
         from .hosted_ack_recovery import async_recover_pending_acks
+        from .hosted_parse_transport import HostedParseError
         from .hosted_source_transport import HostedSourceTransport
         from .hosted_text_batch import async_process_text_batch
 
@@ -272,7 +290,18 @@ class HostedConnectionRuntime:
 
                 async def guarded_parse(source):
                     guard_delivery(require_owner=True)
-                    outcome, parser_guard = await parse_source(source)
+                    if self._delivery_poll_running:
+                        await store.async_change_hosted_parse_attempt(source.upstream_source_id)
+                        guard_delivery(require_owner=True)
+                    try:
+                        outcome, parser_guard = await parse_source(source)
+                    except (SourceValidationError, HostedParseError) as error:
+                        definitive = isinstance(error, SourceValidationError) or (
+                            not error.uncertain and error.status in (400, 401, 403, 413, 429)
+                        )
+                        if self._delivery_poll_running and definitive:
+                            await store.async_change_hosted_parse_attempt(None)
+                        raise
                     guard_delivery(require_owner=True)
 
                     def acceptance_guard():
@@ -288,17 +317,27 @@ class HostedConnectionRuntime:
                     session, api_origin=self._service.api_origin,
                     account_origin=self._service.account_origin,
                 )
-                await async_recover_pending_acks(
+                recovered = await async_recover_pending_acks(
                     store=store, credentials=self._credential_store, transport=ack,
                     local_config_entry_id=self._entry_id, limit=limit,
                 )
                 guard_delivery(require_owner=True)
-                return await async_process_text_batch(
-                    store=store, credentials=self._credential_store,
-                    claim_transport=claim, ack_transport=ack,
-                    local_config_entry_id=self._entry_id, route_source=route_source,
-                    parse_source=guarded_parse, limit=limit,
-                )
+                if recovered and any(item.ack_status == "expired" for item in recovered):
+                    self._delivery_attention_issue("hosted_delivery_expired")
+                try:
+                    return await async_process_text_batch(
+                        store=store, credentials=self._credential_store,
+                        claim_transport=claim, ack_transport=ack,
+                        local_config_entry_id=self._entry_id, route_source=route_source,
+                        parse_source=guarded_parse, limit=limit,
+                    )
+                finally:
+                    if type(store) is PendingImportStore and not store._storage_blocked and any(
+                        item.ack_status == "expired"
+                        and item.evidence.local_config_entry_id == self._entry_id
+                        for item in store.hosted_ack_journal()
+                    ):
+                        self._delivery_attention_issue("hosted_delivery_expired")
             finally:
                 self._delivery_owner = None
 
@@ -330,6 +369,7 @@ class HostedConnectionRuntime:
     def pause(self) -> None:
         """Close admission before platform unload starts."""
         self._accepting = False
+        self._cancel_delivery_poll()
         self._parse_generation += 1
         if self._cancel_timer is not None:
             self._cancel_timer()
@@ -339,15 +379,18 @@ class HostedConnectionRuntime:
         """A failed platform unload may reopen the same retained runtime."""
         if not self._stopped:
             self._accepting = True
-            if self._automatic and self._cancel_stop is None:
+            if (self._automatic or self._delivery_poll_enabled) and self._cancel_stop is None:
                 self._cancel_stop = self._hass.bus.async_listen_once(
                     EVENT_HOMEASSISTANT_STOP, self._async_ha_stop,
                 )
+            if not self._delivery_poll_enabled:
+                ir.async_delete_issue(self._hass, DOMAIN, f"hosted_delivery_retry_{self._entry_id}")
             if not self._automatic:
                 ir.async_delete_issue(self._hass, DOMAIN, f"hosted_lifecycle_{self._entry_id}")
             if self._state.state == "checking_access" and not self.busy:
                 self._start_work("verify_saved", {})
             self._schedule_automation()
+            self._schedule_delivery_poll()
 
     async def _async_ha_stop(self, _event) -> None:
         await self.async_stop()
@@ -377,6 +420,100 @@ class HostedConnectionRuntime:
         self._cancel_timer = async_track_point_in_utc_time(
             self._hass, self._automatic_tick,
             max(plan.due_at, datetime.now(UTC) + timedelta(seconds=1)),
+        )
+
+    def _cancel_delivery_poll(self) -> None:
+        if self._delivery_poll_timer is not None:
+            self._delivery_poll_timer()
+            self._delivery_poll_timer = None
+
+    def _has_delivery_parse_attempt(self) -> bool:
+        return (
+            self._delivery_handlers is not None
+            and getattr(self._delivery_handlers[0], "hosted_parse_uncertain", False) is True
+        )
+
+    def _foreground_delivery_conflict(self) -> bool:
+        store = self._delivery_handlers[0]
+        return bool(getattr(store, "active_submissions", ()) or
+                    getattr(store, "active_service_handlers", ()))
+
+    async def async_retry_delivery_parse(self) -> dict[str, Any]:
+        """Clear an uncertain attempt only after an explicit administrator decision."""
+        if not self.accepting or not self._delivery_poll_enabled or not self._has_delivery_parse_attempt():
+            raise HostedRuntimeError("hosted_unavailable")
+        if self.busy or self._delivery_poll_running:
+            raise HostedRuntimeError("hosted_busy")
+        self._delivery_poll_running = True
+        try:
+            await self._delivery_handlers[0].async_change_hosted_parse_attempt(None)
+            ir.async_delete_issue(self._hass, DOMAIN, f"hosted_delivery_uncertain_{self._entry_id}")
+            self._delivery_due_at = None
+        finally:
+            self._delivery_poll_running = False
+            self._schedule_delivery_poll()
+        return self.snapshot()
+
+    def _schedule_delivery_poll(self) -> None:
+        self._cancel_delivery_poll()
+        if (not self._delivery_poll_enabled or not self._delivery_parser_selected
+                or not self.accepting or self.busy or self._delivery_poll_running
+                or self._delivery_handlers is None
+                or self._state.credential_status not in ("current", "overlap")):
+            return
+        if self._has_delivery_parse_attempt():
+            self._delivery_attention_issue("hosted_delivery_uncertain")
+            return
+        now = datetime.now(UTC)
+        due = self._delivery_due_at or now + timedelta(seconds=1)
+        self._delivery_poll_timer = async_track_point_in_utc_time(
+            self._hass, self._delivery_poll_tick, max(due, now + timedelta(seconds=1)),
+        )
+
+    @callback
+    def _delivery_poll_tick(self, _now) -> None:
+        self._delivery_poll_timer = None
+        if not self.accepting or self.busy or self._delivery_poll_running:
+            return
+        if self._foreground_delivery_conflict():
+            self._delivery_due_at = datetime.now(UTC) + timedelta(seconds=_DELIVERY_INTERVAL)
+            self._schedule_delivery_poll()
+            return
+        self._delivery_poll_running = True
+        self._hass.async_create_task(self._async_delivery_poll(), "Daylight delivery poll", eager_start=False)
+
+    async def _async_delivery_poll(self) -> None:
+        from .hosted_parse_transport import HostedParseError
+
+        delay = _DELIVERY_INTERVAL
+        try:
+            if self._foreground_delivery_conflict():
+                return
+            # Each pass makes one claim POST at most. A new pass after backoff
+            # first checks the durable ACK journal, even after an uncertain POST.
+            async with asyncio.timeout(110):
+                await self.async_delivery_pass(limit=1)
+        except Exception as error:
+            self._delivery_failures = min(6, self._delivery_failures + 1)
+            delay = min(_MAX_DELIVERY_BACKOFF, _DELIVERY_INTERVAL * 2 ** self._delivery_failures)
+            if isinstance(error, (HostedTransportError, HostedParseError)):
+                delay = max(delay, error.retry_after or 0)
+            if self._delivery_failures == 5:
+                self._delivery_attention_issue("hosted_delivery_retry")
+                _LOGGER.warning("Daylight hosted delivery polling is backing off")
+        else:
+            self._delivery_failures = 0
+            ir.async_delete_issue(self._hass, DOMAIN, f"hosted_delivery_retry_{self._entry_id}")
+        finally:
+            self._delivery_due_at = datetime.now(UTC) + timedelta(seconds=delay)
+            self._delivery_poll_running = False
+            self._schedule_delivery_poll()
+
+    def _delivery_attention_issue(self, key: str) -> None:
+        ir.async_create_issue(
+            self._hass, DOMAIN, f"{key}_{self._entry_id}", is_fixable=False,
+            severity=ir.IssueSeverity.WARNING, translation_key=key,
+            is_persistent=key in ("hosted_delivery_expired", "hosted_delivery_uncertain"),
         )
 
     def _attention_issue(self) -> None:
@@ -434,6 +571,7 @@ class HostedConnectionRuntime:
         if not task.cancelled():
             task.exception()
         self._schedule_automation()
+        self._schedule_delivery_poll()
         if self.accepting:
             async_dispatcher_send(self._hass, hosted_signal(self._entry_id))
 
