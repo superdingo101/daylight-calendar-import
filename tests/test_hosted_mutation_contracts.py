@@ -4,6 +4,7 @@ These tests pin canonical bytes, request constraints and fail-closed recovery,
 rather than merely observing that an exception occurred.
 """
 import asyncio
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
 from unittest.mock import MagicMock
@@ -119,14 +120,19 @@ def test_operation_journal_invalid_shape_and_exact_limit():
 def test_operation_envelope_error_message_and_exact_schema(status):
     result = {"events": []} if status == "succeeded" else None
     envelope = {"schema_version": 2, "operation_id": KEY, "payload_sha256": SHA,
-                "status": status, "result": result, "replay_expires_at": None}
+                "status": status, "result": result,
+                "replay_expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+                if status == "succeeded" else None}
     assert validate_envelope(envelope, KEY, SHA) is envelope
     for broken in (
         {**envelope, "schema_version": 1},
         {**envelope, "operation_id": "different"},
         {**envelope, "payload_sha256": "different"},
         {**envelope, "status": "not-a-status"},
+        {**envelope, "status": []},
         {**envelope, "result": None if status == "succeeded" else {}},
+        {**envelope, "result": []},
+        {**envelope, "result": False},
         {**envelope, "unexpected": True},
     ):
         with pytest.raises(ValueError, match="^invalid operation envelope$"):

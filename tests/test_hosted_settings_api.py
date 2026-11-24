@@ -615,3 +615,24 @@ async def test_account_status_action_is_admin_owned_and_routes_to_runtime():
                             {"entry_id": cfg.entry_id, "action": "account"})
     runtime.async_account_status.assert_awaited_once_with()
     assert response.results
+
+
+async def test_durable_operation_opt_in_cannot_be_silently_disabled():
+    from custom_components.daylight_calendar_import.hosted_runtime import CONF_HOSTED_PARSE_OPERATIONS
+
+    cfg = entry(options={CONF_HOSTED_SERVICE: SERVICE, CONF_HOSTED_AUTOMATIC: True,
+                         CONF_HOSTED_PARSE_OPERATIONS: True})
+    hass = hass_for(cfg)
+    fake_runtime(hass, cfg)
+    result = await invoke(api.websocket_hosted_configure, hass, {
+        "entry_id": cfg.entry_id, **SERVICE, "parse_operations_v2": False,
+    })
+    assert result.errors[0][1] == "invalid_hosted_configuration"
+    assert not hass.config_entries.updates
+    assert not hass.config_entries.reloads
+    assert cfg.options[CONF_HOSTED_PARSE_OPERATIONS] is True
+    result = await invoke(api.websocket_hosted_configure, hass, {
+        "entry_id": cfg.entry_id, **SERVICE,
+    })
+    assert result.results
+    assert not hass.config_entries.updates

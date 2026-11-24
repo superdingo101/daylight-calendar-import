@@ -55,8 +55,9 @@ def validate_envelope(value, key, expected_digest):
             "schema_version", "operation_id", "payload_sha256", "status", "result",
             "replay_expires_at"} or type(value["schema_version"]) is not int or value["schema_version"] != 2
             or value["operation_id"] != key or value["payload_sha256"] != expected_digest
-            or value["status"] not in {"pending", "uncertain", "succeeded", "failed", "expired"}
-            or (value["status"] == "succeeded") != (type(value["result"]) is dict)):
+            or value["status"] not in ("pending", "uncertain", "succeeded", "failed", "expired")
+            or (value["status"] == "succeeded" and type(value["result"]) is not dict)
+            or (value["status"] != "succeeded" and value["result"] is not None)):
         raise ValueError("invalid operation envelope")
     expiry = value["replay_expires_at"]
     if expiry is not None:
@@ -65,14 +66,13 @@ def validate_envelope(value, key, expected_digest):
         except (TypeError, vol.Invalid):
             raise ValueError("invalid operation expiry") from None
     if value["status"] == "succeeded" and (
-            expiry is None or datetime.fromisoformat(expiry.replace("Z", "+00:00")) <= datetime.now(UTC)):
+            expiry is None or datetime.fromisoformat(expiry.upper()) <= datetime.now(UTC)):
         raise ValueError("expired operation result")
     return value
 
 
 def validate_account(value, account_origin):
     """Allow only bounded public facts and a local trusted account destination."""
-    from urllib.parse import urlsplit
     from .hosted_transport import _timestamp
     if (type(value) is not dict or value.get("schema_version") != 2
             or value.get("parse_operations_v2") is not True
@@ -88,8 +88,8 @@ def validate_account(value, account_origin):
     if (type(billing) is not dict or set(billing) != {
             "state", "trial_ends_at", "trial_remaining", "paid_remaining", "period_ends_at",
             "grace_ends_at", "cancel_at_period_end"}
-            or billing["state"] not in {"unavailable", "trial", "active", "grace", "cancelled",
-                                        "drain", "capped", "incomplete", "expired"}
+            or billing["state"] not in ("unavailable", "trial", "active", "grace", "cancelled",
+                                        "drain", "capped", "incomplete", "expired")
             or type(billing["cancel_at_period_end"]) is not bool):
         raise ValueError("invalid billing status")
     for field, maximum in (("trial_remaining", 20), ("paid_remaining", 100)):
@@ -102,10 +102,6 @@ def validate_account(value, account_origin):
                 _timestamp(stamp)
             except (TypeError, vol.Invalid):
                 raise ValueError("invalid account deadline") from None
-    if not isinstance(value["account_url"], str):
-        raise ValueError("untrusted account action")
-    url = urlsplit(value["account_url"])
-    if (url.scheme + "://" + url.netloc != account_origin or url.path != "/account"
-            or url.query or url.fragment or url.username or url.password):
+    if value["account_url"] != account_origin + "/account":
         raise ValueError("untrusted account action")
     return deepcopy(value)

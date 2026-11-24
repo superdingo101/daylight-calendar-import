@@ -922,3 +922,54 @@ async def test_m5_parse_session_only_wires_durable_journal_with_explicit_opt_in(
     with pytest.raises(ProviderError, match="Daylight Cloud connection changed"):
         guard()
     await r.async_stop()
+
+
+@pytest.mark.parametrize("failure", [None, "transport", "guard", "invalid"])
+async def test_commercial_account_status_validates_authority_and_public_response(
+    runtime, monkeypatch, failure,
+):
+    from unittest.mock import Mock
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+    from custom_components.daylight_calendar_import.hosted_parse_transport import HostedParseError
+    from custom_components.daylight_calendar_import.providers import ProviderError
+
+    r, _ = runtime
+    r._options[module.CONF_HOSTED_PARSE_OPERATIONS] = True
+    value = {
+        "schema_version": 2, "parse_operations_v2": True,
+        "capabilities": {"managed_ai": True, "new_email_intake": False,
+                         "accepted_source_drain": True},
+        "billing": {"state": "trial", "trial_ends_at": None, "trial_remaining": 12,
+                    "paid_remaining": 0, "period_ends_at": None, "grace_ends_at": None,
+                    "cancel_at_period_end": False},
+        "drain_cutoff_at": None, "account_url": SERVICE["account_origin"] + "/account",
+    }
+    token = "private-token"
+    get = AsyncMock(return_value=value)
+    provider = SimpleNamespace(_authority=Mock(return_value=SimpleNamespace(token=token)),
+                               _transport=SimpleNamespace(async_v2_get=get))
+    guard = Mock()
+    session = Mock(return_value=(provider, guard))
+    monkeypatch.setattr(r, "parse_session", session)
+    if failure == "transport":
+        get.side_effect = HostedParseError("private")
+    elif failure == "guard":
+        guard.side_effect = ProviderError("changed", "private")
+    elif failure == "invalid":
+        get.return_value = {**value, "account_url": "https://evil.test/account"}
+
+    if failure is None:
+        snapshot = await r.async_account_status()
+        assert snapshot["commercial_status"] == value
+        assert snapshot["commercial_status"] is not value
+        assert token not in str(snapshot)
+        assert snapshot == r.snapshot()
+    else:
+        with pytest.raises(HostedRuntimeError, match="^hosted_action_failed$"):
+            await r.async_account_status()
+        assert r.snapshot()["commercial_status"] is None
+    session.assert_called_once_with()
+    provider._authority.assert_called_once_with()
+    get.assert_awaited_once_with("/account", token=token)
+    assert guard.call_count == (0 if failure == "transport" else 1)
+    await r.async_stop()

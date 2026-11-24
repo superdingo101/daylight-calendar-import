@@ -545,11 +545,12 @@ class PendingImportStore:
             if data is None:
                 if any((self._items, self._activity, self._notifications, self._source_claims,
                         self._seen_source_fingerprints, self._seen_event_fingerprints,
-                        self._hosted_delivery_journal, self._hosted_parse_attempt)):
+                        self._hosted_delivery_journal, self._hosted_parse_attempt, self._hosted_operations)):
                     raise PendingImportStorageError(_STORAGE_ERROR)
                 snapshot = ({}, (), (), (), (), {}, (), None)
             else:
                 snapshot = _decode_storage_data(data)
+            operations = validate_records(data.get(_STORAGE_HOSTED_OPERATIONS, {}) if data else {})
         except Exception:
             self._storage_blocked = True
             self.accepting_services = False
@@ -558,7 +559,7 @@ class PendingImportStore:
         (self._items, self._activity, self._notifications, self._seen_source_fingerprints,
          self._seen_event_fingerprints, self._source_claims, self._hosted_delivery_journal,
          self._hosted_parse_attempt) = snapshot
-        self._hosted_operations = validate_records(data.get(_STORAGE_HOSTED_OPERATIONS, {}) if data else {})
+        self._hosted_operations = operations
         self._storage_blocked = False
         self._source_claim_releases = set()
         self._source_claim_release_provider_codes = {}

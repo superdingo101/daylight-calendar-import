@@ -209,3 +209,90 @@ async def test_operation_recovery_transport_uncertainty(transport, error):
     with pytest.raises(HostedParseError) as failure:
         await client.async_operation(str(uuid4()), token="T" * 43)
     assert failure.value.uncertain
+
+
+@pytest.mark.parametrize("invalid", ["invalid", 123, [], "2026-02-30T00:00:00Z"])
+def test_operation_invalid_expiry_is_sanitized(invalid):
+    key = str(uuid4())
+    value = envelope(key, "a" * 64)
+    value["replay_expires_at"] = invalid
+    with pytest.raises(ValueError, match="^invalid operation expiry$"):
+        validate_envelope(value, key, "a" * 64)
+
+
+def test_operation_expiry_boundary_and_lowercase_utc(freezer):
+    freezer.move_to("2026-11-17T10:00:00Z")
+    key = str(uuid4())
+    value = envelope(key, "a" * 64)
+    for expiry in (None, "2026-11-17T09:59:59Z", "2026-11-17T10:00:00Z"):
+        value["replay_expires_at"] = expiry
+        with pytest.raises(ValueError, match="^expired operation result$"):
+            validate_envelope(value, key, "a" * 64)
+    value["replay_expires_at"] = "2026-11-17t10:00:01z"
+    assert validate_envelope(value, key, "a" * 64) is value
+    value["status"] = "pending"
+    value["result"] = None
+    value["replay_expires_at"] = "2026-11-17T09:59:59Z"
+    assert validate_envelope(value, key, "a" * 64) is value
+
+
+@pytest.mark.parametrize("url", [None, [], "https://[invalid/account",
+                                 "https://app.daylight.test/acc\nount"])
+def test_account_url_must_be_exact_trusted_destination(url):
+    value = account_status()
+    value["account_url"] = url
+    with pytest.raises(ValueError, match="^untrusted account action$"):
+        validate_account(value, SERVICE.account_origin)
+
+
+def test_account_non_string_billing_state_is_sanitized():
+    value = account_status()
+    value["billing"]["state"] = []
+    with pytest.raises(ValueError, match="^invalid billing status$"):
+        validate_account(value, SERVICE.account_origin)
+
+
+@pytest.mark.parametrize("missing", [True, False])
+async def test_operation_journal_load_failure_fences_existing_store(hass, missing):
+    backend = Backend()
+    store = PendingImportStore(hass)
+    store._store = backend
+    record, _ = await store.async_prepare_hosted_operation("a" * 64, request(), ())
+    store.accepting_services = True
+    if missing:
+        backend.data = None
+    else:
+        backend.data["hosted_parse_operations"] = {"bad": {}}
+    with pytest.raises(PendingImportStorageError):
+        await store.async_load()
+    assert store.accepting_services is False
+    assert store._hosted_operations["a" * 64] == record
+    with pytest.raises(PendingImportStorageError):
+        await store.async_prepare_hosted_operation("b" * 64, request(), ())
+
+
+@pytest.mark.parametrize("claim_matches", [True, False, None])
+async def test_accepted_operation_replay_releases_only_matching_claim(hass, claim_matches):
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+
+    backend = Backend()
+    store = PendingImportStore(hass)
+    store._store = backend
+    record, _ = await store.async_prepare_hosted_operation("a" * 64, request(), ())
+    await store.async_add(source_text="Meeting", events=(), hosted_operation_id=record["key"])
+    fingerprint = source_fingerprint("source" if claim_matches else "other")
+    store._source_claims = {"claim": fingerprint}
+    source_id = None if claim_matches is None else "source"
+    before = deepcopy(backend.data)
+    kwargs = dict(source_text="Meeting", events=(), hosted_operation_id=record["key"],
+                  activity_id="claim", source_id=source_id)
+    if claim_matches:
+        result = await store.async_add(**kwargs)
+        assert result.duplicate_source and result.pending is None
+        assert store._source_claims == {}
+        assert backend.data["hosted_parse_operations"]["a" * 64]["accepted"] is True
+    else:
+        with pytest.raises(ValueError, match="^source_id does not match claimed source$"):
+            await store.async_add(**kwargs)
+        assert backend.data == before
+        assert store._source_claims == {"claim": fingerprint}
