@@ -27,7 +27,7 @@ _SOURCE_DECLARED_ZONE = re.compile(
     r"(?P<zone>[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)+)\b",
     re.IGNORECASE,
 )
-_FIXED = re.compile(r"(?i:(UTC|GMT))\s*([+-])(\d{1,2})(?::?(\d{2}))?\Z")
+_FIXED = re.compile(r"(?i:(UTC|GMT))?\s*([+-])(\d{1,2})(?::?(\d{2}))?\Z")
 _TRAVEL = re.compile(
     r"\b(?:flights?|departures?|departing|arrivals?|arriving|boarding|"
     r"itinerar(?:y|ies)|trains?|ferr(?:y|ies)|buses|bus|"
@@ -323,6 +323,22 @@ def _place_zone(kind: str, value: str) -> str | None:
     return next(iter(zones)) if len(zones) == 1 else None
 
 
+def _blocked_range(start: datetime, end: datetime, start_name: str,
+                   end_name: str) -> tuple[str, str]:
+    """Represent an unsafe range without losing its separate original wall clocks.
+
+    Only a blocked draft uses these provisional instants. If they are not
+    chronologically valid, give the draft a minimal positive duration rather
+    than inventing an arrival date. Confirmation always recalculates from
+    the original wall clocks, never from these placeholders.
+    """
+    first = start.replace(tzinfo=_zone(start_name))
+    last = end.replace(tzinfo=_zone(end_name))
+    if last.astimezone(timezone.utc) <= first.astimezone(timezone.utc):
+        last = (first.astimezone(timezone.utc) + timedelta(minutes=1)).astimezone(_zone(end_name))
+    return first.isoformat(), last.isoformat()
+
+
 def _range_for_wall(start: datetime, end: datetime, start_name: str,
                     end_name: str, start_occurrence: str | None = None,
                     end_occurrence: str | None = None) -> tuple[str, str, bool, bool]:
@@ -344,8 +360,8 @@ def _range_for_wall(start: datetime, end: datetime, start_name: str,
                  (len(ends) > 1 and end_occurrence is None))
     if gap:
         # Keep the original wall clocks visible for correction but block writes.
-        return (start.replace(tzinfo=_zone(start_name)).isoformat(),
-                end.replace(tzinfo=_zone(end_name)).isoformat(), ambiguous, True)
+        a, b = _blocked_range(start, end, start_name, end_name)
+        return a, b, ambiguous, True
     for occurrence, choices in ((start_occurrence, starts), (end_occurrence, ends)):
         if occurrence is not None and (occurrence not in ("first", "second") or len(choices) != 2):
             raise ValueError("Invalid DST occurrence")
@@ -462,7 +478,7 @@ def _collect_geography(raw: dict, source: _SourceEvidence) -> _GeographyEvidence
     if start.kind == "unknown" and not start.value and not end.value:
         if venue and (not display or display.casefold() == venue.casefold()):
             start = _EndpointEvidence("venue", venue[:_BOUNDED])
-        elif display and ("," in display or source.venues):
+        elif display:
             start = _EndpointEvidence("unknown", display[:_BOUNDED])
 
     has_start = start.kind not in ("unknown", "virtual") and bool(start.value)
@@ -506,7 +522,7 @@ def _check_geography(
 
 def normalize_structured_event(
     raw: dict, ha_zone: str, source_text: str = "", *,
-    event_scoped: bool = True,
+    event_scoped: bool = True, has_attachments: bool = False,
 ) -> tuple[dict, TemporalEvidence]:
     """Turn structured AI source facts into provisional safe review timestamps."""
     start = _local(raw.get("start_local"))
@@ -538,7 +554,9 @@ def normalize_structured_event(
     # Models sometimes copy the configured HA zone into an "explicit" field,
     # even though the invitation never printed it. Never let that hallucinated
     # claim override real geography, especially on a cross-zone flight.
-    unsupported_explicit = bool(source_text and explicit and
+    # Text supplied alongside an attachment is not the entire source.
+    # Absence from that text cannot disprove an attachment-derived claim.
+    unsupported_explicit = bool(not has_attachments and source_text and explicit and
                                 explicit.casefold() not in source_text.casefold())
     if unsupported_explicit:
         explicit = ""
@@ -603,8 +621,7 @@ def normalize_structured_event(
             raise
         # A provisional HA-zone interval is not evidence that a date-line
         # journey is invalid. Keep clocks in a blocked draft for review.
-        a = start.replace(tzinfo=_zone(start_zone)).isoformat()
-        b = (end + timedelta(days=1)).replace(tzinfo=_zone(end_zone)).isoformat()
+        a, b = _blocked_range(start, end, start_zone, end_zone)
         ambiguous, gap = False, False
         unresolved = True
     status = ("correction_required" if gap else

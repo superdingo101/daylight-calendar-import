@@ -1616,16 +1616,6 @@ class PendingImportStore:
                     and unresolved == event.routing_unresolved):
                 return event
 
-            fingerprint = event_fingerprint(draft)
-            other_active = {
-                event_fingerprint(item.draft)
-                for active in self._items.values()
-                for item in active.events
-                if active.id != pending_id or item.id != event_id
-            }
-            if fingerprint in self._seen_event_fingerprints or fingerprint in other_active:
-                raise PendingEventEditError("Edited event duplicates a pending or handled event")
-
             temporal_changed = any((
                 event.draft.start != draft.start,
                 event.draft.end != draft.end,
@@ -1657,6 +1647,16 @@ class PendingImportStore:
                              calendar_entity=target, routing_unresolved=unresolved,
                              date_time_assumptions=(() if temporal_changed
                                                     else event.date_time_assumptions))
+            fingerprint = event_fingerprint(edited.draft)
+            other_active = {
+                event_fingerprint(item.draft)
+                for active in self._items.values()
+                for item in active.events
+                if active.id != pending_id or item.id != event_id
+            }
+            if fingerprint in self._seen_event_fingerprints or fingerprint in other_active:
+                raise PendingEventEditError("Edited event duplicates a pending or handled event")
+
             updated = replace(pending, events=tuple(
                 edited if item.id == event_id else item for item in pending.events
             ))

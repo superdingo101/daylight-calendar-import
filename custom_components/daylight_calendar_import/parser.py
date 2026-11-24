@@ -451,6 +451,7 @@ def _correct_inferred_zone(
 
 def parse_ai_data(
     data: Any, *, source_text: str = "", time_zone: str | None = None,
+    has_attachments: bool = False,
 ) -> ParseOutcome:
     """Retain valid drafts when individual AI output items are malformed."""
     if not isinstance(data, dict):
@@ -516,6 +517,7 @@ def parse_ai_data(
                     normalized, temporal = normalize_structured_event(
                         structured_raw, time_zone, verified_source,
                         event_scoped=len(events) == 1,
+                        has_attachments=has_attachments,
                     )
                 except ValueError as err:
                     raise DraftValidationError(str(err)) from err
