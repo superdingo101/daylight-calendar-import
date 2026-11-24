@@ -297,9 +297,13 @@ class DaylightHostedParserProvider:
             record, fresh = await self._operation_store.async_prepare_hosted_operation(
                 identity, request, tuple(binaries))
             self.last_operation_id = record["key"]
+            if self._authority() != credential:
+                raise HostedParseError("unauthenticated", status=401)
             envelope = None if fresh else await self._transport.async_operation(
                 record["key"], token=credential.token)
             if envelope is None:
+                if self._authority() != credential:
+                    raise HostedParseError("unauthenticated", status=401)
                 envelope = await self._transport.async_parse(
                     request, tuple(binaries), token=credential.token, operation_key=record["key"])
             try:

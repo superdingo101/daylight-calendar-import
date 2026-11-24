@@ -937,3 +937,47 @@ def test_initial_durable_parser_metadata_has_no_operation_id(provider):
     assert client.last_operation_id is None
     assert client._operation_store is None
     assert client._operation_namespace is None
+
+
+@pytest.mark.parametrize("stage", ["prepare_fresh", "prepare_recovery", "lookup"])
+@pytest.mark.parametrize("change", ["disconnect", "rotate"])
+async def test_durable_parser_rechecks_authority_before_every_network_request(
+    provider, stage, change,
+):
+    from uuid import uuid4
+
+    client, saved, active = provider
+    key = str(uuid4())
+    record = {"key": key, "digest": "a" * 64}
+    store = MagicMock()
+    client._operation_store = store
+    client._operation_namespace = "entry:origin"
+
+    def invalidate():
+        if change == "disconnect":
+            active[0] = False
+        else:
+            saved[0] = replace(saved[0], current=replace(saved[0].current, token="R" * 43))
+
+    async def prepare(*args):
+        if stage != "lookup":
+            invalidate()
+        return record, stage == "prepare_fresh"
+
+    async def lookup(*args, **kwargs):
+        invalidate()
+        return None
+
+    store.async_prepare_hosted_operation = AsyncMock(side_effect=prepare)
+    client._transport.async_operation = AsyncMock(side_effect=lookup)
+    with pytest.raises(HostedParseError) as error:
+        await client.async_parse(TextSourceAdapter().create("School event"),
+                                 reference_datetime="2026-11-17T12:00:00Z", time_zone="UTC")
+    assert (error.value.code, error.value.status) == ("unauthenticated", 401)
+    assert client.last_operation_id == key
+    store.async_prepare_hosted_operation.assert_awaited_once()
+    client._transport.async_parse.assert_not_awaited()
+    if stage == "lookup":
+        client._transport.async_operation.assert_awaited_once_with(key, token=TOKEN)
+    else:
+        client._transport.async_operation.assert_not_awaited()
