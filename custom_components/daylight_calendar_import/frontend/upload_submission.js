@@ -1,5 +1,5 @@
 import {configureSubmissionStatus, focusSubmissionStatus} from "./submission_accessibility.js";
-import {SubmissionAttempt, SubmissionFeedback, submissionOutcomeUncertain} from "./submission_feedback.js";
+import {SubmissionAttempt, SubmissionFeedback, submissionOutcomeUncertain, submissionTerminalOperation} from "./submission_feedback.js";
 import {inspectUpload, submitFile} from "./upload_transport.js";
 import {validateSubmissionResponse} from "./manual_submission.js";
 
@@ -47,6 +47,7 @@ export class FileSubmission {
     this.attempt = new SubmissionAttempt();
     this.feedback = new SubmissionFeedback(this.status, {
       onReview, onActivity, onReimport: () => this.submit(true),
+      onRetryTerminal: () => this.submit(false, true),
     });
     this.form.append(fileLabel, this.filename, contextLabel, this.button, this.status, this.feedback.actions);
     this.text.addEventListener("input", () => {
@@ -74,7 +75,7 @@ export class FileSubmission {
     });
   }
 
-  async submit(reimportDuplicates = false) {
+  async submit(reimportDuplicates = false, retryTerminal = false) {
       if (this.busy) return;
       ++this._validationSequence; // Supersede any earlier selection-only validation.
       const selected = this.file.files?.[0];
@@ -95,8 +96,8 @@ export class FileSubmission {
       try {
         await inspectUpload(selected);
         this.feedback.processing("Uploading file…");
-        const sourceId = reimportDuplicates ?
-          this.attempt.reimport(this.text.value || "", selected) :
+        const sourceId = retryTerminal ? this.attempt.retryTerminal(this.text.value || "", selected) :
+          reimportDuplicates ? this.attempt.reimport(this.text.value || "", selected) :
           this.attempt.forDraft(this.text.value || "", selected);
         const response = validateSubmissionResponse(await submitFile(this.getHass(), selected, {
           text: this.text.value || "",
@@ -112,7 +113,7 @@ export class FileSubmission {
           this.status.textContent += " Refresh the review inbox to see the latest imports.";
         }
       } catch (error) {
-        if (!submissionOutcomeUncertain(error, submitted)) this.attempt.complete();
+        if (!submissionTerminalOperation(error, submitted) && !submissionOutcomeUncertain(error, submitted)) this.attempt.complete();
         this.feedback.error(error, submitted);
       } finally {
         this.busy = false;

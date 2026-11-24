@@ -12,6 +12,7 @@ PROVIDER_FAILURE_GUIDANCE = {
     "hosted_access": "Managed parsing is not enabled for this Daylight Cloud connection. Check its access before retrying.",
     "hosted_rate_limited": "Daylight Cloud rate limit reached. Wait before deliberately retrying; the request was not replayed.",
     "hosted_outcome_uncertain": "Daylight Cloud parse outcome is uncertain. Check recent activity and the review inbox before deliberately retrying; the request was not replayed.",
+    "hosted_operation_terminal": "Daylight Cloud parse operation ended without a recoverable result. Start a new parse to retry.",
     "hosted_parse_failed": "Daylight Cloud could not parse the source. Check its settings and recent activity before deliberately retrying.",
     "provider_timeout": "The AI provider timed out. Wait before trying the source again.",
     "provider_rate_limited": "The AI provider rate limit was reached. Wait and check your provider quota before trying again.",

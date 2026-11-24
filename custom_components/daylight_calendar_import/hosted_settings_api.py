@@ -16,6 +16,7 @@ from .const import DOMAIN
 from .hosted_runtime import (
     CONF_HOSTED_AUTOMATIC,
     CONF_HOSTED_DELIVERY_POLL,
+    CONF_HOSTED_PARSE_OPERATIONS,
     CONF_HOSTED_SERVICE,
     HostedConnectionRuntime,
     HostedRuntimeError,
@@ -78,6 +79,7 @@ async def websocket_hosted_get(hass: HomeAssistant, connection: Any, msg: dict[s
     vol.Required("account_origin"): vol.All(str, vol.Length(min=1, max=2048)),
     vol.Optional("automatic_lifecycle"): bool,
     vol.Optional("delivery_polling"): bool,
+    vol.Optional("parse_operations_v2"): bool,
 })
 @websocket_api.async_response
 async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
@@ -100,6 +102,10 @@ async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: 
                 # saved opt-out merely by updating the service origins.
                 automatic = (True if entry.options.get(CONF_HOSTED_SERVICE) is None
                              else entry.options.get(CONF_HOSTED_AUTOMATIC) is True)
+            previous_v2 = entry.options.get(CONF_HOSTED_PARSE_OPERATIONS) is True
+            v2 = msg.get("parse_operations_v2", previous_v2)
+            if previous_v2 and not v2:
+                raise HostedRuntimeError("invalid_hosted_configuration")
             previous_poll = entry.options.get(CONF_HOSTED_DELIVERY_POLL) is True
             poll = msg.get("delivery_polling", previous_poll)
             # An opt-in belongs to the current trusted service configuration.
@@ -107,7 +113,7 @@ async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: 
                 poll = False
             if (entry.options.get(CONF_HOSTED_SERVICE) == canonical
                     and (entry.options.get(CONF_HOSTED_AUTOMATIC) is True) == automatic
-                    and previous_poll == poll):
+                    and previous_poll == poll and previous_v2 == v2):
                 result = runtime.snapshot()
             else:
                 before = dict(entry.options)
@@ -118,6 +124,7 @@ async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: 
                 try:
                     await async_save_option_patch(hass, entry, {
                         CONF_HOSTED_SERVICE: canonical, CONF_HOSTED_AUTOMATIC: automatic,
+                        **({CONF_HOSTED_PARSE_OPERATIONS: v2} if previous_v2 != v2 else {}),
                         **({CONF_HOSTED_DELIVERY_POLL: poll} if previous_poll != poll else {}),
                     })
                 finally:
@@ -135,7 +142,8 @@ async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: 
                 if ((result["api_origin"], result["account_origin"]) != (
                     service.api_origin, service.account_origin,
                 ) or result.get("automatic_lifecycle", False) != automatic
-                        or result.get("delivery_polling", False) != poll):
+                        or result.get("delivery_polling", False) != poll
+                        or result.get("parse_operations_v2", False) != v2):
                     loaded.pause()
                     raise HostedRuntimeError("reload_failed")
     except SettingsValidationError as error:
@@ -150,7 +158,7 @@ async def websocket_hosted_configure(hass: HomeAssistant, connection: Any, msg: 
 @websocket_api.websocket_command({
     "type": WS_HOSTED_ACTION,
     vol.Required("entry_id"): cv.string,
-    vol.Required("action"): vol.In(("connect", "reconnect", "poll", "reconcile", "rotate", "disconnect", "retry_delivery")),
+    vol.Required("action"): vol.In(("connect", "reconnect", "poll", "reconcile", "rotate", "disconnect", "retry_delivery", "account")),
     vol.Optional("processing_consent"): bool,
     vol.Optional("installation_label"): vol.All(str, vol.Length(min=1, max=128)),
     vol.Optional("confirm_disconnect"): bool,
@@ -179,7 +187,9 @@ async def websocket_hosted_action(hass: HomeAssistant, connection: Any, msg: dic
         if action == "disconnect" and msg.get("confirm_disconnect") is not True:
             raise HostedRuntimeError("confirmation_required")
         runtime = _runtime(hass, entry)
-        if action == "retry_delivery":
+        if action == "account":
+            result = await runtime.async_account_status()
+        elif action == "retry_delivery":
             if msg.get("confirm_delivery_retry") is not True:
                 raise HostedRuntimeError("confirmation_required")
             result = await runtime.async_retry_delivery_parse()

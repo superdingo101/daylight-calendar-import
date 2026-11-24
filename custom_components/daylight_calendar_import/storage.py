@@ -19,6 +19,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util.json import json_loads
 
+from .hosted_operations import digest, payload_digest, validate_records
 from .hosted_delivery_journal import HostedDeliveryEvidence, HostedDeliveryJournalEntry
 from .const import DOMAIN
 from .dedup import (
@@ -42,6 +43,7 @@ COMPLETED_HISTORY_DAYS = 30
 TERMINAL_NOTIFICATION_LIMIT = 1_000
 _STORAGE_HOSTED_JOURNAL = "hosted_delivery_journal"
 _STORAGE_HOSTED_PARSE_ATTEMPT = "hosted_parse_attempt"
+_STORAGE_HOSTED_OPERATIONS = "hosted_parse_operations"
 _STORAGE_ITEMS = "items"
 _STORAGE_ACTIVITY = "activity"
 _STORAGE_NOTIFICATIONS = "notifications"
@@ -374,7 +376,7 @@ def _decode_storage_data(data: Any) -> tuple:
     """Decode all durable collections before installing any of the snapshot."""
     fields = {_STORAGE_ITEMS, _STORAGE_ACTIVITY, _STORAGE_NOTIFICATIONS,
               _STORAGE_SOURCE_CLAIMS, _STORAGE_SEEN_SOURCES, _STORAGE_SEEN_EVENTS,
-              _STORAGE_HOSTED_JOURNAL, _STORAGE_HOSTED_PARSE_ATTEMPT}
+              _STORAGE_HOSTED_JOURNAL, _STORAGE_HOSTED_PARSE_ATTEMPT, _STORAGE_HOSTED_OPERATIONS}
     if not isinstance(data, dict) or set(data) - fields:
         raise ValueError("unsupported pending storage envelope")
 
@@ -469,6 +471,7 @@ def _decode_storage_data(data: Any) -> tuple:
     parse_attempt = data.get(_STORAGE_HOSTED_PARSE_ATTEMPT)
     if parse_attempt is not None:
         stored_fingerprint(parse_attempt, "source")
+    validate_records(data.get(_STORAGE_HOSTED_OPERATIONS, {}))
     return (
         {item.id: item for item in loaded_items}, tuple(activity), journal, *histories,
         dict(claims), hosted, parse_attempt,
@@ -500,6 +503,7 @@ class PendingImportStore:
         self._activity: tuple[dict[str, Any], ...] = ()
         self._hosted_delivery_journal: tuple[HostedDeliveryJournalEntry, ...] = ()
         self._hosted_parse_attempt: str | None = None
+        self._hosted_operations: dict = {}
         self._hosted_writes_closed = False
         self._notifications: tuple[NotificationRecord, ...] = ()
         self.notification_preferences: Callable[[], NotificationPreferences] = NotificationPreferences
@@ -541,11 +545,12 @@ class PendingImportStore:
             if data is None:
                 if any((self._items, self._activity, self._notifications, self._source_claims,
                         self._seen_source_fingerprints, self._seen_event_fingerprints,
-                        self._hosted_delivery_journal, self._hosted_parse_attempt)):
+                        self._hosted_delivery_journal, self._hosted_parse_attempt, self._hosted_operations)):
                     raise PendingImportStorageError(_STORAGE_ERROR)
                 snapshot = ({}, (), (), (), (), {}, (), None)
             else:
                 snapshot = _decode_storage_data(data)
+            operations = validate_records(data.get(_STORAGE_HOSTED_OPERATIONS, {}) if data else {})
         except Exception:
             self._storage_blocked = True
             self.accepting_services = False
@@ -554,6 +559,7 @@ class PendingImportStore:
         (self._items, self._activity, self._notifications, self._seen_source_fingerprints,
          self._seen_event_fingerprints, self._source_claims, self._hosted_delivery_journal,
          self._hosted_parse_attempt) = snapshot
+        self._hosted_operations = operations
         self._storage_blocked = False
         self._source_claim_releases = set()
         self._source_claim_release_provider_codes = {}
@@ -1408,6 +1414,7 @@ class PendingImportStore:
                 # Only passed to the transaction when a guard was supplied.
                 acceptance_guard()
 
+            guarded_acceptance.hosted_operation_id = getattr(acceptance_guard, "hosted_operation_id", None)
             result, cancelled = await self._async_complete_transaction(
                 self._async_commit_reprocessed(
                     original, candidates, warnings,
@@ -1437,6 +1444,20 @@ class PendingImportStore:
                 # retained source. Preserve that work, append no stale candidates,
                 # and keep the source-level safety warning authoritative.
                 original, candidates = current, ()
+            operations = None
+            operation_id = getattr(acceptance_guard, "hosted_operation_id", None)
+            if operation_id is not None:
+                if self._hosted_writes_closed or self._storage_blocked:
+                    raise PendingImportStorageError(_STORAGE_ERROR)
+                operations = deepcopy(self._hosted_operations)
+                matches = [row for row in operations.values() if row["key"] == operation_id]
+                if len(matches) != 1:
+                    raise ValueError("unknown hosted operation")
+                if "terminal_source" in matches[0]:
+                    raise ValueError("terminal hosted operation cannot be accepted")
+                if matches[0]["accepted"]:
+                    return original, 0, 0
+                matches[0]["accepted"] = True
             known = set(self._seen_event_fingerprints) | self._active_event_fingerprints()
             accepted = []
             duplicates = 0
@@ -1455,7 +1476,8 @@ class PendingImportStore:
             items = dict(self._items)
             items[original.id] = updated
             activity = self._transition(updated, "source_reprocessed", remaining=updated.events)
-            await self._async_save(items, activity=activity)
+            await self._async_save(items, activity=activity,
+                                   **({"hosted_operations": operations} if operations is not None else {}))
             self._commit_items(items)
             return updated, len(accepted), duplicates
 
@@ -1514,6 +1536,63 @@ class PendingImportStore:
             self._commit_items(items)
             return edited
 
+    async def async_prepare_hosted_operation(self, identity, request, attachments):
+        """Persist original ephemeral fields and binding before any provider bytes."""
+        result, cancelled = await self._async_complete_transaction(
+            self._async_prepare_hosted_operation_transaction(identity, request, attachments),
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    async def _async_prepare_hosted_operation_transaction(self, identity, request, attachments):
+        from uuid import uuid4
+        async with self._lock:
+            if self._hosted_writes_closed or self._storage_blocked:
+                raise PendingImportStorageError(_STORAGE_ERROR)
+            records = deepcopy(self._hosted_operations)
+            record = records.get(identity)
+            if record is not None:
+                request["source"]["id"] = record["request_id"]
+                request["source"]["received_at"] = record["received_at"]
+                request["reference_datetime"] = record["reference_datetime"]
+                request["time_zone"] = record.get("time_zone", request["time_zone"])
+                if payload_digest(request, attachments) != record["digest"]:
+                    raise ValueError("operation payload conflict")
+                return deepcopy(record), False
+            if len(records) >= 10000:
+                raise ValueError("operation journal requires owner recovery")
+            record = {"key": str(uuid4()), "digest": payload_digest(request, attachments),
+                      "request_id": request["source"]["id"],
+                      "received_at": request["source"]["received_at"],
+                      "reference_datetime": request["reference_datetime"], "time_zone": request["time_zone"],
+                       "accepted": False}
+            records[identity] = record
+            await self._async_save(self._items, hosted_operations=records)
+            return deepcopy(record), True
+
+    async def async_mark_hosted_operation_terminal(self, identity, key, source_id):
+        """Record a validated terminal result only for the currently fenced delivery."""
+        _, cancelled = await self._async_complete_transaction(
+            self._async_mark_hosted_operation_terminal_transaction(identity, key, source_id),
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _async_mark_hosted_operation_terminal_transaction(self, identity, key, source_id):
+        async with self._lock:
+            if self._hosted_writes_closed or self._storage_blocked:
+                raise PendingImportStorageError(_STORAGE_ERROR)
+            fingerprint = build_source_fingerprint(source_id)
+            if self._hosted_parse_attempt != fingerprint:
+                return
+            records = deepcopy(self._hosted_operations)
+            record = records.get(identity)
+            if record is None or record["key"] != key or record["accepted"]:
+                return
+            record["terminal_source"] = fingerprint
+            await self._async_save(self._items, hosted_operations=records)
+
     def hosted_ack_journal(self) -> tuple[HostedDeliveryJournalEntry, ...]:
         """Return independent snapshots; the private store owns mutable evidence."""
         if self._storage_blocked:
@@ -1534,7 +1613,7 @@ class PendingImportStore:
         """A managed parse was attempted without a durable terminal result."""
         return self._hosted_parse_attempt is not None
 
-    async def async_change_hosted_parse_attempt(self, source_id: str | None) -> None:
+    async def async_change_hosted_parse_attempt(self, source_id: str | None, *, retry_terminal: bool = False) -> None:
         """Fence a managed POST durably, or clear it after explicit recovery."""
         async def change() -> None:
             async with self._lock:
@@ -1543,7 +1622,24 @@ class PendingImportStore:
                 if source_id is not None and self._hosted_parse_attempt is not None:
                     raise ValueError("hosted parse requires explicit recovery")
                 attempt = build_source_fingerprint(source_id) if source_id is not None else None
-                await self._async_save(self._items, hosted_parse_attempt=(attempt,))
+                operations = None
+                if retry_terminal and attempt is None and self._hosted_parse_attempt is not None:
+                    records = deepcopy(self._hosted_operations)
+                    matches = [identity for identity, record in records.items()
+                               if record.get("terminal_source") == self._hosted_parse_attempt
+                               and identity != digest({"retired_operation": record["key"]})]
+                    if len(matches) > 1:
+                        raise ValueError("ambiguous terminal operation")
+                    if matches:
+                        identity = matches[0]
+                        record = records.pop(identity)
+                        archive = digest({"retired_operation": record["key"]})
+                        if archive in records:
+                            raise ValueError("operation archive conflict")
+                        records[archive] = record
+                        operations = records
+                await self._async_save(self._items, hosted_parse_attempt=(attempt,),
+                                       hosted_operations=operations)
 
         _, cancelled = await self._async_complete_transaction(change())
         if cancelled:
@@ -1654,6 +1750,7 @@ class PendingImportStore:
         activity_id: str | None = None,
         acceptance_guard: Callable[[], None] | None = None,
         hosted_evidence: HostedDeliveryEvidence | None = None,
+        hosted_operation_id: str | None = None,
     ) -> PendingImportAddResult:
         """Persist events, letting the storage transaction finish before cancellation."""
         # Freeze mutable evidence before yielding to another task.
@@ -1682,6 +1779,7 @@ class PendingImportStore:
                 activity_id=activity_id,
                 acceptance_guard=(guarded_acceptance if acceptance_guard is not None else None),
                 hosted_evidence=hosted_evidence,
+                hosted_operation_id=hosted_operation_id,
             ),
             on_cancel=(cancelled_before_acceptance.set if acceptance_guard is not None else None),
         )
@@ -1706,6 +1804,7 @@ class PendingImportStore:
         activity_id: str | None = None,
         acceptance_guard: Callable[[], None] | None = None,
         hosted_evidence: HostedDeliveryEvidence | None = None,
+        hosted_operation_id: str | None = None,
     ) -> PendingImportAddResult:
         """Persist only events not already pending or handled."""
         if hosted_evidence is not None:
@@ -1745,6 +1844,38 @@ class PendingImportStore:
                        for entry in self._hosted_delivery_journal):
                     raise ValueError("hosted delivery already has an ACK obligation")
 
+            operations = None
+            if hosted_operation_id is not None:
+                if self._hosted_writes_closed or self._storage_blocked:
+                    raise PendingImportStorageError(_STORAGE_ERROR)
+                operations = deepcopy(self._hosted_operations)
+                matches = [row for row in operations.values() if row["key"] == hosted_operation_id]
+                if len(matches) != 1:
+                    raise ValueError("unknown hosted operation")
+                if "terminal_source" in matches[0]:
+                    raise ValueError("terminal hosted operation cannot be accepted")
+                if matches[0]["accepted"]:
+                    # A recovered parse may belong to a newly leased delivery.
+                    # Journal its ACK in the same durable write even though the
+                    # operation tombstone prevents adding its events twice.
+                    claims = self._source_claims
+                    if activity_id is not None and activity_id in claims:
+                        if source_fp is None or claims[activity_id] != source_fp:
+                            raise ValueError("source_id does not match claimed source")
+                        claims = {key: value for key, value in claims.items() if key != activity_id}
+                    journal = None if hosted_evidence is None else self._hosted_delivery_journal + (
+                        HostedDeliveryJournalEntry(hosted_evidence, source_fp, "duplicate"),
+                    )
+                    if activity_id is not None or journal is not None:
+                        await self._async_save(
+                            self._items, activity=self._finish_submission(activity_id, "duplicate"),
+                            source_claims=claims, hosted_operations=operations,
+                            hosted_delivery_journal=journal,
+                        )
+                        self._source_claims = claims
+                    return PendingImportAddResult(None, True, 0)
+                matches[0]["accepted"] = True
+
             def hosted_journal(disposition: str) -> tuple[HostedDeliveryJournalEntry, ...] | None:
                 if hosted_evidence is None:
                     return None
@@ -1775,11 +1906,12 @@ class PendingImportStore:
                 if hosted_evidence is not None:
                     raise ValueError("hosted source has no proven successful outcome")
                 activity = self._finish_submission(activity_id, "duplicate")
-                if activity_id is not None or hosted_evidence is not None:
+                if activity_id is not None or hosted_evidence is not None or operations is not None:
                     await self._async_save(
                         self._items,
                         activity=activity,
                         source_claims=source_claims,
+                        hosted_operations=operations,
                         hosted_delivery_journal=hosted_journal("duplicate"),
                     )
                     self._source_claims = source_claims
@@ -1835,15 +1967,17 @@ class PendingImportStore:
                         seen_source_fingerprints=seen_sources,
                         activity=activity,
                         source_claims=source_claims,
+                        hosted_operations=operations,
                         hosted_delivery_journal=hosted_journal(status),
                     )
                     self._seen_source_fingerprints = seen_sources
                     self._source_claims = source_claims
-                elif activity_id is not None or hosted_evidence is not None:
+                elif activity_id is not None or hosted_evidence is not None or operations is not None:
                     await self._async_save(
                         self._items,
                         activity=activity,
                         source_claims=source_claims,
+                        hosted_operations=operations,
                         hosted_delivery_journal=hosted_journal(status),
                     )
                     self._source_claims = source_claims
@@ -1875,6 +2009,7 @@ class PendingImportStore:
                 items,
                 activity=activity,
                 source_claims=source_claims,
+                hosted_operations=operations,
                 hosted_delivery_journal=hosted_journal("pending"),
             )
             self._commit_items(items)
@@ -2204,6 +2339,7 @@ class PendingImportStore:
         notifications: tuple[NotificationRecord, ...] | None = None,
         hosted_delivery_journal: tuple[HostedDeliveryJournalEntry, ...] | None = None,
         hosted_parse_attempt: tuple[str | None] | None = None,
+        hosted_operations: dict | None = None,
     ) -> None:
         """Persist a proposed collection and deduplication history."""
         if self._storage_blocked:
@@ -2244,7 +2380,11 @@ class PendingImportStore:
             attempt = None
         if attempt is not None:
             data[_STORAGE_HOSTED_PARSE_ATTEMPT] = attempt
-        hosted_write = hosted_delivery_journal is not None or hosted_parse_attempt is not None
+        operations = self._hosted_operations if hosted_operations is None else hosted_operations
+        if operations:
+            data[_STORAGE_HOSTED_OPERATIONS] = operations
+        hosted_write = (hosted_delivery_journal is not None or hosted_parse_attempt is not None
+                        or hosted_operations is not None)
         try:
             if hosted_write:
                 await self._store.async_save_immediate(data)
@@ -2259,6 +2399,7 @@ class PendingImportStore:
             raise
         self._hosted_delivery_journal = hosted
         self._hosted_parse_attempt = attempt
+        self._hosted_operations = operations
         self._activity = history
         self._notifications = journal
         if self.on_notifications is not None:

@@ -614,8 +614,8 @@ async def test_delivery_poll_defers_foreground_and_requires_explicit_recovery(ha
         await runtime.async_retry_delivery_parse()
     runtime._delivery_poll_enabled = runtime._delivery_parser_selected = True
     store = SimpleNamespace(hosted_parse_uncertain=True, active_submissions={object()})
-    async def clear(value):
-        assert value is None
+    async def clear(value, *, retry_terminal):
+        assert value is None and retry_terminal is True
         store.hosted_parse_uncertain = False
     store.async_change_hosted_parse_attempt = AsyncMock(side_effect=clear)
     runtime.configure_delivery(store=store, route_source=object(), parse_source=object())
@@ -632,7 +632,7 @@ async def test_delivery_poll_defers_foreground_and_requires_explicit_recovery(ha
         await runtime.async_retry_delivery_parse()
     runtime._delivery_poll_running = False
     assert "delivery_parse_uncertain" not in await runtime.async_retry_delivery_parse()
-    store.async_change_hosted_parse_attempt.assert_awaited_once_with(None)
+    store.async_change_hosted_parse_attempt.assert_awaited_once_with(None, retry_terminal=True)
     delete_issue.assert_called_with(hass, "daylight_calendar_import",
                                     "hosted_delivery_uncertain_hosted-entry")
     assert timer.call_count == 1
@@ -832,8 +832,8 @@ async def test_explicit_delivery_retry_fences_permission_and_owns_transaction(ru
     monkeypatch.setattr(module.ir, "async_delete_issue", delete)
     monkeypatch.setattr(module.ir, "async_create_issue", Mock())
     store = SimpleNamespace(hosted_parse_uncertain=True)
-    async def clear_attempt(value):
-        assert value is None
+    async def clear_attempt(value, *, retry_terminal):
+        assert value is None and retry_terminal is True
         assert r._delivery_poll_running is True
         store.hosted_parse_uncertain = False
     store.async_change_hosted_parse_attempt = AsyncMock(side_effect=clear_attempt)
@@ -858,7 +858,7 @@ async def test_explicit_delivery_retry_fences_permission_and_owns_transaction(ru
     assert "delivery_parse_uncertain" not in result
     assert r._delivery_due_at is None
     assert r._delivery_poll_running is False
-    store.async_change_hosted_parse_attempt.assert_awaited_once_with(None)
+    store.async_change_hosted_parse_attempt.assert_awaited_once_with(None, retry_terminal=True)
     delete.assert_any_call(hass, module.DOMAIN, "hosted_delivery_uncertain_hosted-entry")
     assert timer.called
     await r.async_stop()
@@ -873,4 +873,160 @@ async def test_foreground_delivery_conflict_checks_service_handlers_independentl
     assert r._foreground_delivery_conflict() is False
     store.active_submissions.add(object())
     assert r._foreground_delivery_conflict() is True
+    await r.async_stop()
+
+
+@pytest.mark.parametrize("enabled", [True, False, None])
+async def test_m5_parse_session_only_wires_durable_journal_with_explicit_opt_in(
+    runtime, hass, monkeypatch, enabled,
+):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+    r, store = runtime
+    binding = HostedServiceBinding(**SERVICE)
+    credential = BoundCredential(
+        "account_1234567890", "installation_1234567890",
+        "x" * 60, (datetime.now(UTC) + timedelta(days=10)).isoformat(),
+    )
+    store.snapshot = CredentialCheckpoint(
+        service_binding=binding, processing_consent=True, current=credential,
+    )
+    r._verified_parse_credential = credential
+    r._state = HostedConnectionResult("connected", credential_status="current")
+    r._options[module.CONF_HOSTED_PARSE_OPERATIONS] = enabled
+    from custom_components.daylight_calendar_import.const import DOMAIN
+    pending_store = object()
+    hass.data.setdefault(DOMAIN, {})[r._entry_id] = pending_store
+    constructor = Mock(return_value=object())
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.hosted_parser.DaylightHostedParserProvider",
+        constructor,
+    )
+    parser, guard = r.parse_session()
+    assert parser is constructor.return_value
+    guard()
+    kwargs = constructor.call_args.kwargs
+    assert kwargs["service_binding"] == binding
+    assert kwargs["checkpoint"]() == store.snapshot
+    assert kwargs["active"]() is True
+    if enabled is True:
+        assert kwargs["operation_store"] is pending_store
+        assert kwargs["operation_namespace"] == "hosted-entry:" + binding.api_origin
+    else:
+        assert "operation_store" not in kwargs
+        assert "operation_namespace" not in kwargs
+    # Admission must be irreversibly fenced after authority rotation.
+    r._parse_generation += 1
+    from custom_components.daylight_calendar_import.providers import ProviderError
+    with pytest.raises(ProviderError, match="Daylight Cloud connection changed"):
+        guard()
+    await r.async_stop()
+
+
+@pytest.mark.parametrize("failure", [None, "transport", "guard", "invalid"])
+async def test_commercial_account_status_validates_authority_and_public_response(
+    runtime, monkeypatch, failure,
+):
+    from unittest.mock import Mock
+    from custom_components.daylight_calendar_import import hosted_runtime as module
+    from custom_components.daylight_calendar_import.hosted_parse_transport import HostedParseError
+    from custom_components.daylight_calendar_import.providers import ProviderError
+
+    r, _ = runtime
+    r._options[module.CONF_HOSTED_PARSE_OPERATIONS] = True
+    value = {
+        "schema_version": 2, "parse_operations_v2": True,
+        "capabilities": {"managed_ai": True, "new_email_intake": False,
+                         "accepted_source_drain": True},
+        "billing": {"state": "trial", "trial_ends_at": None, "trial_remaining": 12,
+                    "paid_remaining": 0, "period_ends_at": None, "grace_ends_at": None,
+                    "cancel_at_period_end": False},
+        "drain_cutoff_at": None, "account_url": SERVICE["account_origin"] + "/account",
+    }
+    token = "private-token"
+    get = AsyncMock(return_value=value)
+    provider = SimpleNamespace(_authority=Mock(return_value=SimpleNamespace(token=token)),
+                               _transport=SimpleNamespace(async_v2_get=get))
+    guard = Mock()
+    session = Mock(return_value=(provider, guard))
+    monkeypatch.setattr(r, "parse_session", session)
+    if failure == "transport":
+        get.side_effect = HostedParseError("private")
+    elif failure == "guard":
+        guard.side_effect = ProviderError("changed", "private")
+    elif failure == "invalid":
+        get.return_value = {**value, "account_url": "https://evil.test/account"}
+
+    if failure is None:
+        snapshot = await r.async_account_status()
+        assert snapshot["commercial_status"] == value
+        assert snapshot["commercial_status"] is not value
+        assert token not in str(snapshot)
+        assert snapshot == r.snapshot()
+        r.pause()
+        assert r.snapshot()["commercial_status"] is None
+    else:
+        with pytest.raises(HostedRuntimeError, match="^hosted_action_failed$"):
+            await r.async_account_status()
+        assert r.snapshot()["commercial_status"] is None
+    session.assert_called_once_with()
+    provider._authority.assert_called_once_with()
+    get.assert_awaited_once_with("/account", token=token)
+    assert guard.call_count == (0 if failure == "transport" else 1)
+    await r.async_stop()
+
+
+async def test_delivery_runtime_preserves_operation_id_into_atomic_acceptance(runtime, hass, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
+    from custom_components.daylight_calendar_import.storage import PendingImportStore
+    from tests.test_hosted_operations import Backend, request
+    from tests.test_hosted_delivery_journal import evidence
+    from tests.test_storage import draft
+
+    r, credentials = runtime
+    binding = HostedServiceBinding(**SERVICE)
+    credential = BoundCredential(
+        "account_1234567890", "installation_1234567890", "x" * 60,
+        (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+    )
+    credentials.snapshot = CredentialCheckpoint(
+        service_binding=binding, processing_consent=True, current=credential,
+    )
+    r._verified_parse_credential = credential
+    r._state = HostedConnectionResult("connected", credential_status="current")
+    store = PendingImportStore(hass)
+    backend = Backend()
+    store._store = backend
+    identity = "a" * 64
+    record, _ = await store.async_prepare_hosted_operation(identity, request(), ())
+    guard = Mock()
+    guard.hosted_operation_id = record["key"]
+    outcome = object()
+    parse = AsyncMock(return_value=(outcome, guard))
+    source = object()
+    item = evidence()
+
+    async def batch(**kwargs):
+        parsed, wrapped_guard = await kwargs["parse_source"](source)
+        assert parsed is outcome
+        assert wrapped_guard.hosted_operation_id == record["key"]
+        return await kwargs["store"].async_add(
+            source_text="Meeting", events=[draft()], source_id=item.source_id,
+            hosted_evidence=item, acceptance_guard=wrapped_guard,
+            hosted_operation_id=wrapped_guard.hosted_operation_id,
+        )
+
+    monkeypatch.setattr(
+        "custom_components.daylight_calendar_import.hosted_text_batch.async_process_text_batch",
+        batch,
+    )
+    r.configure_delivery(store=store, route_source=object(), parse_source=parse)
+    result = await r.async_delivery_pass(limit=1)
+    assert result.pending is not None
+    parse.assert_awaited_once_with(source)
+    guard.assert_called_once_with()
+    assert backend.data["hosted_parse_operations"][identity]["accepted"] is True
+    assert backend.data["hosted_delivery_journal"][0]["acceptance_disposition"] == "pending"
     await r.async_stop()

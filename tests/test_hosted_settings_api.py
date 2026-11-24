@@ -604,3 +604,69 @@ async def test_retry_delivery_requires_an_explicit_admin_confirmation():
         **base, "action": "reconcile", "confirm_delivery_retry": True,
     })
     assert wrong.errors[0][1] == "invalid_hosted_action"
+
+
+async def test_account_status_action_is_admin_owned_and_routes_to_runtime():
+    cfg = entry()
+    hass = hass_for(cfg)
+    runtime = fake_runtime(hass, cfg)
+    runtime.async_account_status = AsyncMock(return_value={"state": "connected"})
+    response = await invoke(api.websocket_hosted_action, hass,
+                            {"entry_id": cfg.entry_id, "action": "account"})
+    runtime.async_account_status.assert_awaited_once_with()
+    assert response.results
+
+
+async def test_durable_operation_opt_in_cannot_be_silently_disabled():
+    from custom_components.daylight_calendar_import.hosted_runtime import CONF_HOSTED_PARSE_OPERATIONS
+
+    cfg = entry(options={CONF_HOSTED_SERVICE: SERVICE, CONF_HOSTED_AUTOMATIC: True,
+                         CONF_HOSTED_PARSE_OPERATIONS: True})
+    hass = hass_for(cfg)
+    fake_runtime(hass, cfg)
+    result = await invoke(api.websocket_hosted_configure, hass, {
+        "entry_id": cfg.entry_id, **SERVICE, "parse_operations_v2": False,
+    })
+    assert result.errors[0][1] == "invalid_hosted_configuration"
+    assert not hass.config_entries.updates
+    assert not hass.config_entries.reloads
+    assert cfg.options[CONF_HOSTED_PARSE_OPERATIONS] is True
+    result = await invoke(api.websocket_hosted_configure, hass, {
+        "entry_id": cfg.entry_id, **SERVICE,
+    })
+    assert result.results
+    assert not hass.config_entries.updates
+
+
+@pytest.mark.parametrize("loaded_v2", [True, False])
+async def test_durable_opt_in_requires_matching_reloaded_runtime(monkeypatch, loaded_v2):
+    from unittest.mock import Mock
+    from custom_components.daylight_calendar_import.hosted_runtime import CONF_HOSTED_PARSE_OPERATIONS
+
+    cfg = entry(options={CONF_HOSTED_SERVICE: SERVICE, CONF_HOSTED_AUTOMATIC: True})
+    hass = hass_for(cfg)
+    old = fake_runtime(hass, cfg)
+    old.pause = Mock()
+    loaded = SimpleNamespace(accepting=True, busy=False, pause=Mock(), snapshot=lambda: {
+        **SERVICE, "automatic_lifecycle": True, "parse_operations_v2": loaded_v2,
+    })
+
+    async def save(_hass, _entry, patch):
+        assert patch == {CONF_HOSTED_SERVICE: SERVICE, CONF_HOSTED_AUTOMATIC: True,
+                         CONF_HOSTED_PARSE_OPERATIONS: True}
+        cfg.options = {**cfg.options, **patch}
+        hass.data[DOMAIN][cfg.entry_id].hosted_runtime = loaded
+
+    monkeypatch.setattr(api, "async_save_option_patch", save)
+    response = await invoke(api.websocket_hosted_configure, hass, {
+        "entry_id": cfg.entry_id, **SERVICE, "parse_operations_v2": True,
+    })
+    assert cfg.options[CONF_HOSTED_PARSE_OPERATIONS] is True
+    assert old.pause.called
+    if loaded_v2:
+        assert response.results == [(1, loaded.snapshot())]
+        loaded.pause.assert_not_called()
+    else:
+        assert response.errors[0][1] == "reload_failed"
+        loaded.pause.assert_called_once_with()
+        assert not response.results

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.daylightcalendar.com/schemas/hosted/v2/parse-operation.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "operation_id",
+    "payload_sha256",
+    "status",
+    "result",
+    "replay_expires_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "operation_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "payload_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "uncertain",
+        "succeeded",
+        "failed",
+        "expired"
+      ]
+    },
+    "result": {
+      "anyOf": [
+        {
+          "$ref": "https://docs.daylightcalendar.com/schemas/hosted/v1/parse-response.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "replay_expires_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    }
+  }
+}

@@ -16,7 +16,7 @@ _ROOT = {"items", "activity", "notifications", "source_claims", "seen_source_fin
 _ITEM = {"id", "created_at", "source_text", "events", "source_fingerprint", "source_kind", "source_title", "source_sender", "warnings", "duplicate_events"}
 _EVENT = {"id", "draft", "status", "calendar_entity", "write_attempt", "routing_unresolved", "date_time_assumptions"}
 _DRAFT = {"title", "start", "end", "all_day", "location", "description", "confidence"}
-_ACTIVITY = {"id", "created_at", "source_kind", "source_title", "title", "created_count", "rejected_count", "status", "transitions", "notification_delivery_failed", "guidance"}
+_ACTIVITY = {"id", "created_at", "source_kind", "source_title", "title", "created_count", "rejected_count", "status", "transitions", "notification_delivery_failed", "guidance", "failure_code", "manual_source_text"}
 _TRANSITION = {"type", "at", "event_id", "write_attempt"}
 _NOTIFICATION = {"import_id", "transition_type", "occurred_at", "event_id", "target", "status", "attempts", "next_attempt_at", "failure", "write_attempt", "recovered", "conflict_revision", "terminal_at"}
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{16,128}")
@@ -33,8 +33,10 @@ def _closed(value: Any, fields: set[str]) -> None:
 
 def _local_data(data: dict[str, Any], allow_delivery: bool = False) -> None:
     """Pin every identity-bearing collection rather than accepting future fields."""
-    _closed(data, _ROOT | {"hosted_delivery_journal", "hosted_parse_attempt"} if allow_delivery else _ROOT)
+    _closed(data, _ROOT | {"hosted_delivery_journal", "hosted_parse_attempt", "hosted_parse_operations"} if allow_delivery else _ROOT)
     storage._decode_storage_data(data)
+    if "hosted_parse_operations" in data:
+        storage.validate_records(data["hosted_parse_operations"])
     for item in data["items"]:
         _closed(item, _ITEM)
         if item.get("source_kind", "manual_text") not in _KINDS:
@@ -44,7 +46,19 @@ def _local_data(data: dict[str, Any], allow_delivery: bool = False) -> None:
             _closed(event["draft"], _DRAFT)
     for activity in data.get("activity", ()):
         _closed(activity, _ACTIVITY)
+        if "failure_code" in activity and (
+            type(activity["failure_code"]) is not str
+            or activity["failure_code"] not in storage.PROVIDER_FAILURE_GUIDANCE
+        ):
+            raise NamespaceReconciliationError(_ERROR)
         if activity.get("source_kind") not in _KINDS:
+            raise NamespaceReconciliationError(_ERROR)
+        if "manual_source_text" in activity and (
+            activity["source_kind"] != "manual_text"
+            or activity["status"] not in ("duplicate", "no_events")
+            or type(activity["manual_source_text"]) is not str
+            or not 1 <= len(activity["manual_source_text"]) <= 4096
+        ):
             raise NamespaceReconciliationError(_ERROR)
         for transition in activity["transitions"]:
             _closed(transition, _TRANSITION)
@@ -112,6 +126,9 @@ class LocalOnlyNamespaceReconciler:
                         raise NamespaceReconciliationError(_ERROR)
                     loaded["hosted_delivery_journal"] = [record.as_dict() for record in journal]
                     loaded["hosted_parse_attempt"] = attempt
+                operations = pending._hosted_operations
+                if operations:
+                    loaded["hosted_parse_operations"] = operations
                 _local_data(loaded, self._allow_delivery)
                 durable = await pending._store.hass.async_add_executor_job(
                     _read_contract, pending._store.path, self._allow_delivery,
@@ -122,8 +139,9 @@ class LocalOnlyNamespaceReconciler:
                     raise NamespaceReconciliationError(_ERROR)
                 if self._allow_delivery and durable is not None:
                     decoded = storage._decode_storage_data(durable)
-                    if decoded[-2:] != (journal, attempt):
+                    if (decoded[-2:] != (journal, attempt)
+                            or durable.get("hosted_parse_operations", {}) != operations):
                         raise NamespaceReconciliationError(_ERROR)
-            return DELIVERY_CONTRACT if journal or attempt is not None else LOCAL_ONLY_CONTRACT
+            return DELIVERY_CONTRACT if journal or attempt is not None or operations else LOCAL_ONLY_CONTRACT
         except Exception:  # noqa: BLE001 -- never expose source contents or private paths
             raise NamespaceReconciliationError(_ERROR) from None

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {SubmissionAttempt, SubmissionFeedback, pdfPreprocessingFailure, submissionPreprocessingFailure, submissionErrorMessage, submissionMessage, submissionOutcomeUncertain} from "./submission_feedback.js";
+import {SubmissionAttempt, SubmissionFeedback, pdfPreprocessingFailure, submissionPreprocessingFailure, submissionErrorMessage, submissionMessage, submissionOutcomeUncertain, submissionTerminalOperation} from "./submission_feedback.js";
 class FakeNode {
   constructor(tag) { this.tag = tag; this.children = []; this.textContent = ""; }
   append(...children) { this.children.push(...children); }
@@ -303,4 +303,44 @@ test("hosted failures distinguish connection repair, access, rate limits and unc
   assert.equal(submissionErrorMessage(failure(uncertain)), uncertain);
   assert.match(submissionErrorMessage(failure("Daylight Cloud could not parse this source.")),
     /No local AI Task fallback was used/);
+});
+
+
+test("fresh-operation affordance requires exact acknowledged terminal guidance and current feedback", async () => {
+  const terminal = {code: "home_assistant_error", message: "Daylight Cloud parse operation ended without a recoverable result. Start a new parse to retry."};
+  const uncertain = {code: "home_assistant_error", message: "Daylight Cloud parse outcome is uncertain. Check recent activity and the review inbox before deliberately retrying; the request was not replayed."};
+  let retries = 0;
+  const feedback = new SubmissionFeedback(new FakeNode("p"), {onRetryTerminal: () => { retries++; }});
+  for (const [error, submitted] of [[terminal, false], [uncertain, true],
+    [{...terminal, code: "timeout"}, true], [{...terminal, message: terminal.message + " extra"}, true],
+    [{code: "home_assistant_error", message: "Daylight Cloud could not parse this source."}, true]]) {
+    assert.equal(submissionTerminalOperation(error, submitted), false);
+    feedback.error(error, submitted);
+    assert.equal(feedback.actions.children.length, 0);
+  }
+  assert.equal(submissionOutcomeUncertain(uncertain), true);
+  assert.equal(submissionOutcomeUncertain(uncertain, false), false);
+  feedback.error(terminal);
+  assert.equal(submissionTerminalOperation(terminal), true);
+  assert.equal(feedback.actions.children[0].textContent, "Start new parse");
+  const stale = feedback.actions.children[0];
+  feedback.clear();
+  await stale.click();
+  assert.equal(retries, 0);
+  feedback.error(terminal);
+  await feedback.actions.children[0].click();
+  assert.equal(retries, 1);
+});
+
+test("fresh terminal retry retains duplicate override only for exactly the same draft", () => {
+  const attempt = new SubmissionAttempt();
+  const file = new File(["%PDF"], "event.pdf");
+  const original = attempt.reimport("Lunch", file);
+  assert.notEqual(attempt.retryTerminal("Lunch", file), original);
+  assert.equal(attempt.reimportDuplicates, true);
+  attempt.retryTerminal("Dinner", file);
+  assert.equal(attempt.reimportDuplicates, false);
+  attempt.reimport("Dinner", file);
+  attempt.retryTerminal("Dinner", new File(["%PDF"], "other.pdf"));
+  assert.equal(attempt.reimportDuplicates, false);
 });

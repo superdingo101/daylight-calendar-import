@@ -700,3 +700,34 @@ async def test_attachment_payload_transport_failure_after_headers_keeps_status()
     assert "private" not in str(raised.value)
     assert response.closed
     assert session.request.call_count == 1
+
+
+async def test_claim_integral_json_float_normalized_exactly_by_shared_wire_decoder():
+    response = page()
+    raw = json.dumps(response).replace('"schema_version": 1', '"schema_version": 1.0').encode()
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.request.return_value = Response(raw=raw, headers={"Cache-Control": "no-store"})
+    assert await HostedSourceTransport(session, SERVICE).async_claim(token=TOKEN) == response
+
+
+@pytest.mark.parametrize("status", [300, 301, 302, 399])
+async def test_claim_rejects_every_http_redirect_without_following(status):
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.request.return_value = Response(
+        value=page(), status=status, headers={"Cache-Control": "no-store"},
+    )
+    with pytest.raises(HostedTransportError) as caught:
+        await HostedSourceTransport(session, SERVICE).async_claim(token=TOKEN)
+    assert (caught.value.code, caught.value.status) == ("invalid_response", status)
+    assert session.request.call_args.kwargs["allow_redirects"] is False
+
+
+async def test_claim_failure_before_headers_preserves_absent_status():
+    session = MagicMock(spec=aiohttp.ClientSession)
+    session.request.side_effect = aiohttp.ClientConnectionError("private provider response")
+    with pytest.raises(HostedTransportError) as caught:
+        await HostedSourceTransport(session, SERVICE).async_claim(token=TOKEN)
+    assert (caught.value.code, caught.value.status, caught.value.retryable) == (
+        "service_unavailable", None, True,
+    )
+    assert "private" not in str(caught.value)

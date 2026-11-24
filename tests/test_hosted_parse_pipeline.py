@@ -31,6 +31,7 @@ from custom_components.daylight_calendar_import.hosted_lifecycle import (
 from custom_components.daylight_calendar_import.hosted_parse_transport import (
     HostedParseError,
     HostedParseTransport,
+    HostedTerminalOperationError,
 )
 from custom_components.daylight_calendar_import.hosted_runtime import (
     CONF_HOSTED_SERVICE,
@@ -312,6 +313,10 @@ async def test_first_calendar_can_be_configured_without_resolving_or_writing_dra
 @pytest.mark.parametrize(
     "error,code",
     [
+        (HostedParseError("operation_failed", status=500), "hosted_parse_failed"),
+        (HostedParseError("operation_expired", status=500), "hosted_parse_failed"),
+        (HostedTerminalOperationError("operation_failed"), "hosted_operation_terminal"),
+        (HostedTerminalOperationError("operation_expired"), "hosted_operation_terminal"),
         (HostedParseError("unauthenticated", status=401), "hosted_authentication"),
         (HostedParseError("forbidden", status=403), "hosted_access"),
         (
@@ -541,6 +546,11 @@ async def test_cloud_parse_service_and_explicit_legacy_import_keep_local_write_a
     parsed = await call(client, "parse_text", text="School concert")
     assert parsed["success"], parsed
     assert parsed["result"]["response"]["events"] == [DRAFT.as_dict()]
+    first = runtime.provider.async_parse.await_args.args[0]
+    assert first.metadata["hosted_reparse"] == first.id
+    assert (await call(client, "parse_text", text="School concert"))["success"]
+    second = runtime.provider.async_parse.await_args.args[0]
+    assert second.metadata["hosted_reparse"] == second.id != first.id
     runtime.writes.assert_not_awaited()
     await client.send_json_auto_id(
         {
@@ -554,6 +564,8 @@ async def test_cloud_parse_service_and_explicit_legacy_import_keep_local_write_a
     imported = await call(client, "import_text", text="School concert")
     assert imported["success"], imported
     assert imported["result"]["response"]["imported"] == 1
+    third = runtime.provider.async_parse.await_args.args[0]
+    assert third.metadata["hosted_reparse"] == third.id and third.id not in {first.id, second.id}
     runtime.writes.assert_awaited_once()
     assert not hass.data[DOMAIN][runtime.entry.entry_id].list()
 
@@ -794,15 +806,22 @@ async def test_runtime_parse_permission_requires_successful_current_verification
     await runtime.async_stop()
 
 
+@pytest.mark.parametrize("durable", [False, True])
 async def test_hosted_reprocess_retains_existing_drafts_and_original_reference_context(
     hass,
     hass_ws_client,
     hosted_review,
+    durable,
 ):
     runtime = hosted_review
     client = await hass_ws_client(hass)
     response = await call(client, "submit_text", text="School concert")
     original = runtime.store.get(response["result"]["response"]["pending"]["id"])
+    if durable:
+        from tests.test_hosted_operations import request
+
+        record, _ = await runtime.store.async_prepare_hosted_operation("a" * 64, request(), ())
+        runtime.provider.last_operation_id = record["key"]
     runtime.provider.async_parse.return_value = ParseOutcome(
         [replace(DRAFT, title="Second concert")], []
     )
@@ -814,6 +833,15 @@ async def test_hosted_reprocess_retains_existing_drafts_and_original_reference_c
     assert datetime.fromisoformat(
         runtime.provider.async_parse.await_args.kwargs["reference_datetime"]
     ) == datetime.fromisoformat(original.created_at)
+    if durable:
+        assert runtime.store._hosted_operations == {"a" * 64: {**record, "accepted": True}}
+        replay = await call(client, "reprocess_pending", pending_id=original.id)
+        assert replay["success"], replay
+        assert replay["result"]["response"]["added_events"] == 0
+        assert replay["result"]["response"]["duplicate_events"] == 0
+        assert runtime.store.get(original.id) == updated
+    else:
+        assert runtime.store._hosted_operations == {}
     runtime.writes.assert_not_awaited()
 
 
@@ -1127,7 +1155,8 @@ async def test_delivery_guard_blocks_acceptance_after_pause(hass, monkeypatch):
     await runtime.async_stop()
 
 
-async def test_delivery_pass_runs_real_acceptance_and_ack(hass, hosted_review, monkeypatch):
+@pytest.mark.parametrize("durable", [False, True])
+async def test_delivery_pass_runs_real_acceptance_and_ack(hass, hosted_review, monkeypatch, durable):
     from custom_components.daylight_calendar_import import hosted_runtime, hosted_source_transport
     from tests.test_hosted_ack_dispatch import Transport, checkpoint
     from tests.test_hosted_text_acceptance import page
@@ -1141,11 +1170,26 @@ async def test_delivery_pass_runs_real_acceptance_and_ack(hass, hosted_review, m
     runtime._verified_parse_credential = credential.current
     runtime._state = HostedConnectionResult("connected", "current")
     monkeypatch.setattr(HostedConnectionRuntime, "parse_session", REAL_PARSE_SESSION)
-    wire = AsyncMock(return_value={
+    from custom_components.daylight_calendar_import.hosted_operations import payload_digest
+    from custom_components.daylight_calendar_import.hosted_runtime import CONF_HOSTED_PARSE_OPERATIONS
+    runtime._options = {**runtime._options, CONF_HOSTED_PARSE_OPERATIONS: durable}
+    response = {
         "schema_version": 1,
         "events": [{"draft": DRAFT.as_dict(), "warnings": []}],
         "rejected": [], "warnings": [], "provider_metadata": None,
-    })
+    }
+
+    async def parse(request, attachments, *, token, operation_key=None):
+        if not durable:
+            assert operation_key is None
+            return response
+        assert operation_key is not None
+        return {"schema_version": 2, "operation_id": operation_key,
+                "payload_sha256": payload_digest(request, attachments),
+                "status": "succeeded", "result": response,
+                "replay_expires_at": "2999-01-01T00:00:00Z"}
+
+    wire = AsyncMock(side_effect=parse)
     monkeypatch.setattr(HostedParseTransport, "async_parse", wire)
     ack = Transport()
     claim = SimpleNamespace(service_binding=SERVICE, async_claim=AsyncMock(return_value=page()))
@@ -1156,6 +1200,13 @@ async def test_delivery_pass_runs_real_acceptance_and_ack(hass, hosted_review, m
     assert wire.await_count == 1
     assert len(ack.calls) == 1
     assert review.store.hosted_ack_journal()[0].ack_status == "confirmed"
+    if durable:
+        assert len(review.store._hosted_operations) == 1
+        record = next(iter(review.store._hosted_operations.values()))
+        assert record["accepted"] is True
+        assert record["key"] == wire.await_args.kwargs["operation_key"]
+    else:
+        assert review.store._hosted_operations == {}
     await runtime.async_stop()
 
 
@@ -1530,4 +1581,134 @@ async def test_fresh_delivery_batch_surfaces_its_terminal_ack_expiry(hass, hoste
     runtime.configure_delivery(store=store, route_source=object(), parse_source=AsyncMock())
     assert await runtime.async_delivery_pass() == []
     assert repair.call_args.kwargs["translation_key"] == "hosted_delivery_expired"
+    await runtime.async_stop()
+
+
+@pytest.mark.parametrize("kind", ["text", "image", "pdf"])
+@pytest.mark.parametrize("mode", ["anonymous", "failed", "expired", "pending", "uncertain"])
+async def test_durable_manual_submissions_separate_invocations_and_retry_only_explicitly(
+    hass, hass_ws_client, hass_client, hosted_review, tmp_path, monkeypatch, kind, mode,
+):
+    from custom_components.daylight_calendar_import.hosted_operations import payload_digest
+    from custom_components.daylight_calendar_import.hosted_runtime import CONF_HOSTED_PARSE_OPERATIONS
+    from custom_components.daylight_calendar_import.provider_failures import PROVIDER_FAILURE_GUIDANCE
+
+    review = hosted_review
+    runtime = review.store.hosted_runtime
+    credential = BoundCredential(
+        "account-identifier-1234", "installation-identifier-1234", "x" * 60,
+        (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+    )
+    runtime._service = SERVICE
+    runtime._credential_store = SimpleNamespace(snapshot=CredentialCheckpoint(
+        processing_consent=True, current=credential, service_binding=SERVICE,
+    ))
+    runtime._verified_parse_credential = credential
+    runtime._state = HostedConnectionResult("connected", "current")
+    runtime._options = {**runtime._options, CONF_HOSTED_PARSE_OPERATIONS: True}
+    monkeypatch.setattr(HostedConnectionRuntime, "parse_session", REAL_PARSE_SESSION)
+    responses = {}
+    posts = []
+
+    def success(key, digest, draft):
+        return {"schema_version": 2, "operation_id": key, "payload_sha256": digest,
+                "status": "succeeded", "replay_expires_at": "2999-01-01T00:00:00Z",
+                "result": {"schema_version": 1, "events": [{"draft": draft.as_dict(), "warnings": []}],
+                           "rejected": [], "warnings": [], "provider_metadata": None}}
+
+    async def post(request, attachments, *, token, operation_key):
+        assert token == credential.token
+        assert operation_key not in responses
+        posts.append((operation_key, request["source"]["id"]))
+        digest = payload_digest(request, attachments)
+        if mode != "anonymous" and len(posts) == 1:
+            response = {"schema_version": 2, "operation_id": operation_key, "payload_sha256": digest,
+                        "status": mode, "result": None, "replay_expires_at": None}
+        else:
+            draft = DRAFT if len(posts) == 1 else replace(
+                DRAFT, start="2026-11-13T19:00:00-08:00", end="2026-11-13T20:00:00-08:00",
+            )
+            response = success(operation_key, digest, draft)
+        responses[operation_key] = response
+        return response
+
+    async def lookup(key, *, token):
+        assert token == credential.token
+        return responses[key]
+
+    wire = AsyncMock(side_effect=post)
+    recover = AsyncMock(side_effect=lookup)
+    monkeypatch.setattr(HostedParseTransport, "async_parse", wire)
+    monkeypatch.setattr(HostedParseTransport, "async_operation", recover)
+    client = await hass_ws_client(hass)
+    if kind != "text":
+        hass.config.media_dirs = {"local": str(tmp_path / "media")}
+        http = await hass_client()
+        if kind == "image":
+            payload, filename, media_type = PNG, "event.png", "image/png"
+        else:
+            writer = PdfWriter()
+            page = writer.add_blank_page(width=200, height=200)
+            stream = DecodedStreamObject()
+            stream.set_data(b"0 0 100 100 re f")
+            page[NameObject("/Contents")] = writer._add_object(stream)
+            output = BytesIO()
+            writer.write(output)
+            payload, filename, media_type = output.getvalue(), "event.pdf", "application/pdf"
+
+    async def submit(source_id=None):
+        data = {"text": "Lunch tomorrow at noon"}
+        if source_id is not None:
+            data["source_id"] = source_id
+        if kind != "text":
+            multipart = FormData()
+            multipart.add_field("file", payload, filename=filename, content_type=media_type)
+            uploaded = await http.post("/api/file_upload", data=multipart)
+            assert uploaded.status == 200
+            data["file_id"] = (await uploaded.json())["file_id"]
+        return await call(client, "submit_" + kind, **data)
+
+    if mode == "anonymous":
+        first, second = await submit(), await submit()
+        assert first["success"] and second["success"], (first, second)
+        assert first["result"]["response"]["duplicate_source"] is False
+        assert second["result"]["response"]["duplicate_source"] is False
+        assert len(review.store.list()) == 2
+        assert len(posts) == 2 and posts[0][0] != posts[1][0] and posts[0][1] != posts[1][1]
+        recover.assert_not_awaited()
+        assert all(row["accepted"] for row in review.store._hosted_operations.values())
+    else:
+        first = await submit("stable-draft")
+        assert not first["success"]
+        terminal = mode in ("failed", "expired")
+        if terminal:
+            assert first["error"]["code"] == "home_assistant_error"
+            assert first["error"]["message"] == PROVIDER_FAILURE_GUIDANCE["hosted_operation_terminal"]
+        else:
+            assert "outcome is uncertain" in first["error"]["message"]
+        assert not review.store.list()
+        first_key = posts[0][0]
+        second = await submit("stable-draft")
+        assert not second["success"]
+        assert first["error"]["message"] == second["error"]["message"]
+        assert wire.await_count == 1
+        recover.assert_awaited_once_with(first_key, token=credential.token)
+        if terminal:
+            third = await submit("explicit-new-draft")
+            assert third["success"], third
+            assert len(posts) == 2 and posts[1][0] != first_key
+            assert {row["key"]: row["accepted"] for row in review.store._hosted_operations.values()} == {
+                first_key: False, posts[1][0]: True,
+            }
+            assert recover.await_count == 1
+        else:
+            responses[first_key] = success(first_key, responses[first_key]["payload_sha256"], DRAFT)
+            third = await submit("stable-draft")
+            assert third["success"], third
+            assert wire.await_count == 1
+            assert recover.await_count == 2
+            assert {row["key"]: row["accepted"] for row in review.store._hosted_operations.values()} == {first_key: True}
+        assert len(review.store.list()) == 1
+    review.writes.assert_not_awaited()
+    review.generate.assert_not_awaited()
     await runtime.async_stop()

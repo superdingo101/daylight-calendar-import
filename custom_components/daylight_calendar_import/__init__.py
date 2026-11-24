@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import asyncio
 import logging
 from dataclasses import replace
@@ -427,6 +429,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 raise
             raise _hosted_parse_failure(error) from None
         guard()
+        guard.hosted_operation_id = getattr(provider, "last_operation_id", None)
         return outcome, guard
 
     async def accept_parsed(
@@ -436,7 +439,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if guard is None:
             return await pending_store.async_add(**kwargs)
         try:
-            return await pending_store.async_add(**kwargs, acceptance_guard=guard)
+            operation = getattr(guard, "hosted_operation_id", None)
+            return await pending_store.async_add(**kwargs, acceptance_guard=guard,
+                                                **({"hosted_operation_id": operation} if operation else {}))
         except (ProviderError, asyncio.CancelledError) as error:
             try:
                 await pending_store.async_record_parse_failure(
@@ -504,7 +509,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         else:
             await _async_check_entity_control_permission(hass, None, call.context)
-            outcome, guard = await selected_parse(TextSourceAdapter().create(call.data[ATTR_TEXT]))
+            source = TextSourceAdapter().create(call.data[ATTR_TEXT])
+            outcome, guard = await selected_parse(replace(source, metadata={"hosted_reparse": source.id}))
             guard()
         return {"events": [draft.as_dict() for draft in outcome.events],
                 "warnings": outcome.warnings}
@@ -518,7 +524,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         else:
             await _async_check_entity_control_permission(hass, None, call.context)
-            outcome, guard = await selected_parse(TextSourceAdapter().create(call.data[ATTR_TEXT]))
+            source = TextSourceAdapter().create(call.data[ATTR_TEXT])
+            outcome, guard = await selected_parse(replace(source, metadata={"hosted_reparse": source.id}))
             guard()
         for draft in outcome.events:
             if ai_task_entity is None:
@@ -760,17 +767,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         acceptance_guard = None
 
+        def reprocess_guard():
+            acceptance_guard()
+
         async def reparse(original: PendingImport):
             nonlocal acceptance_guard
             source = SourceDocument(
                 id=original.id, kind=SourceKind.MANUAL_TEXT,
                 received_at=datetime.fromisoformat(original.created_at),
                 text=original.source_text, title=original.source_title,
+                metadata={"hosted_reparse": str(uuid4())},
             )
             route = route_review_source(source)
             outcome, acceptance_guard = await selected_parse(
                 route.parser_source, reference_datetime=source.received_at,
             )
+            reprocess_guard.hosted_operation_id = getattr(acceptance_guard, "hosted_operation_id", None)
             assumptions = outcome.event_assumptions or ((),) * len(outcome.events)
             candidates = tuple(PendingEvent.create(
                 event, route.calendar_entity,
@@ -785,7 +797,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             try:
                 updated, added, duplicates = await pending_store.async_reprocess(
                     call.data[ATTR_PENDING_ID], reparse,
-                    **({"acceptance_guard": lambda: acceptance_guard()} if ai_task_entity is None else {}),
+                    **({"acceptance_guard": reprocess_guard} if ai_task_entity is None else {}),
                 )
             except PendingEventEditError as err:
                 raise ServiceValidationError(str(err)) from err
@@ -1308,6 +1320,11 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 def _hosted_parse_failure(error: Any) -> ProviderError:
     """Translate public status into safe hosted guidance without server text."""
+    from .hosted_parse_transport import HostedTerminalOperationError
+    from .provider_failures import PROVIDER_FAILURE_GUIDANCE
+
+    if isinstance(error, HostedTerminalOperationError):
+        return ProviderError("hosted_operation_terminal", PROVIDER_FAILURE_GUIDANCE["hosted_operation_terminal"])
     if error.status == 401:
         return ProviderError("hosted_authentication", "Daylight Cloud rejected the connection credential. Open Daylight Cloud settings to repair the connection before retrying.")
     if error.status == 403:

@@ -24,8 +24,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .hosted_credentials import BoundCredential, CredentialCheckpoint
-from .hosted_parse_transport import HostedParseError, HostedParseTransport
+from .hosted_parse_transport import HostedParseError, HostedParseTransport, HostedTerminalOperationError
 from .hosted_transport import HostedServiceBinding, _strict_strings, _timestamp
+from .hosted_operations import source_identity, validate_envelope
 from .models import EventDraft
 from .parser import ParseOutcome, parse_ai_data
 from .providers import ParserCapabilities, SourceValidationError
@@ -198,7 +199,11 @@ class DaylightHostedParserProvider:
     def __init__(
         self, hass: HomeAssistant, *, service_binding: HostedServiceBinding,
         checkpoint: Callable[[], CredentialCheckpoint | None], active: Callable[[], bool],
+        operation_store=None, operation_namespace: str | None = None,
     ) -> None:
+        self._operation_store = operation_store
+        self._operation_namespace = operation_namespace
+        self.last_operation_id = None
         self._hass = hass
         self._service = service_binding
         self._checkpoint = checkpoint
@@ -249,7 +254,7 @@ class DaylightHostedParserProvider:
             identifiers = set()
             descriptors = []
             binaries = []
-            for attachment in source.attachments:
+            for index, attachment in enumerate(source.attachments):
                 if (_IDENTIFIER.fullmatch(attachment.id) is None or attachment.id in identifiers
                         or type(attachment.size_bytes) is not int):
                     raise ValueError
@@ -261,11 +266,13 @@ class DaylightHostedParserProvider:
                     _attachment_bytes, self._hass.config.media_dirs, attachment,
                 )
                 descriptors.append({
-                    "id": attachment.id, "filename": attachment.filename,
+                    "id": (f"a{index}" if self._operation_store else attachment.id),
+                    "filename": attachment.filename,
                     "media_type": attachment.media_type, "size_bytes": attachment.size_bytes,
                     "sha256": attachment.sha256,
                 })
-                binaries.append((attachment.id, attachment.media_type, content))
+                binaries.append((f"a{index}" if self._operation_store else attachment.id,
+                                 attachment.media_type, content))
             request = {
                 "schema_version": 1, "reference_datetime": reference_datetime, "time_zone": time_zone,
                 "source": {
@@ -280,7 +287,45 @@ class DaylightHostedParserProvider:
             raise SourceValidationError("invalid_source", "Source could not be prepared for Daylight Cloud") from None
         if self._authority() != credential:
             raise HostedParseError("unauthenticated", status=401)
-        response = await self._transport.async_parse(request, tuple(binaries), token=credential.token)
+        if self._operation_store is None:
+            response = await self._transport.async_parse(request, tuple(binaries), token=credential.token)
+        else:
+            identity = source_identity(
+                request, binaries, namespace=self._operation_namespace + ":" + credential.account_id,
+                upstream=source.upstream_source_id, reparse=source.metadata.get("hosted_reparse"),
+            )
+            record, fresh = await self._operation_store.async_prepare_hosted_operation(
+                identity, request, tuple(binaries))
+            self.last_operation_id = record["key"]
+            if "terminal_source" in record:
+                raise HostedParseError("operation_terminal")
+            if self._authority() != credential:
+                raise HostedParseError("unauthenticated", status=401)
+            envelope = None if fresh else await self._transport.async_operation(
+                record["key"], token=credential.token)
+            if envelope is None:
+                if self._authority() != credential:
+                    raise HostedParseError("unauthenticated", status=401)
+                envelope = await self._transport.async_parse(
+                    request, tuple(binaries), token=credential.token, operation_key=record["key"])
+            try:
+                validate_envelope(envelope, record["key"], record["digest"])
+            except ValueError:
+                raise HostedParseError("provider_invalid_response", uncertain=True) from None
+            if envelope["status"] != "succeeded":
+                terminal = envelope["status"] in ("failed", "expired")
+                if terminal:
+                    try:
+                        if self._authority() != credential:
+                            raise HostedParseError("unauthenticated", status=401)
+                    except HostedParseError as error:
+                        raise HostedParseError(error.code, status=error.status, uncertain=True) from None
+                    if source.kind is SourceKind.EMAIL and source.upstream_source_id is not None:
+                        await self._operation_store.async_mark_hosted_operation_terminal(
+                            identity, record["key"], source.upstream_source_id)
+                    raise HostedTerminalOperationError("operation_" + envelope["status"])
+                raise HostedParseError("operation_" + envelope["status"], uncertain=True)
+            response = envelope["result"]
         try:
             if self._authority() != credential:
                 raise HostedParseError("unauthenticated", status=401)

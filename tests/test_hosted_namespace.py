@@ -245,3 +245,238 @@ async def test_delivery_aware_reconnect_preserves_durable_ack_records(pending, h
         restarted._hosted_delivery_journal = ()
     with pytest.raises(module.NamespaceReconciliationError):
         await reconciler.async_receipt(namespace)
+
+
+async def test_parse_attempt_requires_delivery_aware_receipt_and_preserves_disk(pending):
+    from custom_components.daylight_calendar_import.hosted_credentials import DELIVERY_CONTRACT
+    await pending.async_change_hosted_parse_attempt("hosted:entry:receipt-123")
+    path = Path(pending._store.path)
+    before = path.read_bytes()
+    assert pending.hosted_parse_uncertain is True
+    with pytest.raises(module.NamespaceReconciliationError, match="^Hosted namespace reconciliation is required; preserve existing journals\\.$"):
+        await module.LocalOnlyNamespaceReconciler(pending).async_receipt(None)
+    assert await module.LocalOnlyNamespaceReconciler(pending, allow_delivery=True).async_receipt(None) == DELIVERY_CONTRACT
+    assert path.read_bytes() == before
+
+
+async def test_delivery_aware_receipt_rejects_disagreement_between_memory_and_disk(pending):
+    from custom_components.daylight_calendar_import.storage import PendingImportStore
+    await pending.async_change_hosted_parse_attempt("hosted:entry:receipt-456")
+    path = Path(pending._store.path)
+    original = path.read_bytes()
+    envelope = json.loads(original)
+    del envelope["data"]["hosted_parse_attempt"]
+    path.write_text(json.dumps(envelope))
+    tampered = path.read_bytes()
+    with pytest.raises(module.NamespaceReconciliationError, match="^Hosted namespace reconciliation is required; preserve existing journals\\.$"):
+        await module.LocalOnlyNamespaceReconciler(pending, allow_delivery=True).async_receipt(None)
+    assert path.read_bytes() == tampered
+    path.write_bytes(original)
+    assert await module.LocalOnlyNamespaceReconciler(pending, allow_delivery=True).async_receipt(None) == module.DELIVERY_CONTRACT
+
+
+async def test_delivery_aware_receipt_rechecks_ownership_after_disk_read(pending, monkeypatch):
+    original = pending._store.hass.async_add_executor_job
+    await pending.async_change_hosted_parse_attempt("hosted:entry:receipt-789")
+    for action in ("pause", "write"):
+        pending.accepting_services = True
+        pending._store._data = None
+        async def interleave(*args):
+            result = await original(*args)
+            if action == "pause":
+                pending.accepting_services = False
+            else:
+                pending._store._data = {"late": "write"}
+            return result
+        monkeypatch.setattr(pending._store.hass, "async_add_executor_job", interleave)
+        with pytest.raises(module.NamespaceReconciliationError, match="preserve existing journals"):
+            await module.LocalOnlyNamespaceReconciler(pending, allow_delivery=True).async_receipt(None)
+        monkeypatch.setattr(pending._store.hass, "async_add_executor_job", original)
+    pending._store._data = None
+
+
+@pytest.mark.parametrize("tamper", [None, "missing", "changed", "malformed"])
+async def test_operation_journal_reconnect_requires_exact_durable_agreement(pending, tamper):
+    from tests.test_storage import hosted_operation_request
+
+    identity = "a" * 64
+    record, _ = await pending.async_prepare_hosted_operation(
+        identity, hosted_operation_request(), (),
+    )
+    path = Path(pending._store.path)
+    before = path.read_bytes()
+    with pytest.raises(module.NamespaceReconciliationError):
+        await module.LocalOnlyNamespaceReconciler(pending).async_receipt(None)
+    reconciler = module.LocalOnlyNamespaceReconciler(pending, allow_delivery=True)
+    if tamper is None:
+        assert await reconciler.async_receipt(None) == module.DELIVERY_CONTRACT
+        assert path.read_bytes() == before
+    else:
+        envelope = json.loads(before)
+        operations = envelope["data"]["hosted_parse_operations"]
+        if tamper == "missing":
+            del envelope["data"]["hosted_parse_operations"]
+        elif tamper == "changed":
+            operations[identity]["accepted"] = True
+        else:
+            operations[identity]["key"] = "invalid"
+        path.write_text(json.dumps(envelope))
+        altered = path.read_bytes()
+        with pytest.raises(module.NamespaceReconciliationError):
+            await reconciler.async_receipt(None)
+        assert path.read_bytes() == altered
+    assert pending._hosted_operations == {identity: record}
+
+
+@pytest.mark.parametrize("code", ["hosted_operation_terminal", "hosted_outcome_uncertain", "provider_timeout"])
+async def test_namespace_receipt_preserves_known_failure_history_and_rejects_unknown_codes(pending, code):
+    from datetime import UTC, datetime
+
+    from tests.test_storage import hosted_operation_request
+
+    await pending.async_prepare_hosted_operation("a" * 64, hosted_operation_request(), ())
+    activity_id = await pending.async_begin_submission(
+        source_kind="manual_text", source_title=None, received_at=datetime.now(UTC),
+    )
+    await pending.async_record_parse_failure(activity_id, provider_error_code=code)
+    assert pending.get_activity(activity_id)["failure_code"] == code
+    path = Path(pending._store.path)
+    before = path.read_bytes()
+    reconciler = module.LocalOnlyNamespaceReconciler(pending, allow_delivery=True)
+    assert await reconciler.async_receipt(None) == module.DELIVERY_CONTRACT
+    assert path.read_bytes() == before
+    for invalid in ("unrecognized_future_code", None, ["hosted_operation_terminal"]):
+        envelope = json.loads(before)
+        envelope["data"]["activity"][0]["failure_code"] = invalid
+        path.write_text(json.dumps(envelope))
+        tampered = path.read_bytes()
+        with pytest.raises(module.NamespaceReconciliationError):
+            await reconciler.async_receipt(None)
+        assert path.read_bytes() == tampered
+    path.write_bytes(before)
+    assert await reconciler.async_receipt(None) == module.DELIVERY_CONTRACT
+
+
+@pytest.mark.parametrize("stage", ["prepare", "terminal"])
+async def test_cancelled_operation_executor_write_blocks_drain_and_survives_reload(pending, hass, monkeypatch, stage):
+    """Cancellation must not let the retiring owner outlive its disk write."""
+    from threading import Event
+
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+    from custom_components.daylight_calendar_import.storage import PendingImportStorageError
+    from tests.test_storage import hosted_operation_request
+
+    identity = "a" * 64
+    source_id = "hosted:entry:receipt-cancel"
+    if stage == "terminal":
+        record, fresh = await pending.async_prepare_hosted_operation(identity, hosted_operation_request(), ())
+        assert fresh
+        await pending.async_change_hosted_parse_attempt(source_id)
+        operation = pending.async_mark_hosted_operation_terminal(identity, record["key"], source_id)
+    else:
+        operation = pending.async_prepare_hosted_operation(identity, hosted_operation_request(), ())
+
+    path = Path(pending._store.path)
+    started, release = asyncio.Event(), Event()
+    loop = asyncio.get_running_loop()
+
+    def delayed_write(envelope):
+        loop.call_soon_threadsafe(started.set)
+        if not release.wait(timeout=10):
+            raise RuntimeError("test did not release the writer")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".test-write")
+        temporary.write_text(json.dumps(envelope))
+        temporary.replace(path)
+
+    async def executor_write(envelope):
+        await hass.async_add_executor_job(delayed_write, envelope)
+
+    monkeypatch.setattr(pending._store, "_async_write_data", executor_write)
+    task = asyncio.create_task(operation)
+
+    async def reload_after_drain():
+        await pending.async_drain_hosted_writes()
+        replacement = PendingImportStore(hass)
+        await replacement.async_load()
+        return replacement
+
+    drain = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        pending.close_hosted_writes()
+        task.cancel()
+        await asyncio.sleep(0)
+        drain = asyncio.create_task(reload_after_drain())
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert not drain.done()
+        assert pending._lock.locked()
+        assert pending._store._write_lock.locked()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert not drain.done()
+    finally:
+        release.set()
+        if drain is None:
+            await asyncio.gather(task, return_exceptions=True)
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
+    replacement = await asyncio.wait_for(drain, timeout=5)
+    assert not pending._storage_blocked
+    assert not pending._lock.locked()
+    assert not pending._store._write_lock.locked()
+    row = replacement._hosted_operations[identity]
+    assert row == pending._hosted_operations[identity]
+    if stage == "terminal":
+        assert row["key"] == record["key"]
+        assert row["terminal_source"] == source_fingerprint(source_id)
+        assert replacement.hosted_parse_uncertain
+        await replacement.async_change_hosted_parse_attempt(None, retry_terminal=True)
+        assert identity not in replacement._hosted_operations
+        assert next(iter(replacement._hosted_operations.values())) == row
+    else:
+        recovered, fresh = await replacement.async_prepare_hosted_operation(identity, hosted_operation_request(), ())
+        assert recovered == row and fresh is False
+    with pytest.raises(PendingImportStorageError):
+        await pending.async_prepare_hosted_operation("b" * 64, hosted_operation_request(), ())
+    await replacement.async_add(source_text="New review", events=[draft()])
+    final = PendingImportStore(hass)
+    await final.async_load()
+    assert final._hosted_operations == replacement._hosted_operations
+    assert final.list() == replacement.list()
+    assert len(final.list()) == 1
+
+
+@pytest.mark.parametrize("allow_delivery", [False, True])
+async def test_reconnect_recognizes_bounded_manual_recurrence_history(pending, allow_delivery):
+    from datetime import UTC, datetime
+
+    from custom_components.daylight_calendar_import.parser import UNSUPPORTED_RECURRENCE_WARNING
+
+    activity_id = await pending.async_begin_submission(
+        source_kind="manual_text", source_title=None, received_at=datetime.now(UTC),
+    )
+    await pending.async_add(source_text="Recurring meeting", events=(), activity_id=activity_id,
+                            warnings=(UNSUPPORTED_RECURRENCE_WARNING,))
+    path = Path(pending._store.path)
+    before = path.read_bytes()
+    assert pending.get_activity(activity_id)["manual_source_text"] == "Recurring meeting"
+    assert "manual_source_text" not in pending.list_activity()[0]
+    reconciler = module.LocalOnlyNamespaceReconciler(pending, allow_delivery=allow_delivery)
+    assert await reconciler.async_receipt(None) == module.LOCAL_ONLY_CONTRACT
+    assert path.read_bytes() == before
+    for change in ({"source_kind": "email"}, {"status": "failed"},
+                   {"manual_source_text": None}, {"manual_source_text": ""},
+                   {"manual_source_text": "x" * 4097}):
+        envelope = json.loads(before)
+        envelope["data"]["activity"][0].update(change)
+        path.write_text(json.dumps(envelope))
+        tampered = path.read_bytes()
+        with pytest.raises(module.NamespaceReconciliationError):
+            await reconciler.async_receipt(None)
+        assert path.read_bytes() == tampered
+    path.write_bytes(before)
+    assert await reconciler.async_receipt(None) == module.LOCAL_ONLY_CONTRACT

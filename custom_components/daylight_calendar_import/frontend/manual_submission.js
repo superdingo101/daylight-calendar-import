@@ -1,6 +1,6 @@
 import {isSubmissionResponse} from "./submission_response.js";
 import {configureSubmissionStatus, focusSubmissionStatus} from "./submission_accessibility.js";
-import {SubmissionAttempt, SubmissionFeedback, submissionOutcomeUncertain} from "./submission_feedback.js";
+import {SubmissionAttempt, SubmissionFeedback, submissionOutcomeUncertain, submissionTerminalOperation} from "./submission_feedback.js";
 export {submissionMessage} from "./submission_feedback.js";
 
 /** Manual text intake uses the same durable review service as email imports. */
@@ -62,6 +62,7 @@ export class ManualSubmission {
     this.attempt = new SubmissionAttempt();
     this.feedback = new SubmissionFeedback(this.status, {
       onReview, onActivity, onReimport: () => this.submit(true),
+      onRetryTerminal: () => this.submit(false, true),
     });
     this.form.append(label, this.button, this.status, this.feedback.actions);
     this.text.addEventListener("input", () => {
@@ -74,7 +75,7 @@ export class ManualSubmission {
     });
   }
 
-  async submit(reimportDuplicates = false) {
+  async submit(reimportDuplicates = false, retryTerminal = false) {
       if (this.busy) return;
       if (!this.text.value?.trim()) {
         this.feedback.processing("Paste event details before importing.");
@@ -89,8 +90,8 @@ export class ManualSubmission {
       this.text.disabled = true;
       this.button.textContent = "Processing…";
       try {
-        const sourceId = reimportDuplicates ?
-          this.attempt.reimport(this.text.value) : this.attempt.forDraft(this.text.value);
+        const sourceId = retryTerminal ? this.attempt.retryTerminal(this.text.value) :
+          reimportDuplicates ? this.attempt.reimport(this.text.value) : this.attempt.forDraft(this.text.value);
         const response = await submitText(this.getHass(), this.text.value, {
           sourceId, reimportDuplicates: this.attempt.reimportDuplicates,
         });
@@ -103,7 +104,7 @@ export class ManualSubmission {
           this.status.textContent += " Refresh the review inbox to see the latest imports.";
         }
       } catch (error) {
-        if (!submissionOutcomeUncertain(error)) this.attempt.complete();
+        if (!submissionTerminalOperation(error) && !submissionOutcomeUncertain(error)) this.attempt.complete();
         this.feedback.error(error);
       } finally {
         this.busy = false;

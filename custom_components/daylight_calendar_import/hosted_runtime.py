@@ -43,6 +43,7 @@ from .providers import ParserProvider, ProviderError, SourceValidationError
 CONF_HOSTED_SERVICE = "hosted_service"
 CONF_HOSTED_AUTOMATIC = "hosted_automatic_lifecycle"
 CONF_HOSTED_DELIVERY_POLL = "hosted_delivery_polling"
+CONF_HOSTED_PARSE_OPERATIONS = "hosted_parse_operations_v2"
 _LOGGER = logging.getLogger(__name__)
 _DELIVERY_INTERVAL = 60
 _MAX_DELIVERY_BACKOFF = 900
@@ -113,6 +114,7 @@ class HostedConnectionRuntime:
         registry = hass.data.setdefault(f"{DOMAIN}_hosted_tasks", {})
         self._tasks: set[asyncio.Task] = registry.setdefault(entry.entry_id, set())
         self._options = entry.options
+        self._commercial_status = None
         self._automatic = entry.options.get(CONF_HOSTED_AUTOMATIC) is True
         self._delivery_poll_enabled = entry.options.get(CONF_HOSTED_DELIVERY_POLL) is True
         self._delivery_parser_selected = (
@@ -198,6 +200,8 @@ class HostedConnectionRuntime:
             "credential_status": self._state.credential_status,
             "credential_expires_at": self._state.credential_expires_at,
             "account_url": self._state.account_url,
+            **({"parse_operations_v2": True, "commercial_status": self._commercial_status}
+               if self._options.get(CONF_HOSTED_PARSE_OPERATIONS) is True else {}),
         }
 
     def parse_session(self, *, delivery_owner: bool = False) -> tuple[ParserProvider, Callable[[], None]]:
@@ -251,7 +255,24 @@ class HostedConnectionRuntime:
         guard()
         return DaylightHostedParserProvider(
             self._hass, service_binding=service, checkpoint=checkpoint, active=active,
+            **({"operation_store": self._hass.data[DOMAIN][self._entry_id],
+                "operation_namespace": self._entry_id + ":" + service.api_origin}
+               if self._options.get(CONF_HOSTED_PARSE_OPERATIONS) is True else {}),
         ), guard
+
+    async def async_account_status(self):
+        """Fetch trusted high-level access status without exposing provider IDs."""
+        from .hosted_operations import validate_account
+        from .hosted_parse_transport import HostedParseError
+        try:
+            provider, guard = self.parse_session()
+            credential = provider._authority()
+            value = await provider._transport.async_v2_get("/account", token=credential.token)
+            guard()
+            self._commercial_status = validate_account(value, self._service.account_origin)
+        except (HostedParseError, ProviderError, ValueError):
+            raise HostedRuntimeError("hosted_action_failed") from None
+        return self.snapshot()
 
     def configure_delivery(self, *, store, route_source, parse_source) -> None:
         """Bind entry-local routing and parsing without starting delivery."""
@@ -309,6 +330,7 @@ class HostedConnectionRuntime:
                         if parser_guard is not None:
                             parser_guard()
 
+                    acceptance_guard.hosted_operation_id = getattr(parser_guard, "hosted_operation_id", None)
                     return outcome, acceptance_guard
 
                 session = async_get_clientsession(self._hass)
@@ -369,6 +391,7 @@ class HostedConnectionRuntime:
     def pause(self) -> None:
         """Close admission before platform unload starts."""
         self._accepting = False
+        self._commercial_status = None
         self._cancel_delivery_poll()
         self._parse_generation += 1
         if self._cancel_timer is not None:
@@ -446,7 +469,7 @@ class HostedConnectionRuntime:
             raise HostedRuntimeError("hosted_busy")
         self._delivery_poll_running = True
         try:
-            await self._delivery_handlers[0].async_change_hosted_parse_attempt(None)
+            await self._delivery_handlers[0].async_change_hosted_parse_attempt(None, retry_terminal=True)
             ir.async_delete_issue(self._hass, DOMAIN, f"hosted_delivery_uncertain_{self._entry_id}")
             self._delivery_due_at = None
         finally:
@@ -554,6 +577,7 @@ class HostedConnectionRuntime:
             raise
 
     def _start_work(self, action: str, kwargs: dict[str, Any]) -> asyncio.Task:
+        self._commercial_status = None
         self._parse_generation += 1
         if self._cancel_timer is not None:
             self._cancel_timer()
