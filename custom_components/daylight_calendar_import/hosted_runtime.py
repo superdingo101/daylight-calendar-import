@@ -37,7 +37,7 @@ from .hosted_transport import (
     HostedTransportError,
 )
 from .storage import PendingImportStore
-from .settings import effective_parser_provider
+from .settings import effective_ai_task_entity, effective_parser_provider
 from .providers import ParserProvider, ProviderError, SourceValidationError
 
 CONF_HOSTED_SERVICE = "hosted_service"
@@ -119,7 +119,8 @@ class HostedConnectionRuntime:
         self._delivery_poll_enabled = entry.options.get(CONF_HOSTED_DELIVERY_POLL) is True
         self._delivery_parser_selected = (
             self._delivery_poll_enabled
-            and effective_parser_provider(entry) == PARSER_PROVIDER_DAYLIGHT_CLOUD
+            and (effective_parser_provider(entry) == PARSER_PROVIDER_DAYLIGHT_CLOUD
+                 or bool(effective_ai_task_entity(entry)))
         )
         self._delivery_failures = 0
         self._delivery_due_at: datetime | None = None
@@ -264,6 +265,7 @@ class HostedConnectionRuntime:
         """Fetch trusted high-level access status without exposing provider IDs."""
         from .hosted_operations import validate_account
         from .hosted_parse_transport import HostedParseError
+        self._commercial_status = None
         try:
             provider, guard = self.parse_session()
             credential = provider._authority()
