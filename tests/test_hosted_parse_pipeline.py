@@ -1713,12 +1713,13 @@ async def test_durable_manual_submissions_separate_invocations_and_retry_only_ex
     review.generate.assert_not_awaited()
     await runtime.async_stop()
 
-@pytest.mark.parametrize("mode", ["text", "attachment", "failure", "missing_byo"])
+@pytest.mark.parametrize("mode", ["text", "attachment", "failure", "missing_byo", "changed_before", "changed_after", "paused_after"])
 async def test_hosted_delivery_uses_explicit_byo_and_stages_verified_attachments(
     hass, monkeypatch, tmp_path, mode,
 ):
     from hashlib import sha256
     from pathlib import Path
+    from custom_components import daylight_calendar_import as integration
     from custom_components.daylight_calendar_import import hosted_runtime, hosted_source_transport
     from custom_components.daylight_calendar_import.const import CONF_AI_TASK_ENTITY, PARSER_PROVIDER_AI_TASK
     from tests.test_hosted_ack_dispatch import Transport, checkpoint
@@ -1749,7 +1750,7 @@ async def test_hosted_delivery_uses_explicit_byo_and_stages_verified_attachments
         assert local_hass is hass
         assert entity == "ai_task.local"
         assert source.text == "hello"
-        assert not kwargs
+        assert kwargs == {"reference_datetime": source.received_at}
         if mode in ("attachment", "failure"):
             item, = source.attachments
             assert item.content is None
@@ -1761,6 +1762,10 @@ async def test_hosted_delivery_uses_explicit_byo_and_stages_verified_attachments
             assert not source.attachments
         if mode == "failure":
             raise ProviderError("provider_unavailable", "local provider unavailable")
+        if mode == "changed_after":
+            monkeypatch.setattr(integration, "_ai_task_configuration", lambda _: "ai_task.changed")
+        if mode == "paused_after":
+            store.accepting_services = False
         return ParseOutcome([DRAFT], [])
 
     parse = AsyncMock(side_effect=local_parse)
@@ -1776,7 +1781,9 @@ async def test_hosted_delivery_uses_explicit_byo_and_stages_verified_attachments
     ack = Transport()
     monkeypatch.setattr(hosted_source_transport, "HostedSourceTransport", lambda *_: claim)
     monkeypatch.setattr(hosted_runtime, "HostedLifecycleTransport", lambda *_, **__: ack)
-    if mode in ("failure", "missing_byo"):
+    if mode == "changed_before":
+        monkeypatch.setattr(integration, "_ai_task_configuration", lambda _: "ai_task.changed")
+    if mode in ("failure", "missing_byo", "changed_before", "changed_after", "paused_after"):
         with pytest.raises(ProviderError):
             await runtime.async_delivery_pass()
         assert not ack.calls
@@ -1787,7 +1794,7 @@ async def test_hosted_delivery_uses_explicit_byo_and_stages_verified_attachments
         assert len(ack.calls) == 1
         assert store.hosted_ack_journal()[0].ack_status == "confirmed"
         assert len(store.list()) == 1
-    if mode == "missing_byo":
+    if mode in ("missing_byo", "changed_before"):
         parse.assert_not_awaited()
     else:
         parse.assert_awaited_once()
