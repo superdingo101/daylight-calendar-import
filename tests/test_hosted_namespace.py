@@ -355,3 +355,96 @@ async def test_namespace_receipt_preserves_known_failure_history_and_rejects_unk
         assert path.read_bytes() == tampered
     path.write_bytes(before)
     assert await reconciler.async_receipt(None) == module.DELIVERY_CONTRACT
+
+
+@pytest.mark.parametrize("stage", ["prepare", "terminal"])
+async def test_cancelled_operation_executor_write_blocks_drain_and_survives_reload(pending, hass, monkeypatch, stage):
+    """Cancellation must not let the retiring owner outlive its disk write."""
+    from threading import Event
+
+    from custom_components.daylight_calendar_import.dedup import source_fingerprint
+    from custom_components.daylight_calendar_import.storage import PendingImportStorageError
+    from tests.test_storage import hosted_operation_request
+
+    identity = "a" * 64
+    source_id = "hosted:entry:receipt-cancel"
+    if stage == "terminal":
+        record, fresh = await pending.async_prepare_hosted_operation(identity, hosted_operation_request(), ())
+        assert fresh
+        await pending.async_change_hosted_parse_attempt(source_id)
+        operation = pending.async_mark_hosted_operation_terminal(identity, record["key"], source_id)
+    else:
+        operation = pending.async_prepare_hosted_operation(identity, hosted_operation_request(), ())
+
+    path = Path(pending._store.path)
+    started, release = asyncio.Event(), Event()
+    loop = asyncio.get_running_loop()
+
+    def delayed_write(envelope):
+        loop.call_soon_threadsafe(started.set)
+        if not release.wait(timeout=10):
+            raise RuntimeError("test did not release the writer")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".test-write")
+        temporary.write_text(json.dumps(envelope))
+        temporary.replace(path)
+
+    async def executor_write(envelope):
+        await hass.async_add_executor_job(delayed_write, envelope)
+
+    monkeypatch.setattr(pending._store, "_async_write_data", executor_write)
+    task = asyncio.create_task(operation)
+
+    async def reload_after_drain():
+        await pending.async_drain_hosted_writes()
+        replacement = PendingImportStore(hass)
+        await replacement.async_load()
+        return replacement
+
+    drain = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        pending.close_hosted_writes()
+        task.cancel()
+        await asyncio.sleep(0)
+        drain = asyncio.create_task(reload_after_drain())
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert not drain.done()
+        assert pending._lock.locked()
+        assert pending._store._write_lock.locked()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert not drain.done()
+    finally:
+        release.set()
+        if drain is None:
+            await asyncio.gather(task, return_exceptions=True)
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
+    replacement = await asyncio.wait_for(drain, timeout=5)
+    assert not pending._storage_blocked
+    assert not pending._lock.locked()
+    assert not pending._store._write_lock.locked()
+    row = replacement._hosted_operations[identity]
+    assert row == pending._hosted_operations[identity]
+    if stage == "terminal":
+        assert row["key"] == record["key"]
+        assert row["terminal_source"] == source_fingerprint(source_id)
+        assert replacement.hosted_parse_uncertain
+        await replacement.async_change_hosted_parse_attempt(None, retry_terminal=True)
+        assert identity not in replacement._hosted_operations
+        assert next(iter(replacement._hosted_operations.values())) == row
+    else:
+        recovered, fresh = await replacement.async_prepare_hosted_operation(identity, hosted_operation_request(), ())
+        assert recovered == row and fresh is False
+    with pytest.raises(PendingImportStorageError):
+        await pending.async_prepare_hosted_operation("b" * 64, hosted_operation_request(), ())
+    await replacement.async_add(source_text="New review", events=[draft()])
+    final = PendingImportStore(hass)
+    await final.async_load()
+    assert final._hosted_operations == replacement._hosted_operations
+    assert final.list() == replacement.list()
+    assert len(final.list()) == 1

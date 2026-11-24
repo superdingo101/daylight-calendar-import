@@ -427,3 +427,57 @@ def test_terminal_journal_marker_requires_valid_source_fingerprint_and_unaccepte
                     {**marked, "terminal_source": "wrong"}):
         with pytest.raises(ValueError, match="invalid operation journal"):
             validate_records({identity: invalid})
+
+
+async def test_cancelled_provider_preparation_never_dispatches_and_reuses_key(hass, monkeypatch):
+    backend = Backend()
+    store = PendingImportStore(hass)
+    store._store = backend
+    saved = checkpoint()
+    provider = DaylightHostedParserProvider(
+        hass, service_binding=SERVICE, checkpoint=lambda: saved, active=lambda: True,
+        operation_store=store, operation_namespace="entry:service",
+    )
+    started, release = asyncio.Event(), asyncio.Event()
+    original = backend.async_save_immediate
+
+    async def delayed(data):
+        started.set()
+        await release.wait()
+        await original(data)
+
+    monkeypatch.setattr(backend, "async_save_immediate", delayed)
+    provider._transport.async_parse = AsyncMock()
+    provider._transport.async_operation = AsyncMock()
+    source = TextSourceAdapter().create("Meeting", source_id="stable-cancel")
+    task = asyncio.create_task(provider.async_parse(
+        source, reference_datetime=source.received_at.isoformat(), time_zone="UTC",
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert store._lock.locked()
+        provider._transport.async_parse.assert_not_awaited()
+        provider._transport.async_operation.assert_not_awaited()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
+    provider._transport.async_parse.assert_not_awaited()
+    provider._transport.async_operation.assert_not_awaited()
+    assert provider.last_operation_id is None
+    assert not store._storage_blocked
+    row = next(iter(backend.data["hosted_parse_operations"].values()))
+    restarted = PendingImportStore(hass)
+    restarted._store = backend
+    await restarted.async_load()
+    provider._operation_store = restarted
+    provider._transport.async_operation.return_value = envelope(row["key"], row["digest"])
+    retry = TextSourceAdapter().create("Meeting", source_id="stable-cancel")
+    outcome = await provider.async_parse(retry, reference_datetime=retry.received_at.isoformat(), time_zone="UTC")
+    assert len(outcome.events) == 1
+    assert provider.last_operation_id == row["key"]
+    provider._transport.async_operation.assert_awaited_once_with(row["key"], token=saved.current.token)
+    provider._transport.async_parse.assert_not_awaited()

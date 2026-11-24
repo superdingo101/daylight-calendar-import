@@ -1522,6 +1522,14 @@ class PendingImportStore:
 
     async def async_prepare_hosted_operation(self, identity, request, attachments):
         """Persist original ephemeral fields and binding before any provider bytes."""
+        result, cancelled = await self._async_complete_transaction(
+            self._async_prepare_hosted_operation_transaction(identity, request, attachments),
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    async def _async_prepare_hosted_operation_transaction(self, identity, request, attachments):
         from uuid import uuid4
         async with self._lock:
             if self._hosted_writes_closed or self._storage_blocked:
@@ -1549,6 +1557,13 @@ class PendingImportStore:
 
     async def async_mark_hosted_operation_terminal(self, identity, key, source_id):
         """Record a validated terminal result only for the currently fenced delivery."""
+        _, cancelled = await self._async_complete_transaction(
+            self._async_mark_hosted_operation_terminal_transaction(identity, key, source_id),
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _async_mark_hosted_operation_terminal_transaction(self, identity, key, source_id):
         async with self._lock:
             if self._hosted_writes_closed or self._storage_blocked:
                 raise PendingImportStorageError(_STORAGE_ERROR)
