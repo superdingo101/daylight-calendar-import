@@ -319,3 +319,64 @@ async def async_stage_email_attachments(
             pass
         raise asyncio.CancelledError
     return stage
+
+
+def _stage_verified_hosted_attachments(
+    attachments: tuple[SourceAttachment, ...], media_dirs: dict[str, str],
+) -> tuple[tuple[SourceAttachment, ...], tuple[Path, ...]]:
+    """Stage verified hosted bytes using private temporary media files, not filenames."""
+    if not media_dirs:
+        raise SourceValidationError(
+            "media_storage_unavailable", "No local media directory configured",
+        )
+    media_alias, directory = next(iter(media_dirs.items()))
+    media_path = Path(directory)
+    media_path.mkdir(parents=True, exist_ok=True)
+    staged_attachments: list[SourceAttachment] = []
+    paths: list[Path] = []
+    try:
+        for item in attachments:
+            data = item.content
+            if (not isinstance(data, bytes) or len(data) != item.size_bytes
+                    or sha256(data).hexdigest() != item.sha256
+                    or item.media_type not in _SUPPORTED_MEDIA_SUFFIXES):
+                raise EmailAttachmentError("Hosted attachment could not be verified")
+            staged_file = tempfile.NamedTemporaryFile(
+                prefix="daylight-email-", suffix=_SUPPORTED_MEDIA_SUFFIXES[item.media_type],
+                dir=media_path, delete=False,
+            )
+            staged_path = Path(staged_file.name)
+            paths.append(staged_path)
+            with staged_file as staged:
+                staged.write(data)
+            staged_attachments.append(replace(
+                item, content=None,
+                content_ref=f"media-source://media_source/{media_alias}/{staged_path.name}",
+            ))
+    except BaseException:
+        try:
+            _cleanup_paths(tuple(paths))
+        except Exception as cleanup_error:
+            _report_cleanup_failure("hosted staging failure", cleanup_error)
+        raise
+    return tuple(staged_attachments), tuple(paths)
+
+
+async def async_stage_verified_hosted_attachments(
+    hass: HomeAssistant, document: SourceDocument,
+) -> EmailAttachmentStage:
+    """Materialize verified delivery bytes only for the selected BYO AI Task."""
+    staging = asyncio.ensure_future(hass.async_add_executor_job(
+        _stage_verified_hosted_attachments, document.attachments, hass.config.media_dirs,
+    ))
+    (attachments, paths), cancelled = await _async_wait_for_staging(staging)
+    stage = EmailAttachmentStage(
+        document=replace(document, attachments=attachments), _hass=hass, _paths=paths,
+    )
+    if cancelled:
+        try:
+            await stage.async_cleanup("hosted staging cancellation")
+        except asyncio.CancelledError:
+            pass
+        raise asyncio.CancelledError
+    return stage
