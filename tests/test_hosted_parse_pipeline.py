@@ -1712,3 +1712,90 @@ async def test_durable_manual_submissions_separate_invocations_and_retry_only_ex
     review.writes.assert_not_awaited()
     review.generate.assert_not_awaited()
     await runtime.async_stop()
+
+@pytest.mark.parametrize("mode", ["text", "attachment", "failure", "missing_byo"])
+async def test_hosted_delivery_uses_explicit_byo_and_stages_verified_attachments(
+    hass, monkeypatch, tmp_path, mode,
+):
+    from hashlib import sha256
+    from pathlib import Path
+    from custom_components.daylight_calendar_import import hosted_runtime, hosted_source_transport
+    from custom_components.daylight_calendar_import.const import CONF_AI_TASK_ENTITY, PARSER_PROVIDER_AI_TASK
+    from tests.test_hosted_ack_dispatch import Transport, checkpoint
+    from tests.test_hosted_text_acceptance import page
+
+    hass.config.media_dirs = {"local": str(tmp_path)}
+    entry = MockConfigEntry(
+        domain=DOMAIN, version=2,
+        data={CONF_PARSER_PROVIDER: PARSER_PROVIDER_AI_TASK,
+              **({CONF_AI_TASK_ENTITY: "ai_task.local"} if mode != "missing_byo" else {})},
+    )
+    entry.add_to_hass(hass)
+    monkeypatch.setattr("custom_components.daylight_calendar_import.async_classify_conflicts", AsyncMock(return_value=()))
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    store = hass.data[DOMAIN][entry.entry_id]
+    runtime = store.hosted_runtime
+    credential = checkpoint()
+    runtime._service = SERVICE
+    runtime._credential_store = SimpleNamespace(snapshot=credential)
+    runtime._controller = object()
+    runtime._verified_parse_credential = credential.current
+    runtime._state = HostedConnectionResult("connected", "current")
+    managed = Mock(side_effect=AssertionError("must not use managed parsing"))
+    monkeypatch.setattr(runtime, "parse_session", managed)
+
+    async def local_parse(local_hass, source, entity, **kwargs):
+        assert local_hass is hass
+        assert entity == "ai_task.local"
+        assert source.text == "hello"
+        assert not kwargs
+        if mode in ("attachment", "failure"):
+            item, = source.attachments
+            assert item.content is None
+            assert item.sha256 == sha256(PNG).hexdigest()
+            prefix = "media-source://media_source/local/"
+            assert item.content_ref.startswith(prefix)
+            assert (Path(tmp_path) / item.content_ref.removeprefix(prefix)).read_bytes() == PNG
+        else:
+            assert not source.attachments
+        if mode == "failure":
+            raise ProviderError("provider_unavailable", "local provider unavailable")
+        return ParseOutcome([DRAFT], [])
+
+    parse = AsyncMock(side_effect=local_parse)
+    monkeypatch.setattr("custom_components.daylight_calendar_import._async_parse_source", parse)
+    value = page()
+    if mode in ("attachment", "failure"):
+        value["deliveries"][0]["source"]["attachments"] = [{
+            "id": "a.png", "filename": "school.png", "media_type": "image/png",
+            "size_bytes": len(PNG), "sha256": sha256(PNG).hexdigest(),
+        }]
+    claim = SimpleNamespace(service_binding=SERVICE, async_claim=AsyncMock(return_value=value),
+                            async_fetch_attachment=AsyncMock(return_value=PNG))
+    ack = Transport()
+    monkeypatch.setattr(hosted_source_transport, "HostedSourceTransport", lambda *_: claim)
+    monkeypatch.setattr(hosted_runtime, "HostedLifecycleTransport", lambda *_, **__: ack)
+    if mode in ("failure", "missing_byo"):
+        with pytest.raises(ProviderError):
+            await runtime.async_delivery_pass()
+        assert not ack.calls
+        assert not store.hosted_ack_journal()
+        assert not store.list()
+    else:
+        assert len(await runtime.async_delivery_pass()) == 1
+        assert len(ack.calls) == 1
+        assert store.hosted_ack_journal()[0].ack_status == "confirmed"
+        assert len(store.list()) == 1
+    if mode == "missing_byo":
+        parse.assert_not_awaited()
+    else:
+        parse.assert_awaited_once()
+    if mode in ("attachment", "failure"):
+        claim.async_fetch_attachment.assert_awaited_once()
+    else:
+        claim.async_fetch_attachment.assert_not_awaited()
+    managed.assert_not_called()
+    assert not store._hosted_operations
+    assert not list(tmp_path.iterdir())
+    await runtime.async_stop()
