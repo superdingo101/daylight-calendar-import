@@ -331,6 +331,12 @@ def _reference_zone_endpoint(value: object, zone: ZoneInfo) -> tuple[str, bool]:
             ambiguous)
 
 
+def _printed_clock(source_clock: str) -> time:
+    """Read the English 12-hour clock guaranteed by the source pattern."""
+    hour, minute = source_clock.split(":")
+    return time(int(hour) % 12 + 12 * (source_clock[-2:].upper() == "PM"), int(minute[:2]))
+
+
 def _named_zone_endpoint(
     value: object, zone_name: str, source_clock: str | None, *, check_offset: bool,
     origin: str = "provider_named",
@@ -349,9 +355,7 @@ def _named_zone_endpoint(
     _LOGGER.debug("Timezone candidate validated: origin=%s zone=%s offsets=%s",
                   origin, zone.key, tuple(str(offset) for offset in candidates))
     if source_clock is not None:
-        # The source pattern guarantees an English 12-hour clock and minutes.
-        hour, minute = source_clock.split(":")
-        clock = time(int(hour) % 12 + 12 * (source_clock[-2:].upper() == "PM"), int(minute[:2]))
+        clock = _printed_clock(source_clock)
         if instant.time() != clock:
             # Test the supplied wall clock so a shifted gap still gets the
             # actionable DST warning. A different valid clock also needs review.
@@ -451,6 +455,7 @@ def _correct_inferred_zone(
 
 def parse_ai_data(
     data: Any, *, source_text: str = "", time_zone: str | None = None,
+    has_attachments: bool = False,
 ) -> ParseOutcome:
     """Retain valid drafts when individual AI output items are malformed."""
     if not isinstance(data, dict):
@@ -475,6 +480,8 @@ def parse_ai_data(
             warnings.append(f"event {index} must be an object")
             continue
         try:
+            if raw.get("temporal") is not None:
+                raise DraftValidationError("Provider cannot supply authoritative timezone review metadata")
             try:
                 assumptions = normalize_date_time_assumptions(raw.get("assumptions", []))
             except ValueError as err:
@@ -493,17 +500,36 @@ def parse_ai_data(
             review_notes: list[str] = []
             corrected_raw = raw
             ambiguous = False
-            if "start_local" in raw or "end_local" in raw:
+            if any(raw.get(field) not in (None, "") for field in ("start_local", "end_local")):
                 if raw.get("all_day") is not False:
                     raise DraftValidationError("structured local clocks require a timed event")
                 if time_zone is None:
                     raise DraftValidationError("Home Assistant time zone is unavailable")
+                # The legacy named-source matcher also recognizes explicit
+                # parenthesized zones attached to a Time: range.
+                # Retain a declaration even without a matching title, but
+                # never assign unassociated evidence to the candidate.
+                matched_record = (source_record is not None
+                                  and isinstance(raw.get("title"), str)
+                                  and raw["title"].strip().casefold() == source_record["title"].strip().casefold())
+                verified_source = source_text
+                if source_record is not None:
+                    verified_source += "\nTime zone: " + source_record["zone"]
                 try:
                     normalized, temporal = normalize_structured_event(
-                        raw, time_zone, source_text if len(events) == 1 else "",
+                        raw, time_zone, verified_source,
+                        event_scoped=len(events) == 1 and (source_record is None or matched_record),
+                        has_attachments=has_attachments,
                     )
-                except ValueError as err:
+                except (ValueError, OverflowError) as err:
                     raise DraftValidationError(str(err)) from err
+                if matched_record:
+                    # Validate original wall clocks, never provisional instants
+                    # (which may be placeholders for a blocked DST gap).
+                    for field in ("start", "end"):
+                        local = datetime.fromisoformat(getattr(temporal, field + "_local"))
+                        if local.time() != _printed_clock(source_record[field]):
+                            raise DraftValidationError("Extracted clock time differs from the source time")
                 draft = replace(EventDraft.from_mapping(normalized), temporal=temporal)
                 if temporal.status != "resolved":
                     note = ("Event's local time requires correction." if

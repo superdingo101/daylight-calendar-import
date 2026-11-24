@@ -192,7 +192,10 @@ class AITaskParserProvider:
             if not isinstance(result.data.get("unsupported_recurrence"), bool):
                 raise ValueError("AI Task result must declare unsupported_recurrence")
             # Looking up a named source zone can read the system tz database.
-            return await asyncio.to_thread(parse_ai_data, result.data, source_text=text, time_zone=time_zone)
+            return await asyncio.to_thread(
+                parse_ai_data, result.data, source_text=text, time_zone=time_zone,
+                has_attachments=bool(attachments),
+            )
         except Exception:
             raise ProviderError(
                 "provider_invalid_response", "AI Task returned an invalid result"

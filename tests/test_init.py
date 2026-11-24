@@ -3697,3 +3697,35 @@ async def test_preview_timezone_service_single_venue_and_unknown_geo_do_not_infe
     assert value["suggested_end_zones"] == ["America/New_York"]
     assert value["suggested_start_zones"] == ["Australia/Sydney"]
     assert value["preview"] is None
+
+
+async def test_preview_timezone_service_unicode_endpoints_require_independent_choices(monkeypatch):
+    base = pending().events[0]
+    metadata = TemporalEvidence(
+        "2028-01-10T10:00:00", "2028-01-10T12:00:00",
+        "Europe/Berlin", "Europe/Berlin", "ha_fallback", "confirmation_required",
+        start_location_type="venue", end_location_type="venue",
+        start_location_value="Hauptstrasse 1, Berlin",
+        end_location_value="Hauptstraße 1, Berlin",
+    )
+    event = replace(base, draft=replace(base.draft, temporal=metadata))
+    store = SimpleNamespace(
+        async_load=AsyncMock(), list_notifications=Mock(return_value=()),
+        get_event=Mock(return_value=event),
+    )
+    monkeypatch.setattr("custom_components.daylight_calendar_import.PendingImportStore",
+                        lambda _hass: store)
+    hass = FakeHass(user=SimpleNamespace(permissions=FakePermissions()))
+    await async_setup_entry(hass, entry())
+    handler = hass.services.handlers[(DOMAIN, SERVICE_PREVIEW_PENDING_TIMEZONE)][0]
+    call = SimpleNamespace(
+        context=Context(user_id="reviewer"),
+        data={ATTR_PENDING_ID: "one", ATTR_EVENT_ID: event.id,
+              "expected_event": event.as_service_dict(), "time_zone": "Europe/Berlin"},
+    )
+    result = await handler(call)
+    assert result["needs_end_zone"] is True
+    assert result["preview"] is None
+    call.data["end_time_zone"] = "Europe/Berlin"
+    result = await handler(call)
+    assert result["preview"]["duration_seconds"] == 7200

@@ -55,6 +55,9 @@ test("picker begins empty, cancels without changing and commits an explicit city
   assert.equal(picker.value, "America/New_York");
   assert.deepEqual(changes, ["America/New_York"]);
   assert.match(picker.trigger.textContent, /New York, United States/);
+  assert.equal(picker.trigger.attributes["aria-label"], "Arrival timezone: New York, United States");
+  assert.equal(picker.trigger.attributes["aria-describedby"],
+    picker.element.querySelectorAll("span").at(-1).id);
   assert.match(picker.element.querySelectorAll("span").at(-1).textContent,
     /UTC-04:00/);
 });
@@ -85,6 +88,7 @@ test("suggestions are advisory and never preselect or invent invalid timezone id
   assert.equal(picker.value, "Asia/Kathmandu");
   picker.clear();
   assert.equal(picker.value, "");
+  assert.equal(picker.trigger.attributes["aria-label"], "Departure timezone: choose timezone");
   assert.deepEqual(changes, ["America/Los_Angeles", "Asia/Kathmandu", ""]);
 });
 

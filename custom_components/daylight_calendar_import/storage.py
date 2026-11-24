@@ -1616,16 +1616,6 @@ class PendingImportStore:
                     and unresolved == event.routing_unresolved):
                 return event
 
-            fingerprint = event_fingerprint(draft)
-            other_active = {
-                event_fingerprint(item.draft)
-                for active in self._items.values()
-                for item in active.events
-                if active.id != pending_id or item.id != event_id
-            }
-            if fingerprint in self._seen_event_fingerprints or fingerprint in other_active:
-                raise PendingEventEditError("Edited event duplicates a pending or handled event")
-
             temporal_changed = any((
                 event.draft.start != draft.start,
                 event.draft.end != draft.end,
@@ -1637,8 +1627,10 @@ class PendingImportStore:
                 # authoritative timezone approval gate.
                 if not draft.all_day:
                     try:
-                        start_local = _local(draft.start[:19]).isoformat()
-                        end_local = _local(draft.end[:19]).isoformat()
+                        if "T" not in draft.start or "T" not in draft.end:
+                            raise ValueError("Edited clocks must use ISO T separator")
+                        start_local = _local(datetime.fromisoformat(draft.start).replace(tzinfo=None).isoformat()).isoformat()
+                        end_local = _local(datetime.fromisoformat(draft.end).replace(tzinfo=None).isoformat()).isoformat()
                     except ValueError as err:
                         raise PendingEventEditError("Invalid edited local clocks") from err
                     metadata = replace(metadata, start_local=start_local,
@@ -1651,10 +1643,26 @@ class PendingImportStore:
                             "Confirm the timezone before changing an unresolved event to all-day"
                         )
                     metadata = None
+            # A manual geography edit can invalidate an earlier zone decision
+            # even if neither wall clock changes.
+            if (metadata is not None and metadata.status == "resolved"
+                    and event.draft.location != draft.location):
+                metadata = replace(metadata, status="confirmation_required",
+                                   reason="Edited location needs timezone reconfirmation")
             edited = replace(event, draft=replace(draft, temporal=metadata),
                              calendar_entity=target, routing_unresolved=unresolved,
                              date_time_assumptions=(() if temporal_changed
                                                     else event.date_time_assumptions))
+            fingerprint = event_fingerprint(edited.draft)
+            other_active = {
+                event_fingerprint(item.draft)
+                for active in self._items.values()
+                for item in active.events
+                if active.id != pending_id or item.id != event_id
+            }
+            if fingerprint in self._seen_event_fingerprints or fingerprint in other_active:
+                raise PendingEventEditError("Edited event duplicates a pending or handled event")
+
             updated = replace(pending, events=tuple(
                 edited if item.id == event_id else item for item in pending.events
             ))
@@ -1921,7 +1929,7 @@ class PendingImportStore:
                 )
                 draft = replace(event.draft, start=start, end=end, temporal=resolved)
                 fingerprint = event_fingerprint(draft)
-            except ValueError as err:
+            except (ValueError, OverflowError) as err:
                 raise PendingEventEditError(str(err)) from err
             others = {
                 event_fingerprint(item.draft)
@@ -1931,7 +1939,13 @@ class PendingImportStore:
             }
             if fingerprint in self._seen_event_fingerprints or fingerprint in others:
                 raise PendingEventEditError("Resolved event duplicates a pending or handled event")
-            edited = replace(event, draft=draft, date_time_assumptions=())
+            edited = replace(event, draft=draft, date_time_assumptions=tuple(
+                assumption for assumption in event.date_time_assumptions
+                if assumption not in (
+                    "Event timezone or DST occurrence needs confirmation.",
+                    "Event's local time requires correction.",
+                )
+            ))
             updated = replace(pending, events=tuple(
                 edited if item.id == event_id else item for item in pending.events
             ))

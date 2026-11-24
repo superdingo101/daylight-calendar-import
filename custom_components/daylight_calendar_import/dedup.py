@@ -39,6 +39,10 @@ def event_fingerprint(event: EventDraft) -> str:
         payload["end"] = {"unresolved_wall": event.temporal.end_local,
                           "location": _normalize_text(event.temporal.end_location_value)}
         payload["temporal_pending"] = True
+        if event.temporal.explicit_timezone:
+            payload["explicit_timezone"] = _normalize_text(event.temporal.explicit_timezone)
+        if event.temporal.source_evidence_id:
+            payload["source_evidence_id"] = event.temporal.source_evidence_id
     serialized = json.dumps(
         payload,
         ensure_ascii=False,

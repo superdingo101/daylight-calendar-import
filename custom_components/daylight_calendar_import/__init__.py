@@ -82,7 +82,7 @@ from .notification_delivery import async_deliver_notifications, MAX_ACTIVE_TASKS
 from .sources import SourceDocument, SourceKind, TextSourceAdapter
 from .source_routing import plan_source_routing
 from .uploads import async_image_source
-from .timezone_resolution import preview_zone, suggested_zone
+from .timezone_resolution import needs_end_timezone, preview_zone, suggested_zone
 from .storage import (
     RetryJobConflict,
     PendingEventEditError,
@@ -1194,12 +1194,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if expected != event:
                 raise PendingEventEditError("Event changed since it was loaded; refresh")
             temporal = event.draft.temporal
-            distinct_end = bool(temporal.end_location_value.strip()) and (
-                temporal.end_location_value.strip().casefold() !=
-                temporal.start_location_value.strip().casefold()
-            )
-            needs_end_zone = (temporal.travel_incomplete or distinct_end or
-                              temporal.end_zone != temporal.start_zone)
+            needs_end_zone = needs_end_timezone(temporal)
             suggested_start = suggested_zone(temporal, "start")
             suggested_end = suggested_zone(temporal, "end") if needs_end_zone else None
             result = {

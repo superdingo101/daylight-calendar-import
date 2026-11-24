@@ -6258,6 +6258,41 @@ test("review editor can select the second occurrence of the fall-back hour", asy
 });
 
 
+test("legacy cross-zone event never offers a fold that the fixed-offset save model would discard", async () => {
+  const panel = new DaylightImportPanel();
+  let current = {
+    id: "travel", title: "Flight", all_day: false, status: "pending",
+    start: "2027-07-15T08:00:00-07:00",
+    end: "2027-07-15T16:00:00-04:00", confidence: 1,
+  };
+  const calls = [];
+  panel.hass = {
+    config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => {
+      calls.push(request);
+      if (request.service === "list_pending") return {response: {imports: []}};
+      if (request.service === "get_pending") {
+        return {response: {pending: {id: "one", events: [current]}}};
+      }
+      current = {...current, ...request.service_data.event};
+      return {response: {pending_id: "one", event: current}};
+    },
+  };
+  await flush();
+  await panel.showImport("one");
+  panel._content.querySelectorAll("button")
+    .find(button => button.dataset.eventId === "travel").click();
+  const form = find(panel._content, "form");
+  const start = form.elements.namedItem("start");
+  start.value = "2027-11-07T01:30";
+  start.change();
+  assert.equal(form.elements.namedItem("start_occurrence"), undefined);
+  await panel.saveEdit(current, form);
+  const saved = calls.findLast(call => call.service === "edit_pending_event");
+  assert.equal(saved.service_data.event.start, "2027-11-07T01:30:00-07:00");
+});
+
+
 test("fold selector follows edited wall time and disappears outside the repeated hour", () => {
   const panel = new DaylightImportPanel();
   panel._hass = {config: {time_zone: "Europe/Berlin"}};
@@ -7212,6 +7247,44 @@ test("timezone confirmation submits the exact loaded event and reloads backend s
 });
 
 
+for (const fail of [false, true]) {
+  test(`timezone confirmation releases navigation controls after ${fail ? "failure" : "success"}`, async () => {
+    const panel = new DaylightImportPanel();
+    const temporal = {status: "confirmation_required",
+      start_local: "2027-12-25T18:00:00", end_local: "2027-12-25T20:00:00",
+      start_zone: "America/Los_Angeles", end_zone: "America/Los_Angeles", source: "ha_fallback"};
+    const event = {id: "event", title: "Dinner", all_day: false, status: "pending",
+      start: "2027-12-25T18:00:00-08:00", end: "2027-12-25T20:00:00-08:00", temporal};
+    const resolved = {...event, temporal: {...temporal, status: "resolved", source: "user"}};
+    const detail = item => ({id: "source", source_kind: "manual_text", events: [item]});
+    panel._hass = {user: {is_admin: true}, config: {time_zone: "America/Los_Angeles"},
+      callWS: async request => {
+        if (request.service === "confirm_pending_timezone") {
+          if (fail) throw new Error("Confirmation refused");
+          return {response: {pending_id: "source", event: resolved}};
+        }
+        if (request.service === "get_pending") return {response: {pending: detail(fail ? event : resolved)}};
+        throw new Error("Unexpected service request");
+      }};
+    panel._status = "ready";
+    panel._selectedId = "source";
+    panel._detail = detail(event);
+    panel.render();
+    await panel.confirmTimezone(event, "America/Los_Angeles");
+    assert.equal(panel._saving, false);
+    assert.equal(panel._refreshButton.disabled, false);
+    const nav = find(panel._content, "nav");
+    assert.ok(nav);
+    const buttons = nav.querySelectorAll("button");
+    assert.equal(buttons.find(button => button.textContent === "Review inbox").disabled, true);
+    assert.equal(buttons.find(button => button.textContent === "Recent activity").disabled, false);
+    assert.equal(buttons.find(button => button.textContent === "Settings").disabled, false);
+    assert.equal(panel._newImportButton.disabled, false);
+    assert.equal(panel._detail.events[0].temporal.status, fail ? "confirmation_required" : "resolved");
+    assert.equal(panel._decisionError, fail ? "Confirmation refused" : null);
+  });
+}
+
 test("resolved geographic note never labels an explicitly printed year inferred", () => {
   const panel = new DaylightImportPanel();
   panel._hass = {config: {time_zone: "America/Los_Angeles"}};
@@ -7235,9 +7308,10 @@ test("resolved geographic note never labels an explicitly printed year inferred"
   const notes = cards[0].querySelectorAll(".event-note").map(n => n.textContent).join(" ");
   assert.match(notes, /Event timezone · America\/Los_Angeles \(geographic\)/);
   assert.doesNotMatch(notes, /Year inferred|Date interpretation needs review|Date\/time assumption/);
-  const diagnostic = cards[0].querySelector(".event-diagnostics");
-  assert.ok(diagnostic.querySelectorAll("p").some(n =>
+  assert.ok(cards[0].querySelectorAll(".event-note").some(n =>
     n.textContent === "AI extraction note: Year 2027 is explicitly stated in the source."));
+  assert.ok(cards[0].querySelectorAll(".event-note").some(n =>
+    n.textContent === "AI extraction note: Inferred America/Los_Angeles from the venue location in Encinitas, California."));
   assert.equal(cards[0].querySelectorAll("button").find(n => n.dataset.action === "approve").disabled,
     undefined);
 });
@@ -7349,6 +7423,13 @@ test("timezone confirmation does not invent an arrival field for one Sydney venu
   let labels = panel._content.querySelectorAll(".timezone-field-label").map(label => label.textContent);
   assert.ok(labels.includes("Event timezone"));
   assert.ok(!labels.includes("Arrival timezone"));
+  panel._detail = {id: "sydney", source_kind: "manual_text", events: [{
+    ...event, temporal: {...temporal, start_location_value: "Hauptstrasse 1, Berlin",
+      end_location_value: "Hauptstraße 1, Berlin"},
+  }]};
+  panel.render();
+  labels = panel._content.querySelectorAll(".timezone-field-label").map(label => label.textContent);
+  assert.deepEqual(labels, ["Departure timezone", "Arrival timezone"]);
 
   // A flight with genuinely different endpoints must retain both fields,
   // even if a model gave them the same provisional HA timezone.
@@ -7414,4 +7495,86 @@ test("timezone confirmation does not invent an arrival field for one Sydney venu
   confirm.click();
   assert.deepEqual(captured, [{id: "event", zone: "America/Los_Angeles",
     options: {endTimeZone: "America/New_York"}}]);
+});
+
+
+test("timezone confirmation cannot discard a sibling's unsaved edit", async () => {
+  const panel = new DaylightImportPanel();
+  const requests = [];
+  panel._hass = {config: {time_zone: "America/Los_Angeles"},
+    callWS: async request => { requests.push(request); throw new Error("Unexpected request"); }};
+  panel._status = "ready";
+  panel._selectedId = "source";
+  const first = {id: "a", title: "First", all_day: false, status: "pending",
+    start: "2027-12-25T18:00:00-08:00", end: "2027-12-25T20:00:00-08:00"};
+  const second = {...first, id: "b", title: "Second", temporal: {
+    status: "confirmation_required", source: "ha_fallback",
+    start_zone: "America/Los_Angeles", end_zone: "America/Los_Angeles",
+    start_local: "2027-12-25T18:00:00", end_local: "2027-12-25T20:00:00"}};
+  panel._detail = {id: "source", source_kind: "manual_text", events: [first, second]};
+  panel.render();
+  assert.ok(panel._content.querySelectorAll("button").some(b => b.textContent === "Confirm timezone"));
+  panel._content.querySelectorAll("button").find(b => b.dataset.eventId === "a" && b.textContent === "Edit").click();
+  assert.equal(panel._editingId, "a");
+  const form = panel._content.querySelectorAll("form")[0];
+  const title = form.querySelectorAll("input").find(input => input.name === "title");
+  title.value = "Unsaved changes";
+  assert.ok(!panel._content.querySelectorAll("button").some(b => b.textContent === "Confirm timezone"));
+  await panel.confirmTimezone(second, "America/Los_Angeles");
+  assert.deepEqual(requests.map(request => request.service), ["preview_pending_timezone"]);
+  assert.equal(panel._editingId, "a");
+  assert.equal(title.value, "Unsaved changes");
+  assert.equal(panel._content.querySelectorAll("form")[0], form);
+});
+
+test("blocked gap draft shows original local clocks rather than provisional placeholder", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "source";
+  const event = {id: "gap", title: "Gap", all_day: false, status: "pending",
+    start: "2027-03-14T02:30:00-08:00", end: "2027-03-14T03:31:00-07:00",
+    temporal: {status: "correction_required", source: "ha_fallback",
+      start_zone: "America/Los_Angeles", end_zone: "America/Los_Angeles",
+      start_local: "2027-03-14T02:30:00", end_local: "2027-03-14T03:00:00",
+      reason: "The local time does not exist in this timezone."}};
+  panel._detail = {id: "source", source_kind: "manual_text", events: [event]};
+  panel.render();
+  assert.ok(panel._content.querySelectorAll("p").some(node =>
+    node.textContent === "2027-03-14 02:30:00 – 2027-03-14 03:00:00 · Unconfirmed local time"));
+  panel._content.querySelectorAll("button").find(b => b.dataset.eventId === "gap" && b.textContent === "Edit").click();
+  const form = panel._content.querySelectorAll("form")[0];
+  const inputs = form.querySelectorAll("input");
+  assert.equal(inputs.find(input => input.name === "start").value, "2027-03-14T02:30");
+  assert.equal(inputs.find(input => input.name === "end").value, "2027-03-14T03:00");
+});
+
+
+test("resolved timezone retains arbitrary date inference notes outside collapsed diagnostics", () => {
+  const panel = new DaylightImportPanel();
+  panel._hass = {config: {time_zone: "America/Los_Angeles"}};
+  panel._status = "ready";
+  panel._selectedId = "source";
+  const event = {id: "a", title: "Dinner", status: "pending", all_day: false,
+    start: "2027-12-25T18:00:00-08:00", end: "2027-12-25T20:00:00-08:00",
+    temporal: {status: "resolved", source: "user", start_zone: "America/Los_Angeles",
+      end_zone: "America/Los_Angeles", start_local: "2027-12-25T18:00:00",
+      end_local: "2027-12-25T20:00:00"}};
+  const notes = ["Assumed 2027 because no year is printed in the invitation.",
+    "Sunday was resolved using the reference date", "Time zone and date were inferred."];
+  panel._detail = {id: "source", source_kind: "manual_text", events: [
+    {...event, date_time_assumptions: notes}, {...event, id: "b", title: "No notes"}]};
+  panel.render();
+  const cards = panel._content.querySelectorAll(".detail-event");
+  assert.equal(cards.length, 2);
+  assert.equal(cards[0].querySelector(".event-fold-alert").textContent, "Review extraction notes");
+  assert.equal(cards[1].querySelector(".event-fold-alert"), null);
+  assert.deepEqual(cards[0].querySelectorAll(".event-note").map(n => n.textContent)
+    .filter(note => note.startsWith("AI extraction note: ")), notes.map(note => "AI extraction note: " + note));
+  assert.equal(cards[0].querySelector(".event-diagnostics"), null);
+  assert.notEqual(cards[0].querySelectorAll("button").find(n => n.dataset.action === "approve").disabled, true);
+  panel._detail = {...panel._detail, events: [panel._detail.events[0]]};
+  panel.render();
+  const single = panel._content.querySelectorAll(".event-note").map(n => n.textContent);
+  for (const note of notes) assert.ok(single.includes("AI extraction note: " + note));
 });

@@ -65,3 +65,10 @@ test("only valid, explicitly identified IANA suggestions are rendered", () => {
   ]).map(z => z.id), ["America/New_York", "Asia/Kathmandu"]);
   assert.deepEqual(validSuggestedTimezones(null), []);
 });
+
+
+test("committed catalog order uses locale-independent identifier ordering", () => {
+  const ids = allTimezones().map(zone => zone.id);
+  assert.deepEqual(ids, [...ids].sort());
+  assert.ok(ids.indexOf("America/Matamoros") < ids.indexOf("America/Mazatlan"));
+});

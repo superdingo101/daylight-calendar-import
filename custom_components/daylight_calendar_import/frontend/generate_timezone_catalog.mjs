@@ -22,7 +22,7 @@ const zones = timeZonesNames.map(id => [id, groupMap.get(id)]);
 zones.push(["Etc/UTC", groups.length]);
 groups.push(["World", "", "Coordinated Universal Time", "UTC", "", "UTC",
   "UTC GMT Z"]);
-zones.sort((left, right) => left[0].localeCompare(right[0]));
+zones.sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0);
 const contents = `/** Generated timezone picker catalog from @vvo/tzdb ${version} (IANA ${tzdbVersion}).
  * Source: https://github.com/vvo/tzdb/tree/${version}
  * MIT © CodeAgain SASU. See timezone_catalog.LICENSE.

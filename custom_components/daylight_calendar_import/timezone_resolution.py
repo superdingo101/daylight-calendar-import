@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta, tzinfo
 from functools import lru_cache
+from hashlib import sha256
+import json
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -18,22 +20,25 @@ _POSTAL = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 _SOURCE_VENUE = re.compile(
     r"(?im)^[ \t]*(?:location|venue|where)[ \t]*:[ \t]*(?:\r?\n[ \t]*)?([^\r\n]+)"
 )
-# Recover only direct, source-printed IANA declarations when the AI omits
-# explicit_timezone. Incidental addresses, zones in prose and provider
-# assumptions are not independent declarations.
+# Recover only direct, source-printed declarations when the AI omits the
+# explicit field. A local declaration in a multi-event document is evidence
+# of uncertainty, not a document-wide zone assignment.
 _SOURCE_DECLARED_ZONE = re.compile(
-    r"\b(?:all\s+(?:event\s+)?times\s+are\s+in|"
+    r"\b(?:(?P<global>all\s+(?:event\s+)?times\s+are\s+in)|"
     r"(?:time\s*zone|timezone)\s*(?::|is))\s*"
-    r"(?P<zone>[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)+)\b",
+    r"(?P<zone>[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)+|"
+    r"(?:(?:UTC|GMT)\s*)?[+-]\d{1,2}(?::?\d{2})?|"
+    r"UTC|GMT|Z|CET|EET|WET|EST|MST|HST|PST|PDT|CST|CDT|EDT|MDT|"
+    r"BST|IST|JST|AEST|AEDT|DST)(?=$|[\s,.;!?)\]])",
     re.IGNORECASE,
 )
-_FIXED = re.compile(r"(?i:(UTC|GMT))\s*([+-])(\d{1,2})(?::?(\d{2}))?\Z")
+_FIXED = re.compile(r"(?i:(UTC|GMT))?\s*([+-])(\d{1,2})(?::?(\d{2}))?\Z")
 _TRAVEL = re.compile(
     r"\b(?:flights?|departures?|departing|arrivals?|arriving|boarding|"
     r"itinerar(?:y|ies)|trains?|ferr(?:y|ies)|buses|bus|"
     r"journeys?|travell?ing|travels?|trips?|plane tickets?)\b", re.IGNORECASE,
 )
-_AIRPORT_ROUTE = re.compile(r"\b[A-Z]{3,4}\s*(?:to|→|[-–])\s*[A-Z]{3,4}\b")
+_AIRPORT_ROUTE = re.compile(r"\b([A-Z]{3,4})\s*(?:to|→|[-–])\s*([A-Z]{3,4})\b")
 
 @dataclass(frozen=True, slots=True)
 class TemporalEvidence:
@@ -52,6 +57,7 @@ class TemporalEvidence:
     end_location_value: str = ""
     explicit_timezone: str = ""
     travel_incomplete: bool = False
+    source_evidence_id: str = ""
 
     @classmethod
     def from_dict(cls, raw: dict) -> TemporalEvidence:
@@ -59,13 +65,16 @@ class TemporalEvidence:
                     "source", "status", "reason"}
         allowed = required | {"start_location_type", "start_location_value",
                               "end_location_type", "end_location_value", "explicit_timezone",
-                              "travel_incomplete"}
+                              "travel_incomplete", "source_evidence_id"}
         if not isinstance(raw, dict) or not required.issubset(raw) or set(raw) - allowed:
             raise ValueError("invalid temporal review data")
         if (any(not isinstance(value, str) or len(value) > _BOUNDED
                 for key, value in raw.items() if key != "travel_incomplete")
                 or type(raw.get("travel_incomplete", False)) is not bool):
             raise ValueError("invalid temporal review fields")
+        identity = raw.get("source_evidence_id", "")
+        if identity and not re.fullmatch(r"[0-9a-f]{64}", identity):
+            raise ValueError("invalid source evidence identity")
         for name in ("start_local", "end_local"):
             _local(raw[name])
         for name in ("start_zone", "end_zone"):
@@ -159,7 +168,8 @@ def _labeled_flight_airports(source_text: str) -> tuple[str, str] | None:
         r"(?is)\bdeparture\s*:\s*(.{1,512}?)\barrival\s*:\s*(.{1,512})",
         source_text,
     )
-    if match is None:
+    if (match is None or len(re.findall(r"(?i)\bdeparture\s*:", source_text)) != 1
+            or len(re.findall(r"(?i)\barrival\s*:", source_text)) != 1):
         return None
 
     def code_from(segment: str) -> str | None:
@@ -294,11 +304,13 @@ def _place_zone(kind: str, value: str) -> str | None:
     if kind == "airport":
         return _airport_zone(value)
     if kind == "postal_code":
-        return _postal_zone(value)
+        # Bare five-digit codes are international; require printed US context.
+        match = re.fullmatch(r"(\d{5})(?:-\d{4})?\s*,\s*(?:US|USA|United States)", value, re.I)
+        return _postal_zone(match[1]) if match else None
     if kind not in ("city", "address", "venue"):
         return None
     # A printed airport code overrides an unreliable AI venue classification.
-    if re.search(r"\([A-Za-z]{3,4}\)", value):
+    if kind in ("venue", "address") and re.search(r"\b(?:airport|terminal|flight)\b", value, re.I):
         airport_zone = _airport_zone(value)
         if airport_zone is not None:
             return airport_zone
@@ -318,6 +330,22 @@ def _place_zone(kind: str, value: str) -> str | None:
     zones = {_city_parts_zone(parts_candidate) for parts_candidate in options}
     zones.discard(None)
     return next(iter(zones)) if len(zones) == 1 else None
+
+
+def _blocked_range(start: datetime, end: datetime, start_name: str,
+                   end_name: str) -> tuple[str, str]:
+    """Represent an unsafe range without losing its separate original wall clocks.
+
+    Only a blocked draft uses these provisional instants. If they are not
+    chronologically valid, give the draft a minimal positive duration rather
+    than inventing an arrival date. Confirmation always recalculates from
+    the original wall clocks, never from these placeholders.
+    """
+    first = start.replace(tzinfo=_zone(start_name))
+    last = end.replace(tzinfo=_zone(end_name))
+    if last.astimezone(timezone.utc) <= first.astimezone(timezone.utc):
+        last = (first.astimezone(timezone.utc) + timedelta(minutes=1)).astimezone(_zone(end_name))
+    return first.isoformat(), last.isoformat()
 
 
 def _range_for_wall(start: datetime, end: datetime, start_name: str,
@@ -341,8 +369,8 @@ def _range_for_wall(start: datetime, end: datetime, start_name: str,
                  (len(ends) > 1 and end_occurrence is None))
     if gap:
         # Keep the original wall clocks visible for correction but block writes.
-        return (start.replace(tzinfo=_zone(start_name)).isoformat(),
-                end.replace(tzinfo=_zone(end_name)).isoformat(), ambiguous, True)
+        a, b = _blocked_range(start, end, start_name, end_name)
+        return a, b, ambiguous, True
     for occurrence, choices in ((start_occurrence, starts), (end_occurrence, ends)):
         if occurrence is not None and (occurrence not in ("first", "second") or len(choices) != 2):
             raise ValueError("Invalid DST occurrence")
@@ -363,39 +391,195 @@ def _range_for_wall(start: datetime, end: datetime, start_name: str,
     return selected[0].isoformat(), selected[1].isoformat(), ambiguous, False
 
 
+@dataclass(frozen=True, slots=True)
+class _SourceEvidence:
+    """Source claims, kept separate from per-event AI extraction.
+
+    Unassociated source claims may block automatic approval, but never supply
+    a particular event's endpoint. A missing association is not missing evidence.
+    """
+
+    venues: tuple[str, ...]
+    declared_zones: frozenset[str]
+    flight: tuple[str, str] | None
+    event_scoped: bool
+    text: str
+
+    @classmethod
+    def collect(cls, text: str, event_scoped: bool) -> _SourceEvidence:
+        return cls(
+            tuple(sorted({item.strip() for item in _SOURCE_VENUE.findall(text)
+                          if item.strip()})),
+            frozenset(match["zone"] for match in _SOURCE_DECLARED_ZONE.finditer(text)),
+            _labeled_flight_airports(text) if event_scoped and text else None,
+            event_scoped,
+            text,
+        )
+
+    def identity(self) -> str:
+        """Hash independent printed claims, not a guessed event association.
+
+        Retain only the digest; order, repeated venue labels and whitespace
+        do not distinguish otherwise identical evidence.
+        """
+        claims = (
+            sorted({" ".join(venue.split()).casefold() for venue in self.venues}),
+            sorted(self.declared_zones),
+            sorted(set(_AIRPORT_ROUTE.findall(self.text))),
+            self.flight,
+        )
+        if not any(claims):
+            return ""
+        return sha256(json.dumps(claims, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+    @property
+    def has_unassociated_zone(self) -> bool:
+        return not self.event_scoped and any(
+            not match["global"] for match in _SOURCE_DECLARED_ZONE.finditer(self.text)
+        )
+
+    @property
+    def venue(self) -> str | None:
+        return self.venues[0] if self.event_scoped and len(self.venues) == 1 else None
+
+
+@dataclass(frozen=True, slots=True)
+class _EndpointEvidence:
+    """A typed location claim, before any provisional timezone is assigned."""
+
+    kind: str
+    value: str
+
+    @classmethod
+    def from_raw(cls, raw: dict, prefix: str) -> _EndpointEvidence:
+        kind = raw.get(prefix + "_location_type", "unknown")
+        value = raw.get(prefix + "_location_value", "")
+        if not isinstance(kind, str) or kind not in KINDS:
+            raise ValueError("invalid location type")
+        if value is None:
+            value = ""
+        if not isinstance(value, str) or len(value) > _BOUNDED:
+            raise ValueError("invalid location evidence")
+        return cls(kind, value)
+
+    def resolve(self, ha_zone: str, inherited: tuple[str, str, bool] | None = None) -> tuple[str, str, bool]:
+        if self.kind == "unknown" and not self.value and inherited is not None:
+            return inherited[0], inherited[1], inherited[2]
+        if self.kind in ("unknown", "virtual") and not self.value:
+            return ha_zone, "ha_fallback", False
+        zone = _place_zone(self.kind, self.value)
+        if zone is not None:
+            _zone(zone)
+            return zone, "airport" if self.kind == "airport" else "geographic", False
+        return ha_zone, "ha_fallback", True
+
+
+@dataclass(frozen=True, slots=True)
+class _GeographyEvidence:
+    start: _EndpointEvidence
+    end: _EndpointEvidence
+    display: str
+    conflict: bool
+    unassociated_venue: bool
+    travel_incomplete: bool
+
+
+def _collect_geography(raw: dict, source: _SourceEvidence) -> _GeographyEvidence:
+    """Bind only uniquely associated source claims; retain conflicting AI claims."""
+    start = _EndpointEvidence.from_raw(raw, "start")
+    end = _EndpointEvidence.from_raw(raw, "end")
+    display = raw.get("location")
+    display = display.strip() if isinstance(display, str) else ""
+    conflict = False
+    if source.flight:
+        def matches(endpoint: _EndpointEvidence, code: str) -> bool:
+            return (not endpoint.value or endpoint.value.upper() == code or
+                    (endpoint.value.upper().count(f"({code})") == 1
+                     and endpoint.kind != "airport"))
+
+        if matches(start, source.flight[0]) and matches(end, source.flight[1]):
+            start = _EndpointEvidence("airport", source.flight[0])
+            end = _EndpointEvidence("airport", source.flight[1])
+        else:
+            conflict = True
+
+    # A printed venue is a shared-location candidate, never a substitute for
+    # an independently supplied departure or arrival.
+    venue = source.venue
+    if start.kind in ("unknown", "virtual") and not start.value and not end.value:
+        if start.kind == "unknown" and venue and (
+            not display or display.casefold() == venue.casefold()
+        ):
+            start = _EndpointEvidence("venue", venue[:_BOUNDED])
+        elif display:
+            start = _EndpointEvidence(start.kind, display[:_BOUNDED])
+
+    has_start = start.kind not in ("unknown", "virtual") and bool(start.value)
+    has_end = end.kind not in ("unknown", "virtual") and bool(end.value)
+    travel_context = f"{raw.get('title') or ''} {source.text} {display}"
+    travel = bool(_TRAVEL.search(travel_context) or _AIRPORT_ROUTE.search(travel_context))
+    travel_incomplete = (travel or (has_end and not has_start)) and not (has_start and has_end)
+    # A route in an individual event's title/display or single-event source
+    # must not silently disagree with two independently extracted airports.
+    if start.kind == end.kind == "airport":
+        scoped_route_text = f"{raw.get('title') or ''} {display}"
+        if source.event_scoped:
+            scoped_route_text += " " + source.text
+        for departure, arrival in _AIRPORT_ROUTE.findall(scoped_route_text):
+            if (_airport_zone(departure) and _airport_zone(arrival)
+                    and (_airport_zone(departure) != _airport_zone(start.value)
+                         or _airport_zone(arrival) != _airport_zone(end.value))):
+                conflict = True
+    return _GeographyEvidence(
+        start, end, display, conflict, bool(source.venues and not venue), travel_incomplete,
+    )
+
+
+def _venue_zone(place: str) -> str | None:
+    return _place_zone("venue", place) or _place_zone("city", place)
+
+
+def _check_geography(
+    geo: _GeographyEvidence, source: _SourceEvidence,
+    first: tuple[str, str, bool], second: tuple[str, str, bool],
+) -> tuple[bool, bool]:
+    """Return conflict and unverified-venue blockers without changing zones."""
+    conflict = geo.conflict
+    unverified = geo.unassociated_venue
+    known = {item[0] for item in (first, second) if item[1] != "ha_fallback"}
+    venue = source.venue
+    if venue:
+        printed_zone = _venue_zone(venue)
+        unverified = printed_zone is None
+        if geo.display and geo.display.casefold() != venue.casefold():
+            # Aliases are safe only when both independently match a known zone.
+            if _venue_zone(geo.display) not in known or printed_zone not in known:
+                conflict = True
+        if printed_zone is not None and printed_zone not in known:
+            conflict = True
+    if geo.display:
+        display_zone = _venue_zone(geo.display) or _place_zone("airport", geo.display)
+        if known and display_zone is not None and display_zone not in known:
+            conflict = True
+    return conflict, unverified
+
+
 def normalize_structured_event(
-    raw: dict, ha_zone: str, source_text: str = "",
+    raw: dict, ha_zone: str, source_text: str = "", *,
+    event_scoped: bool = True, has_attachments: bool = False,
 ) -> tuple[dict, TemporalEvidence]:
     """Turn structured AI source facts into provisional safe review timestamps."""
     start = _local(raw.get("start_local"))
     end = _local(raw.get("end_local"))
     _zone(ha_zone)
-    raw = dict(raw)
-    # A single labeled flight supplies independently trustworthy airport
-    # identifiers even if a model collapses the itinerary into one venue.
-    # The parser supplies source_text only when exactly one event was extracted.
-    labeled = _labeled_flight_airports(source_text) if source_text else None
-    if labeled:
-        raw.update(start_location_type="airport", start_location_value=labeled[0],
-                   end_location_type="airport", end_location_value=labeled[1])
-    # An AI provider can fill the event's display location yet omit the
-    # separate typed start-location fields. Treat this as actual geographic
-    # evidence, NOT as permission to silently use the HA timezone.
-    if (raw.get("start_location_type", "unknown") == "unknown"
-            and not raw.get("start_location_value")):
-        display_place = raw.get("location")
-        if isinstance(display_place, str) and display_place.strip():
-            place = display_place.strip()
-            printed = {match.strip() for match in _SOURCE_VENUE.findall(source_text)
-                       if match.strip()}
-            if len(printed) == 1 and place.casefold() == next(iter(printed)).casefold():
-                # Only a source-verified location can resolve automatically.
-                raw.update(start_location_type="venue",
-                           start_location_value=place[:_BOUNDED])
-            elif "," in place or printed:
-                # Unverified or contradictory geography requires confirmation,
-                # even if the model claimed this was an HA timezone fallback.
-                raw["start_location_value"] = place[:_BOUNDED]
+    source_evidence = _SourceEvidence.collect(source_text, event_scoped)
+    geography = _collect_geography(raw, source_evidence)
+    first = geography.start.resolve(ha_zone)
+    second = geography.end.resolve(ha_zone, first)
+    location_conflict, printed_venue_unresolved = _check_geography(
+        geography, source_evidence, first, second,
+    )
+    travel_incomplete = geography.travel_incomplete
     explicit = raw.get("explicit_timezone", "")
     if explicit is None:
         explicit = ""
@@ -405,20 +589,30 @@ def normalize_structured_event(
     # The AI may correctly extract both flight airports yet omit a timezone
     # visibly stated in the source. Recover a narrow, explicit declaration
     # independently; conflicting source declarations still require review.
-    declared_zones = {match["zone"] for match in
-                      _SOURCE_DECLARED_ZONE.finditer(source_text)}
-    conflicting_declarations = len(declared_zones) > 1
-    if len(declared_zones) == 1 and not explicit:
+    declared_zones = source_evidence.declared_zones
+    conflicting_declarations = source_evidence.has_unassociated_zone or len(declared_zones) > 1 or bool(
+        explicit and declared_zones and explicit not in declared_zones
+    )
+    if len(declared_zones) == 1 and not explicit and not source_evidence.has_unassociated_zone:
         explicit = next(iter(declared_zones))
     # Models sometimes copy the configured HA zone into an "explicit" field,
     # even though the invitation never printed it. Never let that hallucinated
     # claim override real geography, especially on a cross-zone flight.
-    unsupported_explicit = bool(source_text and explicit and
+    # Text supplied alongside an attachment is not the entire source.
+    # Absence from that text cannot disprove an attachment-derived claim.
+    unsupported_explicit = bool(not has_attachments and source_text and explicit and
                                 explicit.casefold() not in source_text.casefold())
     if unsupported_explicit:
         explicit = ""
     explicit_unknown = False
     if explicit and not _fixed_zone(explicit):
+        # ZoneInfo includes abbreviation aliases whose offset can differ from
+        # the clock abbreviation printed in an invitation (e.g. CET in July).
+        if "/" not in explicit and explicit.upper() in {
+            "CET", "EET", "WET", "EST", "MST", "HST", "PST", "PDT",
+            "CST", "CDT", "EDT", "MDT", "BST", "IST", "JST", "AEST", "AEDT",
+        }:
+            explicit_unknown = True
         try:
             _zone(explicit)
         except ValueError:
@@ -428,64 +622,6 @@ def normalize_structured_event(
             if not re.fullmatch(r"[A-Za-z][A-Za-z .-]{1,63}", explicit):
                 raise ValueError("invalid timezone name") from None
             explicit_unknown = True
-
-    def endpoint(prefix: str, inherited: tuple[str, str] | None = None) -> tuple[str, str, bool]:
-        kind = raw.get(prefix + "_location_type", "unknown")
-        value = raw.get(prefix + "_location_value", "")
-        if not isinstance(kind, str) or kind not in KINDS:
-            raise ValueError("invalid location type")
-        if value is None:
-            value = ""
-        if not isinstance(value, str) or len(value) > _BOUNDED:
-            raise ValueError("invalid location evidence")
-        if kind == "unknown" and not value and inherited is not None:
-            return inherited[0], inherited[1], False
-        if kind in ("unknown", "virtual") and not value:
-            return ha_zone, "ha_fallback", False
-        zone = _place_zone(kind, value)
-        if zone is not None:
-            _zone(zone)
-            return zone, "airport" if kind == "airport" else "geographic", False
-        return ha_zone, "ha_fallback", True
-
-    first = endpoint("start")
-    second = endpoint("end", (first[0], first[1]))
-
-    # Independently supplied display or printed location evidence must not
-    # silently disagree with a resolved structured endpoint. This comparison
-    # uses only deterministic, unambiguous geographic matches; it does not
-    # assume that missing image OCR means there was no location in the image.
-    places = [raw.get("location")]
-    printed_places = {item.strip() for item in _SOURCE_VENUE.findall(source_text)
-                      if item.strip()}
-    if len(printed_places) == 1:
-        places.extend(printed_places)
-    endpoint_zones = {first[0], second[0]}
-    location_conflict = False
-    for place in places:
-        if not isinstance(place, str) or not place.strip():
-            continue
-        place_zone = (_place_zone("venue", place) or _place_zone("city", place)
-                      or _place_zone("airport", place))
-        if (place_zone is not None and place_zone not in endpoint_zones
-                and (first[1] != "ha_fallback" or second[1] != "ha_fallback")):
-            location_conflict = True
-
-    # Missing destination geography is tolerable for an ordinary one-location
-    # event, but not when an itinerary explicitly indicates travel. In that
-    # case inheriting the departure zone (or guessing HA for departure) would
-    # produce a plausible but possibly incorrect arrival instant.
-    travel_context = f"{raw.get('title') or ''} {source_text}"
-    has_start_location = (raw.get("start_location_type") not in ("unknown", "virtual")
-                          and bool(raw.get("start_location_value")))
-    has_end_location = (raw.get("end_location_type") not in ("unknown", "virtual")
-                        and bool(raw.get("end_location_value")))
-    travel_incomplete = (
-        bool(_TRAVEL.search(travel_context)
-             or (_AIRPORT_ROUTE.search(raw["location"])
-                 if isinstance(raw.get("location"), str) else False))
-        or (has_end_location and not has_start_location)
-    ) and not (has_start_location and has_end_location)
 
     # Legacy start/end are optional when structured clocks exist. If supplied,
     # an inconsistent wall clock is a reason to request confirmation, not to
@@ -501,53 +637,78 @@ def normalize_structured_event(
         except (ValueError, TypeError):
             legacy_clock_conflict = True
 
-    start_zone, source, unresolved = first
-    unresolved = (unresolved or location_conflict or travel_incomplete
-                  or legacy_clock_conflict or conflicting_declarations)
+    start_zone, source, start_unresolved = first
     end_zone, end_source, end_unresolved = second
+    # Collect blockers once. No subsequent evidence recovery can erase one.
+    unresolved = any((start_unresolved, end_unresolved, location_conflict,
+                      travel_incomplete, legacy_clock_conflict,
+                      conflicting_declarations, printed_venue_unresolved))
     if explicit:
         if not explicit_unknown:
             start_zone = end_zone = _fixed_zone(explicit) or explicit
         source = "explicit"
         # Unknown abbreviations and contradictory geographic signals always
         # need deliberate review. Never invent an offset for an abbreviation.
-        unresolved = explicit_unknown or unresolved or end_unresolved or any(
+        unresolved = unresolved or explicit_unknown or any(
             item[1] not in ("ha_fallback", "explicit") and item[0] != start_zone
             for item in (first, second)
         )
     else:
-        unresolved = unresolved or end_unresolved
         if unsupported_explicit and first[1] == "ha_fallback" and second[1] == "ha_fallback":
             unresolved = True
         if source == "ha_fallback" and end_source != "ha_fallback":
             source = end_source
-    a, b, ambiguous, gap = _range_for_wall(start, end, start_zone, end_zone)
+    try:
+        a, b, ambiguous, gap = _range_for_wall(start, end, start_zone, end_zone)
+    except ValueError as err:
+        if str(err) != "end must be after start" or not (unresolved or end_unresolved):
+            raise
+        # A provisional HA-zone interval is not evidence that a date-line
+        # journey is invalid. Keep clocks in a blocked draft for review.
+        a, b = _blocked_range(start, end, start_zone, end_zone)
+        ambiguous, gap = False, False
+        unresolved = True
     status = ("correction_required" if gap else
               "confirmation_required" if unresolved or ambiguous else "resolved")
     reason = ("The local time does not exist in this timezone." if gap else
               "Choose the first or second DST occurrence." if ambiguous else
               "Source declares conflicting timezones; confirm the event timezone." if conflicting_declarations else
               "Location evidence conflicts; confirm the event timezone." if location_conflict else
+              "The printed venue could not be verified; confirm the event timezone." if printed_venue_unresolved else
               "Travel itinerary has an unverified endpoint; confirm both timezones." if travel_incomplete else
               "Structured and legacy clocks disagree; confirm the event time." if legacy_clock_conflict else
               "Confirm the source location's timezone." if unresolved else "")
     display_location = raw.get("location")
     if not isinstance(display_location, str) or not display_location.strip():
-        start_label = raw.get("start_location_value") or ""
-        end_label = raw.get("end_location_value") or ""
+        start_label = geography.start.value
+        end_label = geography.end.value
         display_location = (start_label + " → " + end_label if
                             start_label and end_label and start_label != end_label
                             else start_label or end_label)
     metadata = TemporalEvidence(
         start.isoformat(), end.isoformat(), start_zone, end_zone, source, status,
         reason,
-        raw.get("start_location_type", "unknown"),
-        raw.get("start_location_value") or "",
-        raw.get("end_location_type", "unknown"),
-        raw.get("end_location_value") or "",
+        geography.start.kind,
+        geography.start.value,
+        geography.end.kind,
+        geography.end.value,
         explicit, travel_incomplete,
+        source_evidence.identity() if status != "resolved" else "",
     )
     return {**raw, "start": a, "end": b, "location": display_location}, metadata
+
+
+def needs_end_timezone(evidence: TemporalEvidence) -> bool:
+    """Require independent selection for distinct or incomplete endpoints.
+
+    Use identical ASCII-only whitespace and case normalization in the browser.
+    Non-ASCII spelling differences conservatively require both selections.
+    """
+    table = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+    end = evidence.end_location_value.strip(" \t\r\n\v\f").translate(table)
+    start = evidence.start_location_value.strip(" \t\r\n\v\f").translate(table)
+    return (evidence.travel_incomplete or (bool(end) and end != start)
+            or evidence.end_zone != evidence.start_zone)
 
 
 def confirm_zone(evidence: TemporalEvidence, zone_name: str,
@@ -555,7 +716,7 @@ def confirm_zone(evidence: TemporalEvidence, zone_name: str,
                  start_occurrence: str | None = None,
                  end_occurrence: str | None = None) -> tuple[str, str, TemporalEvidence]:
     """Recalculate both source-local endpoints with reviewer-confirmed zones."""
-    if evidence.travel_incomplete and not end_zone_name:
+    if needs_end_timezone(evidence) and not end_zone_name:
         raise ValueError("Confirm departure and arrival timezones independently")
     _zone(zone_name)
     end_zone_name = end_zone_name or zone_name

@@ -66,7 +66,6 @@ const css = `
     padding-left: max(20px, var(--daylight-safe-left));
   }
   button { box-sizing: border-box; min-height: 44px; max-width: 100%; overflow-wrap: anywhere; cursor: pointer; border: 1px solid var(--divider-color); border-radius: 8px; background: var(--card-background-color); color: inherit; padding: 10px 14px; font: inherit; }
-
   .timezone-field { display: grid; min-width: 0; gap: 5px; margin: 10px 0; }
   .timezone-field-label { font-weight: 600; }
   .timezone-field-trigger { width: 100%; text-align: left; }
@@ -371,6 +370,10 @@ function eventRange(event, hass) {
 // Date-only strings are calendar dates, not local instants. Format in UTC to
 // avoid shifting a school all-day event to the previous day in western zones.
 function reviewRange(event, hass) {
+  if (event.temporal && event.temporal.status !== "resolved") {
+    return event.temporal.start_local.replace("T", " ") + " – " +
+      event.temporal.end_local.replace("T", " ") + " · Unconfirmed local time";
+  }
   if (!event.all_day || !/^\d{4}-\d{2}-\d{2}$/.test(event.start || "") ||
       !/^\d{4}-\d{2}-\d{2}$/.test(event.end || "")) return eventRange(event, hass);
   const start = new Date(event.start + "T12:00:00Z");
@@ -2464,7 +2467,9 @@ export class DaylightImportPanel extends HTMLElement {
   }
 
   async confirmTimezone(event, timeZone, options = {}) {
-    if (this._saving || !event.temporal || !timeZone) return;
+    if (this._saving || this._editingId || this._decision || this._batchAction ||
+        this._resolution || event.status !== "pending" || !event.temporal ||
+        event.temporal.status === "resolved" || !timeZone) return;
     const pendingId = this._selectedId;
     const generation = this._generation;
     this._saving = true;
@@ -2477,6 +2482,7 @@ export class DaylightImportPanel extends HTMLElement {
       if (generation !== this._generation) return;
       this._decisionError = null;
       this._timezoneSelections.delete(pendingId + ":" + event.id);
+      this._saving = false;
       this.render();
       this._announcement.replaceChildren(element("span", "Event timezone confirmed"));
       this.focusEvent(event.id);
@@ -2491,6 +2497,7 @@ export class DaylightImportPanel extends HTMLElement {
         this._status = "Could not refresh the event after timezone confirmation.";
       }
       if (generation !== this._generation) return;
+      this._saving = false;
       this.render();
       this._announcement.replaceChildren(element("span", this._decisionError));
     } finally {
@@ -2717,17 +2724,26 @@ export class DaylightImportPanel extends HTMLElement {
     const start = timedField(
       "start",
       "Start",
-      event.all_day ? event.start + "T00:00" : editDateTimeValue(event.start, timeZone),
+      event.all_day ? event.start + "T00:00" :
+        event.temporal && event.temporal.status !== "resolved" ?
+          event.temporal.start_local.slice(0, 16) : editDateTimeValue(event.start, timeZone),
     );
     const end = timedField(
       "end",
       "End",
-      event.all_day ? event.end + "T00:00" : editDateTimeValue(event.end, endTimeZone),
+      event.all_day ? event.end + "T00:00" :
+        event.temporal && event.temporal.status !== "resolved" ?
+          event.temporal.end_local.slice(0, 16) : editDateTimeValue(event.end, endTimeZone),
     );
     let refreshFolds = () => {};
     const timedSync = syncTimedDuration(start, end, event, timeZone, () => refreshFolds(), event.temporal ? endTimeZone : null);
+    // Legacy drafts have a single event-wide time model: two endpoints can
+    // each resemble HA wall time while the pair is actually fixed-offset.
+    const legacyTimeModel = event.temporal ? null :
+      classifyEventTimeModel(event.start, event.end, timeZone);
     const foldControl = (input, original, title, endpointZone) => {
-      const timeModel = classifyEventTimeModel(original, original, endpointZone);
+      const timeModel = legacyTimeModel ||
+        classifyEventTimeModel(original, original, endpointZone);
       const label = document.createElement("label");
       const caption = element("span", title + " occurrence (DST fall-back)");
       const select = document.createElement("select");
@@ -3313,6 +3329,7 @@ export class DaylightImportPanel extends HTMLElement {
         // expanded, but force advisory checks and active decisions into view.
         let surface = card;
         const grouped = detail.events.length > 1;
+        const assumptions = event.date_time_assumptions || [];
         if (grouped) {
           const fold = element("details", "", "event-fold");
           const summary = element("summary", "", "event-fold-heading");
@@ -3322,9 +3339,7 @@ export class DaylightImportPanel extends HTMLElement {
             element("p", reviewRange(event, this._hass), "event-date"),
             element("p", "Calendar · " +
               reviewCalendarName(event, this._hass, detail.default_calendar), "event-calendar"));
-          const hasReviewAssumptions = event.date_time_assumptions?.length &&
-            (!event.temporal || event.date_time_assumptions.some(note =>
-              /\b(?:(?:inferred|assumed) (?:the )?year|year (?:was )?(?:inferred|assumed))\b/i.test(note)));
+          const hasReviewAssumptions = assumptions.length > 0;
           if (event.routing_unresolved || hasReviewAssumptions ||
               (event.temporal && event.temporal.status !== "resolved") ||
               event.status === "write_uncertain") {
@@ -3333,7 +3348,8 @@ export class DaylightImportPanel extends HTMLElement {
                 event.routing_unresolved ? "Destination needs attention" :
                 event.temporal?.status === "correction_required" ? "Invalid local time — correct before approval" :
                 event.temporal?.status === "confirmation_required" ? "Timezone needs confirmation" :
-                  "Review date interpretation", "event-fold-alert"));
+                  event.temporal?.status === "resolved" ? "Review extraction notes" :
+                    "Review date interpretation", "event-fold-alert"));
           }
           summary.append(summaryText, element("span", reviewStatus(event.status), "event-status"));
           const foldBody = element("div", "", "event-fold-body");
@@ -3378,204 +3394,208 @@ export class DaylightImportPanel extends HTMLElement {
               "Confirm the event timezone before approving.", "error");
             warning.setAttribute("role", "alert");
             surface.append(warning);
-            const key = this._selectedId + ":" + event.id;
-            const snapshot = JSON.stringify(event);
-            let state = this._timezoneSelections.get(key);
-            if (!state || state.snapshot !== snapshot) {
-              state = {snapshot, start: "", end: "", startOccurrence: "",
-                endOccurrence: "", preview: null, suggestionsStart: [],
-                suggestionsEnd: [], request: 0, error: ""};
-              this._timezoneSelections.set(key, state);
-            }
-            const distinctEndLocation = Boolean(temporal.end_location_value?.trim()) &&
-              temporal.end_location_value.trim().toLocaleLowerCase() !==
-                (temporal.start_location_value || "").trim().toLocaleLowerCase();
-            const needsEndZone = temporal.travel_incomplete === true ||
-              distinctEndLocation || temporal.end_zone !== temporal.start_zone;
-            const eventStart = temporal.start_local;
-            const eventEnd = temporal.end_local;
-            const zoneChange = (endpoint, id) => {
-              state[endpoint] = id;
-              state[endpoint + "Occurrence"] = "";
-              // A single-venue zone controls both clocks. A newly chosen zone
-              // must invalidate both previous DST fold decisions.
-              if (endpoint === "start" && !endZone) state.endOccurrence = "";
-              state.preview = null;
-              state.error = "";
-              refresh();
-            };
-            const startZone = createTimezonePicker({
-              label: needsEndZone ? "Departure timezone" : "Event timezone",
-              wallDate: eventStart, locale: this._hass?.locale?.language,
-              value: state.start, suggestions: state.suggestionsStart,
-              onChange: id => zoneChange("start", id),
-            });
-            const endZone = needsEndZone ? createTimezonePicker({
-              label: "Arrival timezone", wallDate: eventEnd,
-              locale: this._hass?.locale?.language,
-              value: state.end, suggestions: state.suggestionsEnd,
-              onChange: id => zoneChange("end", id),
-            }) : null;
-            surface.append(startZone.element);
-            if (endZone) surface.append(endZone.element);
-
-            const occurrence = (which, clock, zonePicker, field) => {
-              const label = element("label", which + " occurrence (DST fall-back)");
-              const select = document.createElement("select");
-              const refreshFold = () => {
-                const options = repeatedHourOptions(clock.slice(0, 16), zonePicker.value);
-                label.hidden = options.length !== 2;
-                select.replaceChildren();
-                const placeholder = document.createElement("option");
-                placeholder.value = "";
-                placeholder.textContent = "Choose first or second occurrence";
-                select.append(placeholder);
-                for (const choice of options) {
-                  const option = document.createElement("option");
-                  option.value = choice.label.startsWith("First") ? "first" : "second";
-                  option.textContent = choice.label;
-                  select.append(option);
-                }
-                if (options.length !== 2) state[field] = "";
-                select.value = options.length === 2 ? state[field] : "";
-              };
-              select.addEventListener("change", () => {
-                state[field] = select.value;
-                state.preview = null;
-                refresh();
-              });
-              label.append(select);
-              surface.append(label);
-              return {select, label, refresh: refreshFold};
-            };
-            const startFold = occurrence("Start", eventStart, startZone, "startOccurrence");
-            const endFold = occurrence("End", eventEnd, endZone || startZone, "endOccurrence");
-            const preview = element("div", "Choose the event timezone to preview the resulting calendar times.",
-              "timezone-event-preview");
-            preview.setAttribute("aria-live", "polite");
-            surface.append(preview);
-            const confirm = element("button", "Confirm timezone", "event-primary");
-            confirm.type = "button";
-            const selectedOptions = () => ({
-              timeZone: startZone.value,
-              ...(endZone ? {endTimeZone: endZone.value} : {}),
-              ...(!startFold.label.hidden ? {startOccurrence: state.startOccurrence} : {}),
-              ...(!endFold.label.hidden ? {endOccurrence: state.endOccurrence} : {}),
-            });
-            const validSelection = () => Boolean(startZone.value &&
-              (!endZone || endZone.value) &&
-              (startFold.label.hidden || state.startOccurrence) &&
-              (endFold.label.hidden || state.endOccurrence));
-            const displayPreview = () => {
-              const result = state.preview;
-              if (state.error) {
-                preview.setAttribute("role", "alert");
-                preview.textContent = state.error;
-              } else {
-                preview.removeAttribute("role");
-                if (!result) {
-                  preview.textContent = validSelection() ?
-                    "Checking timezone offsets for this event…" :
-                    "Select all required timezones and DST occurrences to preview the event.";
-                } else {
-                  const duration = result.duration_seconds;
-                  const durationText = Math.floor(duration / 3600) + "h " +
-                    Math.floor((duration % 3600) / 60) + "m";
-                  preview.textContent =
-                    "Start: " + result.start_local.replace("T", " ") + " " +
-                    result.start_abbreviation + " (" + result.start_offset + ")" +
-                    " → " + result.start_utc + " UTC. End: " +
-                    result.end_local.replace("T", " ") + " " + result.end_abbreviation +
-                    " (" + result.end_offset + ") → " + result.end_utc +
-                    " UTC. Duration: " + durationText + ".";
-                }
+            // Confirmation reloads the import. Never expose this action
+            // while another review transaction or unsaved edit is active.
+            if (event.status === "pending" && !this._editingId && !this._decision &&
+                !this._batchAction && !this._resolution) {
+              const key = this._selectedId + ":" + event.id;
+              const snapshot = JSON.stringify(event);
+              let state = this._timezoneSelections.get(key);
+              if (!state || state.snapshot !== snapshot) {
+                state = {snapshot, start: "", end: "", startOccurrence: "",
+                  endOccurrence: "", preview: null, suggestionsStart: [],
+                  suggestionsEnd: [], request: 0, error: ""};
+                this._timezoneSelections.set(key, state);
               }
-              confirm.disabled = !validSelection() || !state.preview || this._saving;
-            };
-            const loadPreview = async () => {
-              const currentRequest = ++state.request;
-              state.preview = null;
-              displayPreview();
-              if (!this._hass?.callWS) return;
-              const options = validSelection() ? selectedOptions() : {};
-              try {
-                const reply = await previewEventTimezone(
-                  this._hass, this._selectedId, event, options);
-                if (currentRequest !== state.request ||
-                    this._timezoneSelections.get(key) !== state ||
-                    this._selectedId + ":" + event.id !== key) return;
-                state.suggestionsStart = reply.suggested_start_zones;
-                state.suggestionsEnd = reply.suggested_end_zones;
-                startZone.setSuggestions(state.suggestionsStart);
-                endZone?.setSuggestions(state.suggestionsEnd);
-                if (reply.needs_end_zone !== needsEndZone) {
-                  throw new Error("Timezone endpoint evidence changed; refresh review.");
-                }
-                if (validSelection()) {
-                  const result = reply.preview;
-                  if (!result || result.start_zone !== startZone.value ||
-                      result.end_zone !== (endZone?.value || startZone.value)) {
-                    throw new Error("Timezone preview did not match the selected endpoints.");
-                  }
-                  state.preview = result;
-                }
+              // Match the backend's conservative ASCII-only normalization.
+              const locationKey = value => (value || "").replace(/^[ \t\r\n\v\f]+|[ \t\r\n\v\f]+$/g, "")
+                .replace(/[A-Z]/g, letter => letter.toLowerCase());
+              const distinctEndLocation = Boolean(locationKey(temporal.end_location_value)) &&
+                locationKey(temporal.end_location_value) !== locationKey(temporal.start_location_value);
+              const needsEndZone = temporal.travel_incomplete === true ||
+                distinctEndLocation || temporal.end_zone !== temporal.start_zone;
+              const eventStart = temporal.start_local;
+              const eventEnd = temporal.end_local;
+              const zoneChange = (endpoint, id) => {
+                state[endpoint] = id;
+                state[endpoint + "Occurrence"] = "";
+                // A single-venue zone controls both clocks. A newly chosen zone
+                // must invalidate both previous DST fold decisions.
+                if (endpoint === "start" && !endZone) state.endOccurrence = "";
+                state.preview = null;
                 state.error = "";
-              } catch (error) {
-                if (currentRequest !== state.request) return;
-                state.preview = null;
-                state.error = validSelection() ?
-                  (error?.message || "Could not verify timezone preview.") : "";
-              }
-              displayPreview();
-            };
-            const refresh = () => {
-              startFold.refresh();
-              endFold.refresh();
-              state.preview = null;
-              state.error = "";
-              displayPreview();
-              void loadPreview();
-            };
-            confirm.addEventListener("click", () => {
-              if (!validSelection() || !state.preview || this._saving) return;
-              const options = selectedOptions();
-              void this.confirmTimezone(event, startZone.value, {
-                ...(endZone ? {endTimeZone: options.endTimeZone} : {}),
-                ...(options.startOccurrence ? {startOccurrence: options.startOccurrence} : {}),
-                ...(options.endOccurrence ? {endOccurrence: options.endOccurrence} : {}),
+                refresh();
+              };
+              const startZone = createTimezonePicker({
+                label: needsEndZone ? "Departure timezone" : "Event timezone",
+                wallDate: eventStart, locale: this._hass?.locale?.language,
+                value: state.start, suggestions: state.suggestionsStart,
+                onChange: id => zoneChange("start", id),
               });
-            });
-            surface.append(confirm);
-            refresh();
+              const endZone = needsEndZone ? createTimezonePicker({
+                label: "Arrival timezone", wallDate: eventEnd,
+                locale: this._hass?.locale?.language,
+                value: state.end, suggestions: state.suggestionsEnd,
+                onChange: id => zoneChange("end", id),
+              }) : null;
+              surface.append(startZone.element);
+              if (endZone) surface.append(endZone.element);
+
+              const occurrence = (which, clock, zonePicker, field) => {
+                const label = element("label", which + " occurrence (DST fall-back)");
+                const select = document.createElement("select");
+                const refreshFold = () => {
+                  const options = repeatedHourOptions(clock.slice(0, 16), zonePicker.value);
+                  label.hidden = options.length !== 2;
+                  select.replaceChildren();
+                  const placeholder = document.createElement("option");
+                  placeholder.value = "";
+                  placeholder.textContent = "Choose first or second occurrence";
+                  select.append(placeholder);
+                  for (const choice of options) {
+                    const option = document.createElement("option");
+                    option.value = choice.label.startsWith("First") ? "first" : "second";
+                    option.textContent = choice.label;
+                    select.append(option);
+                  }
+                  if (options.length !== 2) state[field] = "";
+                  select.value = options.length === 2 ? state[field] : "";
+                };
+                select.addEventListener("change", () => {
+                  state[field] = select.value;
+                  state.preview = null;
+                  refresh();
+                });
+                label.append(select);
+                surface.append(label);
+                return {select, label, refresh: refreshFold};
+              };
+              const startFold = occurrence("Start", eventStart, startZone, "startOccurrence");
+              const endFold = occurrence("End", eventEnd, endZone || startZone, "endOccurrence");
+              const preview = element("div", "Choose the event timezone to preview the resulting calendar times.",
+                "timezone-event-preview");
+              preview.setAttribute("aria-live", "polite");
+              surface.append(preview);
+              const confirm = element("button", "Confirm timezone", "event-primary");
+              confirm.type = "button";
+              const selectedOptions = () => ({
+                timeZone: startZone.value,
+                ...(endZone ? {endTimeZone: endZone.value} : {}),
+                ...(!startFold.label.hidden ? {startOccurrence: state.startOccurrence} : {}),
+                ...(!endFold.label.hidden ? {endOccurrence: state.endOccurrence} : {}),
+              });
+              const validSelection = () => Boolean(startZone.value &&
+                (!endZone || endZone.value) &&
+                (startFold.label.hidden || state.startOccurrence) &&
+                (endFold.label.hidden || state.endOccurrence));
+              const displayPreview = () => {
+                const result = state.preview;
+                if (state.error) {
+                  preview.setAttribute("role", "alert");
+                  preview.textContent = state.error;
+                } else {
+                  preview.removeAttribute("role");
+                  if (!result) {
+                    preview.textContent = validSelection() ?
+                      "Checking timezone offsets for this event…" :
+                      "Select all required timezones and DST occurrences to preview the event.";
+                  } else {
+                    const duration = result.duration_seconds;
+                    const durationText = Math.floor(duration / 3600) + "h " +
+                      Math.floor((duration % 3600) / 60) + "m";
+                    preview.textContent =
+                      "Start: " + result.start_local.replace("T", " ") + " " +
+                      result.start_abbreviation + " (" + result.start_offset + ")" +
+                      " → " + result.start_utc + " UTC. End: " +
+                      result.end_local.replace("T", " ") + " " + result.end_abbreviation +
+                      " (" + result.end_offset + ") → " + result.end_utc +
+                      " UTC. Duration: " + durationText + ".";
+                  }
+                }
+                confirm.disabled = !validSelection() || !state.preview || this._saving ||
+                  Boolean(this._editingId || this._decision || this._batchAction || this._resolution);
+              };
+              const loadPreview = async () => {
+                const currentRequest = ++state.request;
+                state.preview = null;
+                displayPreview();
+                if (!this._hass?.callWS) return;
+                const options = validSelection() ? selectedOptions() : {};
+                try {
+                  const reply = await previewEventTimezone(
+                    this._hass, this._selectedId, event, options);
+                  if (currentRequest !== state.request ||
+                      this._timezoneSelections.get(key) !== state ||
+                      this._selectedId + ":" + event.id !== key) return;
+                  state.suggestionsStart = reply.suggested_start_zones;
+                  state.suggestionsEnd = reply.suggested_end_zones;
+                  startZone.setSuggestions(state.suggestionsStart);
+                  endZone?.setSuggestions(state.suggestionsEnd);
+                  if (reply.needs_end_zone !== needsEndZone) {
+                    throw new Error("Timezone endpoint evidence changed; refresh review.");
+                  }
+                  if (validSelection()) {
+                    const result = reply.preview;
+                    if (!result || result.start_zone !== startZone.value ||
+                        result.end_zone !== (endZone?.value || startZone.value)) {
+                      throw new Error("Timezone preview did not match the selected endpoints.");
+                    }
+                    state.preview = result;
+                  }
+                  state.error = "";
+                } catch (error) {
+                  if (currentRequest !== state.request ||
+                      this._timezoneSelections.get(key) !== state ||
+                      this._selectedId + ":" + event.id !== key) return;
+                  state.preview = null;
+                  state.error = validSelection() ?
+                    (error?.message || "Could not verify timezone preview.") : "";
+                }
+                displayPreview();
+              };
+              const refresh = () => {
+                startFold.refresh();
+                endFold.refresh();
+                state.preview = null;
+                state.error = "";
+                displayPreview();
+                void loadPreview();
+              };
+              confirm.addEventListener("click", () => {
+                if (!validSelection() || !state.preview || this._saving) return;
+                const options = selectedOptions();
+                void this.confirmTimezone(event, startZone.value, {
+                  ...(endZone ? {endTimeZone: options.endTimeZone} : {}),
+                  ...(options.startOccurrence ? {startOccurrence: options.startOccurrence} : {}),
+                  ...(options.endOccurrence ? {endOccurrence: options.endOccurrence} : {}),
+                });
+              });
+              surface.append(confirm);
+              refresh();
+            }
           }
         }
-        const assumptions = event.date_time_assumptions || [];
         const yearInferred = assumptions.some(note =>
           /\b(?:(?:inferred|assumed) (?:the )?year|year (?:was )?(?:inferred|assumed))\b/i.test(note));
+        const timezoneResolved = event.temporal?.status === "resolved";
         if (yearInferred || (!event.temporal && assumptions.length)) {
           surface.append(element("p", yearInferred ?
             "Year inferred — verify the date" : "Date interpretation needs review", "event-note"));
         }
-        // Only authoritative backend warnings should interrupt review for
-        // structured, resolved events. AI-authored explanations are advisory.
-        if (!event.temporal || event.temporal.status !== "resolved") {
-          for (const assumption of assumptions) {
-            surface.append(element("p", "Date/time assumption: " + assumption, "event-note"));
-          }
+        // Timezone confirmation does not establish the source date. Preserve
+        // all provider disclosures visibly without claiming every note is an
+        // inferred date or imposing a new approval requirement.
+        for (const assumption of assumptions) {
+          surface.append(element("p", (timezoneResolved ?
+            "AI extraction note: " : "Date/time assumption: ") + assumption, "event-note"));
         }
-        if (typeof event.confidence === "number" || event.calendar_entity ||
-            (event.temporal?.status === "resolved" && assumptions.length)) {
+        if (typeof event.confidence === "number" || event.calendar_entity) {
           const diagnostics = element("details", "", "event-diagnostics");
           diagnostics.append(element("summary", "Extraction details"));
           if (event.calendar_entity) diagnostics.append(element("p", "Calendar ID: " + event.calendar_entity));
           if (typeof event.confidence === "number") {
             diagnostics.append(element("p", "AI confidence: " +
               Math.round(event.confidence * 100) + "% (estimate)"));
-          }
-          if (event.temporal?.status === "resolved") {
-            for (const note of assumptions) {
-              diagnostics.append(element("p", "AI extraction note: " + note));
-            }
           }
           surface.append(diagnostics);
         }

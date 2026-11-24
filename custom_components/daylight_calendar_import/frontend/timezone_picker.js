@@ -2,6 +2,8 @@
 import {allTimezones, findTimezone, searchTimezones, timezoneDescription,
   timezoneHeading, validSuggestedTimezones} from "./timezone_catalog.js";
 
+let nextDescriptionId = 0;
+
 function node(tag, text) {
   const item = document.createElement(tag);
   if (text !== undefined) item.textContent = text;
@@ -21,6 +23,8 @@ export function createTimezonePicker({label, wallDate, locale, value = "",
   trigger.setAttribute("aria-label", label + ": choose timezone");
   const description = node("span", "No timezone selected");
   description.className = "timezone-field-description";
+  description.id = "daylight-timezone-description-" + ++nextDescriptionId;
+  trigger.setAttribute("aria-describedby", description.id);
   const dialog = node("dialog");
   dialog.className = "timezone-picker-dialog";
   dialog.setAttribute("aria-label", "Select " + label.toLowerCase());
@@ -66,6 +70,8 @@ export function createTimezonePicker({label, wallDate, locale, value = "",
   function refreshValue() {
     const selected = findTimezone(confirmed);
     trigger.textContent = selected ? timezoneHeading(selected) : "Choose timezone";
+    trigger.setAttribute("aria-label", label + ": " +
+      (selected ? trigger.textContent : "choose timezone"));
     description.textContent = selected ?
       timezoneDescription(confirmed, wallDate, locale) : "No timezone selected";
   }
