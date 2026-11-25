@@ -131,12 +131,7 @@ class HostedParseTransport:
                     if status not in ({200, 202} if operation_key else {200}):
                         if status == 409 and operation_key:
                             raise HostedParseError("operation_conflict", status=409)
-                        try:
-                            self._raise_api_error(value, status, response.headers.get("Retry-After"))
-                        except HostedParseError as error:
-                            if status == 404 and error.code == "operation_not_found" and not error.retryable:
-                                return None
-                            raise
+                        self._raise_api_error(value, status, response.headers.get("Retry-After"))
                     if type(value) is not dict:
                         raise ValueError
                     return value
@@ -191,7 +186,12 @@ class HostedParseTransport:
                     if status == 404 and value == {"error": {"code": "operation_not_found"}}:
                         return None
                     if status != 200:
-                        self._raise_api_error(value, status, response.headers.get("Retry-After"))
+                        try:
+                            self._raise_api_error(value, status, response.headers.get("Retry-After"))
+                        except HostedParseError as error:
+                            if status == 404 and error.code == "operation_not_found" and not error.retryable:
+                                return None
+                            raise
                     if type(value) is not dict:
                         raise ValueError
                     return value
