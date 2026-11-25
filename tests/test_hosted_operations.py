@@ -570,12 +570,21 @@ async def test_manual_operation_acceptance_respects_storage_owner_fence(hass, ac
     assert not store.list()
 
 
-@pytest.mark.parametrize("proof", [{"error": {"code": "operation_not_found"}}, {"detail": "Not Found"}])
-async def test_operation_absence_requires_canonical_authenticated_response(transport, proof):
+@pytest.mark.parametrize(("proof", "absent"), [
+    ({"error": {"code": "operation_not_found"}}, True),
+    ({"schema_version": 1, "error": {
+        "code": "operation_not_found", "message": "Operation not found.", "retryable": False,
+    }}, True),
+    ({"schema_version": 1, "error": {
+        "code": "operation_not_found", "message": "Try again.", "retryable": True,
+    }}, False),
+    ({"detail": "Not Found"}, False),
+])
+async def test_operation_absence_requires_canonical_authenticated_response(transport, proof, absent):
     client, session = transport
     key = str(uuid4())
     session.request.return_value = Response(value=proof, status=404)
-    if "error" in proof:
+    if absent:
         assert await client.async_operation(key, token="T" * 43, prove_absence=True) is None
     else:
         with pytest.raises(HostedParseError):
