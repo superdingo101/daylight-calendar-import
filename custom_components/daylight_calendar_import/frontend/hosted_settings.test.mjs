@@ -847,12 +847,23 @@ test("durable parsing is explicit and displays trusted account status", async ()
   assert.ok(findButton(settings.element, "Refresh allowance and access"));
   const commercial_status = {billing: {state: "trial", trial_remaining: 12, paid_remaining: 0,
     trial_ends_at: "2099-01-01T00:00:00Z", period_ends_at: null, grace_ends_at: null},
+    capabilities: {managed_ai: false, new_email_intake: true, accepted_source_drain: true},
+    drain_cutoff_at: "2099-01-01T00:00:00Z",
     account_url: "https://account.example.test/account"};
   setHandler(async () => ({...status, parse_operations_v2: true, commercial_status}));
   findButton(settings.element, "Refresh allowance and access").click();
   await flush(); await flush();
   assert.equal(calls.at(-1).action, "account");
   assert.ok(texts(settings.element).some(text => text.includes("Trial: 12/20")));
+  for (const expected of ["Managed AI parsing: Unavailable.", "New hosted email intake: Available.", "Accepted-source delivery: Available.", "Accepted-source cutoff: 2099-01-01T00:00:00Z"]) {
+    assert.ok(texts(settings.element).includes(expected), expected);
+  }
+  assert.ok(texts(settings.element).some(text => text.includes("configured BYO AI Task")));
   assert.equal(settings.element.querySelectorAll("a").find(a => a.textContent === "Manage Daylight account and billing").href,
     "https://account.example.test/account");
+  setHandler(async () => { throw new Error("service unavailable"); });
+  findButton(settings.element, "Refresh allowance and access").click();
+  await flush(); await flush();
+  assert.ok(!texts(settings.element).some(text => text.includes("Trial: 12/20")));
+  assert.ok(!texts(settings.element).some(text => text.includes("Managed AI parsing:")));
 });

@@ -305,6 +305,9 @@ export class HostedConnectionSettings {
     if (!this.syncSession() || this.busy || !this.snapshot) return;
     const draft = preserveDraft ? this._captureDraft() : null;
     const previousState = this.snapshot.state;
+    if (Object.hasOwn(this.snapshot, "commercial_status")) {
+      this.snapshot = {...this.snapshot, commercial_status: null};
+    }
     if (!preserveDraft) this.confirmation = null;
     this._cancelGuidance();
     if (["connect", "reconnect"].includes(action)) {
@@ -512,7 +515,7 @@ export class HostedConnectionSettings {
     status.setAttribute("role", "status");
     section.append(status);
     if (state.credential_expires_at) section.append(node("p", `Connection verified · Credential expires ${new Date(state.credential_expires_at).toLocaleDateString(undefined, {year: "numeric", month: "long", day: "numeric"})}`));
-    section.append(node("p", "Cloud processing and hosted email are not yet available in this alpha.", "settings-help"));
+    section.append(node("p", "Hosted processing and email availability depend on your account and installation access.", "settings-help"));
     const advanced = node("details");
     advanced.open = this.advancedOpen;
     advanced.append(node("summary", "Advanced settings & troubleshooting"));
@@ -564,7 +567,7 @@ export class HostedConnectionSettings {
     }
     if (!state.configured) return;
 
-    if (state.credential_status === "current") {
+    if (state.credential_status === "current" || (state.credential_status === "overlap" && state.parse_operations_v2)) {
       const commercial = node("div");
       if (!state.parse_operations_v2) {
         const enable = node("button", "Enable durable managed parsing");
@@ -583,7 +586,17 @@ export class HostedConnectionSettings {
         const status = state.commercial_status;
         if (status?.billing) {
           const billing = status.billing;
-          commercial.append(node("p", `Access: ${billing.state}. Trial: ${billing.trial_remaining}/20. Paid: ${billing.paid_remaining}/100.`));
+          commercial.append(node("p", `Access: ${billing.state}. Trial: ${billing.trial_remaining}/20. Paid: ${billing.paid_remaining}/100 remaining.`));
+          const capabilities = status.capabilities;
+          for (const [key, label] of [["managed_ai", "Managed AI parsing"], ["new_email_intake", "New hosted email intake"], ["accepted_source_drain", "Accepted-source delivery"]]) {
+            const available = capabilities?.[key];
+            commercial.append(node("p", `${label}: ${available === true ? "Available" : available === false ? "Unavailable" : "Unknown"}.`));
+          }
+          if (capabilities?.managed_ai === false && capabilities?.accepted_source_drain === true) {
+            commercial.append(node("p", "You can process eligible hosted emails with a configured BYO AI Task. Changing the selected parser is an explicit setting."));
+          }
+          if (status.drain_cutoff_at) commercial.append(node("p", `Accepted-source cutoff: ${status.drain_cutoff_at}`));
+          if (billing.cancel_at_period_end) commercial.append(node("p", "Subscription cancellation is scheduled for the end of the paid period."));
           for (const [key, label] of [["trial_ends_at", "Trial deadline"], ["period_ends_at", "Allowance resets"], ["grace_ends_at", "Payment grace ends"]]) {
             if (billing[key]) commercial.append(node("p", `${label}: ${billing[key]}`));
           }
@@ -601,7 +614,7 @@ export class HostedConnectionSettings {
 
     if (state.credential_status === "current" || state.delivery_polling) {
       const delivery = node("div");
-      delivery.append(node("p", "Automatically check for hosted email and add results to the Review Inbox. Requires Daylight Cloud as the selected parser and hosted email access for this installation."));
+      delivery.append(node("p", "Automatically check for hosted email and add results to the Review Inbox. Uses your selected parser (Daylight Cloud or a configured BYO AI Task). Requires hosted email delivery access for this installation."));
       const toggleDelivery = node("button", state.delivery_polling ? "Pause hosted email checks" : "Enable hosted email checks");
       toggleDelivery.type = "button";
       toggleDelivery.disabled = this.busy;
@@ -611,7 +624,7 @@ export class HostedConnectionSettings {
       }));
       delivery.append(toggleDelivery);
       if (state.delivery_parse_uncertain && state.delivery_polling) {
-        delivery.append(node("p", "The previous hosted email parse may have completed. Check Recent Activity and the Review Inbox before retrying. A retry may use another managed parse."));
+        delivery.append(node("p", "The previous hosted email parse may have completed. Check Recent Activity and the Review Inbox before retrying. A retry may invoke the selected AI provider again."));
         const retryForm = document.createElement("form");
         const confirm = document.createElement("input");
         confirm.name = "confirm_delivery_retry";

@@ -1148,11 +1148,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         pending_store.hosted_runtime = await async_setup_hosted_runtime(hass, entry)
         async def parse_hosted_delivery(source):
-            return await selected_parse(source, delivery_owner=True)
+            # A queued email may be delivered well after receipt, and a settings
+            # transaction can change the saved parser while the old entry drains.
+            def check_selection():
+                if (not pending_store.accepting_services
+                        or _ai_task_configuration(entry) != ai_task_entity):
+                    raise ProviderError(
+                        "hosted_connection_changed", "Daylight parser settings changed. Check Settings before retrying.",
+                    )
+
+            check_selection()
+            if effective_parser_provider(entry) == PARSER_PROVIDER_AI_TASK and ai_task_entity is None:
+                raise ProviderError("provider_unavailable", "Configure an AI Task before processing hosted email.")
+            outcome, guard = await selected_parse(
+                source, delivery_owner=True, reference_datetime=source.received_at,
+            )
+            if guard is not None:
+                return outcome, guard
+            check_selection()
+            return outcome, check_selection
 
         pending_store.hosted_runtime.configure_delivery(
             store=pending_store, route_source=route_review_source,
             parse_source=parse_hosted_delivery,
+            stage_byo_attachments=ai_task_entity is not None,
         )
         # Forward last: a failing email configuration cannot strand sensor entities.
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
