@@ -7,11 +7,10 @@ on:
   # Release-prep PRs created by GITHUB_TOKEN do not fire pull_request CI.
   workflow_dispatch:
 
-# Keep only the latest PR test run. This avoids stale runs competing for
-# hosted runners after a new patch is pushed; release/main runs are separate.
+# Supersede obsolete PR checks; keep main pushes and release dispatches independent.
 concurrency:
-  group: daylight-tests-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   frontend:
