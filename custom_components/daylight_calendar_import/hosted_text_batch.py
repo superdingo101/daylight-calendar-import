@@ -13,12 +13,13 @@ from .hosted_text_claim import async_handle_text_claim
 
 async def async_process_text_batch(
     *, store, credentials, claim_transport, ack_transport, local_config_entry_id,
-    route_source, parse_source, limit=20,
+    route_source, parse_source, limit=20, ack_only_delivery_ids=None,
 ):
     """Claim once and process sequentially; failures leave later leases to expire.
 
     A lost claim response is ambiguous and is never retried here. Caller must
     retain exclusive lifecycle ownership until this coroutine has completed.
+    In ACK-only mode, ignore leases for sources absent from the durable journal.
     """
     checkpoint = credentials.snapshot
     credential = checkpoint.current
@@ -34,13 +35,16 @@ async def async_process_text_batch(
         raise AckDispatchBlocked("hosted claim authority changed")
     results = []
     for delivery in page["deliveries"]:
+        if ack_only_delivery_ids is not None and delivery["delivery_id"] not in ack_only_delivery_ids:
+            continue
         if (credentials.snapshot != checkpoint
                 or datetime.fromisoformat(credential.expires_at) <= datetime.now(UTC)):
             raise AckDispatchBlocked("hosted claim authority unavailable")
+        recovery_options = {"allow_new": False} if ack_only_delivery_ids is not None else {}
         results.append(await async_handle_text_claim(
             store=store, credentials=credentials, claim_checkpoint=checkpoint,
             service_binding=binding, transport=ack_transport, attachment_transport=claim_transport,
             local_config_entry_id=local_config_entry_id, delivery=delivery,
-            route_source=route_source, parse_source=parse_source,
+            route_source=route_source, parse_source=parse_source, **recovery_options,
         ))
     return results

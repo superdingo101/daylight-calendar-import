@@ -12,7 +12,9 @@ import voluptuous as vol
 from custom_components.daylight_calendar_import.hosted_operations import (
     payload_digest, source_identity, validate_account, validate_envelope, validate_records,
 )
-from custom_components.daylight_calendar_import.hosted_parse_transport import HostedParseError
+from custom_components.daylight_calendar_import.hosted_parse_transport import (
+    HostedParseError, HostedParseNotAdmitted,
+)
 from custom_components.daylight_calendar_import.hosted_parser import DaylightHostedParserProvider
 from custom_components.daylight_calendar_import.models import EventDraft
 from custom_components.daylight_calendar_import.storage import PendingImportStore, PendingImportStorageError
@@ -566,3 +568,141 @@ async def test_manual_operation_acceptance_respects_storage_owner_fence(hass, ac
     assert backend.data == before
     assert store._hosted_operations["a" * 64]["accepted"] is accepted
     assert not store.list()
+
+
+@pytest.mark.parametrize("proof", [{"error": {"code": "operation_not_found"}}, {"detail": "Not Found"}])
+async def test_operation_absence_requires_canonical_authenticated_response(transport, proof):
+    client, session = transport
+    key = str(uuid4())
+    session.request.return_value = Response(value=proof, status=404)
+    if "error" in proof:
+        assert await client.async_operation(key, token="T" * 43, prove_absence=True) is None
+    else:
+        with pytest.raises(HostedParseError):
+            await client.async_operation(key, token="T" * 43, prove_absence=True)
+
+
+@pytest.mark.parametrize("recovery", ["missing", "uncertain", "denied"])
+async def test_retryable_503_proves_absence_or_retains_the_operation(hass, recovery):
+    store = PendingImportStore(hass)
+    store._store = Backend()
+    saved = checkpoint()
+    provider = DaylightHostedParserProvider(
+        hass, service_binding=SERVICE, checkpoint=lambda: saved,
+        active=lambda: True, operation_store=store, operation_namespace="entry:service",
+    )
+
+    async def recover(key, *, token, prove_absence=False):
+        assert token == saved.current.token and prove_absence
+        record = next(iter(store._hosted_operations.values()))
+        assert key == record["key"]
+        if recovery == "denied":
+            raise HostedParseError("forbidden", status=403)
+        if recovery == "uncertain":
+            return envelope(key, record["digest"], status="uncertain")
+        return None
+
+    provider._transport.async_operation = AsyncMock(side_effect=recover)
+    post = AsyncMock(side_effect=HostedParseError(
+        "provider_unavailable", status=503, retryable=True, retry_after=30,
+    ))
+    provider._transport.async_parse = post
+    source = TextSourceAdapter().create("Meeting", source_id="stable-source")
+    with pytest.raises(HostedParseError) as caught:
+        await provider.async_parse(
+            source, reference_datetime=source.received_at.isoformat(), time_zone="UTC",
+        )
+    record = next(iter(store._hosted_operations.values()))
+    assert post.await_count == 1
+    assert provider.last_operation_id == record["key"]
+    if recovery != "missing":
+        assert caught.value.uncertain and not isinstance(caught.value, HostedParseNotAdmitted)
+        return
+    assert isinstance(caught.value, HostedParseNotAdmitted) and caught.value.retry_after == 30
+    provider._transport.async_operation = AsyncMock(return_value=None)
+    post.side_effect = None
+    post.return_value = envelope(record["key"], record["digest"])
+    await provider.async_parse(
+        source, reference_datetime=source.received_at.isoformat(), time_zone="UTC",
+    )
+    assert [call.kwargs["operation_key"] for call in post.await_args_list] == [record["key"]] * 2
+
+
+async def test_journal_capacity_compacts_accepted_evidence_across_restart(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_operations
+
+    monkeypatch.setattr(hosted_operations, "_MAX_ACTIVE_OPERATIONS", 2)
+    monkeypatch.setattr(hosted_operations, "_MAX_COMPACTED_OPERATIONS", 1)
+    backend = Backend()
+    store = PendingImportStore(hass)
+    store._store = backend
+    accepted, _ = await store.async_prepare_hosted_operation("a" * 64, request(), ())
+    await store.async_add(source_text="Meeting", events=(), hosted_operation_id=accepted["key"])
+    unresolved, _ = await store.async_prepare_hosted_operation("b" * 64, request(), ())
+    new, fresh = await store.async_prepare_hosted_operation("c" * 64, request(), ())
+    assert fresh and new["key"] not in {accepted["key"], unresolved["key"]}
+    assert backend.data["hosted_parse_operations"]["a" * 64] == {
+        "key": accepted["key"], "digest": accepted["digest"], "accepted": True, "compacted": True,
+    }
+    restarted = PendingImportStore(hass)
+    restarted._store = backend
+    await restarted.async_load()
+    record, fresh = await restarted.async_prepare_hosted_operation("b" * 64, request(), ())
+    assert record == unresolved and not fresh
+    record, fresh = await restarted.async_prepare_hosted_operation("a" * 64, request(), ())
+    assert record["accepted"] and record["key"] == accepted["key"] and not fresh
+    replay = await restarted.async_add(
+        source_text="Meeting", events=(), reimport_duplicates=True,
+        hosted_operation_id=accepted["key"],
+    )
+    assert replay.duplicate_source
+    with pytest.raises(ValueError, match="requires owner recovery"):
+        await restarted.async_prepare_hosted_operation("d" * 64, request(), ())
+
+
+async def test_journal_compaction_drops_only_already_retired_terminal_keys(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_operations
+
+    monkeypatch.setattr(hosted_operations, "_MAX_ACTIVE_OPERATIONS", 2)
+    store = PendingImportStore(hass)
+    store._store = Backend()
+    retired, _ = await store.async_prepare_hosted_operation("a" * 64, request(), ())
+    await store.async_change_hosted_parse_attempt("inbound-source-id")
+    await store.async_mark_hosted_operation_terminal("a" * 64, retired["key"], "inbound-source-id")
+    await store.async_change_hosted_parse_attempt(None, retry_terminal=True)
+    unresolved, _ = await store.async_prepare_hosted_operation("b" * 64, request(), ())
+    replacement, fresh = await store.async_prepare_hosted_operation("a" * 64, request(), ())
+    assert fresh and replacement["key"] not in {retired["key"], unresolved["key"]}
+    assert set(store._hosted_operations) == {"a" * 64, "b" * 64}
+    assert store._hosted_operations["b" * 64] == unresolved
+
+
+async def test_accepted_compact_evidence_refuses_provider_replay(hass, monkeypatch):
+    from custom_components.daylight_calendar_import import hosted_operations
+
+    monkeypatch.setattr(hosted_operations, "_MAX_ACTIVE_OPERATIONS", 1)
+    store = PendingImportStore(hass)
+    store._store = Backend()
+    saved = checkpoint()
+    provider = DaylightHostedParserProvider(
+        hass, service_binding=SERVICE, checkpoint=lambda: saved,
+        active=lambda: True, operation_store=store, operation_namespace="entry:service",
+    )
+
+    async def submit(*_args, **_kwargs):
+        record = next(iter(store._hosted_operations.values()))
+        return envelope(record["key"], record["digest"])
+
+    provider._transport.async_parse = AsyncMock(side_effect=submit)
+    provider._transport.async_operation = AsyncMock()
+    source = TextSourceAdapter().create("Meeting", source_id="stable-source")
+    options = {"reference_datetime": source.received_at.isoformat(), "time_zone": "UTC"}
+    await provider.async_parse(source, **options)
+    original = provider.last_operation_id
+    await store.async_add(source_text="Meeting", events=(), hosted_operation_id=original)
+    await store.async_prepare_hosted_operation("b" * 64, request(), ())
+    with pytest.raises(HostedParseError, match="Daylight Cloud") as failure:
+        await provider.async_parse(source, **options)
+    assert failure.value.code == "operation_expired" and provider.last_operation_id == original
+    provider._transport.async_parse.assert_awaited_once()
+    provider._transport.async_operation.assert_not_awaited()

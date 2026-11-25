@@ -47,6 +47,10 @@ class HostedParseError(ProviderError):
         self.uncertain = uncertain
 
 
+class HostedParseNotAdmitted(HostedParseError):
+    """Authenticated recovery proved the durable operation was not created."""
+
+
 class HostedTerminalOperationError(HostedParseError):
     """A validated, terminal operation envelope, not an arbitrary API error code."""
 
@@ -142,14 +146,16 @@ class HostedParseTransport:
         except (ValueError, UnicodeError, RecursionError, vol.Invalid):
             raise HostedParseError("provider_invalid_response", status=status) from None
 
-    async def async_operation(self, key: str, *, token: str):
+    async def async_operation(self, key: str, *, token: str, prove_absence: bool = False):
         """Recover a bounded operation; 404 permits only the original key POST."""
         from uuid import UUID
         if str(UUID(key)) != key:
             raise HostedParseError("invalid_request")
-        return await self.async_v2_get("/parse/operations/" + key, token=token)
+        return await self.async_v2_get(
+            "/parse/operations/" + key, token=token, prove_absence=prove_absence,
+        )
 
-    async def async_v2_get(self, path: str, *, token: str):
+    async def async_v2_get(self, path: str, *, token: str, prove_absence: bool = False):
         if not (path == "/account" or path.startswith("/parse/operations/")):
             raise HostedParseError("invalid_request")
         status = None
@@ -164,7 +170,7 @@ class HostedParseTransport:
                     max_line_size=4096, max_field_size=4096, max_headers=32,
                 ) as response:
                     status = response.status
-                    if status == 404:
+                    if status == 404 and not prove_absence:
                         return None
                     if (300 <= status < 400 or "Content-Encoding" in response.headers
                             or response.content_type != "application/json"):
@@ -177,6 +183,8 @@ class HostedParseTransport:
                     value = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs,
                                        parse_constant=_reject_constant, parse_float=_number)
                     _strict_strings(value)
+                    if status == 404 and value == {"error": {"code": "operation_not_found"}}:
+                        return None
                     if status != 200:
                         self._raise_api_error(value, status, response.headers.get("Retry-After"))
                     if type(value) is not dict:
