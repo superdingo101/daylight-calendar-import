@@ -582,14 +582,15 @@ async def test_operation_absence_requires_canonical_authenticated_response(trans
             await client.async_operation(key, token="T" * 43, prove_absence=True)
 
 
-@pytest.mark.parametrize("recovery", ["missing", "uncertain", "denied"])
+@pytest.mark.parametrize("recovery", ["missing", "uncertain", "denied", "changed_before", "changed_after"])
 async def test_retryable_503_proves_absence_or_retains_the_operation(hass, recovery):
     store = PendingImportStore(hass)
     store._store = Backend()
     saved = checkpoint()
+    active = {"value": True}
     provider = DaylightHostedParserProvider(
         hass, service_binding=SERVICE, checkpoint=lambda: saved,
-        active=lambda: True, operation_store=store, operation_namespace="entry:service",
+        active=lambda: active["value"], operation_store=store, operation_namespace="entry:service",
     )
 
     async def recover(key, *, token, prove_absence=False):
@@ -600,12 +601,17 @@ async def test_retryable_503_proves_absence_or_retains_the_operation(hass, recov
             raise HostedParseError("forbidden", status=403)
         if recovery == "uncertain":
             return envelope(key, record["digest"], status="uncertain")
+        if recovery == "changed_after":
+            active["value"] = False
         return None
 
     provider._transport.async_operation = AsyncMock(side_effect=recover)
-    post = AsyncMock(side_effect=HostedParseError(
-        "provider_unavailable", status=503, retryable=True, retry_after=30,
-    ))
+    async def paused(*_args, **_kwargs):
+        if recovery == "changed_before":
+            active["value"] = False
+        raise HostedParseError("provider_unavailable", status=503, retryable=True, retry_after=30)
+
+    post = AsyncMock(side_effect=paused)
     provider._transport.async_parse = post
     source = TextSourceAdapter().create("Meeting", source_id="stable-source")
     with pytest.raises(HostedParseError) as caught:
@@ -617,6 +623,9 @@ async def test_retryable_503_proves_absence_or_retains_the_operation(hass, recov
     assert provider.last_operation_id == record["key"]
     if recovery != "missing":
         assert caught.value.uncertain and not isinstance(caught.value, HostedParseNotAdmitted)
+        if recovery.startswith("changed"):
+            assert caught.value.status == 401
+            assert provider._transport.async_operation.await_count == int(recovery == "changed_after")
         return
     assert isinstance(caught.value, HostedParseNotAdmitted) and caught.value.retry_after == 30
     provider._transport.async_operation = AsyncMock(return_value=None)
@@ -706,3 +715,13 @@ async def test_accepted_compact_evidence_refuses_provider_replay(hass, monkeypat
     assert failure.value.code == "operation_expired" and provider.last_operation_id == original
     provider._transport.async_parse.assert_awaited_once()
     provider._transport.async_operation.assert_not_awaited()
+
+
+@pytest.mark.parametrize("override", [{"accepted": False}, {"compacted": 1}, {"request_id": "raw"}])
+def test_compact_record_requires_definitive_acceptance_and_exact_fields(override):
+    record = {
+        "key": str(uuid4()), "digest": "a" * 64, "accepted": True, "compacted": True,
+    }
+    assert validate_records({"b" * 64: record}) == {"b" * 64: record}
+    with pytest.raises(ValueError, match="invalid operation journal"):
+        validate_records({"b" * 64: {**record, **override}})

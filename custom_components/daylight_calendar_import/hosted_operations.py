@@ -87,7 +87,7 @@ def reserve_operation_space(records):
             continue
         if "terminal_source" in record and identity == digest({"retired_operation": record["key"]}):
             del records[identity]
-        elif record["accepted"] and compacted < _MAX_COMPACTED_OPERATIONS:
+        elif record.get("accepted") is True and compacted < _MAX_COMPACTED_OPERATIONS:
             records[identity] = {
                 "key": record["key"], "digest": record["digest"],
                 "accepted": True, "compacted": True,
