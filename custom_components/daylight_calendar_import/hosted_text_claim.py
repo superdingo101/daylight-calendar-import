@@ -34,6 +34,7 @@ class _LeaseBoundTransport:
 async def async_handle_text_claim(
     *, store, credentials, claim_checkpoint, service_binding, transport,
     local_config_entry_id, delivery, route_source, parse_source, attachment_transport=None,
+    allow_new=True,
 ):
     """Accept a new delivery or rebind proven prior acceptance before ACK.
 
@@ -55,6 +56,8 @@ async def async_handle_text_claim(
     if len(matches) > 1:
         raise AckDispatchBlocked("hosted ACK authority unavailable")
     if not matches:
+        if not allow_new:
+            raise AckDispatchBlocked("hosted ACK authority unavailable")
         return await async_accept_and_ack_text(
             store=store, credentials=credentials, claim_checkpoint=claim_checkpoint,
             service_binding=service_binding, transport=bounded_transport,

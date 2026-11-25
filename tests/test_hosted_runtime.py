@@ -621,7 +621,7 @@ async def test_delivery_poll_defers_foreground_and_requires_explicit_recovery(ha
     runtime.configure_delivery(store=store, route_source=object(), parse_source=object())
     runtime._state = HostedConnectionResult("connected", credential_status="current")
     runtime._schedule_delivery_poll()
-    assert not timer.called
+    assert timer.call_count == 1
     assert create_issue.call_args.kwargs == {
         "is_fixable": False, "is_persistent": True, "severity": module.ir.IssueSeverity.WARNING,
         "translation_key": "hosted_delivery_uncertain",
@@ -635,7 +635,7 @@ async def test_delivery_poll_defers_foreground_and_requires_explicit_recovery(ha
     store.async_change_hosted_parse_attempt.assert_awaited_once_with(None, retry_terminal=True)
     delete_issue.assert_called_with(hass, "daylight_calendar_import",
                                     "hosted_delivery_uncertain_hosted-entry")
-    assert timer.call_count == 1
+    assert timer.call_count == 2
     run = AsyncMock()
     monkeypatch.setattr(runtime, "async_delivery_pass", run)
     runtime._delivery_poll_tick(datetime.now(UTC))

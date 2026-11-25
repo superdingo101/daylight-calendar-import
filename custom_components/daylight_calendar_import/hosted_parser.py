@@ -24,7 +24,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .hosted_credentials import BoundCredential, CredentialCheckpoint
-from .hosted_parse_transport import HostedParseError, HostedParseTransport, HostedTerminalOperationError
+from .hosted_parse_transport import (
+    HostedParseError,
+    HostedParseNotAdmitted,
+    HostedParseTransport,
+    HostedTerminalOperationError,
+)
 from .hosted_transport import HostedServiceBinding, _strict_strings, _timestamp
 from .hosted_operations import source_identity, validate_envelope
 from .models import EventDraft
@@ -234,6 +239,13 @@ class DaylightHostedParserProvider:
         except Exception:
             raise HostedParseError("unauthenticated", status=401) from None
 
+    def _require_recovery_authority(self, credential: BoundCredential) -> None:
+        try:
+            if self._authority() != credential:
+                raise HostedParseError("unauthenticated", status=401)
+        except HostedParseError as error:
+            raise HostedParseError(error.code, status=error.status, uncertain=True) from None
+
     async def async_parse(
         self, source: SourceDocument, *, reference_datetime: str, time_zone: str,
     ) -> ParseOutcome:
@@ -297,6 +309,8 @@ class DaylightHostedParserProvider:
             record, fresh = await self._operation_store.async_prepare_hosted_operation(
                 identity, request, tuple(binaries))
             self.last_operation_id = record["key"]
+            if record.get("compacted") is True:
+                raise HostedTerminalOperationError("operation_expired")
             if "terminal_source" in record:
                 raise HostedParseError("operation_terminal")
             if self._authority() != credential:
@@ -306,8 +320,29 @@ class DaylightHostedParserProvider:
             if envelope is None:
                 if self._authority() != credential:
                     raise HostedParseError("unauthenticated", status=401)
-                envelope = await self._transport.async_parse(
-                    request, tuple(binaries), token=credential.token, operation_key=record["key"])
+                try:
+                    envelope = await self._transport.async_parse(
+                        request, tuple(binaries), token=credential.token, operation_key=record["key"])
+                except HostedParseError as error:
+                    if (error.uncertain or error.status != 503 or not error.retryable
+                            or error.code != "provider_unavailable"):
+                        raise
+                    self._require_recovery_authority(credential)
+                    try:
+                        envelope = await self._transport.async_operation(
+                            record["key"], token=credential.token, prove_absence=True,
+                        )
+                    except HostedParseError as recovery_error:
+                        raise HostedParseError(
+                            "operation_recovery_required", status=recovery_error.status,
+                            retryable=True, uncertain=True,
+                        ) from None
+                    self._require_recovery_authority(credential)
+                    if envelope is None:
+                        raise HostedParseNotAdmitted(
+                            error.code, status=error.status, retryable=error.retryable,
+                            retry_after=error.retry_after,
+                        ) from None
             try:
                 validate_envelope(envelope, record["key"], record["digest"])
             except ValueError:
@@ -326,13 +361,8 @@ class DaylightHostedParserProvider:
                     raise HostedTerminalOperationError("operation_" + envelope["status"])
                 raise HostedParseError("operation_" + envelope["status"], uncertain=True)
             response = envelope["result"]
-        try:
-            if self._authority() != credential:
-                raise HostedParseError("unauthenticated", status=401)
-        except HostedParseError as error:
-            # A successful response followed by local authority loss may already
-            # represent billable work, even when the local error resembles a 401.
-            raise HostedParseError(error.code, status=error.status, uncertain=True) from None
+        # A completed response can represent billable work even if local authority changed.
+        self._require_recovery_authority(credential)
         try:
             return parse_hosted_result(response, source)
         except Exception:

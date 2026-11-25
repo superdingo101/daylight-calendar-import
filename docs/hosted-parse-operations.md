@@ -33,12 +33,19 @@ items, including no-event outcomes and retained-text reprocessing. Operation
 journal writes retain storage ownership through cancellation until persistence
 finishes; the retiring store must drain before a replacement loads. A recovered result cannot create duplicate
 review items after ordinary deduplication history is reset. Explicit source
-reprocessing uses a new operation identity. The journal is bounded at10000 keys;
-full journals fail closed and require operator recovery rather than key eviction.
+reprocessing uses a new operation identity. The journal allows 10,000 full
+records and 100,000 compact acceptance records. At the full-record limit,
+accepted operations retain their original identity, key, digest, and durable
+acceptance, while explicitly retired terminal records may be removed. Pending
+and uncertain records retain all replay information. If no safe compaction is
+available, new work fails closed until existing operations can be resolved.
 For hosted email, an explicit administrator retry may retire a validated failed
 or expired operation associated with the fenced delivery, retaining its original
-record and allowing a fresh key. Pending and uncertain operations retain their
-original key. Independent legacy parse_text and import_text calls use fresh local
+record until journal compaction and allowing a fresh key. Pending and uncertain
+operations retain their original key. During a managed-AI pause, authenticated
+operation recovery can prove a retryable rejection did not create the operation.
+The scheduler can then resume with the same key. Ambiguous work still blocks new
+claims and leaves existing ACK maintenance available. Independent legacy parse_text and import_text calls use fresh local
 invocation IDs; these calls do not provide cross-invocation calendar-write
 idempotency. Review submissions without a stable source ID likewise use their
 unique invocation ID, not content equality. Use the review workflow and stable

@@ -9,6 +9,12 @@ import re
 import voluptuous as vol
 
 
+_MAX_ACTIVE_OPERATIONS = 10_000
+_MAX_COMPACTED_OPERATIONS = 100_000
+_COMPACTED_FIELDS = {"key", "digest", "accepted", "compacted"}
+
+
+
 def digest(value) -> str:
     return sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
                              allow_nan=False, separators=(",", ":")).encode()).hexdigest()
@@ -36,13 +42,14 @@ def source_identity(request, attachments, *, namespace: str, upstream: str | Non
 
 
 def validate_records(value):
-    if type(value) is not dict or len(value) > 10000:
+    if type(value) is not dict or len(value) > _MAX_ACTIVE_OPERATIONS + _MAX_COMPACTED_OPERATIONS:
         raise ValueError("invalid operation journal")
     required = {"key", "digest", "request_id", "received_at", "reference_datetime", "accepted"}
     keys = set()
+    compacted = 0
     for identity, record in value.items():
         if (type(identity) is not str or re.fullmatch(r"[0-9a-f]{64}", identity) is None or type(record) is not dict
-                or not required <= set(record) or set(record) - (required | {"time_zone", "terminal_source"})
+                or not {"accepted", "key", "digest"} <= set(record)
                 or type(record["accepted"]) is not bool
                 or type(record["key"]) is not str
                 or re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", record["key"]) is None
@@ -50,6 +57,13 @@ def validate_records(value):
                 or record["key"] in keys):
             raise ValueError("invalid operation journal")
         keys.add(record["key"])
+        if "compacted" in record:
+            if set(record) != _COMPACTED_FIELDS or record["compacted"] is not True or not record["accepted"]:
+                raise ValueError("invalid operation journal")
+            compacted += 1
+            continue
+        if not required <= set(record) or set(record) - (required | {"time_zone", "terminal_source"}):
+            raise ValueError("invalid operation journal")
         for key in ("request_id", "received_at", "reference_datetime", "time_zone"):
             if key == "time_zone" and key not in record:
                 continue
@@ -58,7 +72,29 @@ def validate_records(value):
         if "terminal_source" in record and (record["accepted"] or not isinstance(record["terminal_source"], str)
                 or re.fullmatch(r"v1:source:[0-9a-f]{64}", record["terminal_source"]) is None):
             raise ValueError("invalid operation journal")
+    if compacted > _MAX_COMPACTED_OPERATIONS or len(value) - compacted > _MAX_ACTIVE_OPERATIONS:
+        raise ValueError("invalid operation journal")
     return deepcopy(value)
+
+
+def reserve_operation_space(records):
+    """Compact only locally accepted records or explicitly retired terminal records."""
+    compacted = sum("compacted" in record for record in records.values())
+    if len(records) - compacted < _MAX_ACTIVE_OPERATIONS:
+        return
+    for identity, record in tuple(records.items()):
+        if "compacted" in record:
+            continue
+        if "terminal_source" in record and identity == digest({"retired_operation": record["key"]}):
+            del records[identity]
+        elif record.get("accepted") is True and compacted < _MAX_COMPACTED_OPERATIONS:
+            records[identity] = {
+                "key": record["key"], "digest": record["digest"],
+                "accepted": True, "compacted": True,
+            }
+            compacted += 1
+    if len(records) - compacted >= _MAX_ACTIVE_OPERATIONS:
+        raise ValueError("operation journal requires owner recovery")
 
 
 def validate_envelope(value, key, expected_digest):

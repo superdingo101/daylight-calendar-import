@@ -19,7 +19,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util.json import json_loads
 
-from .hosted_operations import digest, payload_digest, validate_records
+from .hosted_operations import digest, payload_digest, reserve_operation_space, validate_records
 from .hosted_delivery_journal import HostedDeliveryEvidence, HostedDeliveryJournalEntry
 from .const import DOMAIN
 from .dedup import (
@@ -1550,9 +1550,11 @@ class PendingImportStore:
         async with self._lock:
             if self._hosted_writes_closed or self._storage_blocked:
                 raise PendingImportStorageError(_STORAGE_ERROR)
-            records = deepcopy(self._hosted_operations)
+            records = dict(self._hosted_operations)
             record = records.get(identity)
             if record is not None:
+                if "compacted" in record:
+                    return deepcopy(record), False
                 request["source"]["id"] = record["request_id"]
                 request["source"]["received_at"] = record["received_at"]
                 request["reference_datetime"] = record["reference_datetime"]
@@ -1560,8 +1562,7 @@ class PendingImportStore:
                 if payload_digest(request, attachments) != record["digest"]:
                     raise ValueError("operation payload conflict")
                 return deepcopy(record), False
-            if len(records) >= 10000:
-                raise ValueError("operation journal requires owner recovery")
+            reserve_operation_space(records)
             record = {"key": str(uuid4()), "digest": payload_digest(request, attachments),
                       "request_id": request["source"]["id"],
                       "received_at": request["source"]["received_at"],

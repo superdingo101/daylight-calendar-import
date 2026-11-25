@@ -290,13 +290,13 @@ class HostedConnectionRuntime:
             raise HostedRuntimeError("hosted_unavailable")
         if self._credential_store is None or self._service is None or self._delivery_handlers is None:
             raise HostedRuntimeError("hosted_unavailable")
+        current = self._credential_store.snapshot.current
         if (self._state.credential_status not in ("current", "overlap")
-                or self._credential_store.snapshot.current is None
-                or self._credential_store.snapshot.current != self._verified_parse_credential):
+                or current is None or current != self._verified_parse_credential):
             raise HostedRuntimeError("hosted_unavailable")
         store, route_source, parse_source = self._delivery_handlers
         from .hosted_ack_recovery import async_recover_pending_acks
-        from .hosted_parse_transport import HostedParseError
+        from .hosted_parse_transport import HostedParseError, HostedParseNotAdmitted
         from .hosted_source_transport import HostedSourceTransport
         from .hosted_text_batch import async_process_text_batch
 
@@ -330,7 +330,7 @@ class HostedConnectionRuntime:
                         else:
                             outcome, parser_guard = await parse_source(source)
                     except (SourceValidationError, HostedParseError) as error:
-                        definitive = isinstance(error, SourceValidationError) or (
+                        definitive = isinstance(error, (SourceValidationError, HostedParseNotAdmitted)) or (
                             not error.uncertain and error.status in (400, 401, 403, 413, 429)
                         )
                         if self._delivery_poll_running and definitive:
@@ -347,7 +347,6 @@ class HostedConnectionRuntime:
                     return outcome, acceptance_guard
 
                 session = async_get_clientsession(self._hass)
-                claim = HostedSourceTransport(session, self._service)
                 ack = HostedLifecycleTransport(
                     session, api_origin=self._service.api_origin,
                     account_origin=self._service.account_origin,
@@ -359,12 +358,24 @@ class HostedConnectionRuntime:
                 guard_delivery(require_owner=True)
                 if recovered and any(item.ack_status == "expired" for item in recovered):
                     self._delivery_attention_issue("hosted_delivery_expired")
+                recovery_options = {}
+                if self._has_delivery_parse_attempt():
+                    pending = frozenset(
+                        item.evidence.delivery_id for item in store.hosted_ack_journal()
+                        if item.ack_status == "pending"
+                        and item.evidence.local_config_entry_id == self._entry_id
+                        and item.evidence.matches_namespace(*current.namespace)
+                    )
+                    if not pending:
+                        return []
+                    recovery_options["ack_only_delivery_ids"] = pending
+                claim = HostedSourceTransport(session, self._service)
                 try:
                     return await async_process_text_batch(
                         store=store, credentials=self._credential_store,
                         claim_transport=claim, ack_transport=ack,
                         local_config_entry_id=self._entry_id, route_source=route_source,
-                        parse_source=guarded_parse, limit=limit,
+                        parse_source=guarded_parse, limit=limit, **recovery_options,
                     )
                 finally:
                     if type(store) is PendingImportStore and not store._storage_blocked and any(
@@ -499,7 +510,6 @@ class HostedConnectionRuntime:
             return
         if self._has_delivery_parse_attempt():
             self._delivery_attention_issue("hosted_delivery_uncertain")
-            return
         now = datetime.now(UTC)
         due = self._delivery_due_at or now + timedelta(seconds=1)
         self._delivery_poll_timer = async_track_point_in_utc_time(

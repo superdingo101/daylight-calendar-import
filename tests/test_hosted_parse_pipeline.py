@@ -1447,7 +1447,8 @@ async def test_delivery_acceptance_guard_rechecks_fence_after_parse(
         await runtime.async_stop()
 
 
-async def test_delivery_pass_surfaces_expired_ack_without_reparse(hass, monkeypatch):
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_delivery_pass_surfaces_expired_ack_without_reparse(hass, monkeypatch, uncertain):
     from custom_components.daylight_calendar_import import (
         hosted_ack_recovery, hosted_runtime, hosted_text_batch,
     )
@@ -1455,12 +1456,19 @@ async def test_delivery_pass_surfaces_expired_ack_without_reparse(hass, monkeypa
     runtime, _ = await verified_runtime(hass, monkeypatch)
     recovery = AsyncMock(return_value=[SimpleNamespace(ack_status="expired")])
     monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", recovery)
-    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", AsyncMock(return_value=[]))
+    batch = AsyncMock(return_value=[])
+    monkeypatch.setattr(hosted_text_batch, "async_process_text_batch", batch)
     repair = Mock()
     monkeypatch.setattr(hosted_runtime.ir, "async_create_issue", repair)
     parser = AsyncMock()
-    runtime.configure_delivery(store=object(), route_source=object(), parse_source=parser)
+    store = SimpleNamespace(hosted_parse_uncertain=uncertain, hosted_ack_journal=lambda: ())
+    runtime.configure_delivery(store=store, route_source=object(), parse_source=parser)
     assert await runtime.async_delivery_pass() == []
+    recovery.assert_awaited_once()
+    if uncertain:
+        batch.assert_not_awaited()
+    else:
+        batch.assert_awaited_once()
     assert repair.call_args.kwargs["translation_key"] == "hosted_delivery_expired"
     assert repair.call_args.kwargs["is_persistent"] is True
     parser.assert_not_awaited()
@@ -1524,8 +1532,8 @@ async def test_managed_delivery_parse_fences_attempt_before_io(hass, monkeypatch
     await runtime.async_stop()
 
 
-@pytest.mark.parametrize("rate_limited", [False, True])
-async def test_real_delivery_retry_preserves_parse_transport_evidence(hosted_review, monkeypatch, rate_limited):
+@pytest.mark.parametrize("case", ["uncertain", "rate_limited", "paused"])
+async def test_real_delivery_retry_preserves_parse_transport_evidence(hosted_review, monkeypatch, case):
     from custom_components.daylight_calendar_import import hosted_runtime, hosted_source_transport
     from tests.test_hosted_ack_dispatch import Transport, checkpoint
     from tests.test_hosted_text_acceptance import page
@@ -1539,8 +1547,15 @@ async def test_real_delivery_retry_preserves_parse_transport_evidence(hosted_rev
     runtime._verified_parse_credential = credential.current
     runtime._state = HostedConnectionResult("connected", "current")
     monkeypatch.setattr(HostedConnectionRuntime, "parse_session", REAL_PARSE_SESSION)
-    error = (HostedParseError("rate_limited", status=429, retry_after=300) if rate_limited
-             else HostedParseError("provider_timeout", uncertain=True))
+    if case == "rate_limited":
+        error = HostedParseError("rate_limited", status=429, retry_after=300)
+    elif case == "paused":
+        from custom_components.daylight_calendar_import.hosted_parse_transport import (
+            HostedParseNotAdmitted,
+        )
+        error = HostedParseNotAdmitted("provider_unavailable", status=503, retryable=True)
+    else:
+        error = HostedParseError("provider_timeout", uncertain=True)
     wire = AsyncMock(side_effect=error)
     monkeypatch.setattr(HostedParseTransport, "async_parse", wire)
     ack = Transport()
@@ -1551,8 +1566,8 @@ async def test_real_delivery_retry_preserves_parse_transport_evidence(hosted_rev
     await runtime._async_delivery_poll()
     assert wire.await_count == 1
     assert not ack.calls and not store.hosted_ack_journal()
-    assert store.hosted_parse_uncertain is not rate_limited
-    if rate_limited:
+    assert store.hosted_parse_uncertain is (case == "uncertain")
+    if case == "rate_limited":
         assert (runtime._delivery_due_at - datetime.now(UTC)).total_seconds() > 295
     await runtime.async_stop()
 
@@ -1841,4 +1856,47 @@ async def test_byo_delivery_rechecks_owner_after_staging_before_provider(hass, m
     stager.assert_awaited_once_with(hass, original)
     parser.assert_not_awaited()
     cleanup.assert_awaited_once_with("hosted email processing")
+    await runtime.async_stop()
+
+
+async def test_uncertain_parse_allows_evidence_checked_releasing_but_no_new_acceptance(
+    hass, monkeypatch,
+):
+    from custom_components.daylight_calendar_import import (
+        hosted_ack_recovery, hosted_runtime, hosted_source_transport, hosted_text_batch,
+    )
+    from tests.test_hosted_delivery_journal import evidence
+
+    runtime, credentials = await verified_runtime(hass, monkeypatch)
+    item = replace(evidence(), local_config_entry_id=runtime._entry_id)
+    accepted = SimpleNamespace(
+        delivery_id=item.delivery_id,
+        local_config_entry_id=runtime._entry_id,
+        matches_namespace=lambda *args: args == credentials.snapshot.current.namespace,
+    )
+    store = SimpleNamespace(
+        hosted_parse_uncertain=True,
+        hosted_ack_journal=lambda: (SimpleNamespace(ack_status="pending", evidence=accepted),),
+    )
+    recover = AsyncMock(return_value=[])
+    handler = AsyncMock(return_value="recovered")
+    parse = AsyncMock()
+    claim = SimpleNamespace(
+        service_binding=SERVICE,
+        async_claim=AsyncMock(return_value={"deliveries": [
+            {"delivery_id": "unseen"}, {"delivery_id": item.delivery_id},
+        ]}),
+    )
+    ack = SimpleNamespace(service_binding=SERVICE)
+    monkeypatch.setattr(hosted_ack_recovery, "async_recover_pending_acks", recover)
+    monkeypatch.setattr(hosted_text_batch, "async_handle_text_claim", handler)
+    monkeypatch.setattr(hosted_source_transport, "HostedSourceTransport", lambda *_: claim)
+    monkeypatch.setattr(hosted_runtime, "HostedLifecycleTransport", lambda *_, **__: ack)
+    runtime.configure_delivery(store=store, route_source=object(), parse_source=parse)
+    assert await runtime.async_delivery_pass(limit=2) == ["recovered"]
+    recover.assert_awaited_once()
+    handler.assert_awaited_once()
+    assert handler.await_args.kwargs["delivery"]["delivery_id"] == item.delivery_id
+    assert handler.await_args.kwargs["allow_new"] is False
+    parse.assert_not_awaited()
     await runtime.async_stop()

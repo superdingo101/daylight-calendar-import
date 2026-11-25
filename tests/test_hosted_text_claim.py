@@ -16,7 +16,7 @@ from tests.test_storage import FakeStoreBackend, draft, make_store
 BLOCKED_REASON = r"^hosted ACK authority unavailable$"
 
 
-async def handle(store, creds, transport, delivery, *, parse=None, attachments=None):
+async def handle(store, creds, transport, delivery, *, parse=None, attachments=None, allow_new=True):
     async def default_parse(_source):
         return SimpleNamespace(events=[draft()], event_assumptions=(), warnings=[]), None
 
@@ -28,7 +28,7 @@ async def handle(store, creds, transport, delivery, *, parse=None, attachments=N
         store=store, credentials=creds, claim_checkpoint=creds.snapshot,
         service_binding=SERVICE, transport=transport, local_config_entry_id="entry",
         delivery=delivery, route_source=route, parse_source=parse or default_parse,
-        attachment_transport=attachments,
+        attachment_transport=attachments, allow_new=allow_new,
     )
 
 
@@ -41,7 +41,8 @@ async def test_new_claim_is_accepted_before_ack(monkeypatch):
     assert store.hosted_ack_journal()[0].ack_status == "confirmed"
 
 
-async def test_re_lease_is_saved_before_ack_without_reparse(monkeypatch):
+@pytest.mark.parametrize("allow_new", [True, False])
+async def test_re_lease_is_saved_before_ack_without_reparse(monkeypatch, allow_new):
     store, backend, creds, entry, delivery = await setup(monkeypatch)
 
     async def no_parse(_source):
@@ -53,7 +54,7 @@ async def test_re_lease_is_saved_before_ack_without_reparse(monkeypatch):
         assert saved["ack_status"] == "pending"
 
     transport = Transport(on_call=on_call)
-    await handle(store, creds, transport, delivery, parse=no_parse)
+    await handle(store, creds, transport, delivery, parse=no_parse, allow_new=allow_new)
     assert store.hosted_ack_journal()[0].ack_status == "confirmed"
     assert len(transport.calls) == 1
 
@@ -369,3 +370,19 @@ async def test_attachment_claim_through_restart_and_re_lease(monkeypatch, failur
     assert session.request.call_args.kwargs["headers"]["X-Daylight-Lease-Token"] == "r" * 32
     assert ack.calls[0]["lease_token"] == "r" * 32
     assert restarted.hosted_ack_journal()[0].ack_status == "confirmed"
+
+
+async def test_ack_only_claim_never_accepts_when_journal_has_no_matching_evidence():
+    store = SimpleNamespace(hosted_ack_journal=lambda: ())
+    creds = SimpleNamespace(snapshot=checkpoint())
+    transport = Transport()
+
+    async def no_parse(_source):
+        pytest.fail("ACK-only work invoked the parser")
+
+    with pytest.raises(AckDispatchBlocked, match=BLOCKED_REASON):
+        await handle(
+            store, creds, transport, page()["deliveries"][0],
+            parse=no_parse, allow_new=False,
+        )
+    assert not transport.calls
