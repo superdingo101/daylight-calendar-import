@@ -25,10 +25,12 @@ jobs:
             frontend: "20260624.6"
             hassil: "3.8.0"
             intents: "2026.6.24"
+            gazetteer: ""
           - ha: "2026.11.1"
             frontend: "20261028.5"
             hassil: "3.12.1"
             intents: "2026.10.27"
+            gazetteer: "gazetteer-matcher==1.1.0"
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -40,6 +42,9 @@ jobs:
           FRONTEND: ${{ matrix.frontend }}
           HASSIL: ${{ matrix.hassil }}
           INTENTS: ${{ matrix.intents }}
+          GAZETTEER: ${{ matrix.gazetteer }}
         run: |
-          python -m pip install "homeassistant==$HA" "home-assistant-frontend==$FRONTEND" "hassil==$HASSIL" "home-assistant-intents==$INTENTS" "aioimaplib==2.0.1" "pypdf==6.14.2" "PyTurboJPEG==1.8.3" "gazetteer-matcher==1.1.0"
+          extras=()
+          if [[ -n "$GAZETTEER" ]]; then extras+=("$GAZETTEER"); fi
+          python -m pip install "homeassistant==$HA" "home-assistant-frontend==$FRONTEND" "hassil==$HASSIL" "home-assistant-intents==$INTENTS" "aioimaplib==2.0.1" "pypdf==6.14.2" "PyTurboJPEG==1.8.3" "jsonschema[format]>=4.23,<5" "referencing>=0.35,<1" "${extras[@]}"
       - run: python -m scripts.check_hosted_storage_compatibility
