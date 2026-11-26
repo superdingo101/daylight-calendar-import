@@ -1,0 +1,45 @@
+name: Hosted storage compatibility
+
+on:
+  pull_request:
+    branches: [integration/hosted-v1]
+    paths:
+      - "custom_components/daylight_calendar_import/**"
+      - "scripts/check_hosted_storage_compatibility.py"
+      - ".github/workflows/hosted-storage-compatibility.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-storage:
+    name: Real HA storage (${{ matrix.ha }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ha: "2026.7.4"
+            frontend: "20260624.6"
+            hassil: "3.8.0"
+            intents: "2026.6.24"
+          - ha: "2026.11.1"
+            frontend: "20261028.5"
+            hassil: "3.12.1"
+            intents: "2026.10.27"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Install exact HA runtime and integration dependencies
+        env:
+          HA: ${{ matrix.ha }}
+          FRONTEND: ${{ matrix.frontend }}
+          HASSIL: ${{ matrix.hassil }}
+          INTENTS: ${{ matrix.intents }}
+        run: |
+          python -m pip install "homeassistant==$HA" "home-assistant-frontend==$FRONTEND" "hassil==$HASSIL" "home-assistant-intents==$INTENTS" "aioimaplib==2.0.1" "pypdf==6.14.2" "PyTurboJPEG==1.8.3" "gazetteer-matcher==1.1.0"
+      - run: python -m scripts.check_hosted_storage_compatibility
