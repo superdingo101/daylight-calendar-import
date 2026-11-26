@@ -22,6 +22,7 @@ from homeassistant.util.json import json_loads
 from .hosted_operations import digest, payload_digest, reserve_operation_space, validate_records
 from .hosted_delivery_journal import HostedDeliveryEvidence, HostedDeliveryJournalEntry
 from .const import DOMAIN
+from .storage_compat import invalidate_store_cache
 from .dedup import (
     event_fingerprint,
     source_fingerprint as build_source_fingerprint,
@@ -203,7 +204,7 @@ class _PendingStore(Store[dict[str, Any]]):
         async with self._write_lock:
             if self._read_only or self._data is not None:
                 raise PendingImportStorageError(_STORAGE_ERROR)
-            self._manager.async_invalidate(self.key)
+            invalidate_store_cache(self)
             await self._async_write_data({
                 "version": STORAGE_VERSION, "minor_version": 1,
                 "key": self.key, "data": data,

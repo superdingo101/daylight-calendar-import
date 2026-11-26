@@ -18,6 +18,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
+from .storage_compat import invalidate_store_cache
 from .hosted_transport import HostedServiceBinding
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{16,128}")
@@ -318,7 +319,7 @@ class _ImmediatePrivateStore(Store[dict[str, Any]]):
         async with self._write_lock:
             if self._read_only:
                 raise HostedCredentialStorageError(_ERROR)
-            self._manager.async_invalidate(self.key)
+            invalidate_store_cache(self)
             await self._async_write_data({
                 "version": 1, "minor_version": 1, "key": self.key, "data": data,
             })
