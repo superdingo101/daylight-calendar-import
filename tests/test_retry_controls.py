@@ -1,10 +1,13 @@
 """Manual retry, cancellation and late-response regression tests."""
 
 import asyncio
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from custom_components.daylight_calendar_import import storage as storage_module
+from custom_components.daylight_calendar_import.retry_settings import RetrySettings
 from custom_components.daylight_calendar_import.storage import RetryJobConflict
 from tests.test_storage import FakeStoreBackend, make_store, draft
 from tests.test_retry_jobs import source_kwargs
@@ -54,8 +57,9 @@ async def test_deleted_retry_source_blocks_late_response(monkeypatch):
             source_text=claimed.source_text, events=[draft()], source_id=claimed.source_id,
             activity_id=job_id, retry_claim=claimed.claim,
         )
-    with pytest.raises(RetryJobConflict, match="not found"):
+    with pytest.raises(RetryJobConflict) as exc:
         await store.async_cancel_retry(job_id)
+    assert str(exc.value) == "Saved import not found"
     with pytest.raises(RetryJobConflict, match="unavailable"):
         await store.async_claim_retry(job_id)
 
@@ -146,8 +150,6 @@ async def test_retry_claim_restarts_each_eligible_state_and_clears_schedule(
     monkeypatch, state,
 ):
     """A manual retry must reclaim any stopped job, not just waiting jobs."""
-    from dataclasses import replace
-
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
     job_id = await store.async_begin_submission(**source_kwargs())
@@ -201,8 +203,6 @@ async def test_pending_events_block_claim_without_modifying_retry_job(monkeypatc
 
 async def test_cancel_clears_schedule_idempotently_and_delete_is_scoped(monkeypatch):
     """Cancel keeps input, whereas delete discards only the selected input."""
-    from dataclasses import replace
-
     backend = FakeStoreBackend()
     store = make_store(monkeypatch, backend)
     first = await store.async_begin_submission(**source_kwargs())
@@ -273,3 +273,72 @@ async def test_parse_failure_classifies_each_provider_code_and_releases_claim(
     assert snapshot["state"] == expected_state
     assert snapshot["claim"] is None
     assert snapshot["last_failure_code"] == code
+
+
+async def test_manual_retry_attempt_limit_keeps_original_snapshot(monkeypatch):
+    """The attempt limit must reject further claims without changing storage."""
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    await store.async_cancel_retry(job_id)
+    exhausted = replace(store.get_retry_job(job_id), attempts=1000)
+    await store._async_save(store._items, retry_jobs={job_id: exhausted})
+    previous_saves = backend.save_attempts
+    with pytest.raises(RetryJobConflict) as exc:
+        await store.async_claim_retry(job_id)
+    assert str(exc.value) == "Retry attempt limit reached"
+    assert store.get_retry_job(job_id) == exhausted
+    assert backend.save_attempts == previous_saves
+
+
+async def test_retry_retention_keeps_exact_cutoff_and_prunes_older_source(monkeypatch):
+    """A source on the retention boundary must survive until it is older."""
+    now = datetime(2030, 1, 1, 12, tzinfo=UTC)
+
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr(storage_module, "datetime", FixedClock)
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    store.retry_preferences = lambda: RetrySettings(retention_days=7)
+    cutoff = now - timedelta(days=7)
+    identifiers = {}
+    for label, received in (
+        ("older", cutoff - timedelta(microseconds=1)),
+        ("boundary", cutoff),
+        ("newer", cutoff + timedelta(microseconds=1)),
+    ):
+        job_id = await store.async_begin_submission(**{
+            **source_kwargs(), "retry_source_id": label, "received_at": received,
+        })
+        await store.async_record_parse_failure(
+            job_id, provider_error_code="provider_unavailable",
+        )
+        identifiers[label] = job_id
+    await store.async_apply_retention()
+    expected = {identifiers["boundary"], identifiers["newer"]}
+    assert {job.id for job in store.list_retry_jobs()} == expected
+    assert {job["id"] for job in backend.saved[-1]["retry_jobs"]} == expected
+
+
+async def test_pause_waiting_clears_retained_claim_and_due_time(monkeypatch):
+    """Pause also sanitizes a waiting snapshot containing a stale claim."""
+    backend = FakeStoreBackend()
+    store = make_store(monkeypatch, backend)
+    job_id = await store.async_begin_submission(**source_kwargs())
+    original = store.get_retry_job(job_id)
+    await store.async_record_parse_failure(
+        job_id, provider_error_code="provider_unavailable",
+    )
+    waiting = replace(
+        store.get_retry_job(job_id), claim=original.claim,
+        next_attempt_at=datetime(2030, 1, 1, tzinfo=UTC).isoformat(),
+    )
+    await store._async_save(store._items, retry_jobs={job_id: waiting})
+    paused = await store.async_pause_retry(job_id, expected_job=waiting)
+    assert paused == replace(waiting, state="paused", claim=None, next_attempt_at=None)
+    assert store.get_retry_job(job_id) == paused
+    assert backend.saved[-1]["retry_jobs"] == [paused.as_dict()]
