@@ -10,9 +10,10 @@ from tests.test_storage import FakeStoreBackend, draft, make_store
 
 
 def source_kwargs():
+    """Return a fresh receipt so restart tests do not age out of retention."""
     return {
         "source_kind": "manual_text", "source_title": None,
-        "received_at": datetime(2026, 11, 18, 20, 35, tzinfo=UTC),
+        "received_at": datetime.now(UTC),
         "retry_source_text": "Christmas dinner at 6 PM on December 25, 2027",
         "retry_source_id": "manual-one", "retry_provider": "ai_task.gemini",
         "retry_calendar": "calendar.family", "retry_owner": "user-1",
@@ -215,6 +216,7 @@ def test_retry_job_create_defaults_and_processing_claim_are_valid():
     )
     assert job.routing_unresolved is False
     assert job.reimport_duplicates is False
+    assert job.attachment_in_ai is True
     assert job.state == "processing"
     assert job.attempts == 1
     assert job.claim is not None
@@ -277,6 +279,7 @@ def test_retry_job_accepts_all_documented_provider_failure_codes(code):
     ({"received_at": "broken"}, "invalid retry timestamp"),
     ({"received_at": "2026-11-18T20:35:00"}, "retry timestamp must be timezone aware"),
     ({"state": "approved"}, "invalid retry lifecycle"),
+    ({"automatic_attempts": 2}, "invalid automatic retry count"),
     ({"claim": None}, "processing retry must have a claim"),
     ({"claim": 123}, "invalid retry claim"),
     ({"last_failure_code": "missing"}, "invalid retry failure"),
